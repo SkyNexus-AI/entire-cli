@@ -23,6 +23,10 @@ const (
 	// ShadowBranchPrefix is the prefix for shadow branches.
 	ShadowBranchPrefix = "entire/"
 
+	// ShadowBranchHashLength is the number of hex characters used in shadow branch names.
+	// Shadow branches are named "entire/<hash>" using the first 7 characters of the commit hash.
+	ShadowBranchHashLength = 7
+
 	// gitDir and entireDir are excluded from tree operations.
 	gitDir    = ".git"
 	entireDir = ".entire"
@@ -441,10 +445,10 @@ func (s *GitStore) DeleteShadowBranch(baseCommit string) error {
 }
 
 // ShadowBranchNameForCommit returns the shadow branch name for a base commit hash.
-// Uses the first 7 characters of the commit hash.
+// Uses the first ShadowBranchHashLength characters of the commit hash.
 func ShadowBranchNameForCommit(baseCommit string) string {
-	if len(baseCommit) >= 7 {
-		return ShadowBranchPrefix + baseCommit[:7]
+	if len(baseCommit) >= ShadowBranchHashLength {
+		return ShadowBranchPrefix + baseCommit[:ShadowBranchHashLength]
 	}
 	return ShadowBranchPrefix + baseCommit
 }

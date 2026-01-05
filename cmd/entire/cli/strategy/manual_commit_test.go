@@ -1167,7 +1167,7 @@ func TestShadowStrategy_PrepareCommitMsg_ReusesLastCheckpointID(t *testing.T) {
 	// (simulating state after first commit with condensation)
 	state := &SessionState{
 		SessionID:                "test-session",
-		BaseCommit:               initialCommit.String()[:7],
+		BaseCommit:               initialCommit.String(),
 		WorktreePath:             dir,
 		StartedAt:                time.Now(),
 		CheckpointCount:          1,

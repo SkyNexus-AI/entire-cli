@@ -960,7 +960,7 @@ func (s *AutoCommitStrategy) InitializeSession(sessionID string) error {
 		return fmt.Errorf("failed to get HEAD: %w", err)
 	}
 
-	baseCommit := head.Hash().String()[:7]
+	baseCommit := head.Hash().String()
 
 	// Check if session state already exists (e.g., session resuming)
 	existing, err := LoadSessionState(sessionID)

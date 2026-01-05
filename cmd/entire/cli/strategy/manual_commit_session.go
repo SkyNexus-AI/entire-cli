@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"time"
 
+	"entire.io/cli/cmd/entire/cli/checkpoint"
+
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
 )
@@ -232,8 +234,8 @@ func (s *ManualCommitStrategy) initializeSession(repo *git.Repository, sessionID
 
 // getShadowBranchNameForCommit returns the shadow branch name for the given base commit.
 func getShadowBranchNameForCommit(baseCommit string) string {
-	if len(baseCommit) >= 7 {
-		return shadowBranchPrefix + baseCommit[:7]
+	if len(baseCommit) >= checkpoint.ShadowBranchHashLength {
+		return shadowBranchPrefix + baseCommit[:checkpoint.ShadowBranchHashLength]
 	}
 	return shadowBranchPrefix + baseCommit
 }
