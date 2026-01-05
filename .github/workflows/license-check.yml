@@ -9,4 +9,4 @@ on:
 
 jobs:
   check-licenses:
-    uses: entirehq/shared/.github/workflows/license-check-reusable.yml@main
+    uses: entireio/shared/.github/workflows/license-check-reusable.yml@main
