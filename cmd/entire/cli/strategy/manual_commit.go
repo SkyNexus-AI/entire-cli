@@ -145,6 +145,16 @@ func (s *ManualCommitStrategy) EnsureSetup() error {
 	if err := EnsureEntireGitignore(); err != nil {
 		return err
 	}
+
+	// Ensure the entire/sessions orphan branch exists for permanent session storage
+	repo, err := OpenRepository()
+	if err != nil {
+		return fmt.Errorf("failed to open git repository: %w", err)
+	}
+	if err := EnsureMetadataBranch(repo); err != nil {
+		return fmt.Errorf("failed to ensure metadata branch: %w", err)
+	}
+
 	// Install generic hooks (they delegate to strategy at runtime)
 	if !IsGitHookInstalled() {
 		_, err := InstallGitHook(true)

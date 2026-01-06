@@ -171,7 +171,7 @@ func EnsureMetadataBranch(repo *git.Repository) error {
 		return fmt.Errorf("failed to create metadata branch: %w", err)
 	}
 
-	fmt.Fprintf(os.Stderr, "Created orphan branch '%s' for session metadata\n", paths.MetadataBranchName)
+	fmt.Fprintf(os.Stderr, "✓ Created orphan branch '%s' for session metadata\n", paths.MetadataBranchName)
 	return nil
 }
 

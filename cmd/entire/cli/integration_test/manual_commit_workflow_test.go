@@ -1505,18 +1505,14 @@ func TestShadow_TrailerRemovalSkipsCondensation(t *testing.T) {
 
 	t.Log("Phase 3: Verify no condensation happened")
 
-	// entire/sessions branch should NOT exist (or should not have this checkpoint)
-	if env.BranchExists("entire/sessions") {
-		// Branch might exist from other tests, but this commit shouldn't have a checkpoint
-		// Check if there are any checkpoints (there shouldn't be any for this commit)
-		latestCheckpointID := env.GetLatestCheckpointID()
-		if latestCheckpointID != "" {
-			// If there is a checkpoint, verify it's not from this commit
-			// by checking if the commit has NO trailer
-			t.Logf("Found checkpoint ID: %s (should be from previous activity, not this commit)", latestCheckpointID)
-		}
+	// entire/sessions branch exists (created at setup), but should not have any checkpoint commits yet
+	// since the user removed the trailer
+	latestCheckpointID := env.TryGetLatestCheckpointID()
+	if latestCheckpointID == "" {
+		t.Log("✓ No checkpoint found on entire/sessions branch (no condensation)")
 	} else {
-		t.Log("✓ entire/sessions branch does not exist (no condensation)")
+		// If there is a checkpoint, this is unexpected for this test
+		t.Logf("Found checkpoint ID: %s (should be from previous activity, not this commit)", latestCheckpointID)
 	}
 
 	t.Log("Phase 4: Now commit WITH trailer (user keeps it)")

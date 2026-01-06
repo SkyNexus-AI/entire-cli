@@ -932,6 +932,7 @@ func (env *TestEnv) ListBranchesWithPrefix(prefix string) []string {
 // GetLatestCheckpointID returns the most recent checkpoint ID from the entire/sessions branch.
 // This is used by tests that previously extracted the checkpoint ID from commit message trailers.
 // Now that active branch commits are clean (no trailers), we get the ID from the sessions branch.
+// Fatals if the checkpoint ID cannot be found, with detailed context about what was found.
 func (env *TestEnv) GetLatestCheckpointID() string {
 	env.T.Helper()
 
@@ -963,6 +964,41 @@ func (env *TestEnv) GetLatestCheckpointID() string {
 
 	env.T.Fatalf("could not find checkpoint ID in %s branch commit message:\n%s",
 		paths.MetadataBranchName, commit.Message)
+	return ""
+}
+
+// TryGetLatestCheckpointID returns the most recent checkpoint ID from the entire/sessions branch.
+// Returns empty string if the branch doesn't exist or has no checkpoint commits yet.
+// Use this when you need to check if a checkpoint exists without failing the test.
+func (env *TestEnv) TryGetLatestCheckpointID() string {
+	env.T.Helper()
+
+	repo, err := git.PlainOpen(env.RepoDir)
+	if err != nil {
+		return ""
+	}
+
+	// Get the entire/sessions branch
+	refName := plumbing.NewBranchReferenceName(paths.MetadataBranchName)
+	ref, err := repo.Reference(refName, true)
+	if err != nil {
+		return ""
+	}
+
+	commit, err := repo.CommitObject(ref.Hash())
+	if err != nil {
+		return ""
+	}
+
+	// Extract checkpoint ID from commit message
+	// Format: "Checkpoint: <12-hex-char-id>\n\nSession: ...\nStrategy: ..."
+	for _, line := range strings.Split(commit.Message, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "Checkpoint: ") {
+			return strings.TrimPrefix(line, "Checkpoint: ")
+		}
+	}
+
 	return ""
 }
 
