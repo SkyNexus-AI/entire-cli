@@ -9,6 +9,7 @@ import (
 	"entire.io/cli/cmd/entire/cli/agent"
 	"entire.io/cli/cmd/entire/cli/agent/claudecode"
 	"entire.io/cli/cmd/entire/cli/logging"
+	"entire.io/cli/cmd/entire/cli/paths"
 
 	"github.com/spf13/cobra"
 )
@@ -141,6 +142,11 @@ func newAgentHookVerbCmdWithLogging(agentName, hookName string) *cobra.Command {
 		Use:   hookName,
 		Short: "Called on " + hookName,
 		RunE: func(_ *cobra.Command, _ []string) error {
+			// Skip silently if not in a git repository - hooks shouldn't prevent the agent from working
+			if _, err := paths.RepoRoot(); err != nil {
+				return nil //nolint:nilerr // intentional silent skip when no git repo
+			}
+
 			start := time.Now()
 
 			// Initialize logging context

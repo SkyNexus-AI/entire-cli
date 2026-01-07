@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -23,8 +24,9 @@ func TestNewAgentHookVerbCmd_LogsInvocation(t *testing.T) {
 	t.Chdir(tmpDir)
 
 	// Initialize git repo (required for paths.RepoRoot to work)
-	if err := os.MkdirAll(".git", 0o755); err != nil {
-		t.Fatalf("failed to create .git directory: %v", err)
+	gitInit := exec.CommandContext(context.Background(), "git", "init")
+	if err := gitInit.Run(); err != nil {
+		t.Fatalf("failed to init git repo: %v", err)
 	}
 
 	// Create .entire directory
@@ -146,9 +148,10 @@ func TestNewAgentHookVerbCmd_LogsFailure(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Chdir(tmpDir)
 
-	// Initialize git repo
-	if err := os.MkdirAll(".git", 0o755); err != nil {
-		t.Fatalf("failed to create .git directory: %v", err)
+	// Initialize git repo (required for paths.RepoRoot to work)
+	gitInit := exec.CommandContext(context.Background(), "git", "init")
+	if err := gitInit.Run(); err != nil {
+		t.Fatalf("failed to init git repo: %v", err)
 	}
 
 	// Create .entire directory and logs
