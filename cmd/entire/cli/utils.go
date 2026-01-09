@@ -4,8 +4,22 @@ import (
 	"fmt"
 	"os"
 
+	"entire.io/cli/cmd/entire/cli/stringutil"
+
 	"github.com/charmbracelet/huh"
 )
+
+// TruncateRunes truncates a string to at most maxRunes runes, appending suffix if truncated.
+// This is safe for multi-byte UTF-8 characters unlike byte-based slicing.
+func TruncateRunes(s string, maxRunes int, suffix string) string {
+	return stringutil.TruncateRunes(s, maxRunes, suffix)
+}
+
+// CapitalizeFirst capitalizes the first rune of a string.
+// This is safe for multi-byte UTF-8 characters unlike byte indexing.
+func CapitalizeFirst(s string) string {
+	return stringutil.CapitalizeFirst(s)
+}
 
 // IsAccessibleMode returns true if accessibility mode should be enabled.
 // This checks the ACCESSIBLE environment variable.

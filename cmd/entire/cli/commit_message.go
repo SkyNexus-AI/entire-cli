@@ -2,6 +2,8 @@ package cli
 
 import (
 	"strings"
+
+	"entire.io/cli/cmd/entire/cli/stringutil"
 )
 
 // generateCommitMessage creates a commit message from the user's original prompt
@@ -55,14 +57,12 @@ func cleanPromptForCommit(prompt string) string {
 	cleaned = strings.TrimSuffix(cleaned, "?")
 	cleaned = strings.TrimSpace(cleaned)
 
-	if len(cleaned) > 72 {
-		cleaned = strings.TrimSpace(cleaned[:72])
-	}
+	// Truncate to 72 characters (rune-safe for multi-byte UTF-8)
+	cleaned = stringutil.TruncateRunes(cleaned, 72, "")
+	cleaned = strings.TrimSpace(cleaned)
 
-	// Capitalize first letter
-	if len(cleaned) > 0 {
-		cleaned = strings.ToUpper(string(cleaned[0])) + cleaned[1:]
-	}
+	// Capitalize first letter (rune-safe for multi-byte UTF-8)
+	cleaned = stringutil.CapitalizeFirst(cleaned)
 
 	return cleaned
 }

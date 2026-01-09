@@ -10,6 +10,7 @@ import (
 
 	"entire.io/cli/cmd/entire/cli/logging"
 	"entire.io/cli/cmd/entire/cli/paths"
+	"entire.io/cli/cmd/entire/cli/stringutil"
 
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
@@ -275,11 +276,8 @@ func (s *ManualCommitStrategy) PrepareCommitMsg(commitMsgFile string, source str
 		lastPrompt = s.getLastPrompt(repo, session)
 	}
 
-	// Truncate long prompts for display
-	displayPrompt := lastPrompt
-	if len(displayPrompt) > 80 {
-		displayPrompt = displayPrompt[:77] + "..."
-	}
+	// Truncate long prompts for display (rune-safe for multi-byte UTF-8)
+	displayPrompt := stringutil.TruncateRunes(lastPrompt, 80, "...")
 
 	// Add trailer differently based on commit source
 	if source == "message" {
