@@ -100,10 +100,11 @@ func (s *AutoCommitStrategy) Description() string {
 	return "Auto-commits code to active branch with metadata on entire/sessions"
 }
 
-// AllowsMainBranch returns false because auto-commit strategy creates commits on the
-// working branch, which would pollute main branch history.
+// AllowsMainBranch returns true to allow auto-commit strategy on main branch.
+// The strategy creates clean commits with Entire-Checkpoint trailers, and detailed
+// metadata is stored on the separate entire/sessions orphan branch.
 func (s *AutoCommitStrategy) AllowsMainBranch() bool {
-	return false
+	return true
 }
 
 func (s *AutoCommitStrategy) ValidateRepository() error {

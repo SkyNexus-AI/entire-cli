@@ -9,15 +9,15 @@ import (
 )
 
 // strategiesBlockingMain returns strategies that should NOT work on main branch.
-// These strategies create commits on the working branch.
+// Currently all strategies are allowed on main branch.
 func strategiesBlockingMain() []string {
-	return []string{strategy.StrategyNameAutoCommit}
+	return []string{}
 }
 
 // strategiesAllowingMain returns strategies that SHOULD work on main branch.
-// These strategies only write to shadow branches, not the working branch.
+// All strategies now support working on main branch.
 func strategiesAllowingMain() []string {
-	return []string{strategy.StrategyNameManualCommit}
+	return []string{strategy.StrategyNameManualCommit, strategy.StrategyNameAutoCommit}
 }
 
 // TestDefaultBranch_SkipsOnMain_BlockingStrategies tests that auto-commit strategy

@@ -184,7 +184,7 @@ Legacy names `shadow` and `dual` are only recognized when reading settings or ch
 - Full rewind allowed if commit is only on current branch (not in main); otherwise logs-only
 - Rewind via `git reset --hard`
 - PrePush hook can push `entire/sessions` branch alongside user pushes
-- `AllowsMainBranch() = false` - creates commits, so not recommended on main branch
+- `AllowsMainBranch() = true` - creates commits on active branch, safe to use on main/master
 
 #### Key Files
 
