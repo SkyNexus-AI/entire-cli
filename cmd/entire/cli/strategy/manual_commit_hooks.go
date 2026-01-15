@@ -694,6 +694,12 @@ func (s *ManualCommitStrategy) InitializeSession(sessionID string, agentType str
 		// Session is fully initialized
 		needSave := false
 
+		// Backfill AgentType if empty (for sessions created before the agent_type field was added)
+		if state.AgentType == "" && agentType != "" {
+			state.AgentType = agentType
+			needSave = true
+		}
+
 		// Clear LastCheckpointID on every new prompt
 		// This is set during PostCommit when a checkpoint is created, and should be
 		// cleared when the user enters a new prompt (starting fresh work)

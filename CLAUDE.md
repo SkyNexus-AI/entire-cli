@@ -42,9 +42,9 @@ mise run test:ci
 
 Integration tests use the `//go:build integration` build tag and are located in `cmd/entire/cli/integration_test/`.
 
-### Linting
+### Linting and Formatting
 ```bash
-mise run lint
+mise run fmt && mise run lint
 ```
 
 ## Code Patterns
@@ -321,8 +321,7 @@ When multiple sessions are condensed to the same checkpoint (same base commit):
 
 - Tests: always run `mise run test` before committing changes
 - Integration tests: run `mise run test:integration` when changing integration test code
-- Linting: always run `mise run lint` before committing changes
-- Code formatting: always run `mise run fmt` before committing changes
+- Formatting and linting: always run `mise run fmt && mise run lint` before committing changes
 - When adding new features, ensure they are well-tested and documented.
 - Always check for code duplication and refactor as needed.
 
