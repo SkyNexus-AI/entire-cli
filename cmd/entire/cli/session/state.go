@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"entire.io/cli/cmd/entire/cli/jsonutil"
 	"entire.io/cli/cmd/entire/cli/paths"
 )
 
@@ -126,11 +127,10 @@ func (s *StateStore) Save(ctx context.Context, state *State) error {
 		return fmt.Errorf("failed to create session state directory: %w", err)
 	}
 
-	data, err := json.MarshalIndent(state, "", "  ")
+	data, err := jsonutil.MarshalIndentWithNewline(state, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal session state: %w", err)
 	}
-	data = append(data, '\n')
 
 	stateFile := s.stateFilePath(state.SessionID)
 

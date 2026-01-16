@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"entire.io/cli/cmd/entire/cli/jsonutil"
 	"entire.io/cli/cmd/entire/cli/paths"
 	"entire.io/cli/cmd/entire/cli/strategy"
 
@@ -235,11 +236,10 @@ func (env *TestEnv) InitEntireWithOptions(strategyName string, strategyOptions m
 	if strategyOptions != nil {
 		settings["strategy_options"] = strategyOptions
 	}
-	data, err := json.MarshalIndent(settings, "", "  ")
+	data, err := jsonutil.MarshalIndentWithNewline(settings, "", "  ")
 	if err != nil {
 		env.T.Fatalf("failed to marshal settings: %v", err)
 	}
-	data = append(data, '\n')
 	settingsPath := filepath.Join(entireDir, paths.SettingsFileName)
 	if err := os.WriteFile(settingsPath, data, 0o644); err != nil {
 		env.T.Fatalf("failed to write %s: %v", paths.SettingsFileName, err)

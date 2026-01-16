@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"entire.io/cli/cmd/entire/cli/jsonutil"
 	"entire.io/cli/cmd/entire/cli/paths"
 	"entire.io/cli/cmd/entire/cli/strategy"
 
@@ -55,11 +56,10 @@ func CapturePrePromptState(sessionID string) error {
 		UntrackedFiles: untrackedFiles,
 	}
 
-	data, err := json.MarshalIndent(state, "", "  ")
+	data, err := jsonutil.MarshalIndentWithNewline(state, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal state: %w", err)
 	}
-	data = append(data, '\n')
 
 	if err := os.WriteFile(stateFile, data, 0o600); err != nil {
 		return fmt.Errorf("failed to write state file: %w", err)
@@ -247,11 +247,10 @@ func CapturePreTaskState(toolUseID string) error {
 		UntrackedFiles: untrackedFiles,
 	}
 
-	data, err := json.MarshalIndent(state, "", "  ")
+	data, err := jsonutil.MarshalIndentWithNewline(state, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal state: %w", err)
 	}
-	data = append(data, '\n')
 
 	if err := os.WriteFile(stateFile, data, 0o600); err != nil {
 		return fmt.Errorf("failed to write state file: %w", err)
