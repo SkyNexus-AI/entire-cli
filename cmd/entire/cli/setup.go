@@ -46,6 +46,7 @@ func newEnableCmd() *cobra.Command {
 	var forceHooks bool
 	var setupShell bool
 	var skipPushSessions bool
+	var disableMultisessionWarning bool
 	var noTelemetry bool
 
 	cmd := &cobra.Command{
@@ -68,13 +69,13 @@ func newEnableCmd() *cobra.Command {
 			}
 			// Non-interactive mode if --agent flag is provided
 			if agentName != "" {
-				return setupAgentHooksNonInteractive(agentName, strategyFlag, localDev, forceHooks, skipPushSessions, noTelemetry)
+				return setupAgentHooksNonInteractive(agentName, strategyFlag, localDev, forceHooks, skipPushSessions, noTelemetry, disableMultisessionWarning)
 			}
 			// If strategy is specified via flag, skip interactive selection
 			if strategyFlag != "" {
-				return runEnableWithStrategy(cmd.OutOrStdout(), strategyFlag, localDev, ignoreUntracked, useLocalSettings, useProjectSettings, forceHooks, setupShell, skipPushSessions, noTelemetry)
+				return runEnableWithStrategy(cmd.OutOrStdout(), strategyFlag, localDev, ignoreUntracked, useLocalSettings, useProjectSettings, forceHooks, setupShell, skipPushSessions, noTelemetry, disableMultisessionWarning)
 			}
-			return runEnableInteractive(cmd.OutOrStdout(), localDev, ignoreUntracked, useLocalSettings, useProjectSettings, forceHooks, setupShell, skipPushSessions, noTelemetry)
+			return runEnableInteractive(cmd.OutOrStdout(), localDev, ignoreUntracked, useLocalSettings, useProjectSettings, forceHooks, setupShell, skipPushSessions, noTelemetry, disableMultisessionWarning)
 		},
 	}
 
@@ -89,6 +90,7 @@ func newEnableCmd() *cobra.Command {
 	cmd.Flags().BoolVarP(&forceHooks, "force", "f", false, "Force reinstall hooks (removes existing Entire hooks first)")
 	cmd.Flags().BoolVar(&setupShell, "setup-shell", false, "Add shell completion to your rc file (non-interactive)")
 	cmd.Flags().BoolVar(&skipPushSessions, "skip-push-sessions", false, "Disable automatic pushing of session logs on git push")
+	cmd.Flags().BoolVar(&disableMultisessionWarning, "disable-multisession-warning", false, "Disable warnings when multiple sessions are active on the same commit")
 	cmd.Flags().BoolVar(&noTelemetry, "no-telemetry", false, "Disable anonymous usage analytics")
 	//nolint:errcheck,gosec // completion is optional, flag is defined above
 	cmd.RegisterFlagCompletionFunc("strategy", func(_ *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {
@@ -132,7 +134,7 @@ func newStatusCmd() *cobra.Command {
 // runEnableWithStrategy enables Entire with a specified strategy (non-interactive).
 // The selectedStrategy can be either a display name (manual-commit, auto-commit)
 // or an internal name (manual-commit, auto-commit).
-func runEnableWithStrategy(w io.Writer, selectedStrategy string, localDev, _, useLocalSettings, useProjectSettings, forceHooks, setupShell, skipPushSessions, noTelemetry bool) error {
+func runEnableWithStrategy(w io.Writer, selectedStrategy string, localDev, _, useLocalSettings, useProjectSettings, forceHooks, setupShell, skipPushSessions, noTelemetry bool, disableMultisessionWarning bool) error {
 	// Map the strategy to internal name if it's a display name
 	internalStrategy := selectedStrategy
 	if mapped, ok := strategyDisplayToInternal[selectedStrategy]; ok {
@@ -182,6 +184,14 @@ func runEnableWithStrategy(w io.Writer, selectedStrategy string, localDev, _, us
 			settings.StrategyOptions = make(map[string]interface{})
 		}
 		settings.StrategyOptions["push_sessions"] = false
+	}
+
+	// Set disable_multisession_warning option if --disable-multisession-warning flag was provided
+	if disableMultisessionWarning {
+		if settings.StrategyOptions == nil {
+			settings.StrategyOptions = make(map[string]interface{})
+		}
+		settings.StrategyOptions["disable_multisession_warning"] = true
 	}
 
 	// Handle telemetry for non-interactive mode
@@ -254,7 +264,7 @@ func runEnableWithStrategy(w io.Writer, selectedStrategy string, localDev, _, us
 }
 
 // runEnableInteractive runs the interactive enable flow with strategy selection.
-func runEnableInteractive(w io.Writer, localDev, _, useLocalSettings, useProjectSettings, forceHooks, setupShell, skipPushSessions, noTelemetry bool) error {
+func runEnableInteractive(w io.Writer, localDev, _, useLocalSettings, useProjectSettings, forceHooks, setupShell, skipPushSessions, noTelemetry, disableMultisessionWarning bool) error {
 	// Build strategy options with user-friendly names
 	var selectedStrategy string
 	options := []huh.Option[string]{
@@ -317,6 +327,14 @@ func runEnableInteractive(w io.Writer, localDev, _, useLocalSettings, useProject
 			settings.StrategyOptions = make(map[string]interface{})
 		}
 		settings.StrategyOptions["push_sessions"] = false
+	}
+
+	// Set disable_multisession_warning option if --disable-multisession-warning flag was provided
+	if disableMultisessionWarning {
+		if settings.StrategyOptions == nil {
+			settings.StrategyOptions = make(map[string]interface{})
+		}
+		settings.StrategyOptions["disable_multisession_warning"] = true
 	}
 
 	// Ask about telemetry consent (only if not already asked)
@@ -554,7 +572,7 @@ func setupClaudeCodeHook(localDev, forceHooks bool) (int, error) {
 
 // setupAgentHooksNonInteractive sets up hooks for a specific agent non-interactively.
 // If strategyName is provided, it sets the strategy; otherwise uses default.
-func setupAgentHooksNonInteractive(agentName, strategyName string, localDev, forceHooks, skipPushSessions, noTelemetry bool) error {
+func setupAgentHooksNonInteractive(agentName, strategyName string, localDev, forceHooks, skipPushSessions, noTelemetry, disableMultisessionWarning bool) error {
 	ag, err := agent.Get(agentName)
 	if err != nil {
 		return fmt.Errorf("unknown agent: %s", agentName)
@@ -592,6 +610,14 @@ func setupAgentHooksNonInteractive(agentName, strategyName string, localDev, for
 			settings.StrategyOptions = make(map[string]interface{})
 		}
 		settings.StrategyOptions["push_sessions"] = false
+	}
+
+	// Set disable_multisession_warning option if --disable-multisession-warning flag was provided
+	if disableMultisessionWarning {
+		if settings.StrategyOptions == nil {
+			settings.StrategyOptions = make(map[string]interface{})
+		}
+		settings.StrategyOptions["disable_multisession_warning"] = true
 	}
 
 	// Set strategy if provided

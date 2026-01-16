@@ -207,7 +207,12 @@ func (env *TestEnv) InitRepo() {
 }
 
 // InitEntire initializes the .entire directory with the specified strategy.
-func (env *TestEnv) InitEntire(strategy string) {
+func (env *TestEnv) InitEntire(strategyName string) {
+	env.InitEntireWithOptions(strategyName, nil)
+}
+
+// InitEntireWithOptions initializes the .entire directory with the specified strategy and options.
+func (env *TestEnv) InitEntireWithOptions(strategyName string, strategyOptions map[string]any) {
 	env.T.Helper()
 
 	// Create .entire directory structure
@@ -223,9 +228,12 @@ func (env *TestEnv) InitEntire(strategy string) {
 	}
 
 	// Write settings.json
-	settings := map[string]interface{}{
-		"strategy":  strategy,
+	settings := map[string]any{
+		"strategy":  strategyName,
 		"local_dev": true, // Use go run for hooks in tests
+	}
+	if strategyOptions != nil {
+		settings["strategy_options"] = strategyOptions
 	}
 	data, err := json.MarshalIndent(settings, "", "  ")
 	if err != nil {
