@@ -4,6 +4,7 @@ go 1.24.0
 
 require (
 	github.com/charmbracelet/huh v0.8.0
+	github.com/creack/pty v1.1.24
 	github.com/denisbrodbeck/machineid v1.0.1
 	github.com/go-git/go-git/v5 v5.16.4
 	github.com/posthog/posthog-go v1.9.0

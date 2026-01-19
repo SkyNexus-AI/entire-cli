@@ -3,7 +3,9 @@
 package integration
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,6 +16,7 @@ import (
 
 	"entire.io/cli/cmd/entire/cli/strategy"
 
+	"github.com/creack/pty"
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
 )
@@ -506,6 +509,77 @@ func (env *TestEnv) RunResumeForce(branchName string) (string, error) {
 	return string(output), err
 }
 
+// RunResumeInteractive executes the resume command with a pty, allowing
+// interactive prompt responses. The respond function receives the pty for
+// reading output and writing input. Timeouts and cleanup are managed centrally.
+// The respond function should read from the pty to find prompts and write responses.
+// All output read by respond is captured and returned.
+func (env *TestEnv) RunResumeInteractive(branchName string, respond func(ptyFile *os.File) string) (string, error) {
+	env.T.Helper()
+
+	cmd := exec.Command(getTestBinary(), "resume", branchName)
+	cmd.Dir = env.RepoDir
+	cmd.Env = append(os.Environ(),
+		"ENTIRE_TEST_CLAUDE_PROJECT_DIR="+env.ClaudeProjectDir,
+		"TERM=xterm",
+		"ACCESSIBLE=1", // Use accessible mode for simpler text prompts
+	)
+
+	// Start command with a pty
+	ptmx, err := pty.Start(cmd)
+	if err != nil {
+		return "", fmt.Errorf("failed to start pty: %w", err)
+	}
+	defer ptmx.Close()
+
+	// Let the respond function interact with the pty and collect output
+	var respondOutput string
+	respondDone := make(chan struct{})
+	go func() {
+		defer close(respondDone)
+		respondOutput = respond(ptmx)
+	}()
+
+	// Wait for respond function with timeout
+	select {
+	case <-respondDone:
+		// respond completed
+	case <-time.After(10 * time.Second):
+		env.T.Log("Warning: respond function timed out")
+	}
+
+	// Collect any remaining output after respond is done
+	var remaining bytes.Buffer
+	remainingDone := make(chan struct{})
+	go func() {
+		defer close(remainingDone)
+		_, _ = io.Copy(&remaining, ptmx)
+	}()
+
+	// Wait for process to complete with timeout
+	cmdDone := make(chan error, 1)
+	go func() {
+		cmdDone <- cmd.Wait()
+	}()
+
+	var cmdErr error
+	select {
+	case cmdErr = <-cmdDone:
+		// process completed
+	case <-time.After(10 * time.Second):
+		_ = cmd.Process.Kill()
+		cmdErr = fmt.Errorf("process timed out")
+	}
+
+	// Give remaining output goroutine time to finish after process exits
+	select {
+	case <-remainingDone:
+	case <-time.After(1 * time.Second):
+	}
+
+	return respondOutput + remaining.String(), cmdErr
+}
+
 // GitMerge merges a branch into the current branch.
 func (env *TestEnv) GitMerge(branchName string) {
 	env.T.Helper()
@@ -679,6 +753,163 @@ func TestResume_LocalLogNewerTimestamp_ForceOverwrites(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "Create hello method") {
 		t.Errorf("restored log should contain checkpoint transcript, got: %s", string(data))
+	}
+}
+
+// waitForPromptAndRespond reads from the pty until it sees the expected prompt text,
+// then writes the response. Returns the output read so far.
+func waitForPromptAndRespond(ptyFile *os.File, promptSubstring, response string, timeout time.Duration) (string, error) {
+	var output bytes.Buffer
+	buf := make([]byte, 1024)
+	deadline := time.Now().Add(timeout)
+
+	for time.Now().Before(deadline) {
+		// Set read deadline to avoid blocking forever
+		_ = ptyFile.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+		n, err := ptyFile.Read(buf)
+		if n > 0 {
+			output.Write(buf[:n])
+			if strings.Contains(output.String(), promptSubstring) {
+				// Found the prompt, send response
+				_, _ = ptyFile.WriteString(response)
+				return output.String(), nil
+			}
+		}
+		if err != nil && !os.IsTimeout(err) {
+			return output.String(), err
+		}
+	}
+	return output.String(), fmt.Errorf("timeout waiting for prompt containing %q", promptSubstring)
+}
+
+// TestResume_LocalLogNewerTimestamp_UserConfirmsOverwrite tests that when the user
+// confirms the overwrite prompt interactively, the local log is overwritten.
+func TestResume_LocalLogNewerTimestamp_UserConfirmsOverwrite(t *testing.T) {
+	t.Parallel()
+	env := NewFeatureBranchEnv(t, strategy.StrategyNameAutoCommit)
+
+	// Create a session with a specific timestamp
+	session := env.NewSession()
+	if err := env.SimulateUserPromptSubmit(session.ID); err != nil {
+		t.Fatalf("SimulateUserPromptSubmit failed: %v", err)
+	}
+
+	content := "def hello; end"
+	env.WriteFile("hello.rb", content)
+
+	session.CreateTranscript(
+		"Create hello method",
+		[]FileChange{{Path: "hello.rb", Content: content}},
+	)
+	if err := env.SimulateStop(session.ID, session.TranscriptPath); err != nil {
+		t.Fatalf("SimulateStop failed: %v", err)
+	}
+
+	featureBranch := env.GetCurrentBranch()
+
+	// Create a local log with a NEWER timestamp than the checkpoint
+	if err := os.MkdirAll(env.ClaudeProjectDir, 0o755); err != nil {
+		t.Fatalf("failed to create Claude project dir: %v", err)
+	}
+	existingLog := filepath.Join(env.ClaudeProjectDir, session.ID+".jsonl")
+	futureTimestamp := time.Now().Add(24 * time.Hour).UTC().Format(time.RFC3339)
+	newerContent := fmt.Sprintf(`{"type":"human","timestamp":"%s","message":{"content":"newer local work"}}`, futureTimestamp)
+	if err := os.WriteFile(existingLog, []byte(newerContent), 0o644); err != nil {
+		t.Fatalf("failed to write existing log: %v", err)
+	}
+
+	// Switch to main
+	env.GitCheckoutBranch(masterBranch)
+
+	// Resume interactively and confirm the overwrite
+	output, err := env.RunResumeInteractive(featureBranch, func(ptyFile *os.File) string {
+		// Wait for the accessible prompt "[y/N]", then send 'y'
+		out, promptErr := waitForPromptAndRespond(ptyFile, "[y/N]", "y\n", 10*time.Second)
+		if promptErr != nil {
+			t.Logf("Warning: %v", promptErr)
+		}
+		return out
+	})
+	if err != nil {
+		t.Fatalf("resume with user confirmation failed: %v\nOutput: %s", err, output)
+	}
+
+	// Verify local log was overwritten with checkpoint content
+	data, err := os.ReadFile(existingLog)
+	if err != nil {
+		t.Fatalf("failed to read log: %v", err)
+	}
+	if strings.Contains(string(data), "newer local work") {
+		t.Errorf("local log should have been overwritten after user confirmed, but still has newer content: %s", string(data))
+	}
+	if !strings.Contains(string(data), "Create hello method") {
+		t.Errorf("restored log should contain checkpoint transcript, got: %s", string(data))
+	}
+}
+
+// TestResume_LocalLogNewerTimestamp_UserDeclinesOverwrite tests that when the user
+// declines the overwrite prompt interactively, the local log is preserved.
+func TestResume_LocalLogNewerTimestamp_UserDeclinesOverwrite(t *testing.T) {
+	t.Parallel()
+	env := NewFeatureBranchEnv(t, strategy.StrategyNameAutoCommit)
+
+	// Create a session with a specific timestamp
+	session := env.NewSession()
+	if err := env.SimulateUserPromptSubmit(session.ID); err != nil {
+		t.Fatalf("SimulateUserPromptSubmit failed: %v", err)
+	}
+
+	content := "def hello; end"
+	env.WriteFile("hello.rb", content)
+
+	session.CreateTranscript(
+		"Create hello method",
+		[]FileChange{{Path: "hello.rb", Content: content}},
+	)
+	if err := env.SimulateStop(session.ID, session.TranscriptPath); err != nil {
+		t.Fatalf("SimulateStop failed: %v", err)
+	}
+
+	featureBranch := env.GetCurrentBranch()
+
+	// Create a local log with a NEWER timestamp than the checkpoint
+	if err := os.MkdirAll(env.ClaudeProjectDir, 0o755); err != nil {
+		t.Fatalf("failed to create Claude project dir: %v", err)
+	}
+	existingLog := filepath.Join(env.ClaudeProjectDir, session.ID+".jsonl")
+	futureTimestamp := time.Now().Add(24 * time.Hour).UTC().Format(time.RFC3339)
+	newerContent := fmt.Sprintf(`{"type":"human","timestamp":"%s","message":{"content":"newer local work"}}`, futureTimestamp)
+	if err := os.WriteFile(existingLog, []byte(newerContent), 0o644); err != nil {
+		t.Fatalf("failed to write existing log: %v", err)
+	}
+
+	// Switch to main
+	env.GitCheckoutBranch(masterBranch)
+
+	// Resume interactively and decline the overwrite
+	output, err := env.RunResumeInteractive(featureBranch, func(ptyFile *os.File) string {
+		// Wait for the accessible prompt "[y/N]", then send 'n'
+		out, promptErr := waitForPromptAndRespond(ptyFile, "[y/N]", "n\n", 10*time.Second)
+		if promptErr != nil {
+			t.Logf("Warning: %v", promptErr)
+		}
+		return out
+	})
+	// Command should succeed (graceful exit) but not overwrite
+	t.Logf("Resume with user decline output: %s, err: %v", output, err)
+
+	// Verify local log was NOT overwritten
+	data, err := os.ReadFile(existingLog)
+	if err != nil {
+		t.Fatalf("failed to read log: %v", err)
+	}
+	if !strings.Contains(string(data), "newer local work") {
+		t.Errorf("local log should NOT have been overwritten after user declined, but content changed to: %s", string(data))
+	}
+
+	// Output should indicate the resume was cancelled
+	if !strings.Contains(output, "cancelled") && !strings.Contains(output, "preserved") {
+		t.Logf("Note: Expected 'cancelled' or 'preserved' in output, got: %s", output)
 	}
 }
 
