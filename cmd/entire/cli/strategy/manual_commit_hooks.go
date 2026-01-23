@@ -443,6 +443,7 @@ func (s *ManualCommitStrategy) PostCommit() error {
 		// 1. Update BaseCommit to new HEAD - session now tracks from new commit
 		// 2. Reset CheckpointCount to 0 - no checkpoints exist on new shadow branch yet
 		// 3. Update CondensedTranscriptLines - track transcript position for detecting new content
+		// 4. Clear PromptAttributions - they were already used in condensation, reset for next cycle
 		//
 		// This is critical: if we don't update BaseCommit, listAllSessionStates will try
 		// to find shadow branch for old commit (which gets deleted), and since CheckpointCount > 0,
@@ -451,6 +452,11 @@ func (s *ManualCommitStrategy) PostCommit() error {
 		state.BaseCommit = head.Hash().String()
 		state.CheckpointCount = 0
 		state.CondensedTranscriptLines = result.TotalTranscriptLines
+
+		// Clear attribution tracking - condensation already used these values
+		// If we don't clear them, they'll be double-counted in the next condensation
+		state.PromptAttributions = nil
+		state.PendingPromptAttribution = nil
 
 		// Save checkpoint ID so subsequent commits without new content can reuse it
 		state.LastCheckpointID = checkpointID
