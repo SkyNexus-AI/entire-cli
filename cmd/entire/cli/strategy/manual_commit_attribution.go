@@ -71,7 +71,9 @@ func CalculateAttribution(
 		totalCommitAdded += commitAdded
 	}
 
-	// Total lines in commit = lines added (what we're attributing)
+	// Total net additions = lines added in the commit (base → committed diff)
+	// This measures "what we're attributing" not the total size of committed files.
+	// It's the denominator for the percentage calculation.
 	totalInCommit := totalCommitAdded
 	if totalInCommit == 0 {
 		// If only deletions, use agent lines as the metric
@@ -239,11 +241,15 @@ func CalculateAttributionWithAccumulated(
 	totalUserRemoved := accumulatedUserRemoved + postCheckpointUserRemoved
 
 	// Estimate modified lines (user changed existing agent lines)
+	// Lines that were both added and removed are treated as modifications.
 	humanModified := min(totalUserAdded, totalUserRemoved)
 	pureUserAdded := totalUserAdded - humanModified
 	pureUserRemoved := totalUserRemoved - humanModified
 
-	// Total lines in commit = agent added + user added (net new lines)
+	// Total net additions = agent additions + pure user additions
+	// This reconstructs the base → head diff from our tracked changes.
+	// Note: This measures "net new lines added to the codebase" not total file size.
+	// pureUserRemoved lines are already excluded (they were agent lines that user deleted).
 	totalCommitted := totalAgentAdded + pureUserAdded
 	if totalCommitted == 0 {
 		totalCommitted = totalAgentAdded // Fallback for delete-only

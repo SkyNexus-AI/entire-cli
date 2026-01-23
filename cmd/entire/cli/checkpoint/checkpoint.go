@@ -355,13 +355,17 @@ type CommittedMetadata struct {
 // InitialAttribution captures line-level attribution metrics at commit time.
 // This is a point-in-time snapshot comparing the checkpoint tree (agent work)
 // against the committed tree (may include human edits).
+//
+// Note: TotalCommitted measures "net additions" (lines added that remain in the commit),
+// not the total size of the committed files. It equals the number of added lines in the
+// base → head diff, which is used as the denominator for calculating agent percentage.
 type InitialAttribution struct {
 	CalculatedAt    time.Time `json:"calculated_at"`
 	AgentLines      int       `json:"agent_lines"`      // Lines added by agent (base → shadow diff)
-	HumanAdded      int       `json:"human_added"`      // Lines added by human
-	HumanModified   int       `json:"human_modified"`   // Lines modified by human (estimate)
-	HumanRemoved    int       `json:"human_removed"`    // Lines removed by human
-	TotalCommitted  int       `json:"total_committed"`  // Total lines added in commit (agent + human)
+	HumanAdded      int       `json:"human_added"`      // Lines added by human (excluding modifications)
+	HumanModified   int       `json:"human_modified"`   // Lines modified by human (estimate: min(added, removed))
+	HumanRemoved    int       `json:"human_removed"`    // Lines removed by human (excluding modifications)
+	TotalCommitted  int       `json:"total_committed"`  // Net additions in commit (agent + human new lines, not total file size)
 	AgentPercentage float64   `json:"agent_percentage"` // agent_lines / total_committed * 100
 }
 
