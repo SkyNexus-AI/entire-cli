@@ -38,6 +38,8 @@ go.work.sum
 
 # Build output directory
 /dist/
+completions
+
 
 # worktrees
 .worktrees/

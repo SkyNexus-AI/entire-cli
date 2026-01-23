@@ -75,6 +75,7 @@ func sessionStateToStrategy(state *session.State) *SessionState {
 		TokenUsage:               state.TokenUsage,
 		TranscriptLinesAtStart:   state.TranscriptLinesAtStart,
 		TranscriptUUIDAtStart:    state.TranscriptUUIDAtStart,
+		TranscriptPath:           state.TranscriptPath,
 	}
 }
 
@@ -98,6 +99,7 @@ func sessionStateFromStrategy(state *SessionState) *session.State {
 		TokenUsage:               state.TokenUsage,
 		TranscriptLinesAtStart:   state.TranscriptLinesAtStart,
 		TranscriptUUIDAtStart:    state.TranscriptUUIDAtStart,
+		TranscriptPath:           state.TranscriptPath,
 	}
 }
 

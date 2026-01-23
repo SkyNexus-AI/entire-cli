@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"entire.io/cli/cmd/entire/cli/checkpoint/id"
 	"entire.io/cli/cmd/entire/cli/paths"
 	"entire.io/cli/cmd/entire/cli/strategy"
 )
@@ -73,7 +74,7 @@ func TestShadowStrategy_LastCheckpointID_ReusedAcrossCommits(t *testing.T) {
 	if state == nil {
 		t.Fatal("Session state should exist after first commit")
 	}
-	if state.LastCheckpointID != firstCheckpointID {
+	if state.LastCheckpointID.String() != firstCheckpointID {
 		t.Errorf("Session state LastCheckpointID = %q, want %q", state.LastCheckpointID, firstCheckpointID)
 	}
 
@@ -99,7 +100,7 @@ func TestShadowStrategy_LastCheckpointID_ReusedAcrossCommits(t *testing.T) {
 	}
 
 	// Verify the checkpoint exists on entire/sessions branch
-	checkpointPath := paths.CheckpointPath(firstCheckpointID)
+	checkpointPath := paths.CheckpointPath(id.MustCheckpointID(firstCheckpointID))
 	if !env.FileExistsInBranch(paths.MetadataBranchName, checkpointPath+"/"+paths.MetadataFileName) {
 		t.Errorf("Checkpoint metadata should exist at %s on %s branch",
 			checkpointPath, paths.MetadataBranchName)
@@ -141,7 +142,7 @@ func TestShadowStrategy_LastCheckpointID_ClearedOnNewPrompt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to get session state: %v", err)
 	}
-	if state.LastCheckpointID != firstCheckpointID {
+	if state.LastCheckpointID.String() != firstCheckpointID {
 		t.Errorf("LastCheckpointID should be set to %s, got %s", firstCheckpointID, state.LastCheckpointID)
 	}
 
@@ -360,8 +361,88 @@ func TestShadowStrategy_ShadowBranchCleanedUpAfterCondensation(t *testing.T) {
 
 	// Verify data exists on entire/sessions
 	checkpointID := env.GetLatestCheckpointID()
-	checkpointPath := paths.CheckpointPath(checkpointID)
+	checkpointPath := paths.CheckpointPath(id.MustCheckpointID(checkpointID))
 	if !env.FileExistsInBranch(paths.MetadataBranchName, checkpointPath+"/"+paths.MetadataFileName) {
 		t.Error("Checkpoint metadata should exist on entire/sessions branch")
+	}
+}
+
+// TestShadowStrategy_BaseCommitUpdatedOnReuse tests that BaseCommit is updated
+// even when a commit reuses a previous checkpoint ID (no new content to condense).
+// This prevents the stale BaseCommit bug where subsequent commits would fall back
+// to old sessions because no sessions matched the current HEAD.
+func TestShadowStrategy_BaseCommitUpdatedOnReuse(t *testing.T) {
+	t.Parallel()
+
+	env := NewFeatureBranchEnv(t, strategy.StrategyNameManualCommit)
+
+	// Create a session
+	session := env.NewSession()
+
+	if err := env.SimulateUserPromptSubmit(session.ID); err != nil {
+		t.Fatalf("SimulateUserPromptSubmit failed: %v", err)
+	}
+
+	// Claude creates two files
+	env.WriteFile("fileA.txt", "content A")
+	env.WriteFile("fileB.txt", "content B")
+
+	session.CreateTranscript("Create files A and B", []FileChange{
+		{Path: "fileA.txt", Content: "content A"},
+		{Path: "fileB.txt", Content: "content B"},
+	})
+
+	// Stop (creates checkpoint on shadow branch)
+	if err := env.SimulateStop(session.ID, session.TranscriptPath); err != nil {
+		t.Fatalf("SimulateStop failed: %v", err)
+	}
+
+	// First commit: file A (with hooks - triggers condensation)
+	env.GitCommitWithShadowHooks("Add file A", "fileA.txt")
+	firstCommitHash := env.GetHeadHash()
+	firstCheckpointID := env.GetCheckpointIDFromCommitMessage(firstCommitHash)
+	t.Logf("First commit (condensed): %s, checkpoint: %s", firstCommitHash[:7], firstCheckpointID)
+
+	// Get session state after first commit
+	state, err := env.GetSessionState(session.ID)
+	if err != nil {
+		t.Fatalf("Failed to get session state: %v", err)
+	}
+	baseCommitAfterFirst := state.BaseCommit
+	t.Logf("BaseCommit after first commit: %s", baseCommitAfterFirst[:7])
+
+	// Verify BaseCommit matches first commit
+	if !strings.HasPrefix(firstCommitHash, baseCommitAfterFirst) {
+		t.Errorf("BaseCommit after first commit should match HEAD: got %s, want prefix of %s",
+			baseCommitAfterFirst[:7], firstCommitHash[:7])
+	}
+
+	// Second commit: file B (reuse - no new content to condense)
+	env.GitCommitWithShadowHooks("Add file B", "fileB.txt")
+	secondCommitHash := env.GetHeadHash()
+	secondCheckpointID := env.GetCheckpointIDFromCommitMessage(secondCommitHash)
+	t.Logf("Second commit (reuse): %s, checkpoint: %s", secondCommitHash[:7], secondCheckpointID)
+
+	// Verify checkpoint IDs match (reuse is correct)
+	if firstCheckpointID != secondCheckpointID {
+		t.Errorf("Second commit should reuse first checkpoint ID: got %s, want %s",
+			secondCheckpointID, firstCheckpointID)
+	}
+
+	// CRITICAL: Get session state after second commit
+	// BaseCommit should be updated to second commit hash, not stay at first commit
+	state, err = env.GetSessionState(session.ID)
+	if err != nil {
+		t.Fatalf("Failed to get session state after second commit: %v", err)
+	}
+	baseCommitAfterSecond := state.BaseCommit
+	t.Logf("BaseCommit after second commit: %s", baseCommitAfterSecond[:7])
+
+	// REGRESSION TEST: BaseCommit must be updated even without condensation
+	// Before the fix, BaseCommit stayed at firstCommitHash after reuse commits
+	if !strings.HasPrefix(secondCommitHash, baseCommitAfterSecond) {
+		t.Errorf("BaseCommit after reuse commit should match HEAD: got %s, want prefix of %s\n"+
+			"This is a regression: BaseCommit was not updated after commit without condensation",
+			baseCommitAfterSecond[:7], secondCommitHash[:7])
 	}
 }

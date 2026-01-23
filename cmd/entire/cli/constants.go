@@ -11,6 +11,3 @@ const (
 	EntireTmpDir      = paths.EntireTmpDir
 	EntireMetadataDir = paths.EntireMetadataDir
 )
-
-// Scanner buffer size for large transcript files (10MB)
-const ScannerBufferSize = 10 * 1024 * 1024

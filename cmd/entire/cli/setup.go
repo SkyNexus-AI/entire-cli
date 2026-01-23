@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -69,7 +68,7 @@ func newEnableCmd() *cobra.Command {
 			}
 			// Non-interactive mode if --agent flag is provided
 			if agentName != "" {
-				return setupAgentHooksNonInteractive(agentName, strategyFlag, localDev, forceHooks, skipPushSessions, telemetry, disableMultisessionWarning)
+				return setupAgentHooksNonInteractive(agent.AgentName(agentName), strategyFlag, localDev, forceHooks, skipPushSessions, telemetry, disableMultisessionWarning)
 			}
 			// If strategy is specified via flag, skip interactive selection
 			if strategyFlag != "" {
@@ -457,7 +456,7 @@ func runStatus(w io.Writer) error {
 		localSettingsPath = EntireSettingsLocalFile
 	}
 
-	// Check if either settings file exists
+	// Check which settings files exist (for source label)
 	_, projectErr := os.Stat(settingsPath)
 	if projectErr != nil && !errors.Is(projectErr, fs.ErrNotExist) {
 		return fmt.Errorf("cannot access project settings file: %w", projectErr)
@@ -474,40 +473,25 @@ func runStatus(w io.Writer) error {
 		return nil
 	}
 
-	// Load and display project settings (if exists)
-	if projectExists {
-		data, readErr := os.ReadFile(settingsPath) //nolint:gosec // path is from AbsPath or constant
-		if readErr != nil {
-			return fmt.Errorf("failed to read project settings: %w", readErr)
-		}
-		projectSettings := &EntireSettings{
-			Strategy: strategy.DefaultStrategyName,
-			Enabled:  true,
-		}
-		if unmarshalErr := json.Unmarshal(data, projectSettings); unmarshalErr != nil {
-			return fmt.Errorf("failed to parse project settings: %w", unmarshalErr)
-		}
-		projectSettings.Strategy = strategy.NormalizeStrategyName(projectSettings.Strategy)
-		fmt.Fprintln(w, formatSettingsStatus("Project", projectSettings))
+	// Load merged settings
+	settings, err := LoadEntireSettings()
+	if err != nil {
+		return fmt.Errorf("failed to load settings: %w", err)
+	}
+	settings.Strategy = strategy.NormalizeStrategyName(settings.Strategy)
+
+	// Determine source label
+	var sourceLabel string
+	switch {
+	case projectExists && localExists:
+		sourceLabel = "Project + Local"
+	case localExists:
+		sourceLabel = "Local"
+	default:
+		sourceLabel = "Project"
 	}
 
-	// Load and display local settings (if exists)
-	if localExists {
-		data, readErr := os.ReadFile(localSettingsPath) //nolint:gosec // path is from AbsPath or constant
-		if readErr != nil {
-			return fmt.Errorf("failed to read local settings: %w", readErr)
-		}
-		localSettings := &EntireSettings{
-			Strategy: strategy.DefaultStrategyName,
-			Enabled:  true,
-		}
-		if unmarshalErr := json.Unmarshal(data, localSettings); unmarshalErr != nil {
-			return fmt.Errorf("failed to parse local settings: %w", unmarshalErr)
-		}
-		localSettings.Strategy = strategy.NormalizeStrategyName(localSettings.Strategy)
-		fmt.Fprintln(w, formatSettingsStatus("Local", localSettings))
-	}
-
+	fmt.Fprintln(w, formatSettingsStatus(sourceLabel, settings))
 	return nil
 }
 
@@ -568,7 +552,7 @@ func setupClaudeCodeHook(localDev, forceHooks bool) (int, error) {
 
 // setupAgentHooksNonInteractive sets up hooks for a specific agent non-interactively.
 // If strategyName is provided, it sets the strategy; otherwise uses default.
-func setupAgentHooksNonInteractive(agentName, strategyName string, localDev, forceHooks, skipPushSessions, telemetry, disableMultisessionWarning bool) error {
+func setupAgentHooksNonInteractive(agentName agent.AgentName, strategyName string, localDev, forceHooks, skipPushSessions, telemetry, disableMultisessionWarning bool) error {
 	ag, err := agent.Get(agentName)
 	if err != nil {
 		return fmt.Errorf("unknown agent: %s", agentName)
@@ -602,7 +586,7 @@ func setupAgentHooksNonInteractive(agentName, strategyName string, localDev, for
 
 	// Update settings to store the agent choice and strategy
 	settings, _ := LoadEntireSettings() //nolint:errcheck // settings defaults are fine
-	settings.Agent = agentName
+	settings.Agent = string(agentName)
 	settings.Enabled = true
 	if localDev {
 		settings.LocalDev = localDev

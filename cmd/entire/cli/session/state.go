@@ -10,7 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"entire.io/cli/cmd/entire/cli/checkpoint"
+	"entire.io/cli/cmd/entire/cli/agent"
+	"entire.io/cli/cmd/entire/cli/checkpoint/id"
 	"entire.io/cli/cmd/entire/cli/jsonutil"
 	"entire.io/cli/cmd/entire/cli/paths"
 )
@@ -51,17 +52,20 @@ type State struct {
 	ConcurrentWarningShown bool `json:"concurrent_warning_shown,omitempty"`
 
 	// LastCheckpointID is the checkpoint ID from last condensation, reused for subsequent commits without new content
-	LastCheckpointID string `json:"last_checkpoint_id,omitempty"`
+	LastCheckpointID id.CheckpointID `json:"last_checkpoint_id,omitempty"`
 
 	// AgentType identifies the agent that created this session (e.g., "Claude Code", "Gemini CLI", "Cursor")
-	AgentType string `json:"agent_type,omitempty"`
+	AgentType agent.AgentType `json:"agent_type,omitempty"`
 
 	// Token usage tracking (accumulated across all checkpoints in this session)
-	TokenUsage *checkpoint.TokenUsage `json:"token_usage,omitempty"`
+	TokenUsage *agent.TokenUsage `json:"token_usage,omitempty"`
 
 	// Transcript position when session started (for multi-session checkpoints)
 	TranscriptLinesAtStart int    `json:"transcript_lines_at_start,omitempty"`
 	TranscriptUUIDAtStart  string `json:"transcript_uuid_at_start,omitempty"`
+
+	// TranscriptPath is the path to the live transcript file (for mid-session commit detection)
+	TranscriptPath string `json:"transcript_path,omitempty"`
 }
 
 // StateStore provides low-level operations for managing session state files.

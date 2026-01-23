@@ -2,13 +2,13 @@ package agent
 
 import (
 	"fmt"
-	"sort"
+	"slices"
 	"sync"
 )
 
 var (
 	registryMu sync.RWMutex
-	registry   = make(map[string]Factory)
+	registry   = make(map[AgentName]Factory)
 )
 
 // Factory creates a new agent instance
@@ -16,7 +16,7 @@ type Factory func() Agent
 
 // Register adds an agent factory to the registry.
 // Called from init() in each agent implementation.
-func Register(name string, factory Factory) {
+func Register(name AgentName, factory Factory) {
 	registryMu.Lock()
 	defer registryMu.Unlock()
 	registry[name] = factory
@@ -25,7 +25,7 @@ func Register(name string, factory Factory) {
 // Get retrieves an agent by name.
 //
 //nolint:ireturn // Factory pattern requires returning the interface
-func Get(name string) (Agent, error) {
+func Get(name AgentName) (Agent, error) {
 	registryMu.RLock()
 	defer registryMu.RUnlock()
 
@@ -37,15 +37,15 @@ func Get(name string) (Agent, error) {
 }
 
 // List returns all registered agent names in sorted order.
-func List() []string {
+func List() []AgentName {
 	registryMu.RLock()
 	defer registryMu.RUnlock()
 
-	names := make([]string, 0, len(registry))
+	names := make([]AgentName, 0, len(registry))
 	for name := range registry {
 		names = append(names, name)
 	}
-	sort.Strings(names)
+	slices.Sort(names)
 	return names
 }
 
@@ -66,38 +66,54 @@ func Detect() (Agent, error) {
 	return nil, fmt.Errorf("no agent detected (available: %v)", List())
 }
 
-// Agent name constants
+// AgentName is the registry key type for agents (e.g., "claude-code", "gemini").
+//
+//nolint:revive // stuttering is intentional - distinguishes from AgentType when both are used
+type AgentName string
+
+// AgentType is the display name type stored in metadata/trailers (e.g., "Claude Code", "Gemini CLI").
+//
+//nolint:revive // stuttering is intentional - distinguishes from AgentName when both are used
+type AgentType string
+
+// Agent name constants (registry keys)
 const (
-	AgentNameClaudeCode = "claude-code"
-	AgentNameCursor     = "cursor"
-	AgentNameWindsurf   = "windsurf"
-	AgentNameAider      = "aider"
-	AgentNameGemini     = "gemini"
+	AgentNameClaudeCode AgentName = "claude-code"
+	AgentNameGemini     AgentName = "gemini"
 )
 
-// DefaultAgentName is the default when none specified
-const DefaultAgentName = AgentNameClaudeCode
+// Agent type constants (type identifiers stored in metadata/trailers)
+const (
+	AgentTypeClaudeCode AgentType = "Claude Code"
+	AgentTypeGemini     AgentType = "Gemini CLI"
+	AgentTypeUnknown    AgentType = "Agent" // Fallback for backwards compatibility
+)
 
-// AgentTypeToRegistryName maps human-readable agent type names (as stored in session state)
-// to their registry names. Used to look up the correct agent when showing resume commands.
-var AgentTypeToRegistryName = map[string]string{
-	"Claude Code": AgentNameClaudeCode,
-	"Gemini CLI":  AgentNameGemini,
-	"Cursor":      AgentNameCursor,
-	"Windsurf":    AgentNameWindsurf,
-	"Aider":       AgentNameAider,
-}
+// DefaultAgentName is the registry key for the default agent.
+const DefaultAgentName AgentName = AgentNameClaudeCode
 
-// GetByAgentType retrieves an agent by its human-readable type name (e.g., "Claude Code", "Gemini CLI").
-// This is used to get the correct agent for formatting resume commands based on session state.
+// GetByAgentType retrieves an agent by its type identifier.
 //
+// Note: This uses a linear search that instantiates agents until a match is found.
+// This is acceptable because:
+//   - Agent count is small (~2-20 agents)
+//   - Agent factories are lightweight (empty struct allocation)
+//   - Called infrequently (commit hooks, rewind, debug commands - not hot paths)
+//   - Cost is ~400ns worst case vs milliseconds for I/O operations
+//
+// Only optimize if agent count exceeds 100 or profiling shows this as a bottleneck.
+func GetByAgentType(agentType AgentType) (Agent, error) {
+	registryMu.RLock()
+	defer registryMu.RUnlock()
 
-func GetByAgentType(agentType string) (Agent, error) {
-	registryName, ok := AgentTypeToRegistryName[agentType]
-	if !ok {
-		return nil, fmt.Errorf("unknown agent type: %s", agentType)
+	for _, factory := range registry {
+		ag := factory()
+		if ag.Type() == agentType {
+			return ag, nil
+		}
 	}
-	return Get(registryName)
+
+	return nil, fmt.Errorf("unknown agent type: %s", agentType)
 }
 
 // Default returns the default agent.

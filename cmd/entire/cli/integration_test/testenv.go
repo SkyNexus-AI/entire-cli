@@ -13,9 +13,12 @@ import (
 	"testing"
 	"time"
 
+	"entire.io/cli/cmd/entire/cli/agent"
+	"entire.io/cli/cmd/entire/cli/checkpoint/id"
 	"entire.io/cli/cmd/entire/cli/jsonutil"
 	"entire.io/cli/cmd/entire/cli/paths"
 	"entire.io/cli/cmd/entire/cli/strategy"
+	"entire.io/cli/cmd/entire/cli/trailers"
 
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
@@ -93,6 +96,55 @@ func NewTestEnv(t *testing.T) *TestEnv {
 // Deprecated: This method is a no-op and will be removed in a future version.
 func (env *TestEnv) Cleanup() {
 	// No-op - temp dirs are cleaned up by t.TempDir()
+}
+
+// cliEnv returns the environment variables for CLI execution.
+// Includes both Claude and Gemini project dirs so tests work for any agent.
+func (env *TestEnv) cliEnv() []string {
+	return append(os.Environ(),
+		"ENTIRE_TEST_CLAUDE_PROJECT_DIR="+env.ClaudeProjectDir,
+		"ENTIRE_TEST_GEMINI_PROJECT_DIR="+env.GeminiProjectDir,
+	)
+}
+
+// RunCLI runs the entire CLI with the given arguments and returns stdout.
+func (env *TestEnv) RunCLI(args ...string) string {
+	env.T.Helper()
+	output, err := env.RunCLIWithError(args...)
+	if err != nil {
+		env.T.Fatalf("CLI command failed: %v\nArgs: %v\nOutput: %s", err, args, output)
+	}
+	return output
+}
+
+// RunCLIWithError runs the entire CLI and returns output and error.
+func (env *TestEnv) RunCLIWithError(args ...string) (string, error) {
+	env.T.Helper()
+
+	// Run CLI using the shared binary
+	cmd := exec.Command(getTestBinary(), args...)
+	cmd.Dir = env.RepoDir
+	cmd.Env = env.cliEnv()
+
+	output, err := cmd.CombinedOutput()
+	return string(output), err
+}
+
+// RunCLIWithStdin runs the CLI with stdin input.
+func (env *TestEnv) RunCLIWithStdin(stdin string, args ...string) string {
+	env.T.Helper()
+
+	// Run CLI with stdin using the shared binary
+	cmd := exec.Command(getTestBinary(), args...)
+	cmd.Dir = env.RepoDir
+	cmd.Env = env.cliEnv()
+	cmd.Stdin = strings.NewReader(stdin)
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		env.T.Fatalf("CLI command failed: %v\nArgs: %v\nOutput: %s", err, args, output)
+	}
+	return string(output)
 }
 
 // NewRepoEnv creates a TestEnv with an initialized git repo and Entire.
@@ -226,19 +278,19 @@ func (env *TestEnv) InitEntireWithOptions(strategyName string, strategyOptions m
 
 // InitEntireWithAgent initializes an Entire test environment with a specific agent.
 // If agentName is empty, defaults to claude-code.
-func (env *TestEnv) InitEntireWithAgent(strategyName, agentName string) {
+func (env *TestEnv) InitEntireWithAgent(strategyName string, agentName agent.AgentName) {
 	env.T.Helper()
 	env.initEntireInternal(strategyName, agentName, nil)
 }
 
 // InitEntireWithAgentAndOptions initializes Entire with the specified strategy, agent, and options.
-func (env *TestEnv) InitEntireWithAgentAndOptions(strategyName, agentName string, strategyOptions map[string]any) {
+func (env *TestEnv) InitEntireWithAgentAndOptions(strategyName string, agentName agent.AgentName, strategyOptions map[string]any) {
 	env.T.Helper()
 	env.initEntireInternal(strategyName, agentName, strategyOptions)
 }
 
 // initEntireInternal is the common implementation for InitEntire variants.
-func (env *TestEnv) initEntireInternal(strategyName, agentName string, strategyOptions map[string]any) {
+func (env *TestEnv) initEntireInternal(strategyName string, agentName agent.AgentName, strategyOptions map[string]any) {
 	env.T.Helper()
 
 	// Create .entire directory structure
@@ -260,7 +312,7 @@ func (env *TestEnv) initEntireInternal(strategyName, agentName string, strategyO
 	}
 	// Only add agent if specified (otherwise defaults to claude-code)
 	if agentName != "" {
-		settings["agent"] = agentName
+		settings["agent"] = string(agentName)
 	}
 	if strategyOptions != nil {
 		settings["strategy_options"] = strategyOptions
@@ -568,9 +620,7 @@ func (env *TestEnv) GetRewindPoints() []RewindPoint {
 	// Run rewind --list using the shared binary
 	cmd := exec.Command(getTestBinary(), "rewind", "--list")
 	cmd.Dir = env.RepoDir
-	cmd.Env = append(os.Environ(),
-		"ENTIRE_TEST_CLAUDE_PROJECT_DIR="+env.ClaudeProjectDir,
-	)
+	cmd.Env = env.cliEnv()
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -618,9 +668,7 @@ func (env *TestEnv) Rewind(commitID string) error {
 	// Run rewind --to <commitID> using the shared binary
 	cmd := exec.Command(getTestBinary(), "rewind", "--to", commitID)
 	cmd.Dir = env.RepoDir
-	cmd.Env = append(os.Environ(),
-		"ENTIRE_TEST_CLAUDE_PROJECT_DIR="+env.ClaudeProjectDir,
-	)
+	cmd.Env = env.cliEnv()
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -639,9 +687,7 @@ func (env *TestEnv) RewindLogsOnly(commitID string) error {
 	// Run rewind --to <commitID> --logs-only using the shared binary
 	cmd := exec.Command(getTestBinary(), "rewind", "--to", commitID, "--logs-only")
 	cmd.Dir = env.RepoDir
-	cmd.Env = append(os.Environ(),
-		"ENTIRE_TEST_CLAUDE_PROJECT_DIR="+env.ClaudeProjectDir,
-	)
+	cmd.Env = env.cliEnv()
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -660,9 +706,7 @@ func (env *TestEnv) RewindReset(commitID string) error {
 	// Run rewind --to <commitID> --reset using the shared binary
 	cmd := exec.Command(getTestBinary(), "rewind", "--to", commitID, "--reset")
 	cmd.Dir = env.RepoDir
-	cmd.Env = append(os.Environ(),
-		"ENTIRE_TEST_CLAUDE_PROJECT_DIR="+env.ClaudeProjectDir,
-	)
+	cmd.Env = env.cliEnv()
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -1075,11 +1119,11 @@ func (env *TestEnv) GetCheckpointIDFromCommitMessage(commitSHA string) string {
 	env.T.Helper()
 
 	msg := env.GetCommitMessage(commitSHA)
-	checkpointID, found := paths.ParseCheckpointTrailer(msg)
+	cpID, found := trailers.ParseCheckpoint(msg)
 	if !found {
 		return ""
 	}
-	return checkpointID
+	return cpID.String()
 }
 
 // GetLatestCheckpointIDFromHistory walks backwards from HEAD on the active branch
@@ -1107,8 +1151,8 @@ func (env *TestEnv) GetLatestCheckpointIDFromHistory() string {
 	var checkpointID string
 	//nolint:errcheck // ForEach callback handles errors
 	commitIter.ForEach(func(c *object.Commit) error {
-		if id, found := paths.ParseCheckpointTrailer(c.Message); found {
-			checkpointID = id
+		if cpID, found := trailers.ParseCheckpoint(c.Message); found {
+			checkpointID = cpID.String()
 			return errors.New("stop iteration") // Found it, stop
 		}
 		return nil
@@ -1123,11 +1167,9 @@ func (env *TestEnv) GetLatestCheckpointIDFromHistory() string {
 
 // ShardedCheckpointPath returns the sharded path for a checkpoint ID.
 // Format: <id[:2]>/<id[2:]>
+// Delegates to id.CheckpointID.Path() for consistency.
 func ShardedCheckpointPath(checkpointID string) string {
-	if len(checkpointID) < 3 {
-		return checkpointID
-	}
-	return checkpointID[:2] + "/" + checkpointID[2:]
+	return id.CheckpointID(checkpointID).Path()
 }
 
 func findModuleRoot() string {

@@ -2,6 +2,7 @@
 package claudecode
 
 import (
+	"bufio"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -30,9 +31,14 @@ func NewClaudeCodeAgent() agent.Agent {
 	return &ClaudeCodeAgent{}
 }
 
-// Name returns the agent identifier.
-func (c *ClaudeCodeAgent) Name() string {
+// Name returns the agent registry key.
+func (c *ClaudeCodeAgent) Name() agent.AgentName {
 	return agent.AgentNameClaudeCode
+}
+
+// Type returns the agent type identifier.
+func (c *ClaudeCodeAgent) Type() agent.AgentType {
+	return agent.AgentTypeClaudeCode
 }
 
 // Description returns a human-readable description.
@@ -326,4 +332,109 @@ var nonAlphanumericRegex = regexp.MustCompile(`[^a-zA-Z0-9]`)
 
 func SanitizePathForClaude(path string) string {
 	return nonAlphanumericRegex.ReplaceAllString(path, "-")
+}
+
+// TranscriptAnalyzer interface implementation
+
+// GetTranscriptPosition returns the current line count of a Claude Code transcript.
+// Claude Code uses JSONL format, so position is the number of lines.
+// This is a lightweight operation that only counts lines without parsing JSON.
+// Uses bufio.Reader to handle arbitrarily long lines (no size limit).
+// Returns 0 if the file doesn't exist or is empty.
+func (c *ClaudeCodeAgent) GetTranscriptPosition(path string) (int, error) {
+	if path == "" {
+		return 0, nil
+	}
+
+	file, err := os.Open(path) //nolint:gosec // Path comes from Claude Code transcript location
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("failed to open transcript file: %w", err)
+	}
+	defer file.Close()
+
+	reader := bufio.NewReader(file)
+	lineCount := 0
+
+	for {
+		_, err := reader.ReadBytes('\n')
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return 0, fmt.Errorf("failed to read transcript: %w", err)
+		}
+		lineCount++
+	}
+
+	return lineCount, nil
+}
+
+// ExtractModifiedFilesFromOffset extracts files modified since a given line number.
+// For Claude Code (JSONL format), offset is the starting line number.
+// Uses bufio.Reader to handle arbitrarily long lines (no size limit).
+// Returns:
+//   - files: list of file paths modified by Claude (from Write/Edit tools)
+//   - currentPosition: total number of lines in the file
+//   - error: any error encountered during reading
+func (c *ClaudeCodeAgent) ExtractModifiedFilesFromOffset(path string, startOffset int) (files []string, currentPosition int, err error) {
+	if path == "" {
+		return nil, 0, nil
+	}
+
+	file, openErr := os.Open(path) //nolint:gosec // Path comes from Claude Code transcript location
+	if openErr != nil {
+		return nil, 0, fmt.Errorf("failed to open transcript file: %w", openErr)
+	}
+	defer file.Close()
+
+	reader := bufio.NewReader(file)
+	var lines []TranscriptLine
+	lineNum := 0
+
+	for {
+		lineData, readErr := reader.ReadBytes('\n')
+		if readErr != nil && readErr != io.EOF {
+			return nil, 0, fmt.Errorf("failed to read transcript: %w", readErr)
+		}
+
+		if len(lineData) > 0 {
+			lineNum++
+			if lineNum > startOffset {
+				var line TranscriptLine
+				if parseErr := json.Unmarshal(lineData, &line); parseErr == nil {
+					lines = append(lines, line)
+				}
+				// Skip malformed lines silently
+			}
+		}
+
+		if readErr == io.EOF {
+			break
+		}
+	}
+
+	return ExtractModifiedFiles(lines), lineNum, nil
+}
+
+// TranscriptChunker interface implementation
+
+// ChunkTranscript splits a JSONL transcript at line boundaries.
+// Claude Code uses JSONL format (one JSON object per line), so chunking
+// is done at newline boundaries to preserve message integrity.
+func (c *ClaudeCodeAgent) ChunkTranscript(content []byte, maxSize int) ([][]byte, error) {
+	chunks, err := agent.ChunkJSONL(content, maxSize)
+	if err != nil {
+		return nil, fmt.Errorf("failed to chunk JSONL transcript: %w", err)
+	}
+	return chunks, nil
+}
+
+// ReassembleTranscript concatenates JSONL chunks with newlines.
+//
+//nolint:unparam // error return is required by interface, kept for consistency
+func (c *ClaudeCodeAgent) ReassembleTranscript(chunks [][]byte) ([]byte, error) {
+	return agent.ReassembleJSONL(chunks), nil
 }

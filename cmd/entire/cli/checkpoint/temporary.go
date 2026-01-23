@@ -5,14 +5,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
+	"entire.io/cli/cmd/entire/cli/agent"
 	"entire.io/cli/cmd/entire/cli/jsonutil"
+	"entire.io/cli/cmd/entire/cli/logging"
 	"entire.io/cli/cmd/entire/cli/paths"
+	"entire.io/cli/cmd/entire/cli/trailers"
 
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
@@ -99,7 +103,7 @@ func (s *GitStore) WriteTemporary(ctx context.Context, opts WriteTemporaryOption
 	}
 
 	// Create checkpoint commit with trailers
-	commitMsg := paths.FormatShadowCommitMessage(opts.CommitMessage, opts.MetadataDir, opts.SessionID)
+	commitMsg := trailers.FormatShadowCommit(opts.CommitMessage, opts.MetadataDir, opts.SessionID)
 
 	commitHash, err := s.createCommit(treeHash, parentHash, commitMsg, opts.AuthorName, opts.AuthorEmail)
 	if err != nil {
@@ -138,8 +142,8 @@ func (s *GitStore) ReadTemporary(ctx context.Context, baseCommit string) (*ReadT
 	}
 
 	// Extract session ID and metadata dir from commit trailers
-	sessionID, _ := paths.ParseSessionTrailer(commit.Message)
-	metadataDir, _ := paths.ParseMetadataTrailer(commit.Message)
+	sessionID, _ := trailers.ParseSession(commit.Message)
+	metadataDir, _ := trailers.ParseMetadata(commit.Message)
 
 	return &ReadTemporaryResult{
 		CommitHash:  ref.Hash(),
@@ -177,7 +181,7 @@ func (s *GitStore) ListTemporary(ctx context.Context) ([]TemporaryInfo, error) {
 			return nil
 		}
 
-		sessionID, _ := paths.ParseSessionTrailer(commit.Message)
+		sessionID, _ := trailers.ParseSession(commit.Message)
 
 		// Extract base commit from branch name
 		baseCommit := strings.TrimPrefix(branchName, ShadowBranchPrefix)
@@ -315,15 +319,36 @@ func (s *GitStore) addTaskMetadataToTree(baseTreeHash plumbing.Hash, opts WriteT
 	} else {
 		// Final checkpoint: add transcripts and checkpoint.json
 
-		// Add session transcript
+		// Add session transcript (with chunking support for large transcripts)
 		if opts.TranscriptPath != "" {
 			if transcriptContent, readErr := os.ReadFile(opts.TranscriptPath); readErr == nil {
-				if blobHash, blobErr := CreateBlobFromContent(s.repo, transcriptContent); blobErr == nil {
-					transcriptPath := sessionMetadataDir + "/" + paths.TranscriptFileName
-					entries[transcriptPath] = object.TreeEntry{
-						Name: transcriptPath,
-						Mode: filemode.Regular,
-						Hash: blobHash,
+				// Detect agent type from content for proper chunking
+				agentType := agent.DetectAgentTypeFromContent(transcriptContent)
+
+				// Chunk if necessary
+				chunks, chunkErr := agent.ChunkTranscript(transcriptContent, agentType)
+				if chunkErr != nil {
+					logging.Warn(context.Background(), "failed to chunk transcript, checkpoint will be saved without transcript",
+						slog.String("error", chunkErr.Error()),
+						slog.String("session_id", opts.SessionID),
+					)
+				} else {
+					for i, chunk := range chunks {
+						chunkPath := sessionMetadataDir + "/" + agent.ChunkFileName(paths.TranscriptFileName, i)
+						blobHash, blobErr := CreateBlobFromContent(s.repo, chunk)
+						if blobErr != nil {
+							logging.Warn(context.Background(), "failed to create blob for transcript chunk",
+								slog.String("error", blobErr.Error()),
+								slog.String("session_id", opts.SessionID),
+								slog.Int("chunk_index", i),
+							)
+							continue
+						}
+						entries[chunkPath] = object.TreeEntry{
+							Name: chunkPath,
+							Mode: filemode.Regular,
+							Hash: blobHash,
+						}
 					}
 				}
 			}
@@ -396,7 +421,7 @@ func (s *GitStore) ListTemporaryCheckpoints(ctx context.Context, baseCommit stri
 		count++
 
 		// Verify commit belongs to target session via Entire-Session trailer
-		commitSessionID, hasTrailer := paths.ParseSessionTrailer(c.Message)
+		commitSessionID, hasTrailer := trailers.ParseSession(c.Message)
 		if !hasTrailer {
 			return nil // Skip commits without session trailer
 		}
@@ -418,13 +443,13 @@ func (s *GitStore) ListTemporaryCheckpoints(ctx context.Context, baseCommit stri
 		}
 
 		// Check for task checkpoint first
-		taskMetadataDir, foundTask := paths.ParseTaskMetadataTrailer(c.Message)
+		taskMetadataDir, foundTask := trailers.ParseTaskMetadata(c.Message)
 		if foundTask {
 			info.IsTaskCheckpoint = true
 			info.MetadataDir = taskMetadataDir
 			info.ToolUseID = extractToolUseIDFromPath(taskMetadataDir)
 		} else {
-			metadataDir, found := paths.ParseMetadataTrailer(c.Message)
+			metadataDir, found := trailers.ParseMetadata(c.Message)
 			if found {
 				info.MetadataDir = metadataDir
 			}
@@ -457,6 +482,53 @@ func extractToolUseIDFromPath(metadataDir string) string {
 
 // errStop is a sentinel error used to break out of git log iteration.
 var errStop = errors.New("stop iteration")
+
+// GetTranscriptFromCommit retrieves the transcript from a specific commit's tree.
+// This is used for shadow branch checkpoints where the transcript is stored in the commit tree
+// rather than on the entire/sessions branch.
+// commitHash is the commit to read from, metadataDir is the path within the tree.
+// agentType is used for reassembling chunked transcripts in the correct format.
+// Handles both chunked and non-chunked transcripts.
+func (s *GitStore) GetTranscriptFromCommit(commitHash plumbing.Hash, metadataDir string, agentType agent.AgentType) ([]byte, error) {
+	commit, err := s.repo.CommitObject(commitHash)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get commit: %w", err)
+	}
+
+	tree, err := commit.Tree()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get commit tree: %w", err)
+	}
+
+	// Try to get the metadata subtree for chunk detection
+	subTree, subTreeErr := tree.Tree(metadataDir)
+	if subTreeErr == nil {
+		// Use the helper function that handles chunking
+		transcript, err := readTranscriptFromTree(subTree, agentType)
+		if err == nil && transcript != nil {
+			return transcript, nil
+		}
+	}
+
+	// Fall back to direct file access (for backwards compatibility)
+	transcriptPath := metadataDir + "/" + paths.TranscriptFileName
+	if file, fileErr := tree.File(transcriptPath); fileErr == nil {
+		content, contentErr := file.Contents()
+		if contentErr == nil {
+			return []byte(content), nil
+		}
+	}
+
+	transcriptPath = metadataDir + "/" + paths.TranscriptFileNameLegacy
+	if file, fileErr := tree.File(transcriptPath); fileErr == nil {
+		content, contentErr := file.Contents()
+		if contentErr == nil {
+			return []byte(content), nil
+		}
+	}
+
+	return nil, ErrNoTranscript
+}
 
 // ShadowBranchExists checks if a shadow branch exists for the given base commit.
 func (s *GitStore) ShadowBranchExists(baseCommit string) bool {

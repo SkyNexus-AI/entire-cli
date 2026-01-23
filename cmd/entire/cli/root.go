@@ -62,7 +62,7 @@ func NewRootCmd() *cobra.Command {
 	// Add subcommands here
 	cmd.AddCommand(newRewindCmd())
 	cmd.AddCommand(newResumeCmd())
-	cmd.AddCommand(newSessionCmd())
+	cmd.AddCommand(newCleanCmd())
 	cmd.AddCommand(newEnableCmd())
 	cmd.AddCommand(newDisableCmd())
 	cmd.AddCommand(newStatusCmd())

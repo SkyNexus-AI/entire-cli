@@ -8,9 +8,12 @@ import (
 	"os"
 	"strings"
 
+	"entire.io/cli/cmd/entire/cli/agent"
+	"entire.io/cli/cmd/entire/cli/checkpoint/id"
 	"entire.io/cli/cmd/entire/cli/logging"
 	"entire.io/cli/cmd/entire/cli/paths"
 	"entire.io/cli/cmd/entire/cli/stringutil"
+	"entire.io/cli/cmd/entire/cli/trailers"
 
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
@@ -77,9 +80,8 @@ func (s *ManualCommitStrategy) CommitMsg(commitMsgFile string) error {
 
 	message := string(content)
 
-	// Check if our trailer is present
-	checkpointID, found := paths.ParseCheckpointTrailer(message)
-	if !found || checkpointID == "" {
+	// Check if our trailer is present (ParseCheckpoint validates format, so found==true means valid)
+	if _, found := trailers.ParseCheckpoint(message); !found {
 		// No trailer, nothing to do
 		return nil
 	}
@@ -98,7 +100,7 @@ func (s *ManualCommitStrategy) CommitMsg(commitMsgFile string) error {
 
 // hasUserContent checks if the message has any content besides comments and our trailer.
 func hasUserContent(message string) bool {
-	trailerPrefix := paths.CheckpointTrailerKey + ":"
+	trailerPrefix := trailers.CheckpointTrailerKey + ":"
 	for _, line := range strings.Split(message, "\n") {
 		trimmed := strings.TrimSpace(line)
 		// Skip empty lines
@@ -121,7 +123,7 @@ func hasUserContent(message string) bool {
 
 // stripCheckpointTrailer removes the Entire-Checkpoint trailer line from the message.
 func stripCheckpointTrailer(message string) string {
-	trailerPrefix := paths.CheckpointTrailerKey + ":"
+	trailerPrefix := trailers.CheckpointTrailerKey + ":"
 	var result []string
 	for _, line := range strings.Split(message, "\n") {
 		if !strings.HasPrefix(strings.TrimSpace(line), trailerPrefix) {
@@ -184,7 +186,7 @@ func (s *ManualCommitStrategy) PrepareCommitMsg(commitMsgFile string, source str
 	sessionsWithContent := s.filterSessionsWithNewContent(repo, sessions)
 
 	// Determine which checkpoint ID to use
-	var checkpointID string
+	var checkpointID id.CheckpointID
 	var hasNewContent bool
 	var reusedSession *SessionState
 
@@ -207,6 +209,10 @@ func (s *ManualCommitStrategy) PrepareCommitMsg(commitMsgFile string, source str
 
 		// Filter to sessions where BaseCommit matches current HEAD
 		// This prevents reusing checkpoint IDs from old sessions
+		// Note: BaseCommit is kept current both when new content is condensed (in the
+		// condensation process) and when no new content is found (via PostCommit when
+		// reusing checkpoint IDs). If none match, we don't add a trailer rather than
+		// falling back to old sessions which could have stale checkpoint IDs.
 		var currentSessions []*SessionState
 		for _, session := range sessions {
 			if session.BaseCommit == currentHeadHash {
@@ -214,22 +220,28 @@ func (s *ManualCommitStrategy) PrepareCommitMsg(commitMsgFile string, source str
 			}
 		}
 
-		// If no sessions match current HEAD, fall back to all sessions
-		// (for backward compatibility with sessions created before BaseCommit tracking)
 		if len(currentSessions) == 0 {
-			currentSessions = sessions
+			// No sessions match current HEAD - don't try to reuse checkpoint IDs
+			// from old sessions as they may be stale
+			logging.Debug(logCtx, "prepare-commit-msg: no sessions match current HEAD",
+				slog.String("strategy", "manual-commit"),
+				slog.String("source", source),
+				slog.String("current_head", currentHeadHash[:7]),
+				slog.Int("total_sessions", len(sessions)),
+			)
+			return nil
 		}
 
 		stagedFiles := getStagedFiles(repo)
 		for _, session := range currentSessions {
-			if session.LastCheckpointID != "" &&
+			if !session.LastCheckpointID.IsEmpty() &&
 				(len(session.FilesTouched) == 0 || hasOverlappingFiles(stagedFiles, session.FilesTouched)) {
 				checkpointID = session.LastCheckpointID
 				reusedSession = session
 				break
 			}
 		}
-		if checkpointID == "" {
+		if checkpointID.IsEmpty() {
 			// No new content and no previous checkpoint to reference (or staged files are unrelated)
 			logging.Debug(logCtx, "prepare-commit-msg: no content to link",
 				slog.String("strategy", "manual-commit"),
@@ -249,37 +261,40 @@ func (s *ManualCommitStrategy) PrepareCommitMsg(commitMsgFile string, source str
 
 	message := string(content)
 
-	// Get or generate checkpoint ID
-	existingID, found := paths.ParseCheckpointTrailer(message)
-	if found && existingID != "" {
+	// Get or generate checkpoint ID (ParseCheckpoint validates format, so found==true means valid)
+	if existingCpID, found := trailers.ParseCheckpoint(message); found {
 		// Trailer already exists (e.g., amend) - keep it
 		logging.Debug(logCtx, "prepare-commit-msg: trailer already exists",
 			slog.String("strategy", "manual-commit"),
 			slog.String("source", source),
-			slog.String("existing_checkpoint_id", existingID),
+			slog.String("existing_checkpoint_id", existingCpID.String()),
 		)
 		return nil
 	}
 
 	if hasNewContent {
 		// New content: generate new checkpoint ID
-		checkpointID = paths.GenerateCheckpointID()
+		cpID, err := id.Generate()
+		if err != nil {
+			return fmt.Errorf("failed to generate checkpoint ID: %w", err)
+		}
+		checkpointID = cpID
 	}
 	// Otherwise checkpointID is already set to LastCheckpointID from above
 
-	// Determine agent name and last prompt from session
-	agentName := DefaultAgentType // default for backward compatibility
+	// Determine agent type and last prompt from session
+	agentType := DefaultAgentType // default for backward compatibility
 	var lastPrompt string
 	if hasNewContent && len(sessionsWithContent) > 0 {
 		session := sessionsWithContent[0]
 		if session.AgentType != "" {
-			agentName = session.AgentType
+			agentType = session.AgentType
 		}
 		lastPrompt = s.getLastPrompt(repo, session)
 	} else if reusedSession != nil {
 		// Reusing checkpoint from existing session - get agent type and prompt from that session
 		if reusedSession.AgentType != "" {
-			agentName = reusedSession.AgentType
+			agentType = reusedSession.AgentType
 		}
 		lastPrompt = s.getLastPrompt(repo, reusedSession)
 	}
@@ -295,10 +310,10 @@ func (s *ManualCommitStrategy) PrepareCommitMsg(commitMsgFile string, source str
 		// Build context string for interactive prompt
 		var promptContext string
 		if displayPrompt != "" {
-			promptContext = "You have an active " + agentName + " session.\nLast Prompt: " + displayPrompt
+			promptContext = "You have an active " + string(agentType) + " session.\nLast Prompt: " + displayPrompt
 		}
 
-		if !askConfirmTTY("Link this commit to "+agentName+" session context?", promptContext, true) {
+		if !askConfirmTTY("Link this commit to "+string(agentType)+" session context?", promptContext, true) {
 			// User declined - don't add trailer
 			logging.Debug(logCtx, "prepare-commit-msg: user declined trailer",
 				slog.String("strategy", "manual-commit"),
@@ -309,13 +324,13 @@ func (s *ManualCommitStrategy) PrepareCommitMsg(commitMsgFile string, source str
 		message = addCheckpointTrailer(message, checkpointID)
 	} else {
 		// Normal editor flow: add trailer with explanatory comment (will be stripped by git)
-		message = addCheckpointTrailerWithComment(message, checkpointID, agentName, displayPrompt)
+		message = addCheckpointTrailerWithComment(message, checkpointID, string(agentType), displayPrompt)
 	}
 
 	logging.Info(logCtx, "prepare-commit-msg: trailer added",
 		slog.String("strategy", "manual-commit"),
 		slog.String("source", source),
-		slog.String("checkpoint_id", checkpointID),
+		slog.String("checkpoint_id", checkpointID.String()),
 		slog.Bool("has_new_content", hasNewContent),
 	)
 
@@ -353,9 +368,9 @@ func (s *ManualCommitStrategy) PostCommit() error {
 		return nil //nolint:nilerr // Hook must be silent on failure
 	}
 
-	// Check if commit has checkpoint trailer
-	checkpointID, found := paths.ParseCheckpointTrailer(commit.Message)
-	if !found || checkpointID == "" {
+	// Check if commit has checkpoint trailer (ParseCheckpoint validates format)
+	checkpointID, found := trailers.ParseCheckpoint(commit.Message)
+	if !found {
 		// No trailer - user removed it, treat as manual commit
 		logging.Debug(logCtx, "post-commit: no checkpoint trailer",
 			slog.String("strategy", "manual-commit"),
@@ -373,7 +388,7 @@ func (s *ManualCommitStrategy) PostCommit() error {
 	if err != nil || len(sessions) == 0 {
 		logging.Warn(logCtx, "post-commit: no active sessions despite trailer",
 			slog.String("strategy", "manual-commit"),
-			slog.String("checkpoint_id", checkpointID),
+			slog.String("checkpoint_id", checkpointID.String()),
 		)
 		return nil //nolint:nilerr // Intentional: hooks must be silent on failure
 	}
@@ -381,11 +396,26 @@ func (s *ManualCommitStrategy) PostCommit() error {
 	// Filter to sessions with new content
 	sessionsWithContent := s.filterSessionsWithNewContent(repo, sessions)
 	if len(sessionsWithContent) == 0 {
-		logging.Warn(logCtx, "post-commit: no new content to condense",
+		logging.Debug(logCtx, "post-commit: no new content to condense",
 			slog.String("strategy", "manual-commit"),
-			slog.String("checkpoint_id", checkpointID),
+			slog.String("checkpoint_id", checkpointID.String()),
 			slog.Int("sessions_found", len(sessions)),
 		)
+		// Still update BaseCommit for all sessions in this worktree
+		// This prevents stale BaseCommit when commits happen without condensation
+		// (e.g., when reusing a previous checkpoint ID for split commits)
+		newHead := head.Hash().String()
+		for _, state := range sessions {
+			if state.BaseCommit != newHead {
+				state.BaseCommit = newHead
+				if err := s.saveSessionState(state); err != nil {
+					logging.Warn(logCtx, "post-commit: failed to update session BaseCommit",
+						slog.String("session_id", state.SessionID),
+						slog.String("error", err.Error()),
+					)
+				}
+			}
+		}
 		return nil
 	}
 
@@ -408,7 +438,7 @@ func (s *ManualCommitStrategy) PostCommit() error {
 		// After condensation, the session continues from the NEW commit (HEAD), so we:
 		// 1. Update BaseCommit to new HEAD - session now tracks from new commit
 		// 2. Reset CheckpointCount to 0 - no checkpoints exist on new shadow branch yet
-		// 3. Update CondensedTranscriptLines - track transcript offset for incremental context
+		// 3. Update CondensedTranscriptLines - track transcript position for detecting new content
 		//
 		// This is critical: if we don't update BaseCommit, listAllSessionStates will try
 		// to find shadow branch for old commit (which gets deleted), and since CheckpointCount > 0,
@@ -436,7 +466,7 @@ func (s *ManualCommitStrategy) PostCommit() error {
 		logCtx := logging.WithComponent(context.Background(), "checkpoint")
 		logging.Info(logCtx, "session condensed",
 			slog.String("strategy", "manual-commit"),
-			slog.String("checkpoint_id", result.CheckpointID),
+			slog.String("checkpoint_id", result.CheckpointID.String()),
 			slog.Int("checkpoints_condensed", result.CheckpointsCount),
 			slog.Int("transcript_lines", result.TotalTranscriptLines),
 		)
@@ -491,10 +521,10 @@ func (s *ManualCommitStrategy) sessionHasNewContent(repo *git.Repository, state 
 	refName := plumbing.NewBranchReferenceName(shadowBranchName)
 	ref, err := repo.Reference(refName, true)
 	if err != nil {
-		// No shadow branch means no new checkpoints have been created since
-		// the last condensation. This is expected after condensation when
-		// BaseCommit was updated to the new HEAD.
-		return false, nil //nolint:nilerr // Expected: no shadow branch = no new content
+		// No shadow branch means no Stop has happened since the last condensation.
+		// However, the agent may have done work (including commits) without a Stop.
+		// Check the live transcript to detect this scenario.
+		return s.sessionHasNewContentFromLiveTranscript(repo, state)
 	}
 
 	commit, err := repo.CommitObject(ref.Hash())
@@ -537,10 +567,74 @@ func countTranscriptLines(content string) int {
 	return len(lines)
 }
 
+// sessionHasNewContentFromLiveTranscript checks if a session has new content
+// by examining the live transcript file. This is used when no shadow branch exists
+// (i.e., no Stop has happened yet) but the agent may have done work.
+//
+// Returns true if:
+//  1. The transcript has grown since the last condensation, AND
+//  2. The new transcript portion contains file modifications, AND
+//  3. At least one modified file overlaps with the currently staged files
+//
+// The overlap check ensures we don't add checkpoint trailers to commits that are
+// unrelated to the agent's recent changes.
+//
+// This handles the scenario where the agent commits mid-session before Stop.
+func (s *ManualCommitStrategy) sessionHasNewContentFromLiveTranscript(repo *git.Repository, state *SessionState) (bool, error) {
+	// Need both transcript path and agent type to analyze
+	if state.TranscriptPath == "" || state.AgentType == "" {
+		return false, nil
+	}
+
+	// Get the agent for transcript analysis
+	ag, err := agent.GetByAgentType(state.AgentType)
+	if err != nil {
+		return false, nil //nolint:nilerr // Unknown agent type, fail gracefully
+	}
+
+	// Cast to TranscriptAnalyzer
+	analyzer, ok := ag.(agent.TranscriptAnalyzer)
+	if !ok {
+		return false, nil // Agent doesn't support transcript analysis
+	}
+
+	// Get current transcript position
+	currentPos, err := analyzer.GetTranscriptPosition(state.TranscriptPath)
+	if err != nil {
+		return false, nil //nolint:nilerr // Error reading transcript, fail gracefully
+	}
+
+	// Check if transcript has grown since last condensation
+	if currentPos <= state.CondensedTranscriptLines {
+		return false, nil // No new content
+	}
+
+	// Transcript has grown - check if there are file modifications in the new portion
+	modifiedFiles, _, err := analyzer.ExtractModifiedFilesFromOffset(state.TranscriptPath, state.CondensedTranscriptLines)
+	if err != nil {
+		return false, nil //nolint:nilerr // Error parsing transcript, fail gracefully
+	}
+
+	// No file modifications means no new content to checkpoint
+	if len(modifiedFiles) == 0 {
+		return false, nil
+	}
+
+	// Check if any modified files overlap with currently staged files
+	// This ensures we only add checkpoint trailers to commits that include
+	// files the agent actually modified
+	stagedFiles := getStagedFiles(repo)
+	if !hasOverlappingFiles(stagedFiles, modifiedFiles) {
+		return false, nil // No overlap - staged files are unrelated to agent's work
+	}
+
+	return true, nil
+}
+
 // addCheckpointTrailer adds the Entire-Checkpoint trailer to a commit message.
 // Handles proper trailer formatting (blank line before trailers if needed).
-func addCheckpointTrailer(message, checkpointID string) string {
-	trailer := paths.CheckpointTrailerKey + ": " + checkpointID
+func addCheckpointTrailer(message string, checkpointID id.CheckpointID) string {
+	trailer := trailers.CheckpointTrailerKey + ": " + checkpointID.String()
 
 	// If message already ends with trailers (lines starting with key:), just append
 	// Otherwise, add a blank line first
@@ -579,8 +673,8 @@ func addCheckpointTrailer(message, checkpointID string) string {
 // The trailer is placed above the git comment block but below the user's message area,
 // with a comment explaining that the user can remove it if they don't want to link the commit
 // to the agent session. If prompt is non-empty, it's shown as context.
-func addCheckpointTrailerWithComment(message, checkpointID, agentName, prompt string) string {
-	trailer := paths.CheckpointTrailerKey + ": " + checkpointID
+func addCheckpointTrailerWithComment(message string, checkpointID id.CheckpointID, agentName, prompt string) string {
+	trailer := trailers.CheckpointTrailerKey + ": " + checkpointID.String()
 	commentLines := []string{
 		"# Remove the Entire-Checkpoint trailer above if you don't want to link this commit to " + agentName + " session context.",
 	}
@@ -631,7 +725,8 @@ func addCheckpointTrailerWithComment(message, checkpointID, agentName, prompt st
 // returns a ShadowBranchConflictError to allow the caller to inform the user.
 //
 // agentType is the human-readable name of the agent (e.g., "Claude Code").
-func (s *ManualCommitStrategy) InitializeSession(sessionID string, agentType string) error {
+// transcriptPath is the path to the live transcript file (for mid-session commit detection).
+func (s *ManualCommitStrategy) InitializeSession(sessionID string, agentType agent.AgentType, transcriptPath string) error {
 	repo, err := OpenRepository()
 	if err != nil {
 		return fmt.Errorf("failed to open git repository: %w", err)
@@ -662,7 +757,7 @@ func (s *ManualCommitStrategy) InitializeSession(sessionID string, agentType str
 			// Shadow branch exists - check if it has commits from a different session
 			tipCommit, commitErr := repo.CommitObject(ref.Hash())
 			if commitErr == nil {
-				existingSessionID, found := paths.ParseSessionTrailer(tipCommit.Message)
+				existingSessionID, found := trailers.ParseSession(tipCommit.Message)
 				if found && existingSessionID != sessionID {
 					// Check if the existing session has a state file
 					// existingSessionID is the full Entire session ID (YYYY-MM-DD-uuid) from the trailer
@@ -697,6 +792,12 @@ func (s *ManualCommitStrategy) InitializeSession(sessionID string, agentType str
 		// Backfill AgentType if empty (for sessions created before the agent_type field was added)
 		if state.AgentType == "" && agentType != "" {
 			state.AgentType = agentType
+			needSave = true
+		}
+
+		// Update transcript path if provided (may change on session resume)
+		if transcriptPath != "" && state.TranscriptPath != transcriptPath {
+			state.TranscriptPath = transcriptPath
 			needSave = true
 		}
 
@@ -784,7 +885,7 @@ func (s *ManualCommitStrategy) InitializeSession(sessionID string, agentType str
 	}
 
 	// Initialize new session
-	_, err = s.initializeSession(repo, sessionID, agentType)
+	_, err = s.initializeSession(repo, sessionID, agentType, transcriptPath)
 	if err != nil {
 		return fmt.Errorf("failed to initialize session: %w", err)
 	}
@@ -825,9 +926,9 @@ func (s *ManualCommitStrategy) getLastPrompt(repo *git.Repository, state *Sessio
 		return ""
 	}
 
-	// Extract session data (using 0 as startLine to get all prompts)
+	// Extract session data to get prompts for commit message generation
 	// Pass agent type to handle different transcript formats (JSONL for Claude, JSON for Gemini)
-	sessionData, err := s.extractSessionData(repo, ref.Hash(), state.SessionID, 0, nil, state.AgentType)
+	sessionData, err := s.extractSessionData(repo, ref.Hash(), state.SessionID, nil, state.AgentType)
 	if err != nil || len(sessionData.Prompts) == 0 {
 		return ""
 	}

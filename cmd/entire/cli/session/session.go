@@ -22,6 +22,7 @@ import (
 	"context"
 	"time"
 
+	"entire.io/cli/cmd/entire/cli/agent"
 	"entire.io/cli/cmd/entire/cli/checkpoint"
 )
 
@@ -40,8 +41,8 @@ type Session struct {
 	// StartTime is when the session was started
 	StartTime time.Time
 
-	// AgentType identifies the AI agent (e.g., "claude-code", "cursor")
-	AgentType string
+	// AgentType identifies the AI agent (e.g., "Claude Code", "Cursor")
+	AgentType agent.AgentType
 
 	// AgentSessionID is the agent's internal session identifier
 	AgentSessionID string
@@ -82,8 +83,8 @@ type CreateSessionOptions struct {
 	// FirstPrompt is the initial user prompt
 	FirstPrompt string
 
-	// AgentType identifies the AI agent (e.g., "claude-code", "cursor")
-	AgentType string
+	// AgentType identifies the AI agent (e.g., "Claude Code", "Cursor")
+	AgentType agent.AgentType
 
 	// AgentSessionID is the agent's internal session identifier
 	AgentSessionID string
