@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"entire.io/cli/cmd/entire/cli/agent"
 	"entire.io/cli/cmd/entire/cli/checkpoint"
 
 	"github.com/go-git/go-git/v5"
@@ -191,7 +192,7 @@ func (s *ManualCommitStrategy) HasOtherActiveSessionsWithCheckpoints(currentSess
 // A partial state may exist if the concurrent session warning was shown.
 // agentType is the human-readable name of the agent (e.g., "Claude Code").
 // transcriptPath is the path to the live transcript file (for mid-session commit detection).
-func (s *ManualCommitStrategy) initializeSession(repo *git.Repository, sessionID string, agentType string, transcriptPath string) (*SessionState, error) {
+func (s *ManualCommitStrategy) initializeSession(repo *git.Repository, sessionID string, agentType agent.AgentType, transcriptPath string) (*SessionState, error) {
 	head, err := repo.Head()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get HEAD: %w", err)

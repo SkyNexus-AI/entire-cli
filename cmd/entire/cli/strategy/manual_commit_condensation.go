@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"strings"
 
+	"entire.io/cli/cmd/entire/cli/agent"
 	"entire.io/cli/cmd/entire/cli/agent/claudecode"
 	cpkg "entire.io/cli/cmd/entire/cli/checkpoint"
+	"entire.io/cli/cmd/entire/cli/checkpoint/id"
 	"entire.io/cli/cmd/entire/cli/paths"
 	"entire.io/cli/cmd/entire/cli/textutil"
 
@@ -71,7 +73,7 @@ func (s *ManualCommitStrategy) getCheckpointsForSession(sessionID string) ([]Che
 
 // getCheckpointLog returns the transcript for a specific checkpoint ID.
 // Uses checkpoint.GitStore.ReadCommitted() for reading from entire/sessions.
-func (s *ManualCommitStrategy) getCheckpointLog(checkpointID string) ([]byte, error) {
+func (s *ManualCommitStrategy) getCheckpointLog(checkpointID id.CheckpointID) ([]byte, error) {
 	store, err := s.getCheckpointStore()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get checkpoint store: %w", err)
@@ -95,7 +97,7 @@ func (s *ManualCommitStrategy) getCheckpointLog(checkpointID string) ([]byte, er
 // checkpointID is the 12-hex-char value from the Entire-Checkpoint trailer.
 // Metadata is stored at sharded path: <checkpoint_id[:2]>/<checkpoint_id[2:]>/
 // Uses checkpoint.GitStore.WriteCommitted for the git operations.
-func (s *ManualCommitStrategy) CondenseSession(repo *git.Repository, checkpointID string, state *SessionState) (*CondenseResult, error) {
+func (s *ManualCommitStrategy) CondenseSession(repo *git.Repository, checkpointID id.CheckpointID, state *SessionState) (*CondenseResult, error) {
 	// Get shadow branch
 	shadowBranchName := getShadowBranchNameForCommit(state.BaseCommit)
 	refName := plumbing.NewBranchReferenceName(shadowBranchName)
@@ -104,10 +106,10 @@ func (s *ManualCommitStrategy) CondenseSession(repo *git.Repository, checkpointI
 		return nil, fmt.Errorf("shadow branch not found: %w", err)
 	}
 
-	// Extract session data, starting from where we left off last condensation
+	// Extract session data from the shadow branch
 	// Use tracked files from session state instead of collecting all files from tree
 	// Pass agent type to handle different transcript formats (JSONL for Claude, JSON for Gemini)
-	sessionData, err := s.extractSessionData(repo, ref.Hash(), state.SessionID, state.CondensedTranscriptLines, state.FilesTouched, state.AgentType)
+	sessionData, err := s.extractSessionData(repo, ref.Hash(), state.SessionID, state.FilesTouched, state.AgentType)
 	if err != nil {
 		return nil, fmt.Errorf("failed to extract session data: %w", err)
 	}
@@ -156,10 +158,9 @@ func (s *ManualCommitStrategy) CondenseSession(repo *git.Repository, checkpointI
 }
 
 // extractSessionData extracts session data from the shadow branch.
-// startLine specifies the first line to include (0 = all lines, for incremental condensation).
 // filesTouched is the list of files tracked during the session (from SessionState.FilesTouched).
 // agentType identifies the agent (e.g., "Gemini CLI", "Claude Code") to determine transcript format.
-func (s *ManualCommitStrategy) extractSessionData(repo *git.Repository, shadowRef plumbing.Hash, sessionID string, startLine int, filesTouched []string, agentType string) (*ExtractedSessionData, error) {
+func (s *ManualCommitStrategy) extractSessionData(repo *git.Repository, shadowRef plumbing.Hash, sessionID string, filesTouched []string, agentType agent.AgentType) (*ExtractedSessionData, error) {
 	commit, err := repo.CommitObject(shadowRef)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get commit object: %w", err)
@@ -190,7 +191,7 @@ func (s *ManualCommitStrategy) extractSessionData(repo *git.Repository, shadowRe
 	// Process transcript based on agent type
 	if fullTranscript != "" {
 		// Check if this is a Gemini CLI transcript (JSON format, not JSONL)
-		isGeminiFormat := strings.Contains(agentType, "Gemini") || isGeminiJSONTranscript(fullTranscript)
+		isGeminiFormat := agentType == agent.AgentTypeGemini || isGeminiJSONTranscript(fullTranscript)
 
 		if isGeminiFormat {
 			// Gemini uses JSON format with a "messages" array
@@ -209,17 +210,14 @@ func (s *ManualCommitStrategy) extractSessionData(repo *git.Repository, shadowRe
 
 			data.FullTranscriptLines = len(allLines)
 
-			// Get only lines from startLine onwards for this condensation
-			if startLine < len(allLines) {
-				newLines := allLines[startLine:]
-				data.Transcript = []byte(strings.Join(newLines, "\n"))
+			// Always store the full transcript for complete session history
+			data.Transcript = []byte(strings.Join(allLines, "\n"))
 
-				// Extract prompts from the new portion only
-				data.Prompts = extractUserPromptsFromLines(newLines)
+			// Extract prompts from the full transcript
+			data.Prompts = extractUserPromptsFromLines(allLines)
 
-				// Generate context from prompts
-				data.Context = generateContextFromPrompts(data.Prompts)
-			}
+			// Generate context from prompts
+			data.Context = generateContextFromPrompts(data.Prompts)
 		}
 	}
 

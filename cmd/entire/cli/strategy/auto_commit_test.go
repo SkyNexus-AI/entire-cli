@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"entire.io/cli/cmd/entire/cli/paths"
+	"entire.io/cli/cmd/entire/cli/trailers"
 
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
@@ -111,13 +112,13 @@ func TestAutoCommitStrategy_SaveChanges_CommitHasMetadataRef(t *testing.T) {
 	}
 
 	// Active branch commits should be clean - no Entire-* trailers
-	if strings.Contains(commit.Message, paths.StrategyTrailerKey) {
+	if strings.Contains(commit.Message, trailers.StrategyTrailerKey) {
 		t.Errorf("code commit should NOT have strategy trailer, got message:\n%s", commit.Message)
 	}
-	if strings.Contains(commit.Message, paths.SourceRefTrailerKey) {
+	if strings.Contains(commit.Message, trailers.SourceRefTrailerKey) {
 		t.Errorf("code commit should NOT have source-ref trailer, got message:\n%s", commit.Message)
 	}
-	if strings.Contains(commit.Message, paths.SessionTrailerKey) {
+	if strings.Contains(commit.Message, trailers.SessionTrailerKey) {
 		t.Errorf("code commit should NOT have session trailer, got message:\n%s", commit.Message)
 	}
 
@@ -132,10 +133,10 @@ func TestAutoCommitStrategy_SaveChanges_CommitHasMetadataRef(t *testing.T) {
 	}
 
 	// Metadata commit should have the checkpoint format with session ID and strategy
-	if !strings.Contains(sessionsCommit.Message, paths.SessionTrailerKey) {
+	if !strings.Contains(sessionsCommit.Message, trailers.SessionTrailerKey) {
 		t.Errorf("sessions branch commit should have session trailer, got message:\n%s", sessionsCommit.Message)
 	}
-	if !strings.Contains(sessionsCommit.Message, paths.StrategyTrailerKey) {
+	if !strings.Contains(sessionsCommit.Message, trailers.StrategyTrailerKey) {
 		t.Errorf("sessions branch commit should have strategy trailer, got message:\n%s", sessionsCommit.Message)
 	}
 }
@@ -224,7 +225,7 @@ func TestAutoCommitStrategy_SaveChanges_MetadataRefPointsToValidCommit(t *testin
 	}
 
 	// Code commit should be clean - no Entire-* trailers
-	if strings.Contains(commit.Message, paths.SourceRefTrailerKey) {
+	if strings.Contains(commit.Message, trailers.SourceRefTrailerKey) {
 		t.Errorf("code commit should NOT have source-ref trailer, got:\n%s", commit.Message)
 	}
 
@@ -245,13 +246,13 @@ func TestAutoCommitStrategy_SaveChanges_MetadataRefPointsToValidCommit(t *testin
 	}
 
 	// Verify it contains the session ID
-	if !strings.Contains(metadataCommit.Message, paths.SessionTrailerKey+": "+sessionID) {
-		t.Errorf("metadata commit missing %s trailer for %s", paths.SessionTrailerKey, sessionID)
+	if !strings.Contains(metadataCommit.Message, trailers.SessionTrailerKey+": "+sessionID) {
+		t.Errorf("metadata commit missing %s trailer for %s", trailers.SessionTrailerKey, sessionID)
 	}
 
 	// Verify it contains the strategy (auto-commit)
-	if !strings.Contains(metadataCommit.Message, paths.StrategyTrailerKey+": "+StrategyNameAutoCommit) {
-		t.Errorf("metadata commit missing %s trailer for %s", paths.StrategyTrailerKey, StrategyNameAutoCommit)
+	if !strings.Contains(metadataCommit.Message, trailers.StrategyTrailerKey+": "+StrategyNameAutoCommit) {
+		t.Errorf("metadata commit missing %s trailer for %s", trailers.StrategyTrailerKey, StrategyNameAutoCommit)
 	}
 }
 
@@ -333,10 +334,10 @@ func TestAutoCommitStrategy_SaveTaskCheckpoint_CommitHasMetadataRef(t *testing.T
 	}
 
 	// Task checkpoint commit should be clean - no Entire-* trailers
-	if strings.Contains(commit.Message, paths.SourceRefTrailerKey) {
+	if strings.Contains(commit.Message, trailers.SourceRefTrailerKey) {
 		t.Errorf("task checkpoint commit should NOT have source-ref trailer, got message:\n%s", commit.Message)
 	}
-	if strings.Contains(commit.Message, paths.StrategyTrailerKey) {
+	if strings.Contains(commit.Message, trailers.StrategyTrailerKey) {
 		t.Errorf("task checkpoint commit should NOT have strategy trailer, got message:\n%s", commit.Message)
 	}
 
@@ -356,86 +357,7 @@ func TestAutoCommitStrategy_SaveTaskCheckpoint_CommitHasMetadataRef(t *testing.T
 	}
 }
 
-func TestAutoCommitStrategy_SaveTaskCheckpoint_TaskStartCreatesEmptyCommit(t *testing.T) {
-	// Setup temp git repo
-	dir := t.TempDir()
-	repo, err := git.PlainInit(dir, false)
-	if err != nil {
-		t.Fatalf("failed to init git repo: %v", err)
-	}
-
-	// Create initial commit (needed for a valid repo state)
-	worktree, err := repo.Worktree()
-	if err != nil {
-		t.Fatalf("failed to get worktree: %v", err)
-	}
-	readmeFile := filepath.Join(dir, "README.md")
-	if err := os.WriteFile(readmeFile, []byte("# Test"), 0o644); err != nil {
-		t.Fatalf("failed to write README: %v", err)
-	}
-	if _, err := worktree.Add("README.md"); err != nil {
-		t.Fatalf("failed to add README: %v", err)
-	}
-	initialCommit, err := worktree.Commit("Initial commit", &git.CommitOptions{
-		Author: &object.Signature{Name: "Test", Email: "test@test.com"},
-	})
-	if err != nil {
-		t.Fatalf("failed to commit: %v", err)
-	}
-
-	t.Chdir(dir)
-
-	// Setup strategy
-	s := NewAutoCommitStrategy()
-	if err := s.EnsureSetup(); err != nil {
-		t.Fatalf("EnsureSetup() error = %v", err)
-	}
-
-	// Create a TaskStart checkpoint with NO file changes
-	ctx := TaskCheckpointContext{
-		SessionID:           "test-session-taskstart",
-		ToolUseID:           "toolu_taskstart123",
-		IsIncremental:       true,
-		IncrementalType:     IncrementalTypeTaskStart,
-		IncrementalSequence: 1,
-		SubagentType:        "dev",
-		TaskDescription:     "Implement feature",
-		// No file changes
-		ModifiedFiles: []string{},
-		NewFiles:      []string{},
-		DeletedFiles:  []string{},
-		AuthorName:    "Test",
-		AuthorEmail:   "test@test.com",
-	}
-
-	if err := s.SaveTaskCheckpoint(ctx); err != nil {
-		t.Fatalf("SaveTaskCheckpoint() error = %v", err)
-	}
-
-	// Verify a NEW commit was created (not just returning HEAD)
-	head, err := repo.Head()
-	if err != nil {
-		t.Fatalf("failed to get HEAD: %v", err)
-	}
-
-	if head.Hash() == initialCommit {
-		t.Error("TaskStart should create a new commit even without file changes, but HEAD is still the initial commit")
-	}
-
-	// Verify the commit message contains the expected content
-	commit, err := repo.CommitObject(head.Hash())
-	if err != nil {
-		t.Fatalf("failed to get HEAD commit: %v", err)
-	}
-
-	// TaskStart commits should have "Starting" in the message
-	expectedSubstring := "Starting 'dev' agent: Implement feature"
-	if !strings.Contains(commit.Message, expectedSubstring) {
-		t.Errorf("commit message should contain %q, got:\n%s", expectedSubstring, commit.Message)
-	}
-}
-
-func TestAutoCommitStrategy_SaveTaskCheckpoint_NonTaskStartNoChangesAmendedForMetadata(t *testing.T) {
+func TestAutoCommitStrategy_SaveTaskCheckpoint_NoChangesSkipsCommit(t *testing.T) {
 	// Setup temp git repo
 	dir := t.TempDir()
 	repo, err := git.PlainInit(dir, false)
@@ -470,12 +392,12 @@ func TestAutoCommitStrategy_SaveTaskCheckpoint_NonTaskStartNoChangesAmendedForMe
 		t.Fatalf("EnsureSetup() error = %v", err)
 	}
 
-	// Create a regular incremental checkpoint (not TaskStart) with NO file changes
+	// Create an incremental checkpoint with NO file changes
 	ctx := TaskCheckpointContext{
-		SessionID:           "test-session-nontaskstart",
-		ToolUseID:           "toolu_nontaskstart456",
+		SessionID:           "test-session-nochanges",
+		ToolUseID:           "toolu_nochanges456",
 		IsIncremental:       true,
-		IncrementalType:     "TodoWrite", // NOT TaskStart
+		IncrementalType:     "TodoWrite",
 		IncrementalSequence: 2,
 		TodoContent:         "Write some code",
 		// No file changes
@@ -511,7 +433,7 @@ func TestAutoCommitStrategy_SaveTaskCheckpoint_NonTaskStartNoChangesAmendedForMe
 
 	// The tree hash should be the same (no file changes)
 	if newCommit.TreeHash != oldCommit.TreeHash {
-		t.Error("non-TaskStart checkpoint without file changes should have the same tree hash")
+		t.Error("checkpoint without file changes should have the same tree hash")
 	}
 
 	// Metadata should still be stored on entire/sessions branch
@@ -526,7 +448,7 @@ func TestAutoCommitStrategy_SaveTaskCheckpoint_NonTaskStartNoChangesAmendedForMe
 	}
 
 	// Verify metadata was committed to the branch
-	if !strings.Contains(metadataCommit.Message, paths.MetadataTaskTrailerKey) {
+	if !strings.Contains(metadataCommit.Message, trailers.MetadataTaskTrailerKey) {
 		t.Error("metadata should still be committed to entire/sessions branch")
 	}
 }

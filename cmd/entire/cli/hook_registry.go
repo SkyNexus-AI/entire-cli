@@ -21,10 +21,10 @@ type HookHandlerFunc func() error
 // hookRegistry maps (agentName, hookName) to handler functions.
 // This allows agents to define their hook vocabulary while keeping
 // handler logic in the CLI package (avoiding circular dependencies).
-var hookRegistry = map[string]map[string]HookHandlerFunc{}
+var hookRegistry = map[agent.AgentName]map[string]HookHandlerFunc{}
 
 // RegisterHookHandler registers a handler for an agent's hook.
-func RegisterHookHandler(agentName, hookName string, handler HookHandlerFunc) {
+func RegisterHookHandler(agentName agent.AgentName, hookName string, handler HookHandlerFunc) {
 	if hookRegistry[agentName] == nil {
 		hookRegistry[agentName] = make(map[string]HookHandlerFunc)
 	}
@@ -32,7 +32,7 @@ func RegisterHookHandler(agentName, hookName string, handler HookHandlerFunc) {
 }
 
 // GetHookHandler returns the handler for an agent's hook, or nil if not found.
-func GetHookHandler(agentName, hookName string) HookHandlerFunc {
+func GetHookHandler(agentName agent.AgentName, hookName string) HookHandlerFunc {
 	if handlers, ok := hookRegistry[agentName]; ok {
 		return handlers[hookName]
 	}
@@ -190,7 +190,7 @@ var agentHookLogCleanup func()
 // currentHookAgentName stores the agent name for the currently executing hook.
 // Set by newAgentHookVerbCmdWithLogging before calling the handler.
 // This allows handlers to know which agent invoked the hook without guessing.
-var currentHookAgentName string
+var currentHookAgentName agent.AgentName
 
 // GetCurrentHookAgent returns the agent for the currently executing hook.
 // Returns the agent based on the hook command structure (e.g., "entire hooks claude-code ...")
@@ -212,9 +212,9 @@ func GetCurrentHookAgent() (agent.Agent, error) {
 
 // newAgentHooksCmd creates a hooks subcommand for an agent that implements HookHandler.
 // It dynamically creates subcommands for each hook the agent supports.
-func newAgentHooksCmd(agentName string, handler agent.HookHandler) *cobra.Command {
+func newAgentHooksCmd(agentName agent.AgentName, handler agent.HookHandler) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:    agentName,
+		Use:    string(agentName),
 		Short:  handler.Description() + " hook handlers",
 		Hidden: true,
 		PersistentPreRunE: func(_ *cobra.Command, _ []string) error {
@@ -253,7 +253,7 @@ func getHookType(hookName string) string {
 
 // newAgentHookVerbCmdWithLogging creates a command for a specific hook verb with structured logging.
 // It logs hook invocation at DEBUG level and completion with duration at INFO level.
-func newAgentHookVerbCmdWithLogging(agentName, hookName string) *cobra.Command {
+func newAgentHookVerbCmdWithLogging(agentName agent.AgentName, hookName string) *cobra.Command {
 	return &cobra.Command{
 		Use:   hookName,
 		Short: "Called on " + hookName,

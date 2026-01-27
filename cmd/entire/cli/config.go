@@ -318,7 +318,7 @@ func GetAgent() (agent.Agent, error) {
 
 	// Explicit agent configured
 	if settings.Agent != "" {
-		ag, err := agent.Get(settings.Agent)
+		ag, err := agent.Get(agent.AgentName(settings.Agent))
 		if err != nil {
 			return nil, fmt.Errorf("getting configured agent: %w", err)
 		}

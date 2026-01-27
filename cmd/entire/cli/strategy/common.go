@@ -12,7 +12,10 @@ import (
 	"strings"
 	"time"
 
+	"entire.io/cli/cmd/entire/cli/agent"
+	"entire.io/cli/cmd/entire/cli/checkpoint/id"
 	"entire.io/cli/cmd/entire/cli/paths"
+	"entire.io/cli/cmd/entire/cli/trailers"
 
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/config"
@@ -83,7 +86,12 @@ func ListCheckpoints() ([]CheckpointInfo, error) {
 			}
 
 			// Reconstruct checkpoint ID: <bucket><remaining>
-			checkpointID := bucketEntry.Name + checkpointEntry.Name
+			checkpointIDStr := bucketEntry.Name + checkpointEntry.Name
+			checkpointID, cpErr := id.NewCheckpointID(checkpointIDStr)
+			if cpErr != nil {
+				// Skip invalid checkpoint IDs
+				continue
+			}
 
 			info := CheckpointInfo{
 				CheckpointID: checkpointID,
@@ -117,7 +125,7 @@ const (
 	shadowBranchPrefix = "entire/"
 
 	// DefaultAgentType is the generic fallback agent type name
-	DefaultAgentType = "Agent"
+	DefaultAgentType = agent.AgentTypeUnknown
 )
 
 // ensureMetadataBranch creates the orphan entire/sessions branch if it doesn't exist.
@@ -1050,12 +1058,12 @@ func collectUntrackedFiles() ([]string, error) {
 // Returns empty string if no session ID is found.
 func ExtractSessionIDFromCommit(commit *object.Commit) string {
 	// Try Entire-Session trailer first
-	if sessionID, found := paths.ParseSessionTrailer(commit.Message); found {
+	if sessionID, found := trailers.ParseSession(commit.Message); found {
 		return sessionID
 	}
 
 	// Try extracting from metadata directory (last path component)
-	if metadataDir, found := paths.ParseMetadataTrailer(commit.Message); found {
+	if metadataDir, found := trailers.ParseMetadata(commit.Message); found {
 		return filepath.Base(metadataDir)
 	}
 

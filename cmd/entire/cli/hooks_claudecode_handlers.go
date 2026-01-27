@@ -15,7 +15,6 @@ import (
 
 	"entire.io/cli/cmd/entire/cli/agent"
 	"entire.io/cli/cmd/entire/cli/agent/claudecode"
-	"entire.io/cli/cmd/entire/cli/checkpoint"
 	"entire.io/cli/cmd/entire/cli/logging"
 	"entire.io/cli/cmd/entire/cli/paths"
 	"entire.io/cli/cmd/entire/cli/strategy"
@@ -154,11 +153,7 @@ func checkConcurrentSessions(ag agent.Agent, entireSessionID string) (bool, erro
 			// Non-fatal: continue without worktree path
 			worktreePath = ""
 		}
-		// Derive agent type from agent description (e.g., "Claude Code" from "Claude Code - ...")
-		agentType := ag.Description()
-		if idx := strings.Index(agentType, " - "); idx > 0 {
-			agentType = agentType[:idx]
-		}
+		agentType := ag.Type()
 		newState := &strategy.SessionState{
 			SessionID:              entireSessionID,
 			BaseCommit:             head.Hash().String(),
@@ -215,25 +210,30 @@ func handleSessionInitErrors(ag agent.Agent, initErr error) error {
 	// Check for shadow branch conflict error (worktree conflict)
 	var conflictErr *strategy.ShadowBranchConflictError
 	if errors.As(initErr, &conflictErr) {
-		fmt.Fprintf(os.Stderr, "\n"+
+		message := fmt.Sprintf(
 			"Warning: Shadow branch conflict detected!\n\n"+
-			"   Branch: %s\n"+
-			"   Existing session: %s\n"+
-			"   From worktree: %s\n"+
-			"   Started: %s\n\n"+
-			"   This may indicate another agent session is active from a different worktree,\n"+
-			"   or a previous session wasn't completed.\n\n"+
-			"   Options:\n"+
-			"   1. Commit your changes (git commit) to create a new base commit\n"+
-			"   2. Run 'entire rewind reset' to discard the shadow branch and start fresh\n"+
-			"   3. Continue the previous session from the original worktree: %s\n\n",
+				"Branch: %s\n"+
+				"Existing session: %s\n"+
+				"From worktree: %s\n"+
+				"Started: %s\n\n"+
+				"This may indicate another agent session is active from a different worktree,\n"+
+				"or a previous session wasn't completed.\n\n"+
+				"Options:\n"+
+				"1. Commit your changes (git commit) to create a new base commit\n"+
+				"2. Run 'entire rewind reset' to discard the shadow branch and start fresh\n"+
+				"3. Continue the previous session from the original worktree: %s",
 			conflictErr.Branch,
 			conflictErr.ExistingSession,
 			conflictErr.ExistingWorktree,
 			conflictErr.LastActivity.Format(time.RFC822),
 			conflictErr.ExistingWorktree,
 		)
-		return fmt.Errorf("shadow branch conflict: %w", initErr)
+		// Output blocking JSON response - user must resolve conflict before continuing
+		if err := outputHookResponse(false, message); err != nil {
+			return err
+		}
+		// Return nil so hook exits cleanly (status 0), not with error status
+		return nil
 	}
 
 	// Check for session ID conflict error (shadow branch has different session)
@@ -244,6 +244,7 @@ func handleSessionInitErrors(ag agent.Agent, initErr error) error {
 		if IsMultiSessionWarningDisabled() {
 			return nil
 		}
+
 		// Check if EITHER session has the concurrent warning shown
 		// If so, the user was already warned and chose to continue - allow concurrent sessions
 		existingState, loadErr := strategy.LoadSessionState(sessionConflictErr.ExistingSession)
@@ -265,25 +266,30 @@ func handleSessionInitErrors(ag agent.Agent, initErr error) error {
 		if resumeCmd == "" {
 			resumeCmd = ag.FormatResumeCommand(ag.ExtractAgentSessionID(sessionConflictErr.ExistingSession))
 		}
-		fmt.Fprintf(os.Stderr, "\n"+
+		message := fmt.Sprintf(
 			"Warning: Session ID conflict detected!\n\n"+
-			"   Shadow branch: %s\n"+
-			"   Existing session: %s\n"+
-			"   New session: %s\n\n"+
-			"   The shadow branch already has checkpoints from a different session.\n"+
-			"   Starting a new session would orphan the existing work.\n\n"+
-			"   Options:\n"+
-			"   1. Commit your changes (git commit) to create a new base commit\n"+
-			"   2. Run 'entire rewind reset' to discard the shadow branch and start fresh\n"+
-			"   3. Resume the existing session: %s\n\n"+
-			"   To suppress this warning in future sessions, run:\n"+
-			"     entire enable --disable-multisession-warning\n\n",
+				"Shadow branch: %s\n"+
+				"Existing session: %s\n"+
+				"New session: %s\n\n"+
+				"The shadow branch already has checkpoints from a different session.\n"+
+				"Starting a new session would orphan the existing work.\n\n"+
+				"Options:\n"+
+				"1. Commit your changes (git commit) to create a new base commit\n"+
+				"2. Run 'entire rewind reset' to discard the shadow branch and start fresh\n"+
+				"3. Resume the existing session: %s\n\n"+
+				"To suppress this warning in future sessions, run:\n"+
+				"  entire enable --disable-multisession-warning",
 			sessionConflictErr.ShadowBranch,
 			sessionConflictErr.ExistingSession,
 			sessionConflictErr.NewSession,
 			resumeCmd,
 		)
-		return fmt.Errorf("session ID conflict: %w", initErr)
+		// Output blocking JSON response - user must resolve conflict before continuing
+		if err := outputHookResponse(false, message); err != nil {
+			return err
+		}
+		// Return nil so hook exits cleanly (status 0), not with error status
+		return nil
 	}
 
 	// Unknown error type
@@ -316,11 +322,7 @@ func captureInitialState() error {
 	// If strategy implements SessionInitializer, call it to initialize session state
 	strat := GetStrategy()
 	if initializer, ok := strat.(strategy.SessionInitializer); ok {
-		// Use agent description, but trim to just the name part (before " - ")
-		agentType := hookData.agent.Description()
-		if idx := strings.Index(agentType, " - "); idx > 0 {
-			agentType = agentType[:idx]
-		}
+		agentType := hookData.agent.Type()
 		if initErr := initializer.InitializeSession(hookData.entireSessionID, agentType, hookData.input.SessionRef); initErr != nil {
 			if err := handleSessionInitErrors(hookData.agent, initErr); err != nil {
 				return err
@@ -534,7 +536,7 @@ func commitWithMetadata() error {
 	}
 
 	// Get agent type from session state (set during InitializeSession)
-	var agentType string
+	var agentType agent.AgentType
 	if sessionState != nil {
 		agentType = sessionState.AgentType
 	}
@@ -548,7 +550,7 @@ func commitWithMetadata() error {
 	}
 
 	// Calculate token usage for this checkpoint (Claude Code specific)
-	var tokenUsage *checkpoint.TokenUsage
+	var tokenUsage *agent.TokenUsage
 	if transcriptPath != "" {
 		// Subagents are stored in a subagents/ directory next to the main transcript
 		subagentsDir := filepath.Join(filepath.Dir(transcriptPath), entireSessionID, "subagents")
@@ -707,7 +709,7 @@ func handlePostTodo() error {
 	}
 
 	// Get agent type from session state
-	var agentType string
+	var agentType agent.AgentType
 	if sessionState, loadErr := strategy.LoadSessionState(entireSessionID); loadErr == nil && sessionState != nil {
 		agentType = sessionState.AgentType
 	}
@@ -772,79 +774,13 @@ func handlePreTask() error {
 	// Log context to stdout
 	logPreTaskHookContext(os.Stdout, input)
 
-	// Capture pre-task state
+	// Capture pre-task state locally (for computing new files when task completes).
+	// We don't create a shadow branch commit here. Commits are created during
+	// task completion (handlePostTask/handlePostTodo) only if the task resulted
+	// in file changes.
 	if err := CapturePreTaskState(input.ToolUseID); err != nil {
 		return fmt.Errorf("failed to capture pre-task state: %w", err)
 	}
-
-	// Create "Starting agent" checkpoint
-	// This allows rewinding to the state just before the subagent began
-	if err := createStartingAgentCheckpoint(input); err != nil {
-		// Log warning but don't fail the hook - state was already captured
-		fmt.Fprintf(os.Stderr, "Warning: failed to create starting checkpoint: %v\n", err)
-	}
-
-	return nil
-}
-
-// createStartingAgentCheckpoint creates a checkpoint commit marking the start of a subagent.
-// This is called during PreToolUse[Task] hook.
-func createStartingAgentCheckpoint(input *TaskHookInput) error {
-	// Get git author
-	author, err := GetGitAuthor()
-	if err != nil {
-		return fmt.Errorf("failed to get git author: %w", err)
-	}
-
-	// Get the active strategy
-	strat := GetStrategy()
-
-	// Ensure strategy setup is complete
-	if err := strat.EnsureSetup(); err != nil {
-		return fmt.Errorf("failed to ensure strategy setup: %w", err)
-	}
-
-	entireSessionID := currentSessionIDWithFallback(input.SessionID)
-
-	// Extract subagent type and description from tool_input for descriptive commit messages
-	subagentType, taskDescription := ParseSubagentTypeAndDescription(input.ToolInput)
-
-	// Get agent type from session state
-	var agentType string
-	if sessionState, loadErr := strategy.LoadSessionState(entireSessionID); loadErr == nil && sessionState != nil {
-		agentType = sessionState.AgentType
-	}
-
-	// Build task checkpoint context for the "starting" checkpoint
-	ctx := strategy.TaskCheckpointContext{
-		SessionID:       entireSessionID,
-		ToolUseID:       input.ToolUseID,
-		TranscriptPath:  input.TranscriptPath,
-		AuthorName:      author.Name,
-		AuthorEmail:     author.Email,
-		SubagentType:    subagentType,
-		TaskDescription: taskDescription,
-		AgentType:       agentType,
-		// No file changes yet - this is the starting state
-		ModifiedFiles: nil,
-		NewFiles:      nil,
-		DeletedFiles:  nil,
-		// Mark as starting checkpoint (sequence 0)
-		IsIncremental:       true,
-		IncrementalSequence: 0,
-		IncrementalType:     strategy.IncrementalTypeTaskStart,
-	}
-
-	// Save the checkpoint
-	if err := strat.SaveTaskCheckpoint(ctx); err != nil {
-		return fmt.Errorf("failed to save starting checkpoint: %w", err)
-	}
-
-	shortID := input.ToolUseID
-	if len(shortID) > 12 {
-		shortID = shortID[:12]
-	}
-	fmt.Fprintf(os.Stderr, "[entire] Created starting checkpoint for task %s\n", shortID)
 
 	return nil
 }
@@ -956,7 +892,7 @@ func handlePostTask() error {
 	entireSessionID := currentSessionIDWithFallback(input.SessionID)
 
 	// Get agent type from session state
-	var agentType string
+	var agentType agent.AgentType
 	if sessionState, loadErr := strategy.LoadSessionState(entireSessionID); loadErr == nil && sessionState != nil {
 		agentType = sessionState.AgentType
 	}

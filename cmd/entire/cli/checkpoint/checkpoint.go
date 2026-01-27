@@ -8,9 +8,22 @@ package checkpoint
 
 import (
 	"context"
+	"errors"
 	"time"
 
+	"entire.io/cli/cmd/entire/cli/agent"
+	"entire.io/cli/cmd/entire/cli/checkpoint/id"
+
 	"github.com/go-git/go-git/v5/plumbing"
+)
+
+// Errors returned by checkpoint operations.
+var (
+	// ErrCheckpointNotFound is returned when a checkpoint ID doesn't exist.
+	ErrCheckpointNotFound = errors.New("checkpoint not found")
+
+	// ErrNoTranscript is returned when a checkpoint exists but has no transcript.
+	ErrNoTranscript = errors.New("no transcript found for checkpoint")
 )
 
 // Checkpoint represents a save point within a session.
@@ -72,7 +85,7 @@ type Store interface {
 
 	// ReadCommitted reads a committed checkpoint by ID.
 	// Returns nil, nil if the checkpoint does not exist.
-	ReadCommitted(ctx context.Context, checkpointID string) (*ReadCommittedResult, error)
+	ReadCommitted(ctx context.Context, checkpointID id.CheckpointID) (*ReadCommittedResult, error)
 
 	// ListCommitted lists all committed checkpoints.
 	ListCommitted(ctx context.Context) ([]CommittedInfo, error)
@@ -164,7 +177,7 @@ type TemporaryInfo struct {
 // WriteCommittedOptions contains options for writing a committed checkpoint.
 type WriteCommittedOptions struct {
 	// CheckpointID is the stable 12-hex-char identifier
-	CheckpointID string
+	CheckpointID id.CheckpointID
 
 	// SessionID is the session identifier
 	SessionID string
@@ -224,14 +237,14 @@ type WriteCommittedOptions struct {
 	CommitSubject string // Subject line for the metadata commit (overrides default)
 
 	// Agent identifies the agent that created this checkpoint (e.g., "Claude Code", "Cursor")
-	Agent string
+	Agent agent.AgentType
 
 	// Transcript position at checkpoint start - tracks what was added during this checkpoint
 	TranscriptUUIDAtStart  string // Last UUID when checkpoint started
 	TranscriptLinesAtStart int    // Line count when checkpoint started
 
 	// TokenUsage contains the token usage for this checkpoint
-	TokenUsage *TokenUsage
+	TokenUsage *agent.TokenUsage
 }
 
 // ReadCommittedResult contains the result of reading a committed checkpoint.
@@ -273,7 +286,7 @@ type ArchivedSession struct {
 // CommittedInfo contains summary information about a committed checkpoint.
 type CommittedInfo struct {
 	// CheckpointID is the stable 12-hex-char identifier
-	CheckpointID string
+	CheckpointID id.CheckpointID
 
 	// SessionID is the session identifier (most recent session for multi-session checkpoints)
 	SessionID string
@@ -288,7 +301,7 @@ type CommittedInfo struct {
 	FilesTouched []string
 
 	// Agent identifies the agent that created this checkpoint
-	Agent string
+	Agent agent.AgentType
 
 	// IsTask indicates if this is a task checkpoint
 	IsTask bool
@@ -303,16 +316,18 @@ type CommittedInfo struct {
 
 // CommittedMetadata contains the metadata stored in metadata.json for each checkpoint.
 type CommittedMetadata struct {
-	CheckpointID     string    `json:"checkpoint_id"`
-	SessionID        string    `json:"session_id"`
-	Strategy         string    `json:"strategy"`
-	CreatedAt        time.Time `json:"created_at"`
-	Branch           string    `json:"branch,omitempty"` // Branch where checkpoint was created (empty if detached HEAD)
-	CheckpointsCount int       `json:"checkpoints_count"`
-	FilesTouched     []string  `json:"files_touched"`
+	CheckpointID     id.CheckpointID `json:"checkpoint_id"`
+	SessionID        string          `json:"session_id"`
+	Strategy         string          `json:"strategy"`
+	CreatedAt        time.Time       `json:"created_at"`
+	Branch           string          `json:"branch,omitempty"` // Branch where checkpoint was created (empty if detached HEAD)
+	CheckpointsCount int             `json:"checkpoints_count"`
+	FilesTouched     []string        `json:"files_touched"`
 
 	// Agent identifies the agent that created this checkpoint (e.g., "Claude Code", "Cursor")
-	Agent string `json:"agent,omitempty"`
+	// For multi-session checkpoints, this is the first agent (see Agents for all)
+	Agent  agent.AgentType   `json:"agent,omitempty"`
+	Agents []agent.AgentType `json:"agents,omitempty"` // All agents that contributed (multi-session, deduplicated)
 
 	// Multi-session support: when multiple sessions contribute to the same checkpoint
 	SessionCount int      `json:"session_count,omitempty"` // Number of sessions (1 if omitted for backwards compat)
@@ -327,23 +342,7 @@ type CommittedMetadata struct {
 	TranscriptLinesAtStart int    `json:"transcript_lines_at_start,omitempty"` // Line count when checkpoint started
 
 	// Token usage for this checkpoint
-	TokenUsage *TokenUsage `json:"token_usage,omitempty"`
-}
-
-// TokenUsage represents aggregated token usage for a checkpoint
-type TokenUsage struct {
-	// Input tokens (fresh, not from cache)
-	InputTokens int `json:"input_tokens"`
-	// Tokens written to cache (billable at cache write rate)
-	CacheCreationTokens int `json:"cache_creation_tokens"`
-	// Tokens read from cache (discounted rate)
-	CacheReadTokens int `json:"cache_read_tokens"`
-	// Output tokens generated
-	OutputTokens int `json:"output_tokens"`
-	// Number of API calls made
-	APICallCount int `json:"api_call_count"`
-	// Subagent token usage (if any agents were spawned)
-	SubagentTokens *TokenUsage `json:"subagent_tokens,omitempty"`
+	TokenUsage *agent.TokenUsage `json:"token_usage,omitempty"`
 }
 
 // Info provides summary information for listing checkpoints.

@@ -13,7 +13,7 @@ import "time"
 //nolint:revive // AgentSession is clearer than Session in context of the package
 type AgentSession struct {
 	SessionID  string
-	AgentName  string
+	AgentName  AgentName
 	RepoPath   string
 	SessionRef string // Path/reference to session in agent's storage
 	StartTime  time.Time

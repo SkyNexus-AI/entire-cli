@@ -72,7 +72,6 @@ func TestSessionIDConflict_OrphanedBranchIsReset(t *testing.T) {
 	// Try to start a new session - should succeed by resetting the orphaned branch
 	session2 := env.NewSession()
 	err = env.SimulateUserPromptSubmit(session2.ID)
-
 	// Expect success - orphaned branch is reset
 	if err != nil {
 		t.Errorf("Expected success when starting new session with orphaned shadow branch, got: %v", err)
@@ -190,7 +189,6 @@ func TestSessionIDConflict_ManuallyCreatedOrphanedBranch(t *testing.T) {
 	// Try to start a new session - should succeed by resetting the orphaned branch
 	session := env.NewSession()
 	err := env.SimulateUserPromptSubmit(session.ID)
-
 	if err != nil {
 		t.Errorf("Expected success when orphaned shadow branch is reset, got: %v", err)
 	}
@@ -212,8 +210,8 @@ func TestSessionIDConflict_ManuallyCreatedOrphanedBranch(t *testing.T) {
 }
 
 // TestSessionIDConflict_ExistingSessionWithState tests that when a shadow branch exists
-// from a different session AND that session has a state file (not orphaned), a conflict
-// error is returned. This simulates the cross-worktree scenario.
+// from a different session AND that session has a state file (not orphaned), a blocking
+// hook response is returned. This simulates the cross-worktree scenario.
 func TestSessionIDConflict_ExistingSessionWithState(t *testing.T) {
 	env := NewTestEnv(t)
 	defer env.Cleanup()
@@ -267,18 +265,28 @@ func TestSessionIDConflict_ExistingSessionWithState(t *testing.T) {
 		t.Fatalf("State file should exist: %v", err)
 	}
 
-	// Try to start a new session - should fail with conflict because other session has state
+	// Try to start a new session - should return blocking response (not error)
 	session := env.NewSession()
-	err = env.SimulateUserPromptSubmit(session.ID)
-
-	if err == nil {
-		t.Error("Expected session ID conflict error when shadow branch has commits from session with state file")
-	} else {
-		t.Logf("Got expected error: %v", err)
-		if !strings.Contains(err.Error(), "session ID conflict") {
-			t.Errorf("Expected 'session ID conflict' in error, got: %v", err)
-		}
+	hookResp, err := env.SimulateUserPromptSubmitWithResponse(session.ID)
+	// After the fix, the hook should succeed (no error) but return blocking response
+	if err != nil {
+		t.Errorf("Hook should not error (should block via JSON response), got: %v", err)
 	}
+
+	// Verify the hook response blocks and contains expected message
+	if hookResp == nil {
+		t.Fatal("Expected hook response, got nil")
+	}
+	if hookResp.Continue {
+		t.Error("Expected hook to block (Continue: false)")
+	}
+	if !strings.Contains(hookResp.StopReason, "Session ID conflict") {
+		t.Errorf("Expected 'Session ID conflict' in stop reason, got: %s", hookResp.StopReason)
+	}
+	if !strings.Contains(hookResp.StopReason, shadowBranch) {
+		t.Errorf("Expected shadow branch %s in message, got: %s", shadowBranch, hookResp.StopReason)
+	}
+	t.Logf("Got expected blocking response: %s", hookResp.StopReason)
 }
 
 // createOrphanedShadowBranch creates a shadow branch with a specific session ID
@@ -373,7 +381,6 @@ func TestSessionIDConflict_ShadowBranchWithoutTrailer(t *testing.T) {
 	// Starting a new session should succeed (no trailer = no conflict)
 	session := env.NewSession()
 	err := env.SimulateUserPromptSubmit(session.ID)
-
 	if err != nil {
 		t.Errorf("Starting session with shadow branch without trailer should succeed, got: %v", err)
 	}

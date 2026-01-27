@@ -38,6 +38,12 @@ func NewHookRunner(repoDir, claudeProjectDir string, t interface {
 	}
 }
 
+// HookResponse represents the JSON response from Claude Code hooks.
+type HookResponse struct {
+	Continue   bool   `json:"continue"`
+	StopReason string `json:"stopReason,omitempty"`
+}
+
 // SimulateUserPromptSubmit simulates the UserPromptSubmit hook.
 // This captures pre-prompt state (untracked files).
 func (r *HookRunner) SimulateUserPromptSubmit(sessionID string) error {
@@ -49,6 +55,41 @@ func (r *HookRunner) SimulateUserPromptSubmit(sessionID string) error {
 	}
 
 	return r.runHookWithInput("user-prompt-submit", input)
+}
+
+// SimulateUserPromptSubmitWithResponse simulates the UserPromptSubmit hook
+// and returns the parsed hook response (for testing blocking behavior).
+func (r *HookRunner) SimulateUserPromptSubmitWithResponse(sessionID string) (*HookResponse, error) {
+	r.T.Helper()
+
+	input := map[string]string{
+		"session_id":      sessionID,
+		"transcript_path": "", // Not used for user-prompt-submit
+	}
+
+	inputJSON, err := json.Marshal(input)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal hook input: %w", err)
+	}
+
+	output := r.runHookWithOutput("user-prompt-submit", inputJSON)
+
+	// If hook failed with an error, return the error
+	if output.Err != nil {
+		return nil, fmt.Errorf("hook failed: %w\nStderr: %s\nStdout: %s",
+			output.Err, output.Stderr, output.Stdout)
+	}
+
+	// Parse JSON response from stdout
+	var resp HookResponse
+	if len(output.Stdout) > 0 {
+		if err := json.Unmarshal(output.Stdout, &resp); err != nil {
+			return nil, fmt.Errorf("failed to parse hook response: %w\nStdout: %s",
+				err, output.Stdout)
+		}
+	}
+
+	return &resp, nil
 }
 
 // SimulateStop simulates the Stop hook with session transcript info.
@@ -213,6 +254,13 @@ func (env *TestEnv) SimulateUserPromptSubmit(sessionID string) error {
 	env.T.Helper()
 	runner := NewHookRunner(env.RepoDir, env.ClaudeProjectDir, env.T)
 	return runner.SimulateUserPromptSubmit(sessionID)
+}
+
+// SimulateUserPromptSubmitWithResponse is a convenience method on TestEnv.
+func (env *TestEnv) SimulateUserPromptSubmitWithResponse(sessionID string) (*HookResponse, error) {
+	env.T.Helper()
+	runner := NewHookRunner(env.RepoDir, env.ClaudeProjectDir, env.T)
+	return runner.SimulateUserPromptSubmitWithResponse(sessionID)
 }
 
 // SimulateStop is a convenience method on TestEnv.

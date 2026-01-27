@@ -6,14 +6,16 @@ import (
 	"time"
 )
 
-const mockAgentName = "mock" // Used by mock implementations
+const mockAgentName AgentName = "mock" // Used by mock implementations
+const mockAgentType AgentType = "Mock Agent"
 
 // mockAgent is a minimal implementation of Agent for testing interface compliance.
 type mockAgent struct{}
 
 var _ Agent = (*mockAgent)(nil) // Compile-time interface check
 
-func (m *mockAgent) Name() string                  { return mockAgentName }
+func (m *mockAgent) Name() AgentName               { return mockAgentName }
+func (m *mockAgent) Type() AgentType               { return mockAgentType }
 func (m *mockAgent) Description() string           { return "Mock agent for testing" }
 func (m *mockAgent) DetectPresence() (bool, error) { return false, nil }
 func (m *mockAgent) GetHookConfigPath() string     { return "" }

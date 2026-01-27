@@ -12,9 +12,9 @@ func newCleanCmd() *cobra.Command {
 	var forceFlag bool
 
 	cmd := &cobra.Command{
-		Use:   "cleanup",
-		Short: "Clean up orphaned session data",
-		Long: `Remove orphaned session data that wasn't cleaned up automatically.
+		Use:   "clean",
+		Short: "Clean up orphaned entire's data",
+		Long: `Remove orphaned entire's data that wasn't cleaned up automatically.
 
 This command finds and removes orphaned data from any strategy:
 

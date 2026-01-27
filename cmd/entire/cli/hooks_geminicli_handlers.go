@@ -116,11 +116,7 @@ func checkConcurrentSessionsGemini(entireSessionID string) {
 			worktreePath = ""
 		}
 
-		// Derive agent type from agent description (e.g., "Gemini CLI" from "Gemini CLI - ...")
-		agentType := geminiAgent.Description()
-		if idx := strings.Index(agentType, " - "); idx > 0 {
-			agentType = agentType[:idx]
-		}
+		agentType := geminiAgent.Type()
 		newState := &strategy.SessionState{
 			SessionID:              entireSessionID,
 			BaseCommit:             head.Hash().String(),
@@ -626,11 +622,7 @@ func handleGeminiBeforeAgent() error {
 	// If strategy implements SessionInitializer, call it to initialize session state
 	strat := GetStrategy()
 	if initializer, ok := strat.(strategy.SessionInitializer); ok {
-		// Use agent description, but trim to just the name part (before " - ")
-		agentType := ag.Description()
-		if idx := strings.Index(agentType, " - "); idx > 0 {
-			agentType = agentType[:idx]
-		}
+		agentType := ag.Type()
 		if initErr := initializer.InitializeSession(entireSessionID, agentType, input.SessionRef); initErr != nil {
 			if handleErr := handleSessionInitErrors(ag, initErr); handleErr != nil {
 				return handleErr

@@ -59,13 +59,13 @@ func TestNewAgentHookVerbCmd_LogsInvocation(t *testing.T) {
 
 	// Register a test handler
 	testHandlerCalled := false
-	RegisterHookHandler("test-agent", "test-hook", func() error {
+	RegisterHookHandler(agent.AgentName("test-agent"), "test-hook", func() error {
 		testHandlerCalled = true
 		return nil
 	})
 
 	// Create the command with logging
-	cmd := newAgentHookVerbCmdWithLogging("test-agent", "test-hook")
+	cmd := newAgentHookVerbCmdWithLogging(agent.AgentName("test-agent"), "test-hook")
 
 	// Execute the command
 	err := cmd.Execute()
@@ -178,12 +178,12 @@ func TestNewAgentHookVerbCmd_LogsFailure(t *testing.T) {
 	defer cleanup()
 
 	// Register a handler that fails
-	RegisterHookHandler("test-agent", "failing-hook", func() error {
+	RegisterHookHandler(agent.AgentName("test-agent"), "failing-hook", func() error {
 		return context.DeadlineExceeded // Use a real error
 	})
 
 	// Create the command with logging
-	cmd := newAgentHookVerbCmdWithLogging("test-agent", "failing-hook")
+	cmd := newAgentHookVerbCmdWithLogging(agent.AgentName("test-agent"), "failing-hook")
 	cmd.SetOut(&bytes.Buffer{}) // Suppress output
 
 	// Execute the command (expect error)
@@ -268,7 +268,7 @@ func TestHookCommand_SetsCurrentHookAgentName(t *testing.T) {
 
 	tests := []struct {
 		name      string
-		agentName string
+		agentName agent.AgentName
 	}{
 		{"claude-code hook sets claude-code", agent.AgentNameClaudeCode},
 		{"gemini hook sets gemini", agent.AgentNameGemini},
@@ -276,9 +276,9 @@ func TestHookCommand_SetsCurrentHookAgentName(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var agentNameInsideHandler string
+			var agentNameInsideHandler agent.AgentName
 
-			hookName := "test-hook-" + tt.agentName
+			hookName := "test-hook-" + string(tt.agentName)
 			RegisterHookHandler(tt.agentName, hookName, func() error {
 				agentNameInsideHandler = currentHookAgentName
 				return nil

@@ -8,7 +8,10 @@ import (
 	"strings"
 	"testing"
 
+	"entire.io/cli/cmd/entire/cli/agent"
+	"entire.io/cli/cmd/entire/cli/checkpoint/id"
 	"entire.io/cli/cmd/entire/cli/paths"
+	"entire.io/cli/cmd/entire/cli/trailers"
 
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
@@ -121,15 +124,15 @@ func TestWriteCommitted_AgentField(t *testing.T) {
 	store := NewGitStore(repo)
 
 	// Write a committed checkpoint with Agent field
-	checkpointID := "a1b2c3d4e5f6"
+	checkpointID := id.MustCheckpointID("a1b2c3d4e5f6")
 	sessionID := "test-session-123"
-	agentName := "Claude Code"
+	agentType := agent.AgentTypeClaudeCode
 
 	err = store.WriteCommitted(context.Background(), WriteCommittedOptions{
 		CheckpointID: checkpointID,
 		SessionID:    sessionID,
 		Strategy:     "manual-commit",
-		Agent:        agentName,
+		Agent:        agentType,
 		Transcript:   []byte("test transcript content"),
 		AuthorName:   "Test Author",
 		AuthorEmail:  "test@example.com",
@@ -155,7 +158,7 @@ func TestWriteCommitted_AgentField(t *testing.T) {
 	}
 
 	// Read metadata.json from the sharded path
-	shardedPath := paths.CheckpointPath(checkpointID)
+	shardedPath := checkpointID.Path()
 	metadataPath := shardedPath + "/" + paths.MetadataFileName
 	metadataFile, err := tree.File(metadataPath)
 	if err != nil {
@@ -172,14 +175,175 @@ func TestWriteCommitted_AgentField(t *testing.T) {
 		t.Fatalf("failed to parse metadata.json: %v", err)
 	}
 
-	if metadata.Agent != agentName {
-		t.Errorf("metadata.Agent = %q, want %q", metadata.Agent, agentName)
+	if metadata.Agent != agentType {
+		t.Errorf("metadata.Agent = %q, want %q", metadata.Agent, agentType)
 	}
 
 	// Verify commit message contains Entire-Agent trailer
-	if !strings.Contains(commit.Message, paths.AgentTrailerKey+": "+agentName) {
+	if !strings.Contains(commit.Message, trailers.AgentTrailerKey+": "+string(agentType)) {
 		t.Errorf("commit message should contain %s trailer with value %q, got:\n%s",
-			paths.AgentTrailerKey, agentName, commit.Message)
+			trailers.AgentTrailerKey, agentType, commit.Message)
+	}
+}
+
+// readCheckpointMetadata reads metadata.json from the metadata branch for a checkpoint.
+func readCheckpointMetadata(t *testing.T, repo *git.Repository, checkpointID id.CheckpointID) CommittedMetadata {
+	t.Helper()
+
+	ref, err := repo.Reference(plumbing.NewBranchReferenceName(paths.MetadataBranchName), true)
+	if err != nil {
+		t.Fatalf("failed to get metadata branch reference: %v", err)
+	}
+
+	commit, err := repo.CommitObject(ref.Hash())
+	if err != nil {
+		t.Fatalf("failed to get commit object: %v", err)
+	}
+
+	tree, err := commit.Tree()
+	if err != nil {
+		t.Fatalf("failed to get tree: %v", err)
+	}
+
+	metadataPath := checkpointID.Path() + "/" + paths.MetadataFileName
+	metadataFile, err := tree.File(metadataPath)
+	if err != nil {
+		t.Fatalf("failed to find metadata.json: %v", err)
+	}
+
+	content, err := metadataFile.Contents()
+	if err != nil {
+		t.Fatalf("failed to read metadata.json: %v", err)
+	}
+
+	var metadata CommittedMetadata
+	if err := json.Unmarshal([]byte(content), &metadata); err != nil {
+		t.Fatalf("failed to parse metadata.json: %v", err)
+	}
+
+	return metadata
+}
+
+func TestWriteCommitted_AgentsArray_SingleSession(t *testing.T) {
+	repo, _ := setupBranchTestRepo(t)
+	store := NewGitStore(repo)
+	checkpointID := id.MustCheckpointID("c1d2e3f4a5b6")
+
+	err := store.WriteCommitted(context.Background(), WriteCommittedOptions{
+		CheckpointID: checkpointID,
+		SessionID:    "test-session-single",
+		Strategy:     "auto-commit",
+		Agent:        agent.AgentTypeGemini,
+		Transcript:   []byte("test transcript"),
+		AuthorName:   "Test Author",
+		AuthorEmail:  "test@example.com",
+	})
+	if err != nil {
+		t.Fatalf("WriteCommitted() error = %v", err)
+	}
+
+	metadata := readCheckpointMetadata(t, repo, checkpointID)
+
+	if metadata.Agent != agent.AgentTypeGemini {
+		t.Errorf("metadata.Agent = %q, want %q", metadata.Agent, agent.AgentTypeGemini)
+	}
+	if len(metadata.Agents) != 0 {
+		t.Errorf("metadata.Agents length = %d, want 0 (single-session should not have agents array)", len(metadata.Agents))
+	}
+}
+
+func TestWriteCommitted_AgentsArray_MultiSession(t *testing.T) {
+	repo, _ := setupBranchTestRepo(t)
+	store := NewGitStore(repo)
+	checkpointID := id.MustCheckpointID("d2e3f4a5b6c7")
+
+	// First session with Gemini CLI
+	err := store.WriteCommitted(context.Background(), WriteCommittedOptions{
+		CheckpointID: checkpointID,
+		SessionID:    "session-1",
+		Strategy:     "auto-commit",
+		Agent:        agent.AgentTypeGemini,
+		Transcript:   []byte("gemini transcript"),
+		AuthorName:   "Test Author",
+		AuthorEmail:  "test@example.com",
+	})
+	if err != nil {
+		t.Fatalf("WriteCommitted() first session error = %v", err)
+	}
+
+	// Second session with Claude Code (same checkpoint ID triggers merge)
+	err = store.WriteCommitted(context.Background(), WriteCommittedOptions{
+		CheckpointID: checkpointID,
+		SessionID:    "session-2",
+		Strategy:     "auto-commit",
+		Agent:        agent.AgentTypeClaudeCode,
+		Transcript:   []byte("claude transcript"),
+		AuthorName:   "Test Author",
+		AuthorEmail:  "test@example.com",
+	})
+	if err != nil {
+		t.Fatalf("WriteCommitted() second session error = %v", err)
+	}
+
+	metadata := readCheckpointMetadata(t, repo, checkpointID)
+
+	// Verify Agent is the first agent (backwards compat)
+	if metadata.Agent != agent.AgentTypeGemini {
+		t.Errorf("metadata.Agent = %q, want %q (first agent for backwards compat)", metadata.Agent, agent.AgentTypeGemini)
+	}
+
+	// Verify Agents array contains both agents in order
+	if len(metadata.Agents) != 2 {
+		t.Errorf("metadata.Agents length = %d, want 2", len(metadata.Agents))
+	}
+	if len(metadata.Agents) >= 2 {
+		if metadata.Agents[0] != agent.AgentTypeGemini {
+			t.Errorf("metadata.Agents[0] = %q, want %q", metadata.Agents[0], agent.AgentTypeGemini)
+		}
+		if metadata.Agents[1] != agent.AgentTypeClaudeCode {
+			t.Errorf("metadata.Agents[1] = %q, want %q", metadata.Agents[1], agent.AgentTypeClaudeCode)
+		}
+	}
+
+	if metadata.SessionCount != 2 {
+		t.Errorf("metadata.SessionCount = %d, want 2", metadata.SessionCount)
+	}
+}
+
+func TestWriteCommitted_AgentsArray_Deduplication(t *testing.T) {
+	repo, _ := setupBranchTestRepo(t)
+	store := NewGitStore(repo)
+	checkpointID := id.MustCheckpointID("e3f4a5b6c7d8")
+
+	// Two sessions with the same agent
+	for i := 1; i <= 2; i++ {
+		err := store.WriteCommitted(context.Background(), WriteCommittedOptions{
+			CheckpointID: checkpointID,
+			SessionID:    "session-" + string(rune('0'+i)),
+			Strategy:     "auto-commit",
+			Agent:        agent.AgentTypeClaudeCode,
+			Transcript:   []byte("transcript"),
+			AuthorName:   "Test Author",
+			AuthorEmail:  "test@example.com",
+		})
+		if err != nil {
+			t.Fatalf("WriteCommitted() session %d error = %v", i, err)
+		}
+	}
+
+	metadata := readCheckpointMetadata(t, repo, checkpointID)
+
+	// Should only have one agent (deduplicated)
+	if len(metadata.Agents) != 1 {
+		t.Errorf("metadata.Agents length = %d, want 1 (deduplicated)", len(metadata.Agents))
+	}
+	if len(metadata.Agents) > 0 && metadata.Agents[0] != agent.AgentTypeClaudeCode {
+		t.Errorf("metadata.Agents[0] = %q, want %q", metadata.Agents[0], agent.AgentTypeClaudeCode)
+	}
+
+	// But session count should be 2
+	if metadata.SessionCount != 2 {
+		t.Errorf("metadata.SessionCount = %d, want 2", metadata.SessionCount)
 	}
 }
 
@@ -341,7 +505,7 @@ func setupBranchTestRepo(t *testing.T) (*git.Repository, plumbing.Hash) {
 }
 
 // verifyBranchInMetadata reads and verifies the branch field in metadata.json.
-func verifyBranchInMetadata(t *testing.T, repo *git.Repository, checkpointID, expectedBranch string, shouldOmit bool) {
+func verifyBranchInMetadata(t *testing.T, repo *git.Repository, checkpointID id.CheckpointID, expectedBranch string, shouldOmit bool) {
 	t.Helper()
 
 	metadataRef, err := repo.Reference(plumbing.NewBranchReferenceName(paths.MetadataBranchName), true)
@@ -359,7 +523,7 @@ func verifyBranchInMetadata(t *testing.T, repo *git.Repository, checkpointID, ex
 		t.Fatalf("failed to get tree: %v", err)
 	}
 
-	shardedPath := paths.CheckpointPath(checkpointID)
+	shardedPath := checkpointID.Path()
 	metadataPath := shardedPath + "/" + paths.MetadataFileName
 	metadataFile, err := tree.File(metadataPath)
 	if err != nil {
@@ -382,6 +546,66 @@ func verifyBranchInMetadata(t *testing.T, repo *git.Repository, checkpointID, ex
 
 	if shouldOmit && strings.Contains(content, `"branch"`) {
 		t.Errorf("metadata.json should not contain 'branch' field when empty (omitempty), got:\n%s", content)
+	}
+}
+
+// TestArchiveExistingSession_ChunkedTranscript verifies that when archiving
+// a session with chunked transcripts, all chunk files are moved to the archive folder.
+func TestArchiveExistingSession_ChunkedTranscript(t *testing.T) {
+	repo, _ := setupBranchTestRepo(t)
+	store := NewGitStore(repo)
+
+	basePath := "a1/b2c3d4e5f6/"
+
+	// Simulate existing checkpoint with chunked transcript
+	// Chunk 0 is the base file (full.jsonl), chunks 1+ have suffixes (.001, .002)
+	entries := map[string]object.TreeEntry{
+		basePath + paths.MetadataFileName:            {Name: basePath + paths.MetadataFileName, Hash: plumbing.NewHash("aaa")},
+		basePath + paths.TranscriptFileName:          {Name: basePath + paths.TranscriptFileName, Hash: plumbing.NewHash("bbb")},          // chunk 0
+		basePath + paths.TranscriptFileName + ".001": {Name: basePath + paths.TranscriptFileName + ".001", Hash: plumbing.NewHash("ccc")}, // chunk 1
+		basePath + paths.TranscriptFileName + ".002": {Name: basePath + paths.TranscriptFileName + ".002", Hash: plumbing.NewHash("ddd")}, // chunk 2
+		basePath + paths.PromptFileName:              {Name: basePath + paths.PromptFileName, Hash: plumbing.NewHash("eee")},
+		basePath + paths.ContextFileName:             {Name: basePath + paths.ContextFileName, Hash: plumbing.NewHash("fff")},
+		basePath + paths.ContentHashFileName:         {Name: basePath + paths.ContentHashFileName, Hash: plumbing.NewHash("ggg")},
+	}
+
+	existingMetadata := &CommittedMetadata{
+		SessionCount: 1,
+	}
+
+	// Archive the existing session
+	store.archiveExistingSession(basePath, existingMetadata, entries)
+
+	archivePath := basePath + "1/"
+
+	// Verify standard files were archived
+	if _, ok := entries[archivePath+paths.MetadataFileName]; !ok {
+		t.Error("metadata.json should be archived to 1/")
+	}
+	if _, ok := entries[archivePath+paths.TranscriptFileName]; !ok {
+		t.Error("full.jsonl (chunk 0) should be archived to 1/")
+	}
+	if _, ok := entries[archivePath+paths.PromptFileName]; !ok {
+		t.Error("prompt.txt should be archived to 1/")
+	}
+
+	// Verify chunk files were archived
+	if _, ok := entries[archivePath+paths.TranscriptFileName+".001"]; !ok {
+		t.Error("full.jsonl.001 (chunk 1) should be archived to 1/")
+	}
+	if _, ok := entries[archivePath+paths.TranscriptFileName+".002"]; !ok {
+		t.Error("full.jsonl.002 (chunk 2) should be archived to 1/")
+	}
+
+	// Verify original locations are cleared
+	if _, ok := entries[basePath+paths.TranscriptFileName]; ok {
+		t.Error("original full.jsonl should be removed from base path")
+	}
+	if _, ok := entries[basePath+paths.TranscriptFileName+".001"]; ok {
+		t.Error("original full.jsonl.001 should be removed from base path")
+	}
+	if _, ok := entries[basePath+paths.TranscriptFileName+".002"]; ok {
+		t.Error("original full.jsonl.002 should be removed from base path")
 	}
 }
 
@@ -415,7 +639,7 @@ func TestWriteCommitted_BranchField(t *testing.T) {
 		}
 
 		// Write a committed checkpoint with branch information
-		checkpointID := "a1b2c3d4e5f6"
+		checkpointID := id.MustCheckpointID("a1b2c3d4e5f6")
 		store := NewGitStore(repo)
 		err = store.WriteCommitted(context.Background(), WriteCommittedOptions{
 			CheckpointID: checkpointID,
@@ -455,7 +679,7 @@ func TestWriteCommitted_BranchField(t *testing.T) {
 		}
 
 		// Write a committed checkpoint (branch should be empty in detached HEAD)
-		checkpointID := "b2c3d4e5f6a7"
+		checkpointID := id.MustCheckpointID("b2c3d4e5f6a7")
 		store := NewGitStore(repo)
 		err = store.WriteCommitted(context.Background(), WriteCommittedOptions{
 			CheckpointID: checkpointID,

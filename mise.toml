@@ -42,3 +42,14 @@ run = "goreleaser build --snapshot --clean"
 [tasks."lint:gomod"]
 description = "Check go.mod tidiness"
 run = "go mod tidy && git diff --exit-code go.mod go.sum"
+
+[tasks."completions"]
+description = "generate entire shell completions"
+quiet = true
+run = """
+rm -rf completions
+mkdir completions
+for sh in bash zsh fish; do
+	go run ./cmd/entire/main.go completion "$sh" >"completions/entire.$sh"
+done
+"""

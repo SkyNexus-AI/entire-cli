@@ -114,8 +114,8 @@ func TestDefaultBranch_PostTaskWorksOnMain(t *testing.T) {
 		}
 
 		points := env.GetRewindPoints()
-		if len(points) != 2 {
-			t.Errorf("expected 2 rewind points (starting + completed checkpoints) on main for %s, got %d", strategyName, len(points))
+		if len(points) != 1 {
+			t.Errorf("expected 1 rewind point (completed checkpoint) on main for %s, got %d", strategyName, len(points))
 		}
 	})
 }
