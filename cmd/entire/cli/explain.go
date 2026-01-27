@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"entire.io/cli/cmd/entire/cli/checkpoint"
-	"entire.io/cli/cmd/entire/cli/paths"
+	"entire.io/cli/cmd/entire/cli/checkpoint/id"
 	"entire.io/cli/cmd/entire/cli/strategy"
 	"entire.io/cli/cmd/entire/cli/trailers"
 
@@ -147,15 +147,15 @@ func runExplainCheckpoint(w io.Writer, checkpointIDPrefix string, noPager, verbo
 		return fmt.Errorf("failed to list checkpoints: %w", err)
 	}
 
-	var fullCheckpointID string
+	var fullCheckpointID id.CheckpointID
 	for _, info := range committed {
-		if strings.HasPrefix(info.CheckpointID, checkpointIDPrefix) {
+		if strings.HasPrefix(info.CheckpointID.String(), checkpointIDPrefix) {
 			fullCheckpointID = info.CheckpointID
 			break
 		}
 	}
 
-	if fullCheckpointID == "" {
+	if fullCheckpointID.IsEmpty() {
 		return fmt.Errorf("checkpoint not found: %s", checkpointIDPrefix)
 	}
 
@@ -183,7 +183,7 @@ func runExplainCheckpoint(w io.Writer, checkpointIDPrefix string, noPager, verbo
 // findCommitMessageForCheckpoint searches git history for a commit with the
 // Entire-Checkpoint trailer matching the given checkpoint ID, and returns
 // the first line of the commit message. Returns empty string if not found.
-func findCommitMessageForCheckpoint(repo *git.Repository, checkpointID string) string {
+func findCommitMessageForCheckpoint(repo *git.Repository, checkpointID id.CheckpointID) string {
 	// Get HEAD reference
 	head, err := repo.Head()
 	if err != nil {
@@ -212,7 +212,7 @@ func findCommitMessageForCheckpoint(repo *git.Repository, checkpointID string) s
 		}
 
 		// Check if this commit has our checkpoint ID
-		foundID, hasTrailer := paths.ParseCheckpointTrailer(commit.Message)
+		foundID, hasTrailer := trailers.ParseCheckpoint(commit.Message)
 		if hasTrailer && foundID == checkpointID {
 			// Return first line of commit message (without trailing newline)
 			firstLine := strings.Split(commit.Message, "\n")[0]
@@ -227,7 +227,7 @@ func findCommitMessageForCheckpoint(repo *git.Repository, checkpointID string) s
 // Default: Summary (ID, session, timestamp, tokens, intent)
 // Verbose: + prompts, files, commit message
 // Full: + complete transcript
-func formatCheckpointOutput(result *checkpoint.ReadCommittedResult, checkpointID, commitMessage string, verbose, full bool) string {
+func formatCheckpointOutput(result *checkpoint.ReadCommittedResult, checkpointID id.CheckpointID, commitMessage string, verbose, full bool) string {
 	var sb strings.Builder
 	meta := result.Metadata
 
@@ -839,8 +839,8 @@ func formatCheckpointLine(sb *strings.Builder, point strategy.RewindPoint) {
 	// Time
 	timeStr := point.Date.Format(timeFormat)
 
-	// Checkpoint ID (truncated)
-	checkpointID := point.CheckpointID
+	// Checkpoint ID (truncated for display)
+	checkpointID := point.CheckpointID.String()
 	if len(checkpointID) > checkpointIDDisplayLength {
 		checkpointID = checkpointID[:checkpointIDDisplayLength]
 	}

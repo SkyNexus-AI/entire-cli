@@ -8,7 +8,9 @@ import (
 	"testing"
 	"time"
 
+	"entire.io/cli/cmd/entire/cli/agent"
 	"entire.io/cli/cmd/entire/cli/checkpoint"
+	"entire.io/cli/cmd/entire/cli/checkpoint/id"
 	"entire.io/cli/cmd/entire/cli/paths"
 	"entire.io/cli/cmd/entire/cli/strategy"
 	"entire.io/cli/cmd/entire/cli/trailers"
@@ -871,7 +873,7 @@ func TestFormatCheckpointOutput_Default(t *testing.T) {
 			CreatedAt:        time.Date(2026, 1, 21, 10, 30, 0, 0, time.UTC),
 			FilesTouched:     []string{"main.go", "util.go"},
 			CheckpointsCount: 3,
-			TokenUsage: &checkpoint.TokenUsage{
+			TokenUsage: &agent.TokenUsage{
 				InputTokens:  10000,
 				OutputTokens: 5000,
 			},
@@ -880,7 +882,7 @@ func TestFormatCheckpointOutput_Default(t *testing.T) {
 	}
 
 	// Default mode: empty commit message (not shown anyway in default mode)
-	output := formatCheckpointOutput(result, "abc123def456", "", false, false)
+	output := formatCheckpointOutput(result, id.MustCheckpointID("abc123def456"), "", false, false)
 
 	// Should show checkpoint ID
 	if !strings.Contains(output, "abc123def456") {
@@ -916,7 +918,7 @@ func TestFormatCheckpointOutput_Verbose(t *testing.T) {
 			CreatedAt:        time.Date(2026, 1, 21, 10, 30, 0, 0, time.UTC),
 			FilesTouched:     []string{"main.go", "util.go", "config.yaml"},
 			CheckpointsCount: 3,
-			TokenUsage: &checkpoint.TokenUsage{
+			TokenUsage: &agent.TokenUsage{
 				InputTokens:  10000,
 				OutputTokens: 5000,
 			},
@@ -924,7 +926,7 @@ func TestFormatCheckpointOutput_Verbose(t *testing.T) {
 		Prompts: "Add a new feature\nFix the bug\nRefactor the code",
 	}
 
-	output := formatCheckpointOutput(result, "abc123def456", "feat: implement user authentication", true, false)
+	output := formatCheckpointOutput(result, id.MustCheckpointID("abc123def456"), "feat: implement user authentication", true, false)
 
 	// Should show checkpoint ID (like default)
 	if !strings.Contains(output, "abc123def456") {
@@ -977,7 +979,7 @@ func TestFormatCheckpointOutput_Verbose_NoCommitMessage(t *testing.T) {
 	}
 
 	// When commit message is empty, should not show Commit section
-	output := formatCheckpointOutput(result, "abc123def456", "", true, false)
+	output := formatCheckpointOutput(result, id.MustCheckpointID("abc123def456"), "", true, false)
 
 	if strings.Contains(output, "Commit:") {
 		t.Error("verbose output should not show Commit section when message is empty")
@@ -992,7 +994,7 @@ func TestFormatCheckpointOutput_Full(t *testing.T) {
 			CreatedAt:        time.Date(2026, 1, 21, 10, 30, 0, 0, time.UTC),
 			FilesTouched:     []string{"main.go", "util.go"},
 			CheckpointsCount: 3,
-			TokenUsage: &checkpoint.TokenUsage{
+			TokenUsage: &agent.TokenUsage{
 				InputTokens:  10000,
 				OutputTokens: 5000,
 			},
@@ -1001,7 +1003,7 @@ func TestFormatCheckpointOutput_Full(t *testing.T) {
 		Transcript: []byte(`{"type":"user","content":"Add a new feature"}` + "\n" + `{"type":"assistant","content":"I'll add that feature for you."}`),
 	}
 
-	output := formatCheckpointOutput(result, "abc123def456", "feat: add user login", false, true)
+	output := formatCheckpointOutput(result, id.MustCheckpointID("abc123def456"), "feat: add user login", false, true)
 
 	// Should show checkpoint ID (like default)
 	if !strings.Contains(output, "abc123def456") {
