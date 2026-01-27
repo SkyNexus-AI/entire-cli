@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 	"entire.io/cli/cmd/entire/cli/agent"
 	"entire.io/cli/cmd/entire/cli/checkpoint/id"
 	"entire.io/cli/cmd/entire/cli/jsonutil"
+	"entire.io/cli/cmd/entire/cli/logging"
 	"entire.io/cli/cmd/entire/cli/sessionid"
 	"entire.io/cli/cmd/entire/cli/validation"
 )
@@ -285,27 +287,41 @@ func GetWorktreePath() (string, error) {
 	return strings.TrimSpace(string(output)), nil
 }
 
-// GetOrCreateEntireSessionID returns a stable session ID for the given agent UUID.
-// If a session state already exists with this UUID, returns that session ID
+// GetOrCreateEntireSessionID returns a stable session ID for the given agent session ID.
+// If a session state already exists with this ID, returns that session ID
 // (preserving the original date prefix). Otherwise creates a new ID with today's date.
 //
-// When multiple state files exist for the same UUID (due to the midnight-crossing bug),
+// When multiple state files exist for the same ID (due to the midnight-crossing bug),
 // this function picks the most recent by date and cleans up older duplicates.
 //
 // This function never returns an error - it always falls back to generating a new ID
-// if any issues occur (e.g., corrupt git repo, permission problems).
-func GetOrCreateEntireSessionID(agentSessionUUID string) string {
+// if any issues occur (e.g., corrupt git repo, permission problems, invalid ID).
+//
+// Note: This function is not thread-safe. Concurrent calls with the same ID may
+// race on file cleanup. In practice this is not an issue since agent hooks are
+// called sequentially within a session.
+func GetOrCreateEntireSessionID(agentSessionID string) string {
+	// Validate ID format to prevent path traversal attacks
+	if err := validation.ValidateAgentSessionID(agentSessionID); err != nil {
+		logging.Warn(context.Background(), "invalid agent session ID",
+			slog.String("input", agentSessionID),
+			slog.Any("error", err))
+		// Invalid ID - return it anyway (will fail downstream with clearer error)
+		// Don't generate random ID as that breaks session continuity
+		return sessionid.EntireSessionID(agentSessionID)
+	}
+
 	commonDir, err := getGitCommonDir()
 	if err != nil {
 		// Can't get common dir (corrupt git repo?) - fall back to new ID
-		return sessionid.EntireSessionID(agentSessionUUID)
+		return sessionid.EntireSessionID(agentSessionID)
 	}
 
 	stateDir := filepath.Join(commonDir, sessionStateDirName)
 	entries, err := os.ReadDir(stateDir)
 	if err != nil {
 		// State dir doesn't exist or can't read it - fall back to new ID
-		return sessionid.EntireSessionID(agentSessionUUID)
+		return sessionid.EntireSessionID(agentSessionID)
 	}
 
 	// Collect all matching session IDs
@@ -318,14 +334,14 @@ func GetOrCreateEntireSessionID(agentSessionUUID string) string {
 		existingSessionID := strings.TrimSuffix(entry.Name(), ".json")
 		existingUUID := sessionid.ModelSessionID(existingSessionID)
 
-		if existingUUID == agentSessionUUID {
+		if existingUUID == agentSessionID {
 			matches = append(matches, existingSessionID)
 		}
 	}
 
 	if len(matches) == 0 {
 		// No existing session found - create new ID with today's date
-		return sessionid.EntireSessionID(agentSessionUUID)
+		return sessionid.EntireSessionID(agentSessionID)
 	}
 
 	// Pick most recent (YYYY-MM-DD sorts correctly lexicographically)

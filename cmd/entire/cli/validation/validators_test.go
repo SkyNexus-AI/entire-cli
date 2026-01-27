@@ -207,3 +207,35 @@ func TestValidateAgentID(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateAgentSessionID(t *testing.T) {
+	tests := []struct {
+		name    string
+		id      string
+		wantErr bool
+	}{
+		// Valid cases - UUIDs
+		{name: "valid uuid", id: "a1b2c3d4-e5f6-7890-abcd-ef1234567890", wantErr: false},
+		// Valid cases - test identifiers
+		{name: "test session id", id: "test-session-1", wantErr: false},
+		{name: "alphanumeric", id: "session123", wantErr: false},
+		{name: "with underscores", id: "test_session_1", wantErr: false},
+		// Invalid - empty (required field)
+		{name: "empty rejected", id: "", wantErr: true},
+		// Invalid - path traversal
+		{name: "path traversal", id: "../../../etc/passwd", wantErr: true},
+		{name: "forward slash", id: "session/test", wantErr: true},
+		// Invalid - other unsafe chars
+		{name: "dot rejected", id: "session.test", wantErr: true},
+		{name: "space rejected", id: "session test", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateAgentSessionID(tt.id)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ValidateAgentSessionID(%q) error = %v, wantErr %v", tt.id, err, tt.wantErr)
+			}
+		})
+	}
+}

@@ -47,3 +47,16 @@ func ValidateAgentID(id string) error {
 	}
 	return nil
 }
+
+// ValidateAgentSessionID validates that an agent session ID contains only safe characters for paths.
+// Agent session IDs can be UUIDs (Claude Code), test identifiers, or other formats depending on the agent.
+// This prevents path traversal attacks when the ID is used in file path construction.
+func ValidateAgentSessionID(id string) error {
+	if id == "" {
+		return errors.New("agent session ID cannot be empty")
+	}
+	if !pathSafeRegex.MatchString(id) {
+		return fmt.Errorf("invalid agent session ID %q: must be alphanumeric with underscores/hyphens only", id)
+	}
+	return nil
+}
