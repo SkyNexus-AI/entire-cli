@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1255,6 +1256,103 @@ func TestFormatBranchCheckpoints_TruncatesLongMessages(t *testing.T) {
 	// Should contain truncation indicator (usually "...")
 	if !strings.Contains(output, "...") {
 		t.Errorf("expected truncation indicator '...' for long message, got:\n%s", output)
+	}
+}
+
+func TestGetBranchCheckpoints_ReadsPromptFromShadowBranch(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Chdir(tmpDir)
+
+	// Initialize git repo with an initial commit
+	repo, err := git.PlainInit(tmpDir, false)
+	if err != nil {
+		t.Fatalf("failed to init git repo: %v", err)
+	}
+
+	w, err := repo.Worktree()
+	if err != nil {
+		t.Fatalf("failed to get worktree: %v", err)
+	}
+
+	// Create and commit initial file
+	testFile := filepath.Join(tmpDir, "test.txt")
+	if err := os.WriteFile(testFile, []byte("initial content"), 0o644); err != nil {
+		t.Fatalf("failed to write test file: %v", err)
+	}
+	if _, err := w.Add("test.txt"); err != nil {
+		t.Fatalf("failed to add test file: %v", err)
+	}
+	initialCommit, err := w.Commit("Initial commit", &git.CommitOptions{
+		Author: &object.Signature{Name: "Test", Email: "test@test.com", When: time.Now()},
+	})
+	if err != nil {
+		t.Fatalf("failed to create initial commit: %v", err)
+	}
+
+	// Create .entire directory
+	if err := os.MkdirAll(filepath.Join(tmpDir, ".entire"), 0o750); err != nil {
+		t.Fatalf("failed to create .entire dir: %v", err)
+	}
+
+	// Create metadata directory with prompt.txt
+	sessionID := "2026-01-27-test-session"
+	metadataDir := filepath.Join(tmpDir, ".entire", "metadata", sessionID)
+	if err := os.MkdirAll(metadataDir, 0o755); err != nil {
+		t.Fatalf("failed to create metadata dir: %v", err)
+	}
+
+	expectedPrompt := "This is my test prompt for the checkpoint"
+	if err := os.WriteFile(filepath.Join(metadataDir, paths.PromptFileName), []byte(expectedPrompt), 0o644); err != nil {
+		t.Fatalf("failed to write prompt file: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(metadataDir, "full.jsonl"), []byte(`{"test": true}`), 0o644); err != nil {
+		t.Fatalf("failed to write transcript: %v", err)
+	}
+
+	// Modify the test file so there's something to checkpoint
+	if err := os.WriteFile(testFile, []byte("modified content"), 0o644); err != nil {
+		t.Fatalf("failed to modify test file: %v", err)
+	}
+
+	// Create a checkpoint on the shadow branch
+	store := checkpoint.NewGitStore(repo)
+	baseCommit := initialCommit.String()[:7]
+	_, err = store.WriteTemporary(context.Background(), checkpoint.WriteTemporaryOptions{
+		SessionID:         sessionID,
+		BaseCommit:        baseCommit,
+		ModifiedFiles:     []string{"test.txt"},
+		MetadataDir:       ".entire/metadata/" + sessionID,
+		MetadataDirAbs:    metadataDir,
+		CommitMessage:     "Test checkpoint",
+		AuthorName:        "Test",
+		AuthorEmail:       "test@test.com",
+		IsFirstCheckpoint: true,
+	})
+	if err != nil {
+		t.Fatalf("WriteTemporary() error = %v", err)
+	}
+
+	// Now call getBranchCheckpoints and verify the prompt is read
+	points, err := getBranchCheckpoints(repo, 10)
+	if err != nil {
+		t.Fatalf("getBranchCheckpoints() error = %v", err)
+	}
+
+	// Should have at least one temporary checkpoint
+	var foundTempCheckpoint bool
+	for _, point := range points {
+		if !point.IsLogsOnly && point.SessionID == sessionID {
+			foundTempCheckpoint = true
+			// Verify the prompt was read correctly
+			if point.SessionPrompt != expectedPrompt {
+				t.Errorf("expected prompt %q, got %q", expectedPrompt, point.SessionPrompt)
+			}
+			break
+		}
+	}
+
+	if !foundTempCheckpoint {
+		t.Errorf("expected to find temporary checkpoint with session ID %s, got points: %+v", sessionID, points)
 	}
 }
 

@@ -436,10 +436,15 @@ func getBranchCheckpoints(repo *git.Repository, limit int) ([]strategy.RewindPoi
 	headShort := head.Hash().String()[:7]
 	tempCheckpoints, _ := store.ListTemporaryCheckpoints(context.Background(), headShort, "", limit) //nolint:errcheck // Best-effort, continue without temp checkpoints
 	for _, tc := range tempCheckpoints {
-		// Read session prompt
+		// Read session prompt from the shadow branch commit's tree (not from entire/sessions)
+		// Temporary checkpoints store their metadata in the shadow branch, not in entire/sessions
 		var sessionPrompt string
-		if metadataTree, treeErr := strategy.GetMetadataBranchTree(repo); treeErr == nil && metadataTree != nil {
-			sessionPrompt = strategy.ReadSessionPromptFromTree(metadataTree, tc.MetadataDir)
+		shadowCommit, commitErr := repo.CommitObject(tc.CommitHash)
+		if commitErr == nil {
+			shadowTree, treeErr := shadowCommit.Tree()
+			if treeErr == nil {
+				sessionPrompt = strategy.ReadSessionPromptFromTree(shadowTree, tc.MetadataDir)
+			}
 		}
 
 		points = append(points, strategy.RewindPoint{
