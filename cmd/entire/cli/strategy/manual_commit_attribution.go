@@ -289,7 +289,7 @@ func CalculateAttributionWithAccumulated(
 	}
 
 	return &checkpoint.InitialAttribution{
-		CalculatedAt:    time.Now(),
+		CalculatedAt:    time.Now().UTC(),
 		AgentLines:      agentLinesInCommit,
 		HumanAdded:      pureUserAdded,
 		HumanModified:   totalHumanModified, // Total modifications (for reporting)

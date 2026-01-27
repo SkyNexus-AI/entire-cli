@@ -326,7 +326,7 @@ func (s *GitStore) writeMetadataJSON(opts WriteCommittedOptions, basePath string
 		CheckpointID:           opts.CheckpointID,
 		SessionID:              opts.SessionID,
 		Strategy:               opts.Strategy,
-		CreatedAt:              time.Now(),
+		CreatedAt:              time.Now().UTC(),
 		Branch:                 opts.Branch,
 		CheckpointsCount:       opts.CheckpointsCount,
 		FilesTouched:           opts.FilesTouched,
