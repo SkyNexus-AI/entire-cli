@@ -38,43 +38,17 @@ func (silentLogger) Debugf(_ string, _ ...interface{}) {}
 func (silentLogger) Warnf(_ string, _ ...interface{})  {}
 func (silentLogger) Errorf(_ string, _ ...interface{}) {}
 
-// stringifyArg converts an argument to string for debug logging
-func stringifyArg(arg any) string {
-	switch v := arg.(type) {
-	case string:
-		return v
-	case error:
-		return v.Error()
-	default:
-		b, err := json.Marshal(v)
-		if err != nil {
-			return "<marshal error>"
-		}
-		return string(b)
-	}
-}
-
-// TrackCommandDetached tracks a command execution by spawning a detached subprocess.
-// This returns immediately without blocking the CLI.
-func TrackCommandDetached(cmd *cobra.Command, strategy, agent string, isEntireEnabled bool, version string) {
-	// Check opt-out environment variables
-	if os.Getenv("ENTIRE_TELEMETRY_OPTOUT") != "" {
-		return
-	}
-
+// BuildEventPayload constructs the event payload for tracking.
+// Exported for testing. Returns nil if the payload cannot be built.
+func BuildEventPayload(cmd *cobra.Command, strategy, agent string, isEntireEnabled bool, version string) *EventPayload {
 	if cmd == nil {
-		return
-	}
-
-	// Skip hidden commands
-	if cmd.Hidden {
-		return
+		return nil
 	}
 
 	// Get machine ID for distinct_id
 	machineID, err := machineid.ProtectedID("entire-cli")
 	if err != nil {
-		return
+		return nil
 	}
 
 	// Collect flag names (not values) for privacy
@@ -102,13 +76,36 @@ func TrackCommandDetached(cmd *cobra.Command, strategy, agent string, isEntireEn
 		properties["flags"] = strings.Join(flags, ",")
 	}
 
-	payload := EventPayload{
+	return &EventPayload{
 		Event:      "cli_command_executed",
 		DistinctID: machineID,
 		Properties: properties,
 		Timestamp:  time.Now(),
 		APIKey:     PostHogAPIKey,
 		Endpoint:   PostHogEndpoint,
+	}
+}
+
+// TrackCommandDetached tracks a command execution by spawning a detached subprocess.
+// This returns immediately without blocking the CLI.
+func TrackCommandDetached(cmd *cobra.Command, strategy, agent string, isEntireEnabled bool, version string) {
+	// Check opt-out environment variables
+	if os.Getenv("ENTIRE_TELEMETRY_OPTOUT") != "" {
+		return
+	}
+
+	if cmd == nil {
+		return
+	}
+
+	// Skip hidden commands
+	if cmd.Hidden {
+		return
+	}
+
+	payload := BuildEventPayload(cmd, strategy, agent, isEntireEnabled, version)
+	if payload == nil {
+		return
 	}
 
 	if payloadJSON, err := json.Marshal(payload); err == nil {

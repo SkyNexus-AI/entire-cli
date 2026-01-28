@@ -87,15 +87,42 @@ func TestTrackCommandDetachedRespectsOptOut(t *testing.T) {
 	TrackCommandDetached(cmd, "manual-commit", "claude-code", true, "1.0.0")
 }
 
-func TestTrackCommandDetachedDefaultsAgentToAuto(_ *testing.T) {
-	// We can't easily test the actual spawning without integration tests,
-	// but we can verify the function doesn't panic with empty agent
+func TestBuildEventPayloadDefaultsAgentToAuto(t *testing.T) {
 	cmd := &cobra.Command{
-		Use:    "test",
-		Hidden: true, // Use hidden to prevent actual spawning
+		Use: "test",
 	}
 
-	TrackCommandDetached(cmd, "manual-commit", "", true, "1.0.0")
+	payload := BuildEventPayload(cmd, "manual-commit", "", true, "1.0.0")
+	if payload == nil {
+		t.Fatal("Expected non-nil payload")
+	}
+
+	agent, ok := payload.Properties["agent"].(string)
+	if !ok {
+		t.Fatal("Expected agent property to be a string")
+	}
+	if agent != "auto" {
+		t.Errorf("Expected agent to default to 'auto', got %q", agent)
+	}
+}
+
+func TestBuildEventPayloadPreservesExplicitAgent(t *testing.T) {
+	cmd := &cobra.Command{
+		Use: "test",
+	}
+
+	payload := BuildEventPayload(cmd, "manual-commit", "claude-code", true, "1.0.0")
+	if payload == nil {
+		t.Fatal("Expected non-nil payload")
+	}
+
+	agent, ok := payload.Properties["agent"].(string)
+	if !ok {
+		t.Fatal("Expected agent property to be a string")
+	}
+	if agent != "claude-code" {
+		t.Errorf("Expected agent to be 'claude-code', got %q", agent)
+	}
 }
 
 func TestSendEventHandlesInvalidJSON(_ *testing.T) {
@@ -103,26 +130,4 @@ func TestSendEventHandlesInvalidJSON(_ *testing.T) {
 	SendEvent("invalid json")
 	SendEvent("")
 	SendEvent("{}")
-}
-
-func TestStringifyArg(t *testing.T) {
-	tests := []struct {
-		name     string
-		input    any
-		expected string
-	}{
-		{"string", "hello", "hello"},
-		{"int", 42, "42"},
-		{"bool", true, "true"},
-		{"nil", nil, "null"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := stringifyArg(tt.input)
-			if result != tt.expected {
-				t.Errorf("stringifyArg(%v) = %q, want %q", tt.input, result, tt.expected)
-			}
-		})
-	}
 }
