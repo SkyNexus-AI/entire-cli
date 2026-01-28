@@ -184,7 +184,7 @@ func isGitSequenceOperation() bool {
 //   - "message": using -m or -F flag - prompts user interactively via /dev/tty
 //   - "merge", "squash", "commit": skip trailer entirely (auto-generated or amend commits)
 //
-//nolint:unparam // error return required by interface but hooks must return nil
+
 func (s *ManualCommitStrategy) PrepareCommitMsg(commitMsgFile string, source string) error {
 	logCtx := logging.WithComponent(context.Background(), "checkpoint")
 
