@@ -582,6 +582,7 @@ func isAncestorOf(repo *git.Repository, commit, target plumbing.Hash) bool {
 	if err != nil {
 		return false
 	}
+	defer iter.Close()
 
 	found := false
 	count := 0
