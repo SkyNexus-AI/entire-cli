@@ -1137,11 +1137,15 @@ func groupByCheckpointID(points []strategy.RewindPoint) []checkpointGroup {
 	var order []string // Track insertion order for stable iteration
 
 	for _, point := range points {
-		// Determine the checkpoint ID to use
+		// Determine the checkpoint ID to use for grouping
 		cpID := point.CheckpointID.String()
 		if cpID == "" {
-			// All temporary checkpoints group together under "temporary"
-			cpID = "temporary"
+			// Temporary checkpoints: group by session ID to preserve per-session prompts
+			// Use session ID prefix for readability (format: YYYY-MM-DD-uuid)
+			cpID = point.SessionID
+			if cpID == "" {
+				cpID = "temporary" // Fallback if no session ID
+			}
 		}
 
 		group, exists := groupMap[cpID]
