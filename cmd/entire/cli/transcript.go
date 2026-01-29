@@ -192,20 +192,12 @@ func ExtractAllPromptResponses(transcript []transcriptLine) []PromptResponsePair
 
 // extractUserPromptAt extracts the user prompt at the given index.
 // IDE-injected context tags (like <ide_opened_file>) are stripped from the result.
-func extractUserPromptAt(transcript []transcriptLine, idx int) string {
-	if idx >= len(transcript) || transcript[idx].Type != transcriptTypeUser {
+func extractUserPromptAt(lines []transcriptLine, idx int) string {
+	if idx >= len(lines) || lines[idx].Type != transcriptTypeUser {
 		return ""
 	}
 
-	return extractUserContentFromMessage(transcript[idx].Message)
-}
-
-// extractUserContentFromMessage extracts user content from a raw message.
-// Handles both string and array content formats.
-// IDE-injected context tags (like <ide_opened_file>) are stripped from the result.
-// Returns empty string if the message cannot be parsed or contains no text.
-func extractUserContentFromMessage(message json.RawMessage) string {
-	return transcript.ExtractUserContent(message)
+	return transcript.ExtractUserContent(lines[idx].Message)
 }
 
 // extractAssistantResponses collects all assistant text blocks from the given transcript slice.

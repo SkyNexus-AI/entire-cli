@@ -54,9 +54,6 @@ type Entry struct {
 	ToolDetail string
 }
 
-// TranscriptLine is an alias to the shared transcript.Line type.
-type TranscriptLine = transcript.Line
-
 // BuildCondensedTranscriptFromBytes parses transcript bytes and extracts a condensed view.
 // This is a convenience function that combines parsing and condensing.
 func BuildCondensedTranscriptFromBytes(content []byte) ([]Entry, error) {
@@ -70,7 +67,7 @@ func BuildCondensedTranscriptFromBytes(content []byte) ([]Entry, error) {
 // BuildCondensedTranscript extracts a condensed view of the transcript.
 // It processes user prompts, assistant responses, and tool calls into
 // a simplified format suitable for LLM summarisation.
-func BuildCondensedTranscript(lines []TranscriptLine) []Entry {
+func BuildCondensedTranscript(lines []transcript.Line) []Entry {
 	var entries []Entry
 
 	for _, line := range lines {
@@ -90,7 +87,7 @@ func BuildCondensedTranscript(lines []TranscriptLine) []Entry {
 
 // extractUserEntry extracts a user entry from a transcript line.
 // Returns nil if the line doesn't contain a valid user prompt.
-func extractUserEntry(line TranscriptLine) *Entry {
+func extractUserEntry(line transcript.Line) *Entry {
 	content := transcript.ExtractUserContent(line.Message)
 	if content == "" {
 		return nil
@@ -102,7 +99,7 @@ func extractUserEntry(line TranscriptLine) *Entry {
 }
 
 // extractAssistantEntries extracts assistant and tool entries from a transcript line.
-func extractAssistantEntries(line TranscriptLine) []Entry {
+func extractAssistantEntries(line transcript.Line) []Entry {
 	var msg transcript.AssistantMessage
 	if err := json.Unmarshal(line.Message, &msg); err != nil {
 		return nil

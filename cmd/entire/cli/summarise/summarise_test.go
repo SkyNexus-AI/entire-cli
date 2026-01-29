@@ -8,7 +8,7 @@ import (
 )
 
 func TestBuildCondensedTranscript_UserPrompts(t *testing.T) {
-	lines := []TranscriptLine{
+	lines := []transcript.Line{
 		{
 			Type: "user",
 			UUID: "user-1",
@@ -34,7 +34,7 @@ func TestBuildCondensedTranscript_UserPrompts(t *testing.T) {
 }
 
 func TestBuildCondensedTranscript_AssistantResponses(t *testing.T) {
-	lines := []TranscriptLine{
+	lines := []transcript.Line{
 		{
 			Type: "assistant",
 			UUID: "assistant-1",
@@ -62,7 +62,7 @@ func TestBuildCondensedTranscript_AssistantResponses(t *testing.T) {
 }
 
 func TestBuildCondensedTranscript_ToolCalls(t *testing.T) {
-	lines := []TranscriptLine{
+	lines := []transcript.Line{
 		{
 			Type: "assistant",
 			UUID: "assistant-1",
@@ -100,7 +100,7 @@ func TestBuildCondensedTranscript_ToolCalls(t *testing.T) {
 }
 
 func TestBuildCondensedTranscript_ToolCallWithCommand(t *testing.T) {
-	lines := []TranscriptLine{
+	lines := []transcript.Line{
 		{
 			Type: "assistant",
 			UUID: "assistant-1",
@@ -131,7 +131,7 @@ func TestBuildCondensedTranscript_ToolCallWithCommand(t *testing.T) {
 
 //nolint:dupl // Test functions intentionally similar for different tag types
 func TestBuildCondensedTranscript_StripIDEContextTags(t *testing.T) {
-	lines := []TranscriptLine{
+	lines := []transcript.Line{
 		{
 			Type: "user",
 			UUID: "user-1",
@@ -154,7 +154,7 @@ func TestBuildCondensedTranscript_StripIDEContextTags(t *testing.T) {
 
 //nolint:dupl // Test functions intentionally similar for different tag types
 func TestBuildCondensedTranscript_StripSystemTags(t *testing.T) {
-	lines := []TranscriptLine{
+	lines := []transcript.Line{
 		{
 			Type: "user",
 			UUID: "user-1",
@@ -176,7 +176,7 @@ func TestBuildCondensedTranscript_StripSystemTags(t *testing.T) {
 }
 
 func TestBuildCondensedTranscript_MixedContent(t *testing.T) {
-	lines := []TranscriptLine{
+	lines := []transcript.Line{
 		{
 			Type: "user",
 			UUID: "user-1",
@@ -222,7 +222,7 @@ func TestBuildCondensedTranscript_MixedContent(t *testing.T) {
 }
 
 func TestBuildCondensedTranscript_EmptyTranscript(t *testing.T) {
-	lines := []TranscriptLine{}
+	lines := []transcript.Line{}
 
 	entries := BuildCondensedTranscript(lines)
 
@@ -233,7 +233,7 @@ func TestBuildCondensedTranscript_EmptyTranscript(t *testing.T) {
 
 func TestBuildCondensedTranscript_UserArrayContent(t *testing.T) {
 	// Test user message with array content (text blocks)
-	lines := []TranscriptLine{
+	lines := []transcript.Line{
 		{
 			Type: "user",
 			UUID: "user-1",
@@ -265,7 +265,7 @@ func TestBuildCondensedTranscript_UserArrayContent(t *testing.T) {
 }
 
 func TestBuildCondensedTranscript_SkipsEmptyContent(t *testing.T) {
-	lines := []TranscriptLine{
+	lines := []transcript.Line{
 		{
 			Type: "user",
 			UUID: "user-1",
