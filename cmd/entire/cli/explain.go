@@ -16,6 +16,7 @@ import (
 	"entire.io/cli/cmd/entire/cli/checkpoint/id"
 	"entire.io/cli/cmd/entire/cli/logging"
 	"entire.io/cli/cmd/entire/cli/strategy"
+	"entire.io/cli/cmd/entire/cli/summarise"
 	"entire.io/cli/cmd/entire/cli/trailers"
 
 	"github.com/go-git/go-git/v5"
@@ -66,6 +67,8 @@ func newExplainCmd() *cobra.Command {
 	var noPagerFlag bool
 	var shortFlag bool
 	var fullFlag bool
+	var generateFlag bool
+	var forceFlag bool
 
 	cmd := &cobra.Command{
 		Use:   "explain",
@@ -83,6 +86,10 @@ Output verbosity levels (for --checkpoint):
   --short:   Summary only (ID, session, timestamp, tokens, intent)
   --full:    + complete transcript
 
+Summary generation (for --checkpoint):
+  --generate    Generate an AI summary for the checkpoint
+  --force       Regenerate even if a summary already exists (requires --generate)
+
 Only one of --session, --commit, or --checkpoint can be specified at a time.`,
 		Args: func(_ *cobra.Command, args []string) error {
 			if len(args) > 0 {
@@ -96,9 +103,17 @@ Only one of --session, --commit, or --checkpoint can be specified at a time.`,
 				return nil
 			}
 
+			// Validate flag dependencies
+			if generateFlag && checkpointFlag == "" {
+				return errors.New("--generate requires --checkpoint/-c flag")
+			}
+			if forceFlag && !generateFlag {
+				return errors.New("--force requires --generate flag")
+			}
+
 			// Convert short flag to verbose (verbose = !short)
 			verbose := !shortFlag
-			return runExplain(cmd.OutOrStdout(), sessionFlag, commitFlag, checkpointFlag, noPagerFlag, verbose, fullFlag)
+			return runExplain(cmd.OutOrStdout(), cmd.ErrOrStderr(), sessionFlag, commitFlag, checkpointFlag, noPagerFlag, verbose, fullFlag, generateFlag, forceFlag)
 		},
 	}
 
@@ -108,6 +123,8 @@ Only one of --session, --commit, or --checkpoint can be specified at a time.`,
 	cmd.Flags().BoolVar(&noPagerFlag, "no-pager", false, "Disable pager output")
 	cmd.Flags().BoolVarP(&shortFlag, "short", "s", false, "Show summary only (omit prompts and files)")
 	cmd.Flags().BoolVar(&fullFlag, "full", false, "Show complete transcript")
+	cmd.Flags().BoolVar(&generateFlag, "generate", false, "Generate an AI summary for the checkpoint")
+	cmd.Flags().BoolVar(&forceFlag, "force", false, "Regenerate summary even if one already exists (requires --generate)")
 
 	// Make --short and --full mutually exclusive
 	cmd.MarkFlagsMutuallyExclusive("short", "full")
@@ -116,7 +133,7 @@ Only one of --session, --commit, or --checkpoint can be specified at a time.`,
 }
 
 // runExplain routes to the appropriate explain function based on flags.
-func runExplain(w io.Writer, sessionID, commitRef, checkpointID string, noPager, verbose, full bool) error {
+func runExplain(w, errW io.Writer, sessionID, commitRef, checkpointID string, noPager, verbose, full, generate, force bool) error {
 	// Count mutually exclusive flags
 	flagCount := 0
 	if sessionID != "" {
@@ -140,7 +157,7 @@ func runExplain(w io.Writer, sessionID, commitRef, checkpointID string, noPager,
 		return runExplainCommit(w, commitRef)
 	}
 	if checkpointID != "" {
-		return runExplainCheckpoint(w, checkpointID, noPager, verbose, full)
+		return runExplainCheckpoint(w, errW, checkpointID, noPager, verbose, full, generate, force)
 	}
 
 	// Default: explain current session
@@ -150,7 +167,9 @@ func runExplain(w io.Writer, sessionID, commitRef, checkpointID string, noPager,
 // runExplainCheckpoint explains a specific checkpoint.
 // Supports both committed checkpoints (by checkpoint ID) and temporary checkpoints (by git SHA).
 // First tries to match committed checkpoints, then falls back to temporary checkpoints.
-func runExplainCheckpoint(w io.Writer, checkpointIDPrefix string, noPager, verbose, full bool) error {
+// When generate is true, generates an AI summary for the checkpoint.
+// When force is true, regenerates even if a summary already exists.
+func runExplainCheckpoint(w, errW io.Writer, checkpointIDPrefix string, noPager, verbose, full, generate, force bool) error {
 	repo, err := openRepository()
 	if err != nil {
 		return fmt.Errorf("not a git repository: %w", err)
@@ -176,6 +195,9 @@ func runExplainCheckpoint(w io.Writer, checkpointIDPrefix string, noPager, verbo
 	switch len(matches) {
 	case 0:
 		// Not found in committed, try temporary checkpoints by git SHA
+		if generate {
+			return fmt.Errorf("cannot generate summary for temporary checkpoint %s (only committed checkpoints supported)", checkpointIDPrefix)
+		}
 		output, found := explainTemporaryCheckpoint(repo, store, checkpointIDPrefix, verbose, full)
 		if found {
 			outputExplainContent(w, output, noPager)
@@ -206,12 +228,72 @@ func runExplainCheckpoint(w io.Writer, checkpointIDPrefix string, noPager, verbo
 		return fmt.Errorf("checkpoint not found: %s", fullCheckpointID)
 	}
 
+	// Handle summary generation
+	if generate {
+		if err := generateCheckpointSummary(w, errW, store, fullCheckpointID, result, force); err != nil {
+			return err
+		}
+		// Reload the result to get the updated summary
+		result, err = store.ReadCommitted(context.Background(), fullCheckpointID)
+		if err != nil {
+			return fmt.Errorf("failed to reload checkpoint: %w", err)
+		}
+		if result == nil {
+			return fmt.Errorf("checkpoint not found after save: %s", fullCheckpointID)
+		}
+	}
+
 	// Look up the commit message for this checkpoint
 	commitMessage := findCommitMessageForCheckpoint(repo, fullCheckpointID)
 
 	// Format and output
 	output := formatCheckpointOutput(result, fullCheckpointID, commitMessage, verbose, full)
 	outputExplainContent(w, output, noPager)
+	return nil
+}
+
+// generateCheckpointSummary generates an AI summary for a checkpoint and persists it.
+func generateCheckpointSummary(w, _ io.Writer, store *checkpoint.GitStore, checkpointID id.CheckpointID, result *checkpoint.ReadCommittedResult, force bool) error {
+	// Check if summary already exists
+	if result.Metadata.Summary != nil && !force {
+		return fmt.Errorf("checkpoint %s already has a summary (use --force to regenerate)", checkpointID)
+	}
+
+	// Check if transcript exists
+	if len(result.Transcript) == 0 {
+		return fmt.Errorf("checkpoint %s has no transcript to summarise", checkpointID)
+	}
+
+	// Build condensed transcript for summarisation
+	condensed, err := summarise.BuildCondensedTranscriptFromBytes(result.Transcript)
+	if err != nil {
+		return fmt.Errorf("failed to parse transcript: %w", err)
+	}
+	if len(condensed) == 0 {
+		return fmt.Errorf("checkpoint %s transcript has no content to summarise", checkpointID)
+	}
+
+	input := summarise.Input{
+		Transcript:   condensed,
+		FilesTouched: result.Metadata.FilesTouched,
+	}
+
+	// Generate summary using Claude CLI
+	ctx := context.Background()
+	logging.Info(ctx, "generating checkpoint summary")
+
+	var generator summarise.Generator = &summarise.ClaudeGenerator{}
+	summary, err := generator.Generate(ctx, input)
+	if err != nil {
+		return fmt.Errorf("failed to generate summary: %w", err)
+	}
+
+	// Persist the summary
+	if err := store.UpdateSummary(ctx, checkpointID, summary); err != nil {
+		return fmt.Errorf("failed to save summary: %w", err)
+	}
+
+	fmt.Fprintln(w, "✓ Summary generated and saved")
 	return nil
 }
 
@@ -368,11 +450,8 @@ func formatCheckpointOutput(result *checkpoint.ReadCommittedResult, checkpointID
 	meta := result.Metadata
 
 	// Header - always shown
-	shortID := checkpointID
-	if len(shortID) > checkpointIDDisplayLength {
-		shortID = shortID[:checkpointIDDisplayLength]
-	}
-	fmt.Fprintf(&sb, "Checkpoint: %s\n", shortID)
+	// Note: CheckpointID is always exactly 12 characters, matching checkpointIDDisplayLength
+	fmt.Fprintf(&sb, "Checkpoint: %s\n", checkpointID)
 	fmt.Fprintf(&sb, "Session: %s\n", meta.SessionID)
 	fmt.Fprintf(&sb, "Created: %s\n", meta.CreatedAt.Format("2006-01-02 15:04:05"))
 
@@ -385,19 +464,30 @@ func formatCheckpointOutput(result *checkpoint.ReadCommittedResult, checkpointID
 
 	sb.WriteString("\n")
 
-	// Intent (use first line of prompts as fallback until AI summary is available)
-	intent := "(not generated)"
-	if result.Prompts != "" {
-		lines := strings.Split(result.Prompts, "\n")
-		if len(lines) > 0 && lines[0] != "" {
-			intent = strategy.TruncateDescription(lines[0], maxIntentDisplayLength)
+	// Intent and Outcome from AI summary, or fallback to prompt text
+	if meta.Summary != nil {
+		fmt.Fprintf(&sb, "Intent: %s\n", meta.Summary.Intent)
+		fmt.Fprintf(&sb, "Outcome: %s\n", meta.Summary.Outcome)
+	} else {
+		// Fallback: use first line of prompts for intent
+		intent := "(not generated)"
+		if result.Prompts != "" {
+			lines := strings.Split(result.Prompts, "\n")
+			if len(lines) > 0 && lines[0] != "" {
+				intent = strategy.TruncateDescription(lines[0], maxIntentDisplayLength)
+			}
 		}
+		fmt.Fprintf(&sb, "Intent: %s\n", intent)
+		sb.WriteString("Outcome: (not generated)\n")
 	}
-	fmt.Fprintf(&sb, "Intent: %s\n", intent)
-	sb.WriteString("Outcome: (not generated)\n")
 
-	// Verbose: add commit message, files, and prompts
+	// Verbose: add commit message, learnings, friction, files, and prompts
 	if verbose || full {
+		// AI Summary details (learnings, friction, open items)
+		if meta.Summary != nil {
+			formatSummaryDetails(&sb, meta.Summary)
+		}
+
 		// Commit message section (only if available)
 		if commitMessage != "" {
 			sb.WriteString("\n")
@@ -441,6 +531,63 @@ func formatCheckpointOutput(result *checkpoint.ReadCommittedResult, checkpointID
 	}
 
 	return sb.String()
+}
+
+// formatSummaryDetails formats the detailed sections of an AI summary.
+func formatSummaryDetails(sb *strings.Builder, summary *checkpoint.Summary) {
+	// Learnings section
+	hasLearnings := len(summary.Learnings.Repo) > 0 ||
+		len(summary.Learnings.Code) > 0 ||
+		len(summary.Learnings.Workflow) > 0
+
+	if hasLearnings {
+		sb.WriteString("\nLearnings:\n")
+
+		if len(summary.Learnings.Repo) > 0 {
+			sb.WriteString("  Repository:\n")
+			for _, learning := range summary.Learnings.Repo {
+				fmt.Fprintf(sb, "    - %s\n", learning)
+			}
+		}
+
+		if len(summary.Learnings.Code) > 0 {
+			sb.WriteString("  Code:\n")
+			for _, learning := range summary.Learnings.Code {
+				if learning.Line > 0 {
+					if learning.EndLine > 0 {
+						fmt.Fprintf(sb, "    - %s:%d-%d: %s\n", learning.Path, learning.Line, learning.EndLine, learning.Finding)
+					} else {
+						fmt.Fprintf(sb, "    - %s:%d: %s\n", learning.Path, learning.Line, learning.Finding)
+					}
+				} else {
+					fmt.Fprintf(sb, "    - %s: %s\n", learning.Path, learning.Finding)
+				}
+			}
+		}
+
+		if len(summary.Learnings.Workflow) > 0 {
+			sb.WriteString("  Workflow:\n")
+			for _, learning := range summary.Learnings.Workflow {
+				fmt.Fprintf(sb, "    - %s\n", learning)
+			}
+		}
+	}
+
+	// Friction section
+	if len(summary.Friction) > 0 {
+		sb.WriteString("\nFriction:\n")
+		for _, item := range summary.Friction {
+			fmt.Fprintf(sb, "  - %s\n", item)
+		}
+	}
+
+	// Open items section
+	if len(summary.OpenItems) > 0 {
+		sb.WriteString("\nOpen Items:\n")
+		for _, item := range summary.OpenItems {
+			fmt.Fprintf(sb, "  - %s\n", item)
+		}
+	}
 }
 
 // runExplainDefault shows all checkpoints on the current branch.

@@ -2,7 +2,6 @@ package cli
 
 import (
 	"bufio"
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,13 +11,15 @@ import (
 
 	"entire.io/cli/cmd/entire/cli/agent/claudecode"
 	"entire.io/cli/cmd/entire/cli/textutil"
+	"entire.io/cli/cmd/entire/cli/transcript"
 )
 
-// Transcript message type constants
+// Transcript message type constants - aliases to transcript package for local use.
 const (
-	transcriptTypeUser      = "user"
-	transcriptTypeAssistant = "assistant"
-	contentTypeText         = "text"
+	transcriptTypeUser      = transcript.TypeUser
+	transcriptTypeAssistant = transcript.TypeAssistant
+	contentTypeText         = transcript.ContentTypeText
+	contentTypeToolUse      = transcript.ContentTypeToolUse
 )
 
 // parseTranscript reads and parses a Claude Code transcript file.
@@ -114,33 +115,10 @@ func parseTranscriptFromLine(path string, startLine int) ([]transcriptLine, int,
 // parseTranscriptFromBytes parses transcript content from a byte slice.
 // Uses bufio.Reader to handle arbitrarily long lines.
 func parseTranscriptFromBytes(content []byte) ([]transcriptLine, error) {
-	var lines []transcriptLine
-	reader := bufio.NewReader(bytes.NewReader(content))
-
-	for {
-		lineBytes, err := reader.ReadBytes('\n')
-		if err != nil && err != io.EOF {
-			return nil, fmt.Errorf("failed to read transcript: %w", err)
-		}
-
-		// Handle empty line or EOF without content
-		if len(lineBytes) == 0 {
-			if err == io.EOF {
-				break
-			}
-			continue
-		}
-
-		var line transcriptLine
-		if err := json.Unmarshal(lineBytes, &line); err == nil {
-			lines = append(lines, line)
-		}
-
-		if err == io.EOF {
-			break
-		}
+	lines, err := transcript.ParseFromBytes(content)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse transcript: %w", err)
 	}
-
 	return lines, nil
 }
 
@@ -214,39 +192,12 @@ func ExtractAllPromptResponses(transcript []transcriptLine) []PromptResponsePair
 
 // extractUserPromptAt extracts the user prompt at the given index.
 // IDE-injected context tags (like <ide_opened_file>) are stripped from the result.
-func extractUserPromptAt(transcript []transcriptLine, idx int) string {
-	if idx >= len(transcript) || transcript[idx].Type != transcriptTypeUser {
+func extractUserPromptAt(lines []transcriptLine, idx int) string {
+	if idx >= len(lines) || lines[idx].Type != transcriptTypeUser {
 		return ""
 	}
 
-	var msg userMessage
-	if err := json.Unmarshal(transcript[idx].Message, &msg); err != nil {
-		return ""
-	}
-
-	// Handle string content
-	if str, ok := msg.Content.(string); ok {
-		return textutil.StripIDEContextTags(str)
-	}
-
-	// Handle array content (only if it contains text blocks)
-	if arr, ok := msg.Content.([]interface{}); ok {
-		var texts []string
-		for _, item := range arr {
-			if m, ok := item.(map[string]interface{}); ok {
-				if m["type"] == contentTypeText {
-					if text, ok := m["text"].(string); ok {
-						texts = append(texts, text)
-					}
-				}
-			}
-		}
-		if len(texts) > 0 {
-			return textutil.StripIDEContextTags(strings.Join(texts, "\n\n"))
-		}
-	}
-
-	return ""
+	return transcript.ExtractUserContent(lines[idx].Message)
 }
 
 // extractAssistantResponses collects all assistant text blocks from the given transcript slice.
@@ -391,7 +342,7 @@ func extractModifiedFiles(transcript []transcriptLine) []string {
 			}
 
 			for _, block := range msg.Content {
-				if block.Type == "tool_use" {
+				if block.Type == contentTypeToolUse {
 					isModifyTool := false
 					for _, name := range claudecode.FileModificationTools {
 						if block.Name == name {
@@ -436,7 +387,7 @@ func extractKeyActions(transcript []transcriptLine, maxActions int) []string {
 			}
 
 			for _, block := range msg.Content {
-				if block.Type == "tool_use" {
+				if block.Type == contentTypeToolUse {
 					var input toolInput
 					_ = json.Unmarshal(block.Input, &input) //nolint:errcheck // Best-effort parsing for display purposes
 

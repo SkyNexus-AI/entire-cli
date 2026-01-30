@@ -797,6 +797,76 @@ func LookupSessionLog(cpID id.CheckpointID) ([]byte, string, error) {
 	return store.GetSessionLog(cpID)
 }
 
+// UpdateSummary updates the summary field in an existing checkpoint's metadata.
+// Returns ErrCheckpointNotFound if the checkpoint doesn't exist.
+func (s *GitStore) UpdateSummary(ctx context.Context, checkpointID id.CheckpointID, summary *Summary) error {
+	_ = ctx // Reserved for future use
+
+	// Ensure sessions branch exists
+	if err := s.ensureSessionsBranch(); err != nil {
+		return fmt.Errorf("failed to ensure sessions branch: %w", err)
+	}
+
+	// Get current branch tip and flatten tree
+	ref, entries, err := s.getSessionsBranchEntries()
+	if err != nil {
+		return err
+	}
+
+	// Read existing metadata
+	basePath := checkpointID.Path() + "/"
+	metadataPath := basePath + paths.MetadataFileName
+	entry, exists := entries[metadataPath]
+	if !exists {
+		return ErrCheckpointNotFound
+	}
+
+	// Read and parse existing metadata
+	existingMetadata, err := s.readMetadataFromBlob(entry.Hash)
+	if err != nil {
+		return fmt.Errorf("failed to read existing metadata: %w", err)
+	}
+
+	// Update the summary
+	existingMetadata.Summary = summary
+
+	// Write updated metadata
+	metadataJSON, err := jsonutil.MarshalIndentWithNewline(existingMetadata, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal metadata: %w", err)
+	}
+	metadataHash, err := CreateBlobFromContent(s.repo, metadataJSON)
+	if err != nil {
+		return fmt.Errorf("failed to create metadata blob: %w", err)
+	}
+	entries[metadataPath] = object.TreeEntry{
+		Name: metadataPath,
+		Mode: filemode.Regular,
+		Hash: metadataHash,
+	}
+
+	// Build and commit
+	newTreeHash, err := BuildTreeFromEntries(s.repo, entries)
+	if err != nil {
+		return err
+	}
+
+	authorName, authorEmail := getGitAuthorFromRepo(s.repo)
+	commitMsg := fmt.Sprintf("Update summary for checkpoint %s (session: %s)", checkpointID, existingMetadata.SessionID)
+	newCommitHash, err := s.createCommit(newTreeHash, ref.Hash(), commitMsg, authorName, authorEmail)
+	if err != nil {
+		return err
+	}
+
+	refName := plumbing.NewBranchReferenceName(paths.MetadataBranchName)
+	newRef := plumbing.NewHashReference(refName, newCommitHash)
+	if err := s.repo.Storer.SetReference(newRef); err != nil {
+		return fmt.Errorf("failed to set branch reference: %w", err)
+	}
+
+	return nil
+}
+
 // ensureSessionsBranch ensures the entire/sessions branch exists.
 func (s *GitStore) ensureSessionsBranch() error {
 	refName := plumbing.NewBranchReferenceName(paths.MetadataBranchName)

@@ -37,6 +37,16 @@ func TestNewExplainCmd(t *testing.T) {
 	if commitFlag == nil {
 		t.Error("expected --commit flag to exist")
 	}
+
+	generateFlag := cmd.Flags().Lookup("generate")
+	if generateFlag == nil {
+		t.Error("expected --generate flag to exist")
+	}
+
+	forceFlag := cmd.Flags().Lookup("force")
+	if forceFlag == nil {
+		t.Error("expected --force flag to exist")
+	}
 }
 
 func TestExplainCmd_RejectsPositionalArgs(t *testing.T) {
@@ -355,8 +365,8 @@ func TestExplainDefault_NoCheckpoints_ShowsHelpfulMessage(t *testing.T) {
 
 func TestExplainBothFlagsError(t *testing.T) {
 	// Test that providing both --session and --commit returns an error
-	var stdout bytes.Buffer
-	err := runExplain(&stdout, "session-id", "commit-sha", "", false, false, false)
+	var stdout, stderr bytes.Buffer
+	err := runExplain(&stdout, &stderr, "session-id", "commit-sha", "", false, false, false, false, false)
 
 	if err == nil {
 		t.Error("expected error when both flags provided, got nil")
@@ -872,10 +882,10 @@ func TestExplainCmd_HasFullFlag(t *testing.T) {
 }
 
 func TestRunExplain_MutualExclusivityError(t *testing.T) {
-	var buf bytes.Buffer
+	var buf, errBuf bytes.Buffer
 
 	// Providing both --session and --checkpoint should error
-	err := runExplain(&buf, "session-id", "", "checkpoint-id", false, false, false)
+	err := runExplain(&buf, &errBuf, "session-id", "", "checkpoint-id", false, false, false, false, false)
 
 	if err == nil {
 		t.Error("expected error when multiple flags provided")
@@ -918,8 +928,8 @@ func TestRunExplainCheckpoint_NotFound(t *testing.T) {
 		t.Fatalf("failed to commit: %v", err)
 	}
 
-	var buf bytes.Buffer
-	err = runExplainCheckpoint(&buf, "nonexistent123", false, false, false)
+	var buf, errBuf bytes.Buffer
+	err = runExplainCheckpoint(&buf, &errBuf, "nonexistent123", false, false, false, false, false)
 
 	if err == nil {
 		t.Error("expected error for nonexistent checkpoint")
@@ -1097,6 +1107,145 @@ func TestFormatCheckpointOutput_Full(t *testing.T) {
 	}
 	if !strings.Contains(output, "feat: add user login") {
 		t.Error("full output should show commit message")
+	}
+}
+
+func TestFormatCheckpointOutput_WithSummary(t *testing.T) {
+	cpID := id.MustCheckpointID("abc123456789")
+	result := &checkpoint.ReadCommittedResult{
+		Metadata: checkpoint.CommittedMetadata{
+			CheckpointID: cpID,
+			SessionID:    "2026-01-22-test-session",
+			CreatedAt:    time.Date(2026, 1, 22, 10, 30, 0, 0, time.UTC),
+			FilesTouched: []string{"file1.go", "file2.go"},
+			Summary: &checkpoint.Summary{
+				Intent:  "Implement user authentication",
+				Outcome: "Added login and logout functionality",
+				Learnings: checkpoint.LearningsSummary{
+					Repo:     []string{"Uses JWT for auth tokens"},
+					Code:     []checkpoint.CodeLearning{{Path: "auth.go", Line: 42, Finding: "Token validation happens here"}},
+					Workflow: []string{"Always run tests after auth changes"},
+				},
+				Friction:  []string{"Had to refactor session handling"},
+				OpenItems: []string{"Add password reset flow"},
+			},
+		},
+		Prompts: "Add user authentication",
+	}
+
+	// Test default output (non-verbose) with summary
+	output := formatCheckpointOutput(result, cpID, "", false, false)
+
+	// Should show AI-generated intent and outcome
+	if !strings.Contains(output, "Intent: Implement user authentication") {
+		t.Errorf("expected AI intent in output, got:\n%s", output)
+	}
+	if !strings.Contains(output, "Outcome: Added login and logout functionality") {
+		t.Errorf("expected AI outcome in output, got:\n%s", output)
+	}
+	// Non-verbose should NOT show learnings
+	if strings.Contains(output, "Learnings:") {
+		t.Errorf("non-verbose should not show learnings, got:\n%s", output)
+	}
+
+	// Test verbose output with summary
+	verboseOutput := formatCheckpointOutput(result, cpID, "", true, false)
+
+	// Verbose should show learnings sections
+	if !strings.Contains(verboseOutput, "Learnings:") {
+		t.Errorf("verbose output should show learnings, got:\n%s", verboseOutput)
+	}
+	if !strings.Contains(verboseOutput, "Repository:") {
+		t.Errorf("verbose output should show repository learnings, got:\n%s", verboseOutput)
+	}
+	if !strings.Contains(verboseOutput, "Uses JWT for auth tokens") {
+		t.Errorf("verbose output should show repo learning content, got:\n%s", verboseOutput)
+	}
+	if !strings.Contains(verboseOutput, "Code:") {
+		t.Errorf("verbose output should show code learnings, got:\n%s", verboseOutput)
+	}
+	if !strings.Contains(verboseOutput, "auth.go:42:") {
+		t.Errorf("verbose output should show code learning with line number, got:\n%s", verboseOutput)
+	}
+	if !strings.Contains(verboseOutput, "Workflow:") {
+		t.Errorf("verbose output should show workflow learnings, got:\n%s", verboseOutput)
+	}
+	if !strings.Contains(verboseOutput, "Friction:") {
+		t.Errorf("verbose output should show friction, got:\n%s", verboseOutput)
+	}
+	if !strings.Contains(verboseOutput, "Open Items:") {
+		t.Errorf("verbose output should show open items, got:\n%s", verboseOutput)
+	}
+}
+
+func TestFormatSummaryDetails(t *testing.T) {
+	summary := &checkpoint.Summary{
+		Intent:  "Test intent",
+		Outcome: "Test outcome",
+		Learnings: checkpoint.LearningsSummary{
+			Repo:     []string{"Repo learning 1", "Repo learning 2"},
+			Code:     []checkpoint.CodeLearning{{Path: "test.go", Line: 10, EndLine: 20, Finding: "Code finding"}},
+			Workflow: []string{"Workflow learning"},
+		},
+		Friction:  []string{"Friction item"},
+		OpenItems: []string{"Open item 1", "Open item 2"},
+	}
+
+	var sb strings.Builder
+	formatSummaryDetails(&sb, summary)
+	output := sb.String()
+
+	// Check learnings
+	if !strings.Contains(output, "Learnings:") {
+		t.Error("should have Learnings section")
+	}
+	if !strings.Contains(output, "Repo learning 1") {
+		t.Error("should include repo learnings")
+	}
+	if !strings.Contains(output, "test.go:10-20:") {
+		t.Error("should show code learning with line range")
+	}
+
+	// Check friction
+	if !strings.Contains(output, "Friction:") {
+		t.Error("should have Friction section")
+	}
+	if !strings.Contains(output, "Friction item") {
+		t.Error("should include friction items")
+	}
+
+	// Check open items
+	if !strings.Contains(output, "Open Items:") {
+		t.Error("should have Open Items section")
+	}
+	if !strings.Contains(output, "Open item 1") {
+		t.Error("should include open items")
+	}
+}
+
+func TestFormatSummaryDetails_EmptyCategories(t *testing.T) {
+	// Test with empty learnings - should not show Learnings section
+	summary := &checkpoint.Summary{
+		Intent:    "Test intent",
+		Outcome:   "Test outcome",
+		Learnings: checkpoint.LearningsSummary{},
+		Friction:  []string{},
+		OpenItems: []string{},
+	}
+
+	var sb strings.Builder
+	formatSummaryDetails(&sb, summary)
+	output := sb.String()
+
+	// Empty summary should have no sections
+	if strings.Contains(output, "Learnings:") {
+		t.Error("empty learnings should not show Learnings section")
+	}
+	if strings.Contains(output, "Friction:") {
+		t.Error("empty friction should not show Friction section")
+	}
+	if strings.Contains(output, "Open Items:") {
+		t.Error("empty open items should not show Open Items section")
 	}
 }
 

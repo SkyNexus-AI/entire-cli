@@ -3,6 +3,7 @@ package checkpoint
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -696,4 +697,101 @@ func TestWriteCommitted_BranchField(t *testing.T) {
 
 		verifyBranchInMetadata(t, repo, checkpointID, "", true)
 	})
+}
+
+// TestUpdateSummary verifies that UpdateSummary correctly updates the summary
+// field in an existing checkpoint's metadata.
+func TestUpdateSummary(t *testing.T) {
+	repo, _ := setupBranchTestRepo(t)
+	store := NewGitStore(repo)
+	checkpointID := id.MustCheckpointID("f1e2d3c4b5a6")
+
+	// First, create a checkpoint without a summary
+	err := store.WriteCommitted(context.Background(), WriteCommittedOptions{
+		CheckpointID: checkpointID,
+		SessionID:    "test-session-summary",
+		Strategy:     "manual-commit",
+		Transcript:   []byte("test transcript content"),
+		FilesTouched: []string{"file1.go", "file2.go"},
+		AuthorName:   "Test Author",
+		AuthorEmail:  "test@example.com",
+	})
+	if err != nil {
+		t.Fatalf("WriteCommitted() error = %v", err)
+	}
+
+	// Verify no summary initially
+	metadata := readCheckpointMetadata(t, repo, checkpointID)
+	if metadata.Summary != nil {
+		t.Error("initial checkpoint should not have a summary")
+	}
+
+	// Update with a summary
+	summary := &Summary{
+		Intent:  "Test intent",
+		Outcome: "Test outcome",
+		Learnings: LearningsSummary{
+			Repo:     []string{"Repo learning 1"},
+			Code:     []CodeLearning{{Path: "file1.go", Line: 10, Finding: "Code finding"}},
+			Workflow: []string{"Workflow learning"},
+		},
+		Friction:  []string{"Some friction"},
+		OpenItems: []string{"Open item 1"},
+	}
+
+	err = store.UpdateSummary(context.Background(), checkpointID, summary)
+	if err != nil {
+		t.Fatalf("UpdateSummary() error = %v", err)
+	}
+
+	// Verify summary was saved
+	updatedMetadata := readCheckpointMetadata(t, repo, checkpointID)
+	if updatedMetadata.Summary == nil {
+		t.Fatal("updated checkpoint should have a summary")
+	}
+	if updatedMetadata.Summary.Intent != "Test intent" {
+		t.Errorf("summary.Intent = %q, want %q", updatedMetadata.Summary.Intent, "Test intent")
+	}
+	if updatedMetadata.Summary.Outcome != "Test outcome" {
+		t.Errorf("summary.Outcome = %q, want %q", updatedMetadata.Summary.Outcome, "Test outcome")
+	}
+	if len(updatedMetadata.Summary.Learnings.Repo) != 1 {
+		t.Errorf("summary.Learnings.Repo length = %d, want 1", len(updatedMetadata.Summary.Learnings.Repo))
+	}
+	if len(updatedMetadata.Summary.Friction) != 1 {
+		t.Errorf("summary.Friction length = %d, want 1", len(updatedMetadata.Summary.Friction))
+	}
+
+	// Verify other metadata fields are preserved
+	if updatedMetadata.SessionID != "test-session-summary" {
+		t.Errorf("metadata.SessionID = %q, want %q", updatedMetadata.SessionID, "test-session-summary")
+	}
+	if len(updatedMetadata.FilesTouched) != 2 {
+		t.Errorf("metadata.FilesTouched length = %d, want 2", len(updatedMetadata.FilesTouched))
+	}
+}
+
+// TestUpdateSummary_NotFound verifies that UpdateSummary returns an error
+// when the checkpoint doesn't exist.
+func TestUpdateSummary_NotFound(t *testing.T) {
+	repo, _ := setupBranchTestRepo(t)
+	store := NewGitStore(repo)
+
+	// Ensure sessions branch exists
+	err := store.ensureSessionsBranch()
+	if err != nil {
+		t.Fatalf("ensureSessionsBranch() error = %v", err)
+	}
+
+	// Try to update a non-existent checkpoint (ID must be 12 hex chars)
+	checkpointID := id.MustCheckpointID("000000000000")
+	summary := &Summary{Intent: "Test", Outcome: "Test"}
+
+	err = store.UpdateSummary(context.Background(), checkpointID, summary)
+	if err == nil {
+		t.Error("UpdateSummary() should return error for non-existent checkpoint")
+	}
+	if !errors.Is(err, ErrCheckpointNotFound) {
+		t.Errorf("UpdateSummary() error = %v, want ErrCheckpointNotFound", err)
+	}
 }

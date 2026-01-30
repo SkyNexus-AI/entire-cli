@@ -4,12 +4,8 @@ import (
 	"encoding/json"
 	"os"
 	"testing"
-)
 
-// Transcript type constants for tests
-const (
-	testTypeUser      = "user"
-	testTypeAssistant = "assistant"
+	"entire.io/cli/cmd/entire/cli/transcript"
 )
 
 func TestParseTranscript(t *testing.T) {
@@ -28,11 +24,11 @@ func TestParseTranscript(t *testing.T) {
 		t.Errorf("ParseTranscript() got %d lines, want 2", len(lines))
 	}
 
-	if lines[0].Type != testTypeUser || lines[0].UUID != "u1" {
+	if lines[0].Type != transcript.TypeUser || lines[0].UUID != "u1" {
 		t.Errorf("First line = %+v, want type=user, uuid=u1", lines[0])
 	}
 
-	if lines[1].Type != testTypeAssistant || lines[1].UUID != "a1" {
+	if lines[1].Type != transcript.TypeAssistant || lines[1].UUID != "a1" {
 		t.Errorf("Second line = %+v, want type=assistant, uuid=a1", lines[1])
 	}
 }

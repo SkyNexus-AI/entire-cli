@@ -348,8 +348,35 @@ type CommittedMetadata struct {
 	// Token usage for this checkpoint
 	TokenUsage *agent.TokenUsage `json:"token_usage,omitempty"`
 
+	// AI-generated summary of the checkpoint
+	Summary *Summary `json:"summary,omitempty"`
+
 	// InitialAttribution is line-level attribution calculated at commit time
 	InitialAttribution *InitialAttribution `json:"initial_attribution,omitempty"`
+}
+
+// Summary contains AI-generated summary of a checkpoint.
+type Summary struct {
+	Intent    string           `json:"intent"`     // What user wanted to accomplish
+	Outcome   string           `json:"outcome"`    // What was achieved
+	Learnings LearningsSummary `json:"learnings"`  // Categorized learnings
+	Friction  []string         `json:"friction"`   // Problems/annoyances encountered
+	OpenItems []string         `json:"open_items"` // Tech debt, unfinished work
+}
+
+// LearningsSummary contains learnings grouped by scope.
+type LearningsSummary struct {
+	Repo     []string       `json:"repo"`     // Codebase-specific patterns/conventions
+	Code     []CodeLearning `json:"code"`     // File/module specific findings
+	Workflow []string       `json:"workflow"` // General dev practices
+}
+
+// CodeLearning captures a learning tied to a specific code location.
+type CodeLearning struct {
+	Path    string `json:"path"`               // File path
+	Line    int    `json:"line,omitempty"`     // Start line number
+	EndLine int    `json:"end_line,omitempty"` // End line for ranges (optional)
+	Finding string `json:"finding"`            // What was learned
 }
 
 // InitialAttribution captures line-level attribution metrics at commit time.

@@ -1,37 +1,12 @@
 package cli
 
-import "encoding/json"
+import "entire.io/cli/cmd/entire/cli/transcript"
 
-// transcriptLine represents a single line in the transcript
-type transcriptLine struct {
-	Type    string          `json:"type"`
-	UUID    string          `json:"uuid"`
-	Message json.RawMessage `json:"message"`
-}
-
-// userMessage represents a user message in the transcript
-type userMessage struct {
-	Content interface{} `json:"content"`
-}
-
-// assistantMessage represents an assistant message in the transcript
-type assistantMessage struct {
-	Content []contentBlock `json:"content"`
-}
-
-// contentBlock represents a block within an assistant message
-type contentBlock struct {
-	Type  string          `json:"type"`
-	Text  string          `json:"text,omitempty"`
-	Name  string          `json:"name,omitempty"`
-	Input json.RawMessage `json:"input,omitempty"`
-}
-
-// toolInput represents the input to various tools
-type toolInput struct {
-	FilePath     string `json:"file_path,omitempty"`
-	NotebookPath string `json:"notebook_path,omitempty"`
-	Description  string `json:"description,omitempty"`
-	Command      string `json:"command,omitempty"`
-	Pattern      string `json:"pattern,omitempty"`
-}
+// Type aliases for backward compatibility with existing code in the cli package.
+// These types are now defined in the transcript package.
+type (
+	transcriptLine   = transcript.Line
+	userMessage      = transcript.UserMessage
+	assistantMessage = transcript.AssistantMessage
+	toolInput        = transcript.ToolInput
+)
