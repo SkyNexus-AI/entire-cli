@@ -366,7 +366,7 @@ func TestExplainDefault_NoCheckpoints_ShowsHelpfulMessage(t *testing.T) {
 func TestExplainBothFlagsError(t *testing.T) {
 	// Test that providing both --session and --commit returns an error
 	var stdout, stderr bytes.Buffer
-	err := runExplain(&stdout, &stderr, "session-id", "commit-sha", "", false, false, false, false, false)
+	err := runExplain(&stdout, &stderr, "session-id", "commit-sha", "", false, false, false, false, false, false)
 
 	if err == nil {
 		t.Error("expected error when both flags provided, got nil")
@@ -881,11 +881,20 @@ func TestExplainCmd_HasFullFlag(t *testing.T) {
 	}
 }
 
+func TestExplainCmd_HasRawTranscriptFlag(t *testing.T) {
+	cmd := newExplainCmd()
+
+	flag := cmd.Flags().Lookup("raw-transcript")
+	if flag == nil {
+		t.Error("expected --raw-transcript flag to exist")
+	}
+}
+
 func TestRunExplain_MutualExclusivityError(t *testing.T) {
 	var buf, errBuf bytes.Buffer
 
 	// Providing both --session and --checkpoint should error
-	err := runExplain(&buf, &errBuf, "session-id", "", "checkpoint-id", false, false, false, false, false)
+	err := runExplain(&buf, &errBuf, "session-id", "", "checkpoint-id", false, false, false, false, false, false)
 
 	if err == nil {
 		t.Error("expected error when multiple flags provided")
@@ -929,7 +938,7 @@ func TestRunExplainCheckpoint_NotFound(t *testing.T) {
 	}
 
 	var buf, errBuf bytes.Buffer
-	err = runExplainCheckpoint(&buf, &errBuf, "nonexistent123", false, false, false, false, false)
+	err = runExplainCheckpoint(&buf, &errBuf, "nonexistent123", false, false, false, false, false, false)
 
 	if err == nil {
 		t.Error("expected error for nonexistent checkpoint")
@@ -1034,9 +1043,9 @@ func TestFormatCheckpointOutput_Verbose(t *testing.T) {
 	if !strings.Contains(output, "Files:") {
 		t.Error("verbose output should have Files section")
 	}
-	// Verbose should show all prompts (not just first line)
-	if !strings.Contains(output, "Prompts:") {
-		t.Error("verbose output should have Prompts section")
+	// Verbose should show scoped transcript section
+	if !strings.Contains(output, "Transcript (checkpoint scope):") {
+		t.Error("verbose output should have Transcript (checkpoint scope) section")
 	}
 	if !strings.Contains(output, "Add a new feature") {
 		t.Error("verbose output should show prompts")
@@ -1071,6 +1080,10 @@ func TestFormatCheckpointOutput_Verbose_NoCommitMessage(t *testing.T) {
 }
 
 func TestFormatCheckpointOutput_Full(t *testing.T) {
+	// Use proper transcript format that matches actual Claude transcripts
+	transcriptData := `{"type":"user","message":{"content":"Add a new feature"}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"I'll add that feature for you."}]}}`
+
 	result := &checkpoint.ReadCommittedResult{
 		Metadata: checkpoint.CommittedMetadata{
 			CheckpointID:     "abc123def456",
@@ -1084,7 +1097,7 @@ func TestFormatCheckpointOutput_Full(t *testing.T) {
 			},
 		},
 		Prompts:    "Add a new feature",
-		Transcript: []byte(`{"type":"user","content":"Add a new feature"}` + "\n" + `{"type":"assistant","content":"I'll add that feature for you."}`),
+		Transcript: []byte(transcriptData),
 	}
 
 	output := formatCheckpointOutput(result, id.MustCheckpointID("abc123def456"), "feat: add user login", false, true)
@@ -1093,23 +1106,20 @@ func TestFormatCheckpointOutput_Full(t *testing.T) {
 	if !strings.Contains(output, "abc123def456") {
 		t.Error("expected checkpoint ID in output")
 	}
-	// Full should also include verbose sections (files, prompts)
+	// Full should also include verbose sections (files)
 	if !strings.Contains(output, "Files:") {
 		t.Error("full output should include files section")
 	}
-	if !strings.Contains(output, "Prompts:") {
-		t.Error("full output should include prompts section")
+	// Full shows full session transcript (not scoped)
+	if !strings.Contains(output, "Transcript (full session):") {
+		t.Error("full output should have Transcript (full session) section")
 	}
-	// Full should show transcript section
-	if !strings.Contains(output, "Transcript:") {
-		t.Error("full output should have Transcript section")
-	}
-	// Should contain actual transcript content
+	// Should contain actual transcript content (parsed format)
 	if !strings.Contains(output, "Add a new feature") {
 		t.Error("full output should show transcript content")
 	}
-	if !strings.Contains(output, "assistant") {
-		t.Error("full output should show assistant messages in transcript")
+	if !strings.Contains(output, "[Assistant]") {
+		t.Error("full output should show assistant messages in parsed transcript")
 	}
 	// Full should also show commit message (since it includes verbose)
 	if !strings.Contains(output, "Commit:") {

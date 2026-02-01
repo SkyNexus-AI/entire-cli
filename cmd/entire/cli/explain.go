@@ -68,6 +68,7 @@ func newExplainCmd() *cobra.Command {
 	var noPagerFlag bool
 	var shortFlag bool
 	var fullFlag bool
+	var rawTranscriptFlag bool
 	var generateFlag bool
 	var forceFlag bool
 
@@ -83,9 +84,10 @@ By default, shows checkpoints on the current branch. Use flags to explain a spec
 session, commit, or checkpoint.
 
 Output verbosity levels (for --checkpoint):
-  Default:   Detailed view (ID, session, timestamp, tokens, intent, prompts, files)
-  --short:   Summary only (ID, session, timestamp, tokens, intent)
-  --full:    + complete transcript
+  Default:         Detailed view with scoped prompts (ID, session, tokens, intent, prompts, files)
+  --short:         Summary only (ID, session, timestamp, tokens, intent)
+  --full:          Parsed full transcript (all prompts/responses from entire session)
+  --raw-transcript: Raw transcript file (JSONL format)
 
 Summary generation (for --checkpoint):
   --generate    Generate an AI summary for the checkpoint
@@ -111,10 +113,13 @@ Only one of --session, --commit, or --checkpoint can be specified at a time.`,
 			if forceFlag && !generateFlag {
 				return errors.New("--force requires --generate flag")
 			}
+			if rawTranscriptFlag && checkpointFlag == "" {
+				return errors.New("--raw-transcript requires --checkpoint/-c flag")
+			}
 
 			// Convert short flag to verbose (verbose = !short)
 			verbose := !shortFlag
-			return runExplain(cmd.OutOrStdout(), cmd.ErrOrStderr(), sessionFlag, commitFlag, checkpointFlag, noPagerFlag, verbose, fullFlag, generateFlag, forceFlag)
+			return runExplain(cmd.OutOrStdout(), cmd.ErrOrStderr(), sessionFlag, commitFlag, checkpointFlag, noPagerFlag, verbose, fullFlag, rawTranscriptFlag, generateFlag, forceFlag)
 		},
 	}
 
@@ -123,18 +128,19 @@ Only one of --session, --commit, or --checkpoint can be specified at a time.`,
 	cmd.Flags().StringVarP(&checkpointFlag, "checkpoint", "c", "", "Explain a specific checkpoint (ID or prefix)")
 	cmd.Flags().BoolVar(&noPagerFlag, "no-pager", false, "Disable pager output")
 	cmd.Flags().BoolVarP(&shortFlag, "short", "s", false, "Show summary only (omit prompts and files)")
-	cmd.Flags().BoolVar(&fullFlag, "full", false, "Show complete transcript")
+	cmd.Flags().BoolVar(&fullFlag, "full", false, "Show parsed full transcript (all prompts/responses)")
+	cmd.Flags().BoolVar(&rawTranscriptFlag, "raw-transcript", false, "Show raw transcript file (JSONL format)")
 	cmd.Flags().BoolVar(&generateFlag, "generate", false, "Generate an AI summary for the checkpoint")
 	cmd.Flags().BoolVar(&forceFlag, "force", false, "Regenerate summary even if one already exists (requires --generate)")
 
-	// Make --short and --full mutually exclusive
-	cmd.MarkFlagsMutuallyExclusive("short", "full")
+	// Make --short, --full, and --raw-transcript mutually exclusive
+	cmd.MarkFlagsMutuallyExclusive("short", "full", "raw-transcript")
 
 	return cmd
 }
 
 // runExplain routes to the appropriate explain function based on flags.
-func runExplain(w, errW io.Writer, sessionID, commitRef, checkpointID string, noPager, verbose, full, generate, force bool) error {
+func runExplain(w, errW io.Writer, sessionID, commitRef, checkpointID string, noPager, verbose, full, rawTranscript, generate, force bool) error {
 	// Count mutually exclusive flags
 	flagCount := 0
 	if sessionID != "" {
@@ -158,7 +164,7 @@ func runExplain(w, errW io.Writer, sessionID, commitRef, checkpointID string, no
 		return runExplainCommit(w, commitRef)
 	}
 	if checkpointID != "" {
-		return runExplainCheckpoint(w, errW, checkpointID, noPager, verbose, full, generate, force)
+		return runExplainCheckpoint(w, errW, checkpointID, noPager, verbose, full, rawTranscript, generate, force)
 	}
 
 	// Default: explain current session
@@ -170,7 +176,8 @@ func runExplain(w, errW io.Writer, sessionID, commitRef, checkpointID string, no
 // First tries to match committed checkpoints, then falls back to temporary checkpoints.
 // When generate is true, generates an AI summary for the checkpoint.
 // When force is true, regenerates even if a summary already exists.
-func runExplainCheckpoint(w, errW io.Writer, checkpointIDPrefix string, noPager, verbose, full, generate, force bool) error {
+// When rawTranscript is true, outputs only the raw transcript file (JSONL format).
+func runExplainCheckpoint(w, errW io.Writer, checkpointIDPrefix string, noPager, verbose, full, rawTranscript, generate, force bool) error {
 	repo, err := openRepository()
 	if err != nil {
 		return fmt.Errorf("not a git repository: %w", err)
@@ -199,7 +206,7 @@ func runExplainCheckpoint(w, errW io.Writer, checkpointIDPrefix string, noPager,
 		if generate {
 			return fmt.Errorf("cannot generate summary for temporary checkpoint %s (only committed checkpoints supported)", checkpointIDPrefix)
 		}
-		output, found := explainTemporaryCheckpoint(repo, store, checkpointIDPrefix, verbose, full)
+		output, found := explainTemporaryCheckpoint(repo, store, checkpointIDPrefix, verbose, full, rawTranscript)
 		if found {
 			outputExplainContent(w, output, noPager)
 			return nil
@@ -242,6 +249,18 @@ func runExplainCheckpoint(w, errW io.Writer, checkpointIDPrefix string, noPager,
 		if result == nil {
 			return fmt.Errorf("checkpoint not found after save: %s", fullCheckpointID)
 		}
+	}
+
+	// Handle raw transcript output
+	if rawTranscript {
+		if len(result.Transcript) == 0 {
+			return fmt.Errorf("checkpoint %s has no transcript", fullCheckpointID)
+		}
+		// Output raw transcript directly (no pager, no formatting)
+		if _, err = w.Write(result.Transcript); err != nil {
+			return fmt.Errorf("failed to write transcript: %w", err)
+		}
+		return nil
 	}
 
 	// Look up the commit message for this checkpoint
@@ -310,7 +329,7 @@ func generateCheckpointSummary(w, _ io.Writer, store *checkpoint.GitStore, check
 // Returns the formatted output and whether the checkpoint was found.
 // Searches ALL shadow branches, not just the one for current HEAD, to find checkpoints
 // created from different base commits (e.g., if HEAD advanced since session start).
-func explainTemporaryCheckpoint(repo *git.Repository, store *checkpoint.GitStore, shaPrefix string, verbose, full bool) (string, bool) {
+func explainTemporaryCheckpoint(repo *git.Repository, store *checkpoint.GitStore, shaPrefix string, verbose, full, rawTranscript bool) (string, bool) {
 	// List temporary checkpoints from ALL shadow branches
 	// This ensures we find checkpoints even if HEAD has advanced since the session started
 	tempCheckpoints, err := store.ListAllTemporaryCheckpoints(context.Background(), "", branchCheckpointsLimit)
@@ -347,6 +366,15 @@ func explainTemporaryCheckpoint(repo *git.Repository, store *checkpoint.GitStore
 
 	tc := matches[0]
 
+	// Handle raw transcript output
+	if rawTranscript {
+		transcriptBytes, transcriptErr := store.GetTranscriptFromCommit(tc.CommitHash, tc.MetadataDir, agent.AgentTypeUnknown)
+		if transcriptErr != nil || len(transcriptBytes) == 0 {
+			return "", false
+		}
+		return string(transcriptBytes), true
+	}
+
 	// Found exactly one match - read metadata from shadow branch commit tree
 	shadowCommit, commitErr := repo.CommitObject(tc.CommitHash)
 	if commitErr != nil {
@@ -380,29 +408,13 @@ func explainTemporaryCheckpoint(repo *git.Repository, store *checkpoint.GitStore
 	fmt.Fprintf(&sb, "Intent: %s\n", intent)
 	sb.WriteString("Outcome: (not generated)\n")
 
-	// Verbose: show prompts
-	if verbose || full {
-		sb.WriteString("\n")
-		sb.WriteString("Prompts:\n")
-		if sessionPrompt != "" {
-			sb.WriteString(sessionPrompt)
-			sb.WriteString("\n")
-		} else {
-			sb.WriteString("  (none)\n")
-		}
-	}
-
-	// Full: show transcript
+	// Transcript section: full shows entire session, verbose shows checkpoint scope
+	// For temporary checkpoints, we need to load the full transcript from commit for --full mode
+	var fullTranscript []byte
 	if full {
-		// Use store helper to read transcript - handles chunked and legacy layouts
-		transcript, transcriptErr := store.GetTranscriptFromCommit(tc.CommitHash, tc.MetadataDir, agent.AgentTypeUnknown)
-		if transcriptErr == nil && len(transcript) > 0 {
-			sb.WriteString("\n")
-			sb.WriteString("Transcript:\n")
-			sb.Write(transcript)
-			sb.WriteString("\n")
-		}
+		fullTranscript, _ = store.GetTranscriptFromCommit(tc.CommitHash, tc.MetadataDir, agent.AgentTypeUnknown) //nolint:errcheck // Best-effort
 	}
+	appendTranscriptSection(&sb, verbose, full, fullTranscript, nil, sessionPrompt)
 
 	return sb.String(), true
 }
@@ -480,11 +492,11 @@ func extractPromptsFromTranscript(transcriptBytes []byte) []string {
 
 // formatCheckpointOutput formats checkpoint data based on verbosity level.
 // When verbose is false: summary only (ID, session, timestamp, tokens, intent).
-// When verbose is true: adds prompts, files, and commit message details.
-// When full is true: includes the complete transcript in addition to verbose details.
+// When verbose is true: adds files, commit message, and scoped transcript for this checkpoint.
+// When full is true: shows parsed full session transcript instead of scoped transcript.
 //
-// Prompts are scoped to only show what happened during this checkpoint, not the entire
-// session. This uses TranscriptLinesAtStart from metadata to slice the transcript.
+// Transcript scope is controlled by TranscriptLinesAtStart in metadata, which indicates
+// where this checkpoint's content begins in the full session transcript.
 func formatCheckpointOutput(result *checkpoint.ReadCommittedResult, checkpointID id.CheckpointID, commitMessage string, verbose, full bool) string {
 	var sb strings.Builder
 	meta := result.Metadata
@@ -494,7 +506,7 @@ func formatCheckpointOutput(result *checkpoint.ReadCommittedResult, checkpointID
 	// lines from that point onwards (excluding earlier checkpoint content)
 	scopedTranscript := scopeTranscriptForCheckpoint(result.Transcript, meta.TranscriptLinesAtStart)
 
-	// Extract prompts from the scoped transcript (not the full session's prompts)
+	// Extract prompts from the scoped transcript for intent extraction
 	scopedPrompts := extractPromptsFromTranscript(scopedTranscript)
 
 	// Header - always shown
@@ -533,7 +545,7 @@ func formatCheckpointOutput(result *checkpoint.ReadCommittedResult, checkpointID
 		sb.WriteString("Outcome: (not generated)\n")
 	}
 
-	// Verbose: add commit message, learnings, friction, files, and prompts
+	// Verbose: add commit message, learnings, friction, files, and scoped transcript
 	if verbose || full {
 		// AI Summary details (learnings, friction, open items)
 		if meta.Summary != nil {
@@ -557,37 +569,53 @@ func formatCheckpointOutput(result *checkpoint.ReadCommittedResult, checkpointID
 		} else {
 			sb.WriteString("Files: (none)\n")
 		}
-
-		sb.WriteString("\n")
-
-		// Prompts section (using scoped prompts, or fall back to stored prompts for backwards compat)
-		sb.WriteString("Prompts:\n")
-		switch {
-		case len(scopedPrompts) > 0:
-			sb.WriteString(strings.Join(scopedPrompts, "\n\n---\n\n"))
-			sb.WriteString("\n")
-		case result.Prompts != "":
-			// Backwards compatibility: use stored prompts if no transcript available
-			sb.WriteString(result.Prompts)
-			sb.WriteString("\n")
-		default:
-			sb.WriteString("  (none)\n")
-		}
 	}
 
-	// Full: add transcript
-	if full {
-		sb.WriteString("\n")
-		sb.WriteString("Transcript:\n")
-		if len(result.Transcript) > 0 {
-			sb.Write(result.Transcript)
-			sb.WriteString("\n")
-		} else {
-			sb.WriteString("  (none)\n")
-		}
-	}
+	// Transcript section: full shows entire session, verbose shows checkpoint scope
+	appendTranscriptSection(&sb, verbose, full, result.Transcript, scopedTranscript, result.Prompts)
 
 	return sb.String()
+}
+
+// appendTranscriptSection appends the appropriate transcript section to the builder
+// based on verbosity level. Full mode shows the entire session, verbose shows checkpoint scope.
+// fullTranscript is the entire session transcript, scopedContent is either scoped transcript bytes
+// or a pre-formatted string (for backwards compat), and scopedFallback is used when scoped parsing fails.
+func appendTranscriptSection(sb *strings.Builder, verbose, full bool, fullTranscript, scopedTranscript []byte, scopedFallback string) {
+	switch {
+	case full:
+		sb.WriteString("\n")
+		sb.WriteString("Transcript (full session):\n")
+		sb.WriteString(formatTranscriptBytes(fullTranscript, ""))
+
+	case verbose:
+		sb.WriteString("\n")
+		sb.WriteString("Transcript (checkpoint scope):\n")
+		sb.WriteString(formatTranscriptBytes(scopedTranscript, scopedFallback))
+	}
+}
+
+// formatTranscriptBytes formats transcript bytes into a human-readable string.
+// It parses the JSONL transcript and formats it using the condensed format.
+// The fallback is used for backwards compatibility when transcript parsing fails or is empty.
+func formatTranscriptBytes(transcriptBytes []byte, fallback string) string {
+	if len(transcriptBytes) == 0 {
+		if fallback != "" {
+			return fallback + "\n"
+		}
+		return "  (none)\n"
+	}
+
+	condensed, err := summarise.BuildCondensedTranscriptFromBytes(transcriptBytes)
+	if err != nil || len(condensed) == 0 {
+		if fallback != "" {
+			return fallback + "\n"
+		}
+		return "  (failed to parse transcript)\n"
+	}
+
+	input := summarise.Input{Transcript: condensed}
+	return summarise.FormatCondensedTranscript(input)
 }
 
 // formatSummaryDetails formats the detailed sections of an AI summary.
