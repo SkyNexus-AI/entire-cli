@@ -46,20 +46,37 @@ func (s *ManualCommitStrategy) Reset(force bool) error {
 	// Check if shadow branch exists
 	refName := plumbing.NewBranchReferenceName(shadowBranchName)
 	ref, err := repo.Reference(refName, true)
+	hasShadowBranch := err == nil
+
+	// Find sessions for this commit
+	sessions, err := s.findSessionsForCommit(head.Hash().String())
 	if err != nil {
-		// No shadow branch exists - nothing to reset
-		fmt.Fprintf(os.Stderr, "No shadow branch found for %s\n", shadowBranchName)
-		return nil //nolint:nilerr // Not an error condition - no branch to reset
+		sessions = nil // Ignore error, treat as no sessions
+	}
+
+	// If nothing to reset, return early
+	if !hasShadowBranch && len(sessions) == 0 {
+		fmt.Fprintf(os.Stderr, "Nothing to reset for %s\n", shadowBranchName)
+		return nil
 	}
 
 	// Confirm before deleting
 	if !force {
 		confirmed := false
+		description := "This will delete:\n"
+		if len(sessions) > 0 {
+			description += fmt.Sprintf("  - %d session state file(s)\n", len(sessions))
+		}
+		if hasShadowBranch {
+			description += fmt.Sprintf("  - Shadow branch %s\n", shadowBranchName)
+		}
+		description += "\nThis action cannot be undone."
+
 		form := huh.NewForm(
 			huh.NewGroup(
 				huh.NewConfirm().
-					Title("Delete shadow branch?").
-					Description(fmt.Sprintf("This will delete %s and all associated session state.\nThis action cannot be undone.", shadowBranchName)).
+					Title("Reset session data?").
+					Description(description).
 					Affirmative("Delete").
 					Negative("Cancel").
 					Value(&confirmed),
@@ -77,16 +94,13 @@ func (s *ManualCommitStrategy) Reset(force bool) error {
 		}
 	}
 
-	// Find and clear all sessions that use this shadow branch
+	// Clear all sessions for this commit
 	clearedSessions := make([]string, 0)
-	sessions, err := s.findSessionsForCommit(head.Hash().String())
-	if err == nil {
-		for _, state := range sessions {
-			if err := s.clearSessionState(state.SessionID); err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: failed to clear session state for %s: %v\n", state.SessionID, err)
-			} else {
-				clearedSessions = append(clearedSessions, state.SessionID)
-			}
+	for _, state := range sessions {
+		if err := s.clearSessionState(state.SessionID); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to clear session state for %s: %v\n", state.SessionID, err)
+		} else {
+			clearedSessions = append(clearedSessions, state.SessionID)
 		}
 	}
 
@@ -97,11 +111,13 @@ func (s *ManualCommitStrategy) Reset(force bool) error {
 		}
 	}
 
-	// Delete the shadow branch
-	if err := repo.Storer.RemoveReference(ref.Name()); err != nil {
-		return fmt.Errorf("failed to delete shadow branch: %w", err)
+	// Delete the shadow branch if it exists
+	if hasShadowBranch {
+		if err := repo.Storer.RemoveReference(ref.Name()); err != nil {
+			return fmt.Errorf("failed to delete shadow branch: %w", err)
+		}
+		fmt.Fprintf(os.Stderr, "Deleted shadow branch %s\n", shadowBranchName)
 	}
 
-	fmt.Fprintf(os.Stderr, "Deleted shadow branch %s\n", shadowBranchName)
 	return nil
 }
