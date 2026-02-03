@@ -345,6 +345,7 @@ func (c *ClaudeCodeAgent) AreHooksInstalled() bool {
 func (c *ClaudeCodeAgent) GetSupportedHooks() []agent.HookType {
 	return []agent.HookType{
 		agent.HookSessionStart,
+		agent.HookSessionEnd,
 		agent.HookUserPromptSubmit,
 		agent.HookStop,
 		agent.HookPreToolUse,

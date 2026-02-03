@@ -973,7 +973,7 @@ func handleClaudeCodeSessionEnd() error {
 		return fmt.Errorf("failed to get agent: %w", err)
 	}
 
-	input, err := ag.ParseHookInput(agent.HookStop, os.Stdin)
+	input, err := ag.ParseHookInput(agent.HookSessionEnd, os.Stdin)
 	if err != nil {
 		return fmt.Errorf("failed to parse hook input: %w", err)
 	}
@@ -990,7 +990,11 @@ func handleClaudeCodeSessionEnd() error {
 		return nil // No session to update
 	}
 
-	return markSessionEnded(entireSessionID)
+	// Best-effort cleanup - don't block session closure on failure
+	if err := markSessionEnded(entireSessionID); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to mark session ended: %v\n", err)
+	}
+	return nil
 }
 
 // markSessionEnded updates the session state with the current time as EndedAt.

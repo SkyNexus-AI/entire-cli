@@ -99,7 +99,7 @@ func (c *ClaudeCodeAgent) ParseHookInput(hookType agent.HookType, reader io.Read
 
 	// Parse based on hook type
 	switch hookType {
-	case agent.HookSessionStart, agent.HookUserPromptSubmit, agent.HookStop:
+	case agent.HookSessionStart, agent.HookSessionEnd, agent.HookUserPromptSubmit, agent.HookStop:
 		var raw sessionInfoRaw
 		if err := json.Unmarshal(data, &raw); err != nil {
 			return nil, fmt.Errorf("failed to parse session info: %w", err)

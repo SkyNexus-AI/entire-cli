@@ -226,7 +226,7 @@ func parseGeminiSessionEnd() (*geminiSessionContext, error) {
 		return nil, fmt.Errorf("failed to get agent: %w", err)
 	}
 
-	input, err := ag.ParseHookInput(agent.HookStop, os.Stdin)
+	input, err := ag.ParseHookInput(agent.HookSessionEnd, os.Stdin)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse hook input: %w", err)
 	}

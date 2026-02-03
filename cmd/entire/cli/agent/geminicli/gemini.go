@@ -100,7 +100,7 @@ func (g *GeminiCLIAgent) ParseHookInput(hookType agent.HookType, reader io.Reade
 
 	// Parse based on hook type
 	switch hookType {
-	case agent.HookSessionStart, agent.HookStop:
+	case agent.HookSessionStart, agent.HookSessionEnd, agent.HookStop:
 		var raw sessionInfoRaw
 		if err := json.Unmarshal(data, &raw); err != nil {
 			return nil, fmt.Errorf("failed to parse session info: %w", err)

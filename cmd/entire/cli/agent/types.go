@@ -7,6 +7,7 @@ type HookType string
 
 const (
 	HookSessionStart     HookType = "session_start"
+	HookSessionEnd       HookType = "session_end"
 	HookUserPromptSubmit HookType = "user_prompt_submit"
 	HookStop             HookType = "stop"
 	HookPreToolUse       HookType = "pre_tool_use"
