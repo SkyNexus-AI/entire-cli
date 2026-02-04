@@ -16,7 +16,7 @@ import (
 	"entire.io/cli/cmd/entire/cli/checkpoint/id"
 	"entire.io/cli/cmd/entire/cli/logging"
 	"entire.io/cli/cmd/entire/cli/strategy"
-	"entire.io/cli/cmd/entire/cli/summarise"
+	"entire.io/cli/cmd/entire/cli/summarize"
 	"entire.io/cli/cmd/entire/cli/trailers"
 	"entire.io/cli/cmd/entire/cli/transcript"
 
@@ -301,7 +301,7 @@ func generateCheckpointSummary(w, _ io.Writer, store *checkpoint.GitStore, check
 
 	// Check if transcript exists
 	if len(result.Transcript) == 0 {
-		return fmt.Errorf("checkpoint %s has no transcript to summarise", checkpointID)
+		return fmt.Errorf("checkpoint %s has no transcript to summarize", checkpointID)
 	}
 
 	// Scope the transcript to only this checkpoint's portion
@@ -310,26 +310,11 @@ func generateCheckpointSummary(w, _ io.Writer, store *checkpoint.GitStore, check
 		return fmt.Errorf("checkpoint %s has no transcript content for this checkpoint (scoped)", checkpointID)
 	}
 
-	// Build condensed transcript for summarisation from the scoped portion
-	condensed, err := summarise.BuildCondensedTranscriptFromBytes(scopedTranscript)
-	if err != nil {
-		return fmt.Errorf("failed to parse transcript: %w", err)
-	}
-	if len(condensed) == 0 {
-		return fmt.Errorf("checkpoint %s transcript has no content to summarise", checkpointID)
-	}
-
-	input := summarise.Input{
-		Transcript:   condensed,
-		FilesTouched: result.Metadata.FilesTouched,
-	}
-
-	// Generate summary using Claude CLI
+	// Generate summary using shared helper
 	ctx := context.Background()
 	logging.Info(ctx, "generating checkpoint summary")
 
-	var generator summarise.Generator = &summarise.ClaudeGenerator{}
-	summary, err := generator.Generate(ctx, input)
+	summary, err := summarize.GenerateFromTranscript(ctx, scopedTranscript, result.Metadata.FilesTouched, nil)
 	if err != nil {
 		return fmt.Errorf("failed to generate summary: %w", err)
 	}
@@ -569,14 +554,14 @@ func extractPromptsFromTranscript(transcriptBytes []byte) []string {
 		return nil
 	}
 
-	condensed, err := summarise.BuildCondensedTranscriptFromBytes(transcriptBytes)
+	condensed, err := summarize.BuildCondensedTranscriptFromBytes(transcriptBytes)
 	if err != nil {
 		return nil
 	}
 
 	var prompts []string
 	for _, entry := range condensed {
-		if entry.Type == summarise.EntryTypeUser && entry.Content != "" {
+		if entry.Type == summarize.EntryTypeUser && entry.Content != "" {
 			prompts = append(prompts, entry.Content)
 		}
 	}
@@ -713,7 +698,7 @@ func formatTranscriptBytes(transcriptBytes []byte, fallback string) string {
 		return "  (none)\n"
 	}
 
-	condensed, err := summarise.BuildCondensedTranscriptFromBytes(transcriptBytes)
+	condensed, err := summarize.BuildCondensedTranscriptFromBytes(transcriptBytes)
 	if err != nil || len(condensed) == 0 {
 		if fallback != "" {
 			return fallback + "\n"
@@ -721,8 +706,8 @@ func formatTranscriptBytes(transcriptBytes []byte, fallback string) string {
 		return "  (failed to parse transcript)\n"
 	}
 
-	input := summarise.Input{Transcript: condensed}
-	return summarise.FormatCondensedTranscript(input)
+	input := summarize.Input{Transcript: condensed}
+	return summarize.FormatCondensedTranscript(input)
 }
 
 // formatSummaryDetails formats the detailed sections of an AI summary.
