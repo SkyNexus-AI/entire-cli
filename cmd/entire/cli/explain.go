@@ -495,7 +495,7 @@ func getAssociatedCommits(repo *git.Repository, checkpointID id.CheckpointID, se
 	}
 	defer iter.Close()
 
-	var commits []associatedCommit
+	commits := []associatedCommit{} // Initialize as empty slice, not nil (nil means "not searched")
 	count := 0
 	targetID := checkpointID.String()
 
@@ -1138,8 +1138,8 @@ func runExplainCommit(w io.Writer, commitRef string, noPager, verbose, full, sea
 	}
 
 	// Delegate to checkpoint detail view
-	// Note: We pass a nil errW since runExplainCheckpoint only uses it for generate mode
-	return runExplainCheckpoint(w, nil, checkpointID.String(), noPager, verbose, full, false, false, false, searchAll)
+	// Note: errW is only used for generate mode, but we pass w for safety
+	return runExplainCheckpoint(w, w, checkpointID.String(), noPager, verbose, full, false, false, false, searchAll)
 }
 
 // formatSessionInfo formats session information for display.
