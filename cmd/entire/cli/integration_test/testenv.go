@@ -261,6 +261,10 @@ func (env *TestEnv) InitRepo() {
 	}
 	cfg.User.Name = "Test User"
 	cfg.User.Email = "test@example.com"
+
+	// Disable GPG signing for test commits (prevents failures if user has commit.gpgsign=true globally)
+	cfg.Raw.Section("commit").SetOption("gpgsign", "false")
+
 	if err := repo.SetConfig(cfg); err != nil {
 		env.T.Fatalf("failed to set repo config: %v", err)
 	}

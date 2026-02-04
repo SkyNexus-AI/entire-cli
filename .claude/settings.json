@@ -6,6 +6,10 @@
         "hooks": [
           {
             "type": "command",
+            "command": "bash ${CLAUDE_PROJECT_DIR}/.claude/scripts/remote-setup.sh"
+          },
+          {
+            "type": "command",
             "command": "go run ${CLAUDE_PROJECT_DIR}/cmd/entire/main.go hooks claude-code session-start"
           }
         ]
