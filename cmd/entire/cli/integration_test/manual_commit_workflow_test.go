@@ -793,7 +793,7 @@ func TestShadow_FullTranscriptContext(t *testing.T) {
 	promptPath1 := SessionFilePath(checkpoint1ID, "prompt.txt")
 	prompt1Content, found := env.ReadFileFromBranch("entire/sessions", promptPath1)
 	if !found {
-		t.Logf("prompt.txt should exist at %s", promptPath1)
+		t.Errorf("prompt.txt should exist at %s", promptPath1)
 	} else {
 		t.Logf("First prompt.txt content:\n%s", prompt1Content)
 		// Should contain both "Create function A" and "create function B"
@@ -808,7 +808,7 @@ func TestShadow_FullTranscriptContext(t *testing.T) {
 	contextPath1 := SessionFilePath(checkpoint1ID, "context.md")
 	context1Content, found := env.ReadFileFromBranch("entire/sessions", contextPath1)
 	if !found {
-		t.Logf("context.md should exist at %s", contextPath1)
+		t.Errorf("context.md should exist at %s", contextPath1)
 	} else {
 		t.Logf("First context.md content:\n%s", context1Content)
 	}
@@ -864,7 +864,7 @@ func TestShadow_FullTranscriptContext(t *testing.T) {
 	promptPath2 := SessionFilePath(checkpoint2ID, "prompt.txt")
 	prompt2Content, found := env.ReadFileFromBranch("entire/sessions", promptPath2)
 	if !found {
-		t.Logf("prompt.txt should exist at %s", promptPath2)
+		t.Errorf("prompt.txt should exist at %s", promptPath2)
 	} else {
 		t.Logf("Second prompt.txt content:\n%s", prompt2Content)
 
@@ -883,7 +883,7 @@ func TestShadow_FullTranscriptContext(t *testing.T) {
 	contextPath2 := SessionFilePath(checkpoint2ID, "context.md")
 	context2Content, found := env.ReadFileFromBranch("entire/sessions", contextPath2)
 	if !found {
-		t.Logf("context.md should exist at %s", contextPath2)
+		t.Errorf("context.md should exist at %s", contextPath2)
 	} else {
 		t.Logf("Second context.md content:\n%s", context2Content)
 
@@ -1012,7 +1012,7 @@ func TestShadow_RewindAndCondensation(t *testing.T) {
 	promptPath := SessionFilePath(checkpointID, "prompt.txt")
 	promptContent, found := env.ReadFileFromBranch("entire/sessions", promptPath)
 	if !found {
-		t.Logf("prompt.txt should exist at %s", promptPath)
+		t.Errorf("prompt.txt should exist at %s", promptPath)
 	} else {
 		t.Logf("prompt.txt content:\n%s", promptContent)
 
@@ -1031,7 +1031,7 @@ func TestShadow_RewindAndCondensation(t *testing.T) {
 	contextPath := SessionFilePath(checkpointID, "context.md")
 	contextContent, found := env.ReadFileFromBranch("entire/sessions", contextPath)
 	if !found {
-		t.Logf("context.md should exist at %s", contextPath)
+		t.Errorf("context.md should exist at %s", contextPath)
 	} else {
 		t.Logf("context.md content:\n%s", contextContent)
 
