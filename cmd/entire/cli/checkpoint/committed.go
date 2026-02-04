@@ -238,10 +238,10 @@ func (s *GitStore) writeStandardCheckpointEntries(opts WriteCommittedOptions, ba
 		}
 	}
 
-	// Determine session index (1, 2, 3, ...) - 1-based numbering
-	sessionIndex := 1
+	// Determine session index (0, 1, 2, ...) - 0-based numbering
+	sessionIndex := 0
 	if existingSummary != nil {
-		sessionIndex = len(existingSummary.Sessions) + 1
+		sessionIndex = len(existingSummary.Sessions)
 	}
 
 	// Write session files to numbered subdirectory
@@ -597,14 +597,14 @@ type taskCheckpointData struct {
 // ReadCommitted reads a committed checkpoint by ID from the entire/sessions branch.
 // Returns nil, nil if the checkpoint doesn't exist.
 //
-// The storage format uses numbered subdirectories for each session (1-based):
+// The storage format uses numbered subdirectories for each session (0-based):
 //
 //	<checkpoint-id>/
 //	├── metadata.json      # CheckpointSummary with sessions map
-//	├── 1/                 # First session
+//	├── 0/                 # First session
 //	│   ├── metadata.json  # Session-specific metadata
 //	│   └── full.jsonl     # Transcript
-//	├── 2/                 # Second session
+//	├── 1/                 # Second session
 //	└── ...
 func (s *GitStore) ReadCommitted(ctx context.Context, checkpointID id.CheckpointID) (*ReadCommittedResult, error) {
 	_ = ctx // Reserved for future use
@@ -644,8 +644,8 @@ func (s *GitStore) ReadCommitted(ctx context.Context, checkpointID id.Checkpoint
 
 	// Read data from the appropriate session subdirectories
 	if len(summary.Sessions) > 0 {
-		// Find the latest session index (highest numbered directory, 1-based)
-		latestIndex := len(summary.Sessions)
+		// Find the latest session index (highest numbered directory, 0-based)
+		latestIndex := len(summary.Sessions) - 1
 
 		// Read latest session data
 		latestDir := strconv.Itoa(latestIndex)
@@ -697,10 +697,10 @@ func (s *GitStore) ReadCommitted(ctx context.Context, checkpointID id.Checkpoint
 func (s *GitStore) readArchivedSessionsFromSummary(checkpointTree *object.Tree, summary CheckpointSummary) []ArchivedSession {
 	var archived []ArchivedSession
 
-	// Iterate through all sessions except the latest (1-based indexing)
-	// Sessions are in folders 1, 2, ..., N where N is the latest
+	// Iterate through all sessions except the latest (0-based indexing)
+	// Sessions are in folders 0, 1, ..., N-1 where N-1 is the latest
 	sessionCount := len(summary.Sessions)
-	for i := 1; i < sessionCount; i++ {
+	for i := range sessionCount - 1 {
 		folderName := strconv.Itoa(i)
 
 		// Try to get the session subtree
@@ -809,7 +809,7 @@ func (s *GitStore) ListCommitted(ctx context.Context) ([]CommittedInfo, error) {
 
 						// Read session metadata from latest session to get Agent, SessionID, CreatedAt
 						if len(summary.Sessions) > 0 {
-							latestIndex := len(summary.Sessions)
+							latestIndex := len(summary.Sessions) - 1
 							latestDir := strconv.Itoa(latestIndex)
 							if sessionTree, treeErr := checkpointTree.Tree(latestDir); treeErr == nil {
 								if sessionMetadataFile, smErr := sessionTree.File(paths.MetadataFileName); smErr == nil {
@@ -916,8 +916,8 @@ func (s *GitStore) UpdateSummary(ctx context.Context, checkpointID id.Checkpoint
 		return fmt.Errorf("failed to read checkpoint summary: %w", err)
 	}
 
-	// Find the latest session's metadata path (1-based indexing)
-	latestIndex := len(checkpointSummary.Sessions)
+	// Find the latest session's metadata path (0-based indexing)
+	latestIndex := len(checkpointSummary.Sessions) - 1
 	sessionMetadataPath := fmt.Sprintf("%s%d/%s", basePath, latestIndex, paths.MetadataFileName)
 	sessionEntry, exists := entries[sessionMetadataPath]
 	if !exists {

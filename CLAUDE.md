@@ -315,19 +315,21 @@ All strategies implement:
 **Both Strategies** - Metadata branch (`entire/sessions`) - sharded checkpoint format:
 ```
 <checkpoint-id[:2]>/<checkpoint-id[2:]>/
-├── metadata.json            # Checkpoint info (see below)
-├── full.jsonl               # Current/latest session transcript
-├── prompt.txt               # User prompts
-├── context.md               # Generated context
-├── content_hash.txt         # SHA256 of transcript (shadow only)
-├── tasks/<tool-use-id>/     # Task checkpoints (if applicable)
-│   ├── checkpoint.json      # UUID mapping
-│   └── agent-<id>.jsonl     # Subagent transcript
-└── 1/                       # Archived session (if multiple sessions)
-    ├── metadata.json        # Archived session metadata
-    ├── full.jsonl           # Archived session transcript
-    ├── prompt.txt
-    └── ...
+├── metadata.json            # CheckpointSummary (aggregated stats)
+├── 0/                       # First session (0-based indexing)
+│   ├── metadata.json        # Session-specific metadata
+│   ├── full.jsonl           # Session transcript
+│   ├── prompt.txt           # User prompts
+│   ├── context.md           # Generated context
+│   ├── content_hash.txt     # SHA256 of transcript
+│   └── tasks/<tool-use-id>/ # Task checkpoints (if applicable)
+│       ├── checkpoint.json  # UUID mapping
+│       └── agent-<id>.jsonl # Subagent transcript
+├── 1/                       # Second session (if multiple sessions)
+│   ├── metadata.json
+│   ├── full.jsonl
+│   └── ...
+└── ...
 ```
 
 **Multi-session metadata.json format:**
@@ -344,8 +346,8 @@ All strategies implement:
 ```
 
 When multiple sessions are condensed to the same checkpoint (same base commit):
-- Latest session files go at the root level
-- Previous sessions are archived to numbered subfolders (`1/`, `2/`, etc.)
+- Sessions are stored in numbered subfolders using 0-based indexing (`0/`, `1/`, `2/`, etc.)
+- Latest session is always in the highest-numbered folder
 - `session_ids` array tracks all sessions, `session_count` increments
 
 **Session State** (filesystem, `.git/entire-sessions/`):

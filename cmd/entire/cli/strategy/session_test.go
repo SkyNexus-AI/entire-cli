@@ -402,10 +402,10 @@ func createTestMultiSessionCheckpoint(t *testing.T, repo *git.Repository, checkp
 	entries := make(map[string]object.TreeEntry)
 	checkpointPath := checkpointID.Path()
 
-	// Create session-level metadata for each session (1-based indexing)
+	// Create session-level metadata for each session (0-based indexing)
 	var sessionFilePaths []checkpoint.SessionFilePaths
 	for i, sessionID := range allSessionIDs {
-		sessionDir := strconv.Itoa(i + 1) // 1-based: 1, 2, 3, ...
+		sessionDir := strconv.Itoa(i) // 0-based: 0, 1, 2, ...
 		sessionMetadata := checkpoint.CommittedMetadata{
 			CheckpointID: checkpointID,
 			SessionID:    sessionID,
@@ -501,7 +501,7 @@ func createTestMetadataBranchWithPrompt(t *testing.T, repo *git.Repository, sess
 	entries := make(map[string]object.TreeEntry)
 
 	checkpointPath := checkpointID.Path()
-	sessionDir := "1" // First session (1-based indexing)
+	sessionDir := "0" // First session (0-based indexing)
 
 	// Create session-level metadata in 1/ subdirectory
 	sessionMetadata := CheckpointInfo{

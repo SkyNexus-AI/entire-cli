@@ -410,13 +410,13 @@ func ReadAllSessionPromptsFromTree(tree *object.Tree, checkpointPath string, ses
 		return nil
 	}
 
-	// Multi-session: read prompts from archived folders (1/, 2/, etc.) and root
+	// Multi-session: read prompts from archived folders (0/, 1/, etc.) and root
 	prompts := make([]string, len(sessionIDs))
 
-	// Read archived session prompts (folders 1, 2, ... N-1)
-	for i := 1; i < sessionCount; i++ {
+	// Read archived session prompts (folders 0, 1, ... N-2)
+	for i := range sessionCount - 1 {
 		archivedPath := fmt.Sprintf("%s/%d", checkpointPath, i)
-		prompts[i-1] = ReadSessionPromptFromTree(tree, archivedPath)
+		prompts[i] = ReadSessionPromptFromTree(tree, archivedPath)
 	}
 
 	// Read the most recent session prompt (at root level)

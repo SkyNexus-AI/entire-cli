@@ -247,10 +247,10 @@ func getDescriptionForCheckpoint(repo *git.Repository, checkpointID id.Checkpoin
 	}
 
 	// Find the first session's prompt/context path
-	// Try to use the latest session for description (1-based indexing)
-	sessionDir := "1"
+	// Try to use the latest session for description (0-based indexing)
+	sessionDir := "0"
 	if len(summary.Sessions) > 0 {
-		sessionDir = strconv.Itoa(len(summary.Sessions)) // Use latest session
+		sessionDir = strconv.Itoa(len(summary.Sessions) - 1) // Use latest session
 	}
 
 	sessionTree, err := checkpointTree.Tree(sessionDir)

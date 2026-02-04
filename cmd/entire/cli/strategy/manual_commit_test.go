@@ -1775,8 +1775,8 @@ func TestCondenseSession_IncludesInitialAttribution(t *testing.T) {
 		t.Fatalf("failed to get tree: %v", err)
 	}
 
-	// InitialAttribution is stored in session-level metadata (1/metadata.json), not root (1-based indexing)
-	sessionMetadataPath := checkpointID.Path() + "/1/" + paths.MetadataFileName
+	// InitialAttribution is stored in session-level metadata (0/metadata.json), not root (0-based indexing)
+	sessionMetadataPath := checkpointID.Path() + "/0/" + paths.MetadataFileName
 	metadataFile, err := tree.File(sessionMetadataPath)
 	if err != nil {
 		t.Fatalf("failed to find session metadata.json at %s: %v", sessionMetadataPath, err)
@@ -2106,8 +2106,8 @@ func TestMultiCheckpoint_UserEditsBetweenCheckpoints(t *testing.T) {
 		t.Fatalf("failed to get tree: %v", err)
 	}
 
-	// InitialAttribution is stored in session-level metadata (1/metadata.json), not root (1-based indexing)
-	sessionMetadataPath := checkpointID.Path() + "/1/" + paths.MetadataFileName
+	// InitialAttribution is stored in session-level metadata (0/metadata.json), not root (0-based indexing)
+	sessionMetadataPath := checkpointID.Path() + "/0/" + paths.MetadataFileName
 	metadataFile, err := tree.File(sessionMetadataPath)
 	if err != nil {
 		t.Fatalf("failed to find session metadata.json at %s: %v", sessionMetadataPath, err)

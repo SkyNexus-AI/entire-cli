@@ -187,9 +187,9 @@ func TestWriteCommitted_AgentField(t *testing.T) {
 	}
 
 	// Agent should be in the session-level metadata, not in the summary
-	// Read first session's metadata to verify agent (1-based indexing)
+	// Read first session's metadata to verify agent (0-based indexing)
 	if len(summary.Sessions) > 0 {
-		sessionTree, err := checkpointTree.Tree("1")
+		sessionTree, err := checkpointTree.Tree("0")
 		if err != nil {
 			t.Fatalf("failed to get session tree: %v", err)
 		}
@@ -258,8 +258,8 @@ func readLatestSessionMetadata(t *testing.T, repo *git.Repository, checkpointID 
 		t.Fatalf("failed to parse root metadata.json: %v", err)
 	}
 
-	// Read session-level metadata from latest session subdirectory (1-based indexing)
-	latestIndex := len(summary.Sessions)
+	// Read session-level metadata from latest session subdirectory (0-based indexing)
+	latestIndex := len(summary.Sessions) - 1
 	sessionDir := strconv.Itoa(latestIndex)
 	sessionTree, err := checkpointTree.Tree(sessionDir)
 	if err != nil {

@@ -1199,10 +1199,10 @@ func ShardedCheckpointPath(checkpointID string) string {
 }
 
 // SessionFilePath returns the path to a session file within a checkpoint.
-// Session files are stored in numbered subdirectories using 1-based indexing (e.g., 1/full.jsonl).
+// Session files are stored in numbered subdirectories using 0-based indexing (e.g., 0/full.jsonl).
 // This function constructs the path for the first (default) session.
 func SessionFilePath(checkpointID string, fileName string) string {
-	return id.CheckpointID(checkpointID).Path() + "/1/" + fileName
+	return id.CheckpointID(checkpointID).Path() + "/0/" + fileName
 }
 
 // CheckpointSummaryPath returns the path to the root metadata.json (CheckpointSummary) for a checkpoint.
