@@ -34,6 +34,15 @@ type interaction struct {
 	Files     []string
 }
 
+// associatedCommit holds information about a git commit associated with a checkpoint.
+type associatedCommit struct {
+	SHA      string
+	ShortSHA string
+	Message  string
+	Author   string
+	Date     time.Time
+}
+
 // checkpointDetail holds detailed information about a checkpoint for display.
 type checkpointDetail struct {
 	Index            int
@@ -175,8 +184,6 @@ func runExplain(w, errW io.Writer, sessionID, commitRef, checkpointID string, no
 // When force is true, regenerates even if a summary already exists.
 // When rawTranscript is true, outputs only the raw transcript file (JSONL format).
 // When searchAll is true, searches all commits without branch/depth limits (used for finding associated commits).
-//
-//nolint:revive,unparam // searchAll parameter will be used in Task 5 (associated commits feature)
 func runExplainCheckpoint(w, errW io.Writer, checkpointIDPrefix string, noPager, verbose, full, rawTranscript, generate, force, searchAll bool) error {
 	repo, err := openRepository()
 	if err != nil {
@@ -263,14 +270,14 @@ func runExplainCheckpoint(w, errW io.Writer, checkpointIDPrefix string, noPager,
 		return nil
 	}
 
-	// Look up the commit message for this checkpoint
-	commitMessage := findCommitMessageForCheckpoint(repo, fullCheckpointID)
-
 	// Look up the author for this checkpoint (best-effort, ignore errors)
 	author, _ := store.GetCheckpointAuthor(context.Background(), fullCheckpointID) //nolint:errcheck // Author is optional
 
+	// Find associated commits (git commits with matching Entire-Checkpoint trailer)
+	associatedCommits, _ := getAssociatedCommits(repo, fullCheckpointID, searchAll) //nolint:errcheck // Best-effort
+
 	// Format and output
-	output := formatCheckpointOutput(result, fullCheckpointID, commitMessage, author, verbose, full)
+	output := formatCheckpointOutput(result, fullCheckpointID, associatedCommits, author, verbose, full)
 	outputExplainContent(w, output, noPager)
 	return nil
 }
@@ -446,47 +453,98 @@ func explainTemporaryCheckpoint(w io.Writer, repo *git.Repository, store *checkp
 	return sb.String(), true
 }
 
-// findCommitMessageForCheckpoint searches git history for a commit with the
-// Entire-Checkpoint trailer matching the given checkpoint ID, and returns
-// the first line of the commit message. Returns empty string if not found.
-func findCommitMessageForCheckpoint(repo *git.Repository, checkpointID id.CheckpointID) string {
-	// Get HEAD reference
+// getAssociatedCommits finds git commits that reference the given checkpoint ID.
+// Searches commits on the current branch for Entire-Checkpoint trailer matches.
+// When searchAll is true, removes the commit scan limit (may be slow).
+func getAssociatedCommits(repo *git.Repository, checkpointID id.CheckpointID, searchAll bool) ([]associatedCommit, error) {
 	head, err := repo.Head()
 	if err != nil {
-		return ""
+		return nil, fmt.Errorf("failed to get HEAD: %w", err)
 	}
 
-	// Iterate through commit history (limit to recent commits for performance)
-	commitIter, err := repo.Log(&git.LogOptions{
-		From: head.Hash(),
+	// Determine scan limit
+	limit := commitScanLimit
+	if searchAll {
+		limit = 0 // No limit
+	}
+
+	// Check if on default branch for filtering
+	isOnDefault, _ := strategy.IsOnDefaultBranch(repo)
+	var mainBranchHash plumbing.Hash
+	if !isOnDefault {
+		mainBranchHash = strategy.GetMainBranchHash(repo)
+	}
+
+	// Precompute main branch commits for filtering (same logic as getBranchCheckpoints)
+	reachableFromMain := make(map[plumbing.Hash]bool)
+	if mainBranchHash != plumbing.ZeroHash {
+		mainIter, mainErr := repo.Log(&git.LogOptions{From: mainBranchHash})
+		if mainErr == nil {
+			mainCount := 0
+			_ = mainIter.ForEach(func(c *object.Commit) error { //nolint:errcheck // Best-effort main branch detection
+				mainCount++
+				if mainCount > 1000 {
+					return errStopIteration
+				}
+				reachableFromMain[c.Hash] = true
+				return nil
+			})
+			mainIter.Close()
+		}
+	}
+
+	iter, err := repo.Log(&git.LogOptions{
+		From:  head.Hash(),
+		Order: git.LogOrderCommitterTime,
 	})
 	if err != nil {
-		return ""
+		return nil, fmt.Errorf("failed to get commit log: %w", err)
 	}
-	defer commitIter.Close()
+	defer iter.Close()
 
+	var commits []associatedCommit
 	count := 0
+	targetID := checkpointID.String()
 
-	for {
-		commit, iterErr := commitIter.Next()
-		if iterErr != nil {
-			break
+	err = iter.ForEach(func(c *object.Commit) error {
+		if limit > 0 && count >= limit {
+			return errStopIteration
 		}
 		count++
-		if count > commitScanLimit {
-			break
+
+		// Skip commits on main when on feature branch (same filtering as list view)
+		if len(reachableFromMain) > 0 && reachableFromMain[c.Hash] {
+			return nil
 		}
 
-		// Check if this commit has our checkpoint ID
-		foundID, hasTrailer := trailers.ParseCheckpoint(commit.Message)
-		if hasTrailer && foundID == checkpointID {
-			// Return first line of commit message (without trailing newline)
-			firstLine := strings.Split(commit.Message, "\n")[0]
-			return strings.TrimSpace(firstLine)
+		// Check for matching checkpoint trailer
+		cpID, found := trailers.ParseCheckpoint(c.Message)
+		if !found || cpID.String() != targetID {
+			return nil
 		}
+
+		fullSHA := c.Hash.String()
+		shortSHA := fullSHA
+		if len(fullSHA) >= 7 {
+			shortSHA = fullSHA[:7]
+		}
+
+		commits = append(commits, associatedCommit{
+			SHA:      fullSHA,
+			ShortSHA: shortSHA,
+			Message:  strings.Split(c.Message, "\n")[0],
+			Author:   c.Author.Name,
+			Date:     c.Author.When,
+		})
+
+		return nil
+	})
+
+	if err != nil && !errors.Is(err, errStopIteration) {
+		return nil, fmt.Errorf("error iterating commits: %w", err)
 	}
 
-	return ""
+	return commits, nil
 }
 
 // scopeTranscriptForCheckpoint slices a transcript to include only the lines
@@ -519,14 +577,15 @@ func extractPromptsFromTranscript(transcriptBytes []byte) []string {
 
 // formatCheckpointOutput formats checkpoint data based on verbosity level.
 // When verbose is false: summary only (ID, session, timestamp, tokens, intent).
-// When verbose is true: adds files, commit message, and scoped transcript for this checkpoint.
+// When verbose is true: adds files, associated commits, and scoped transcript for this checkpoint.
 // When full is true: shows parsed full session transcript instead of scoped transcript.
 //
 // Transcript scope is controlled by TranscriptLinesAtStart in metadata, which indicates
 // where this checkpoint's content begins in the full session transcript.
 //
 // Author is displayed when available (only for committed checkpoints).
-func formatCheckpointOutput(result *checkpoint.ReadCommittedResult, checkpointID id.CheckpointID, commitMessage string, author checkpoint.Author, verbose, full bool) string {
+// Associated commits are git commits that reference this checkpoint via Entire-Checkpoint trailer.
+func formatCheckpointOutput(result *checkpoint.ReadCommittedResult, checkpointID id.CheckpointID, associatedCommits []associatedCommit, author checkpoint.Author, verbose, full bool) string {
 	var sb strings.Builder
 	meta := result.Metadata
 
@@ -556,6 +615,18 @@ func formatCheckpointOutput(result *checkpoint.ReadCommittedResult, checkpointID
 		fmt.Fprintf(&sb, "Tokens: %d\n", totalTokens)
 	}
 
+	// Associated commits section
+	if len(associatedCommits) > 0 {
+		sb.WriteString("\n")
+		fmt.Fprintf(&sb, "Commits: (%d)\n", len(associatedCommits))
+		for _, c := range associatedCommits {
+			fmt.Fprintf(&sb, "  %s %s %s\n", c.ShortSHA, c.Date.Format("2006-01-02"), c.Message)
+		}
+	} else if associatedCommits != nil {
+		// associatedCommits is non-nil but empty - show "no commits found" message
+		sb.WriteString("\nCommits: No commits found on this branch\n")
+	}
+
 	sb.WriteString("\n")
 
 	// Intent and Outcome from AI summary, or fallback to prompt text
@@ -579,17 +650,11 @@ func formatCheckpointOutput(result *checkpoint.ReadCommittedResult, checkpointID
 		sb.WriteString("Outcome: (not generated)\n")
 	}
 
-	// Verbose: add commit message, learnings, friction, files, and scoped transcript
+	// Verbose: add learnings, friction, files, and scoped transcript
 	if verbose || full {
 		// AI Summary details (learnings, friction, open items)
 		if meta.Summary != nil {
 			formatSummaryDetails(&sb, meta.Summary)
-		}
-
-		// Commit message section (only if available)
-		if commitMessage != "" {
-			sb.WriteString("\n")
-			fmt.Fprintf(&sb, "Commit: %s\n", commitMessage)
 		}
 
 		sb.WriteString("\n")

@@ -883,8 +883,8 @@ func TestFormatCheckpointOutput_Short(t *testing.T) {
 		Prompts: "Add a new feature",
 	}
 
-	// Default mode: empty commit message (not shown anyway in default mode)
-	output := formatCheckpointOutput(result, id.MustCheckpointID("abc123def456"), "", checkpoint.Author{}, false, false)
+	// Default mode: nil associated commits (not shown anyway in default mode)
+	output := formatCheckpointOutput(result, id.MustCheckpointID("abc123def456"), nil, checkpoint.Author{}, false, false)
 
 	// Should show checkpoint ID
 	if !strings.Contains(output, "abc123def456") {
@@ -938,7 +938,7 @@ func TestFormatCheckpointOutput_Verbose(t *testing.T) {
 		Transcript: transcriptContent,
 	}
 
-	output := formatCheckpointOutput(result, id.MustCheckpointID("abc123def456"), "feat: implement user authentication", checkpoint.Author{}, true, false)
+	output := formatCheckpointOutput(result, id.MustCheckpointID("abc123def456"), nil, checkpoint.Author{}, true, false)
 
 	// Should show checkpoint ID (like default)
 	if !strings.Contains(output, "abc123def456") {
@@ -969,16 +969,9 @@ func TestFormatCheckpointOutput_Verbose(t *testing.T) {
 	if !strings.Contains(output, "Add a new feature") {
 		t.Error("verbose output should show prompts")
 	}
-	// Verbose should show commit message
-	if !strings.Contains(output, "Commit:") {
-		t.Error("verbose output should have Commit section")
-	}
-	if !strings.Contains(output, "feat: implement user authentication") {
-		t.Error("verbose output should show commit message")
-	}
 }
 
-func TestFormatCheckpointOutput_Verbose_NoCommitMessage(t *testing.T) {
+func TestFormatCheckpointOutput_Verbose_NilAssociatedCommits(t *testing.T) {
 	result := &checkpoint.ReadCommittedResult{
 		Metadata: checkpoint.CommittedMetadata{
 			CheckpointID:     "abc123def456",
@@ -990,11 +983,11 @@ func TestFormatCheckpointOutput_Verbose_NoCommitMessage(t *testing.T) {
 		Prompts: "Add a feature",
 	}
 
-	// When commit message is empty, should not show Commit section
-	output := formatCheckpointOutput(result, id.MustCheckpointID("abc123def456"), "", checkpoint.Author{}, true, false)
+	// When associated commits is nil (not searched), should not show Commits section at all
+	output := formatCheckpointOutput(result, id.MustCheckpointID("abc123def456"), nil, checkpoint.Author{}, true, false)
 
-	if strings.Contains(output, "Commit:") {
-		t.Error("verbose output should not show Commit section when message is empty")
+	if strings.Contains(output, "Commits:") {
+		t.Error("verbose output should not show Commits section when nil (not searched)")
 	}
 }
 
@@ -1019,7 +1012,7 @@ func TestFormatCheckpointOutput_Full(t *testing.T) {
 		Transcript: []byte(transcriptData),
 	}
 
-	output := formatCheckpointOutput(result, id.MustCheckpointID("abc123def456"), "feat: add user login", checkpoint.Author{}, false, true)
+	output := formatCheckpointOutput(result, id.MustCheckpointID("abc123def456"), nil, checkpoint.Author{}, false, true)
 
 	// Should show checkpoint ID (like default)
 	if !strings.Contains(output, "abc123def456") {
@@ -1039,13 +1032,6 @@ func TestFormatCheckpointOutput_Full(t *testing.T) {
 	}
 	if !strings.Contains(output, "[Assistant]") {
 		t.Error("full output should show assistant messages in parsed transcript")
-	}
-	// Full should also show commit message (since it includes verbose)
-	if !strings.Contains(output, "Commit:") {
-		t.Error("full output should include commit section")
-	}
-	if !strings.Contains(output, "feat: add user login") {
-		t.Error("full output should show commit message")
 	}
 }
 
@@ -1073,7 +1059,7 @@ func TestFormatCheckpointOutput_WithSummary(t *testing.T) {
 	}
 
 	// Test default output (non-verbose) with summary
-	output := formatCheckpointOutput(result, cpID, "", checkpoint.Author{}, false, false)
+	output := formatCheckpointOutput(result, cpID, nil, checkpoint.Author{}, false, false)
 
 	// Should show AI-generated intent and outcome
 	if !strings.Contains(output, "Intent: Implement user authentication") {
@@ -1088,7 +1074,7 @@ func TestFormatCheckpointOutput_WithSummary(t *testing.T) {
 	}
 
 	// Test verbose output with summary
-	verboseOutput := formatCheckpointOutput(result, cpID, "", checkpoint.Author{}, true, false)
+	verboseOutput := formatCheckpointOutput(result, cpID, nil, checkpoint.Author{}, true, false)
 
 	// Verbose should show learnings sections
 	if !strings.Contains(verboseOutput, "Learnings:") {
@@ -2084,7 +2070,7 @@ func TestFormatCheckpointOutput_UsesScopedPrompts(t *testing.T) {
 	}
 
 	// Verbose output should use scoped prompts
-	output := formatCheckpointOutput(result, id.MustCheckpointID("abc123def456"), "", checkpoint.Author{}, true, false)
+	output := formatCheckpointOutput(result, id.MustCheckpointID("abc123def456"), nil, checkpoint.Author{}, true, false)
 
 	// Should show ONLY the second prompt (scoped)
 	if !strings.Contains(output, "Second prompt - SHOULD appear") {
@@ -2112,7 +2098,7 @@ func TestFormatCheckpointOutput_FallsBackToStoredPrompts(t *testing.T) {
 	}
 
 	// Verbose output should fall back to stored prompts
-	output := formatCheckpointOutput(result, id.MustCheckpointID("abc123def456"), "", checkpoint.Author{}, true, false)
+	output := formatCheckpointOutput(result, id.MustCheckpointID("abc123def456"), nil, checkpoint.Author{}, true, false)
 
 	// Intent should use stored prompt
 	if !strings.Contains(output, "Stored prompt from older checkpoint") {
@@ -2140,7 +2126,7 @@ func TestFormatCheckpointOutput_FullShowsEntireTranscript(t *testing.T) {
 	}
 
 	// Full mode should show the ENTIRE transcript (not scoped)
-	output := formatCheckpointOutput(result, id.MustCheckpointID("abc123def456"), "", checkpoint.Author{}, false, true)
+	output := formatCheckpointOutput(result, id.MustCheckpointID("abc123def456"), nil, checkpoint.Author{}, false, true)
 
 	// Should show the full transcript including first prompt (even though scoped prompts exclude it)
 	if !strings.Contains(output, "First prompt") {
@@ -2394,7 +2380,7 @@ func TestFormatCheckpointOutput_WithAuthor(t *testing.T) {
 	}
 
 	// With author, should show author line
-	output := formatCheckpointOutput(result, id.MustCheckpointID("abc123def456"), "", author, true, false)
+	output := formatCheckpointOutput(result, id.MustCheckpointID("abc123def456"), nil, author, true, false)
 
 	if !strings.Contains(output, "Author: Alice Developer <alice@example.com>") {
 		t.Errorf("expected author line in output, got:\n%s", output)
@@ -2415,9 +2401,320 @@ func TestFormatCheckpointOutput_EmptyAuthor(t *testing.T) {
 	// Empty author - should not show author line
 	author := checkpoint.Author{}
 
-	output := formatCheckpointOutput(result, id.MustCheckpointID("abc123def456"), "", author, true, false)
+	output := formatCheckpointOutput(result, id.MustCheckpointID("abc123def456"), nil, author, true, false)
 
 	if strings.Contains(output, "Author:") {
 		t.Errorf("expected no author line for empty author, got:\n%s", output)
+	}
+}
+
+func TestGetAssociatedCommits(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Chdir(tmpDir)
+
+	// Initialize git repo
+	repo, err := git.PlainInit(tmpDir, false)
+	if err != nil {
+		t.Fatalf("failed to init git repo: %v", err)
+	}
+
+	w, err := repo.Worktree()
+	if err != nil {
+		t.Fatalf("failed to get worktree: %v", err)
+	}
+
+	checkpointID := id.MustCheckpointID("abc123def456")
+
+	// Create first commit without checkpoint trailer
+	testFile := filepath.Join(tmpDir, "test.txt")
+	if err := os.WriteFile(testFile, []byte("initial"), 0o644); err != nil {
+		t.Fatalf("failed to write test file: %v", err)
+	}
+	if _, err := w.Add("test.txt"); err != nil {
+		t.Fatalf("failed to add test file: %v", err)
+	}
+	_, err = w.Commit("initial commit", &git.CommitOptions{
+		Author: &object.Signature{
+			Name:  "Test",
+			Email: "test@example.com",
+			When:  time.Now().Add(-2 * time.Hour),
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to create initial commit: %v", err)
+	}
+
+	// Create commit with matching checkpoint trailer
+	if err := os.WriteFile(testFile, []byte("with checkpoint"), 0o644); err != nil {
+		t.Fatalf("failed to write test file: %v", err)
+	}
+	if _, err := w.Add("test.txt"); err != nil {
+		t.Fatalf("failed to add test file: %v", err)
+	}
+	commitMsg := trailers.FormatCheckpoint("feat: add feature", checkpointID)
+	_, err = w.Commit(commitMsg, &git.CommitOptions{
+		Author: &object.Signature{
+			Name:  "Alice Developer",
+			Email: "alice@example.com",
+			When:  time.Now().Add(-1 * time.Hour),
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to create checkpoint commit: %v", err)
+	}
+
+	// Create another commit without checkpoint trailer
+	if err := os.WriteFile(testFile, []byte("after checkpoint"), 0o644); err != nil {
+		t.Fatalf("failed to write test file: %v", err)
+	}
+	if _, err := w.Add("test.txt"); err != nil {
+		t.Fatalf("failed to add test file: %v", err)
+	}
+	_, err = w.Commit("unrelated commit", &git.CommitOptions{
+		Author: &object.Signature{
+			Name:  "Test",
+			Email: "test@example.com",
+			When:  time.Now(),
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to create unrelated commit: %v", err)
+	}
+
+	// Test: should find the one commit with matching checkpoint
+	commits, err := getAssociatedCommits(repo, checkpointID, false)
+	if err != nil {
+		t.Fatalf("getAssociatedCommits error: %v", err)
+	}
+
+	if len(commits) != 1 {
+		t.Fatalf("expected 1 associated commit, got %d", len(commits))
+	}
+
+	commit := commits[0]
+	if commit.Author != "Alice Developer" {
+		t.Errorf("expected author 'Alice Developer', got %q", commit.Author)
+	}
+	if !strings.Contains(commit.Message, "feat: add feature") {
+		t.Errorf("expected message to contain 'feat: add feature', got %q", commit.Message)
+	}
+	if len(commit.ShortSHA) != 7 {
+		t.Errorf("expected 7-char short SHA, got %d chars: %q", len(commit.ShortSHA), commit.ShortSHA)
+	}
+	if len(commit.SHA) != 40 {
+		t.Errorf("expected 40-char full SHA, got %d chars", len(commit.SHA))
+	}
+}
+
+func TestGetAssociatedCommits_NoMatches(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Chdir(tmpDir)
+
+	// Initialize git repo
+	repo, err := git.PlainInit(tmpDir, false)
+	if err != nil {
+		t.Fatalf("failed to init git repo: %v", err)
+	}
+
+	w, err := repo.Worktree()
+	if err != nil {
+		t.Fatalf("failed to get worktree: %v", err)
+	}
+
+	// Create commit without checkpoint trailer
+	testFile := filepath.Join(tmpDir, "test.txt")
+	if err := os.WriteFile(testFile, []byte("test content"), 0o644); err != nil {
+		t.Fatalf("failed to write test file: %v", err)
+	}
+	if _, err := w.Add("test.txt"); err != nil {
+		t.Fatalf("failed to add test file: %v", err)
+	}
+	_, err = w.Commit("regular commit", &git.CommitOptions{
+		Author: &object.Signature{
+			Name:  "Test",
+			Email: "test@example.com",
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to create commit: %v", err)
+	}
+
+	// Search for a checkpoint ID that doesn't exist (valid format: 12 hex chars)
+	checkpointID := id.MustCheckpointID("aaaa11112222")
+	commits, err := getAssociatedCommits(repo, checkpointID, false)
+	if err != nil {
+		t.Fatalf("getAssociatedCommits error: %v", err)
+	}
+
+	if len(commits) != 0 {
+		t.Errorf("expected 0 associated commits, got %d", len(commits))
+	}
+}
+
+func TestGetAssociatedCommits_MultipleMatches(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Chdir(tmpDir)
+
+	// Initialize git repo
+	repo, err := git.PlainInit(tmpDir, false)
+	if err != nil {
+		t.Fatalf("failed to init git repo: %v", err)
+	}
+
+	w, err := repo.Worktree()
+	if err != nil {
+		t.Fatalf("failed to get worktree: %v", err)
+	}
+
+	checkpointID := id.MustCheckpointID("abc123def456")
+
+	// Create initial commit
+	testFile := filepath.Join(tmpDir, "test.txt")
+	if err := os.WriteFile(testFile, []byte("initial"), 0o644); err != nil {
+		t.Fatalf("failed to write test file: %v", err)
+	}
+	if _, err := w.Add("test.txt"); err != nil {
+		t.Fatalf("failed to add test file: %v", err)
+	}
+	_, err = w.Commit("initial commit", &git.CommitOptions{
+		Author: &object.Signature{
+			Name:  "Test",
+			Email: "test@example.com",
+			When:  time.Now().Add(-3 * time.Hour),
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to create initial commit: %v", err)
+	}
+
+	// Create first commit with checkpoint trailer
+	if err := os.WriteFile(testFile, []byte("first"), 0o644); err != nil {
+		t.Fatalf("failed to write test file: %v", err)
+	}
+	if _, err := w.Add("test.txt"); err != nil {
+		t.Fatalf("failed to add test file: %v", err)
+	}
+	commitMsg := trailers.FormatCheckpoint("first checkpoint commit", checkpointID)
+	_, err = w.Commit(commitMsg, &git.CommitOptions{
+		Author: &object.Signature{
+			Name:  "Test",
+			Email: "test@example.com",
+			When:  time.Now().Add(-2 * time.Hour),
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to create first checkpoint commit: %v", err)
+	}
+
+	// Create second commit with same checkpoint trailer (e.g., amend scenario)
+	if err := os.WriteFile(testFile, []byte("second"), 0o644); err != nil {
+		t.Fatalf("failed to write test file: %v", err)
+	}
+	if _, err := w.Add("test.txt"); err != nil {
+		t.Fatalf("failed to add test file: %v", err)
+	}
+	commitMsg = trailers.FormatCheckpoint("second checkpoint commit", checkpointID)
+	_, err = w.Commit(commitMsg, &git.CommitOptions{
+		Author: &object.Signature{
+			Name:  "Test",
+			Email: "test@example.com",
+			When:  time.Now().Add(-1 * time.Hour),
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to create second checkpoint commit: %v", err)
+	}
+
+	// Test: should find both commits with matching checkpoint
+	commits, err := getAssociatedCommits(repo, checkpointID, false)
+	if err != nil {
+		t.Fatalf("getAssociatedCommits error: %v", err)
+	}
+
+	if len(commits) != 2 {
+		t.Fatalf("expected 2 associated commits, got %d", len(commits))
+	}
+
+	// Should be in reverse chronological order (newest first)
+	if !strings.Contains(commits[0].Message, "second") {
+		t.Errorf("expected newest commit first, got %q", commits[0].Message)
+	}
+	if !strings.Contains(commits[1].Message, "first") {
+		t.Errorf("expected older commit second, got %q", commits[1].Message)
+	}
+}
+
+func TestFormatCheckpointOutput_WithAssociatedCommits(t *testing.T) {
+	result := &checkpoint.ReadCommittedResult{
+		Metadata: checkpoint.CommittedMetadata{
+			CheckpointID: "abc123def456",
+			SessionID:    "2026-02-04-test-session",
+			CreatedAt:    time.Date(2026, 2, 4, 10, 30, 0, 0, time.UTC),
+			FilesTouched: []string{"main.go"},
+		},
+		Prompts: "Add a new feature",
+	}
+
+	associatedCommits := []associatedCommit{
+		{
+			SHA:      "abc123def4567890abc123def4567890abc12345",
+			ShortSHA: "abc123d",
+			Message:  "feat: add feature",
+			Author:   "Alice Developer",
+			Date:     time.Date(2026, 2, 4, 11, 0, 0, 0, time.UTC),
+		},
+		{
+			SHA:      "def456abc7890123def456abc7890123def45678",
+			ShortSHA: "def456a",
+			Message:  "fix: update feature",
+			Author:   "Bob Developer",
+			Date:     time.Date(2026, 2, 4, 12, 0, 0, 0, time.UTC),
+		},
+	}
+
+	output := formatCheckpointOutput(result, id.MustCheckpointID("abc123def456"), associatedCommits, checkpoint.Author{}, true, false)
+
+	// Should show commits section with count
+	if !strings.Contains(output, "Commits: (2)") {
+		t.Errorf("expected 'Commits: (2)' in output, got:\n%s", output)
+	}
+	// Should show commit details
+	if !strings.Contains(output, "abc123d") {
+		t.Errorf("expected short SHA 'abc123d' in output, got:\n%s", output)
+	}
+	if !strings.Contains(output, "def456a") {
+		t.Errorf("expected short SHA 'def456a' in output, got:\n%s", output)
+	}
+	if !strings.Contains(output, "feat: add feature") {
+		t.Errorf("expected commit message in output, got:\n%s", output)
+	}
+	if !strings.Contains(output, "fix: update feature") {
+		t.Errorf("expected commit message in output, got:\n%s", output)
+	}
+	// Should show date in format YYYY-MM-DD
+	if !strings.Contains(output, "2026-02-04") {
+		t.Errorf("expected date in output, got:\n%s", output)
+	}
+}
+
+func TestFormatCheckpointOutput_NoCommitsOnBranch(t *testing.T) {
+	result := &checkpoint.ReadCommittedResult{
+		Metadata: checkpoint.CommittedMetadata{
+			CheckpointID: "abc123def456",
+			SessionID:    "2026-02-04-test-session",
+			CreatedAt:    time.Date(2026, 2, 4, 10, 30, 0, 0, time.UTC),
+			FilesTouched: []string{"main.go"},
+		},
+		Prompts: "Add a new feature",
+	}
+
+	// No associated commits - use empty slice (not nil) to indicate "searched but found none"
+	associatedCommits := []associatedCommit{}
+
+	output := formatCheckpointOutput(result, id.MustCheckpointID("abc123def456"), associatedCommits, checkpoint.Author{}, true, false)
+
+	// Should show message indicating no commits found
+	if !strings.Contains(output, "Commits: No commits found on this branch") {
+		t.Errorf("expected 'Commits: No commits found on this branch' in output, got:\n%s", output)
 	}
 }
