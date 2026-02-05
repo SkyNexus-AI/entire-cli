@@ -583,9 +583,9 @@ func TestGeminiCLIHookInstallation(t *testing.T) {
 			t.Error("settings.json should contain Notification hook")
 		}
 
-		// Verify enableHooks is set
-		if !strings.Contains(content, "enableHooks") {
-			t.Error("settings.json should contain tools.enableHooks")
+		// Verify hooksConfig is set
+		if !strings.Contains(content, "hooksConfig") {
+			t.Error("settings.json should contain hooksConfig.enabled")
 		}
 	})
 
