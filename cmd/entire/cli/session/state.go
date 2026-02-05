@@ -261,38 +261,6 @@ func (s *StateStore) List(ctx context.Context) ([]*State, error) {
 	return states, nil
 }
 
-// FindByBaseCommit finds all sessions based on the given commit hash.
-func (s *StateStore) FindByBaseCommit(ctx context.Context, baseCommit string) ([]*State, error) {
-	allStates, err := s.List(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	var matching []*State
-	for _, state := range allStates {
-		if state.BaseCommit == baseCommit {
-			matching = append(matching, state)
-		}
-	}
-	return matching, nil
-}
-
-// FindByWorktree finds all sessions for the given worktree path.
-func (s *StateStore) FindByWorktree(ctx context.Context, worktreePath string) ([]*State, error) {
-	allStates, err := s.List(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	var matching []*State
-	for _, state := range allStates {
-		if state.WorktreePath == worktreePath {
-			matching = append(matching, state)
-		}
-	}
-	return matching, nil
-}
-
 // stateFilePath returns the path to a session state file.
 func (s *StateStore) stateFilePath(sessionID string) string {
 	return filepath.Join(s.stateDir, sessionID+".json")
@@ -319,70 +287,4 @@ func getGitCommonDir() (string, error) {
 	}
 
 	return filepath.Clean(commonDir), nil
-}
-
-// GetWorktreePath returns the absolute path to the current worktree root.
-func GetWorktreePath() (string, error) {
-	ctx := context.Background()
-	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--show-toplevel")
-	output, err := cmd.Output()
-	if err != nil {
-		return "", fmt.Errorf("failed to get worktree path: %w", err)
-	}
-	return strings.TrimSpace(string(output)), nil
-}
-
-// FindLegacyEntireSessionID checks for existing session state files with a legacy date-prefixed format.
-// Takes an agent session ID and returns the corresponding entire session ID if found
-// (e.g., "2026-01-20-abc123" for agent ID "abc123"), or empty string if no legacy session exists.
-//
-// This provides backward compatibility when resuming sessions that were created before
-// the session ID format change (when EntireSessionID added a date prefix).
-func FindLegacyEntireSessionID(agentSessionID string) string {
-	if agentSessionID == "" {
-		return ""
-	}
-
-	// Validate ID format to prevent path traversal attacks
-	if err := validation.ValidateAgentSessionID(agentSessionID); err != nil {
-		return ""
-	}
-
-	commonDir, err := getGitCommonDir()
-	if err != nil {
-		return ""
-	}
-
-	stateDir := filepath.Join(commonDir, sessionStateDirName)
-	entries, err := os.ReadDir(stateDir)
-	if err != nil {
-		return ""
-	}
-
-	// Look for state files with legacy date-prefixed format matching this agent ID
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
-			continue
-		}
-		if strings.HasSuffix(entry.Name(), ".tmp") {
-			continue
-		}
-
-		existingSessionID := strings.TrimSuffix(entry.Name(), ".json")
-
-		// Check if this is a legacy format (has date prefix) that matches our agent ID
-		// Legacy format: YYYY-MM-DD-<agent-uuid> (11 char prefix)
-		if len(existingSessionID) > 11 &&
-			existingSessionID[4] == '-' &&
-			existingSessionID[7] == '-' &&
-			existingSessionID[10] == '-' {
-			// Extract the agent ID portion and compare
-			extractedAgentID := existingSessionID[11:]
-			if extractedAgentID == agentSessionID {
-				return existingSessionID
-			}
-		}
-	}
-
-	return ""
 }

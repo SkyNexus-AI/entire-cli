@@ -636,16 +636,13 @@ func (s *ManualCommitStrategy) RestoreLogsOnly(point RewindPoint, force bool) er
 		return fmt.Errorf("failed to get checkpoint store: %w", err)
 	}
 
-	// Read full checkpoint data including archived sessions
-	result, err := store.ReadCommitted(context.Background(), point.CheckpointID)
+	// Read checkpoint summary to get session count
+	summary, err := store.ReadCommitted(context.Background(), point.CheckpointID)
 	if err != nil {
 		return fmt.Errorf("failed to read checkpoint: %w", err)
 	}
-	if result == nil {
+	if summary == nil {
 		return fmt.Errorf("checkpoint not found: %s", point.CheckpointID)
-	}
-	if len(result.Transcript) == 0 {
-		return fmt.Errorf("no transcript found for checkpoint: %s", point.CheckpointID)
 	}
 
 	// Get repo root for Claude project path lookup
@@ -666,7 +663,7 @@ func (s *ManualCommitStrategy) RestoreLogsOnly(point RewindPoint, force bool) er
 
 	// Check for newer local logs if not forcing
 	if !force {
-		sessions := s.classifySessionsForRestore(claudeProjectDir, result)
+		sessions := s.classifySessionsForRestore(context.Background(), claudeProjectDir, store, point.CheckpointID, summary)
 		hasConflicts := false
 		for _, sess := range sessions {
 			if sess.Status == StatusLocalNewer {
@@ -687,21 +684,26 @@ func (s *ManualCommitStrategy) RestoreLogsOnly(point RewindPoint, force bool) er
 	}
 
 	// Count sessions to restore
-	totalSessions := 1 + len(result.ArchivedSessions)
+	totalSessions := len(summary.Sessions)
 	if totalSessions > 1 {
 		fmt.Fprintf(os.Stderr, "Restoring %d sessions from checkpoint:\n", totalSessions)
 	}
 
-	// Restore archived sessions first (oldest to newest)
-	for _, archived := range result.ArchivedSessions {
-		if len(archived.Transcript) == 0 {
+	// Restore all sessions (oldest to newest, using 0-based indexing)
+	for i := range totalSessions {
+		content, readErr := store.ReadSessionContent(context.Background(), point.CheckpointID, i)
+		if readErr != nil {
+			fmt.Fprintf(os.Stderr, "  Warning: failed to read session %d: %v\n", i, readErr)
+			continue
+		}
+		if content == nil || len(content.Transcript) == 0 {
 			continue
 		}
 
-		sessionID := archived.SessionID
+		sessionID := content.Metadata.SessionID
 		if sessionID == "" {
 			// Fallback: can't identify session without ID
-			fmt.Fprintf(os.Stderr, "  Warning: archived session %d has no session ID, skipping\n", archived.FolderIndex)
+			fmt.Fprintf(os.Stderr, "  Warning: session %d has no session ID, skipping\n", i)
 			continue
 		}
 
@@ -709,72 +711,32 @@ func (s *ManualCommitStrategy) RestoreLogsOnly(point RewindPoint, force bool) er
 		claudeSessionFile := filepath.Join(claudeProjectDir, modelSessionID+".jsonl")
 
 		// Get first prompt for display
-		promptPreview := ExtractFirstPrompt(archived.Prompts)
-		if promptPreview != "" {
-			fmt.Fprintf(os.Stderr, "  Session %d: %s\n", archived.FolderIndex, promptPreview)
+		promptPreview := ExtractFirstPrompt(content.Prompts)
+
+		if totalSessions > 1 {
+			isLatest := i == totalSessions-1
+			if promptPreview != "" {
+				if isLatest {
+					fmt.Fprintf(os.Stderr, "  Session %d (latest): %s\n", i+1, promptPreview)
+				} else {
+					fmt.Fprintf(os.Stderr, "  Session %d: %s\n", i+1, promptPreview)
+				}
+			}
+			fmt.Fprintf(os.Stderr, "    Writing to: %s\n", claudeSessionFile)
+		} else {
+			fmt.Fprintf(os.Stderr, "Writing transcript to: %s\n", claudeSessionFile)
 		}
 
-		fmt.Fprintf(os.Stderr, "    Writing to: %s\n", claudeSessionFile)
-		if err := os.WriteFile(claudeSessionFile, archived.Transcript, 0o600); err != nil {
-			fmt.Fprintf(os.Stderr, "    Warning: failed to write transcript: %v\n", err)
-			continue
+		if writeErr := os.WriteFile(claudeSessionFile, content.Transcript, 0o600); writeErr != nil {
+			if totalSessions > 1 {
+				fmt.Fprintf(os.Stderr, "    Warning: failed to write transcript: %v\n", writeErr)
+				continue
+			}
+			return fmt.Errorf("failed to write transcript: %w", writeErr)
 		}
-	}
-
-	// Restore the most recent session (at root level)
-	sessionID := result.Metadata.SessionID
-	if sessionID == "" {
-		// Fall back to extracting from commit's Entire-Session trailer
-		sessionID = s.extractSessionIDFromCommit(point.ID)
-		if sessionID == "" {
-			return errors.New("failed to determine session ID for latest session")
-		}
-	}
-
-	modelSessionID := sessionid.ModelSessionID(sessionID)
-	claudeSessionFile := filepath.Join(claudeProjectDir, modelSessionID+".jsonl")
-
-	if totalSessions > 1 {
-		promptPreview := ExtractFirstPrompt(result.Prompts)
-		if promptPreview != "" {
-			fmt.Fprintf(os.Stderr, "  Session %d (latest): %s\n", totalSessions, promptPreview)
-		}
-		fmt.Fprintf(os.Stderr, "    Writing to: %s\n", claudeSessionFile)
-	} else {
-		fmt.Fprintf(os.Stderr, "Writing transcript to: %s\n", claudeSessionFile)
-	}
-
-	if err := os.WriteFile(claudeSessionFile, result.Transcript, 0o600); err != nil {
-		return fmt.Errorf("failed to write transcript: %w", err)
 	}
 
 	return nil
-}
-
-// extractSessionIDFromCommit extracts the session ID from a commit's Entire-Session trailer.
-func (s *ManualCommitStrategy) extractSessionIDFromCommit(commitHash string) string {
-	repo, err := OpenRepository()
-	if err != nil {
-		return ""
-	}
-
-	hash, err := repo.ResolveRevision(plumbing.Revision(commitHash))
-	if err != nil {
-		return ""
-	}
-
-	commit, err := repo.CommitObject(*hash)
-	if err != nil {
-		return ""
-	}
-
-	// Parse Entire-Session trailer
-	sessionID, found := trailers.ParseSession(commit.Message)
-	if found {
-		return sessionID
-	}
-
-	return ""
 }
 
 // readSessionPrompt reads the first prompt from the session's prompt.txt file stored in git.
@@ -825,45 +787,34 @@ type SessionRestoreInfo struct {
 	CheckpointTime time.Time
 }
 
-// classifySessionsForRestore checks all sessions in a checkpoint result and returns info
+// classifySessionsForRestore checks all sessions in a checkpoint and returns info
 // about each session, including whether local logs have newer timestamps.
-func (s *ManualCommitStrategy) classifySessionsForRestore(claudeProjectDir string, result *cpkg.ReadCommittedResult) []SessionRestoreInfo {
+func (s *ManualCommitStrategy) classifySessionsForRestore(ctx context.Context, claudeProjectDir string, store cpkg.Store, checkpointID id.CheckpointID, summary *cpkg.CheckpointSummary) []SessionRestoreInfo {
 	var sessions []SessionRestoreInfo
 
-	// Check archived sessions
-	for _, archived := range result.ArchivedSessions {
-		if len(archived.Transcript) == 0 || archived.SessionID == "" {
+	totalSessions := len(summary.Sessions)
+	// Check all sessions (0-based indexing)
+	for i := range totalSessions {
+		content, err := store.ReadSessionContent(ctx, checkpointID, i)
+		if err != nil || content == nil || len(content.Transcript) == 0 {
 			continue
 		}
 
-		modelSessionID := sessionid.ModelSessionID(archived.SessionID)
+		sessionID := content.Metadata.SessionID
+		if sessionID == "" {
+			continue
+		}
+
+		modelSessionID := sessionid.ModelSessionID(sessionID)
 		localPath := filepath.Join(claudeProjectDir, modelSessionID+".jsonl")
 
 		localTime := paths.GetLastTimestampFromFile(localPath)
-		checkpointTime := paths.GetLastTimestampFromBytes(archived.Transcript)
+		checkpointTime := paths.GetLastTimestampFromBytes(content.Transcript)
 		status := ClassifyTimestamps(localTime, checkpointTime)
 
 		sessions = append(sessions, SessionRestoreInfo{
-			SessionID:      archived.SessionID,
-			Prompt:         ExtractFirstPrompt(archived.Prompts),
-			Status:         status,
-			LocalTime:      localTime,
-			CheckpointTime: checkpointTime,
-		})
-	}
-
-	// Check primary session
-	if result.Metadata.SessionID != "" && len(result.Transcript) > 0 {
-		modelSessionID := sessionid.ModelSessionID(result.Metadata.SessionID)
-		localPath := filepath.Join(claudeProjectDir, modelSessionID+".jsonl")
-
-		localTime := paths.GetLastTimestampFromFile(localPath)
-		checkpointTime := paths.GetLastTimestampFromBytes(result.Transcript)
-		status := ClassifyTimestamps(localTime, checkpointTime)
-
-		sessions = append(sessions, SessionRestoreInfo{
-			SessionID:      result.Metadata.SessionID,
-			Prompt:         ExtractFirstPrompt(result.Prompts),
+			SessionID:      sessionID,
+			Prompt:         ExtractFirstPrompt(content.Prompts),
 			Status:         status,
 			LocalTime:      localTime,
 			CheckpointTime: checkpointTime,

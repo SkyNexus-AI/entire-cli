@@ -680,7 +680,7 @@ func (s *ManualCommitStrategy) sessionHasNewContentFromLiveTranscript(repo *git.
 	// Check if any modified files overlap with currently staged files
 	// This ensures we only add checkpoint trailers to commits that include
 	// files the agent actually modified
-	stagedFiles := getStagedFiles(repo)
+	stagedFiles := getStagedFiles(repo) // TODO: does it work? Do we have staged files if this is called at post-commit hook ?
 	if !hasOverlappingFiles(stagedFiles, modifiedFiles) {
 		return false, nil // No overlap - staged files are unrelated to agent's work
 	}

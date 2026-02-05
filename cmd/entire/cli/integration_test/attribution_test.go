@@ -8,6 +8,7 @@ import (
 
 	"entire.io/cli/cmd/entire/cli/checkpoint"
 	"entire.io/cli/cmd/entire/cli/checkpoint/id"
+	"entire.io/cli/cmd/entire/cli/paths"
 	"entire.io/cli/cmd/entire/cli/strategy"
 	"entire.io/cli/cmd/entire/cli/trailers"
 	"github.com/go-git/go-git/v5"
@@ -135,7 +136,7 @@ func TestManualCommit_Attribution(t *testing.T) {
 	t.Log("Verifying attribution in metadata")
 
 	// Read metadata from entire/sessions branch
-	sessionsRef, err := repo.Reference(plumbing.NewBranchReferenceName("entire/sessions"), true)
+	sessionsRef, err := repo.Reference(plumbing.NewBranchReferenceName(paths.MetadataBranchName), true)
 	if err != nil {
 		t.Fatalf("Failed to get entire/sessions branch: %v", err)
 	}
@@ -150,11 +151,11 @@ func TestManualCommit_Attribution(t *testing.T) {
 		t.Fatalf("Failed to get sessions tree: %v", err)
 	}
 
-	// Read metadata.json from sharded path
-	metadataPath := checkpointID.String()[:2] + "/" + checkpointID.String()[2:] + "/metadata.json"
+	// Read session-level metadata.json from sharded path (InitialAttribution is in 0/metadata.json)
+	metadataPath := SessionMetadataPath(checkpointID.String())
 	metadataFile, err := sessionsTree.File(metadataPath)
 	if err != nil {
-		t.Fatalf("Failed to read metadata.json at path %s: %v", metadataPath, err)
+		t.Fatalf("Failed to read session metadata.json at path %s: %v", metadataPath, err)
 	}
 
 	metadataContent, err := metadataFile.Contents()
@@ -277,7 +278,7 @@ func TestManualCommit_AttributionDeletionOnly(t *testing.T) {
 	// ========================================
 	t.Log("Verifying attribution for deletion-only commit")
 
-	sessionsRef, err := repo.Reference(plumbing.NewBranchReferenceName("entire/sessions"), true)
+	sessionsRef, err := repo.Reference(plumbing.NewBranchReferenceName(paths.MetadataBranchName), true)
 	if err != nil {
 		t.Fatalf("Failed to get entire/sessions branch: %v", err)
 	}
@@ -292,10 +293,11 @@ func TestManualCommit_AttributionDeletionOnly(t *testing.T) {
 		t.Fatalf("Failed to get sessions tree: %v", err)
 	}
 
-	metadataPath := checkpointID.String()[:2] + "/" + checkpointID.String()[2:] + "/metadata.json"
+	// Read session-level metadata.json (InitialAttribution is in 0/metadata.json)
+	metadataPath := SessionMetadataPath(checkpointID.String())
 	metadataFile, err := sessionsTree.File(metadataPath)
 	if err != nil {
-		t.Fatalf("Failed to read metadata.json: %v", err)
+		t.Fatalf("Failed to read session metadata.json at path %s: %v", metadataPath, err)
 	}
 
 	metadataContent, err := metadataFile.Contents()
@@ -513,10 +515,11 @@ func TestManualCommit_AttributionNoDoubleCount(t *testing.T) {
 }
 
 // getAttributionFromMetadata reads attribution from a checkpoint on entire/sessions branch.
+// InitialAttribution is stored in session-level metadata (0/metadata.json).
 func getAttributionFromMetadata(t *testing.T, repo *git.Repository, checkpointID id.CheckpointID) *checkpoint.InitialAttribution {
 	t.Helper()
 
-	sessionsRef, err := repo.Reference(plumbing.NewBranchReferenceName("entire/sessions"), true)
+	sessionsRef, err := repo.Reference(plumbing.NewBranchReferenceName(paths.MetadataBranchName), true)
 	if err != nil {
 		t.Fatalf("Failed to get entire/sessions branch: %v", err)
 	}
@@ -531,10 +534,11 @@ func getAttributionFromMetadata(t *testing.T, repo *git.Repository, checkpointID
 		t.Fatalf("Failed to get sessions tree: %v", err)
 	}
 
-	metadataPath := checkpointID.String()[:2] + "/" + checkpointID.String()[2:] + "/metadata.json"
+	// Read session-level metadata (InitialAttribution is in 0/metadata.json)
+	metadataPath := SessionMetadataPath(checkpointID.String())
 	metadataFile, err := sessionsTree.File(metadataPath)
 	if err != nil {
-		t.Fatalf("Failed to read metadata.json at path %s: %v", metadataPath, err)
+		t.Fatalf("Failed to read session metadata.json at path %s: %v", metadataPath, err)
 	}
 
 	metadataContent, err := metadataFile.Contents()

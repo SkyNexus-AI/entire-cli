@@ -766,13 +766,35 @@ func (s *AutoCommitStrategy) GetTaskCheckpointTranscript(point RewindPoint) ([]b
 		return nil, fmt.Errorf("failed to get metadata tree: %w", err)
 	}
 
-	// MetadataDir for auto-commit task checkpoints is: cond-YYYYMMDD-HHMMSS-XXXXXXXX/tasks/<tool-use-id>
-	// Session transcript is at: cond-YYYYMMDD-HHMMSS-XXXXXXXX/<TranscriptFileName>
+	// MetadataDir for auto-commit task checkpoints is: <id[:2]>/<id[2:]>/tasks/<tool-use-id>
 	// Extract the checkpoint path by removing "/tasks/<tool-use-id>"
 	metadataDir := point.MetadataDir
 	if idx := strings.Index(metadataDir, "/tasks/"); idx > 0 {
 		checkpointPath := metadataDir[:idx]
-		transcriptPath := checkpointPath + "/" + paths.TranscriptFileName
+
+		// Use the first session's transcript path from sessions array
+		transcriptPath := ""
+		summaryFile, summaryErr := tree.File(checkpointPath + "/" + paths.MetadataFileName)
+		if summaryErr == nil {
+			summaryContent, contentErr := summaryFile.Contents()
+			if contentErr == nil {
+				var summary checkpoint.CheckpointSummary
+				if json.Unmarshal([]byte(summaryContent), &summary) == nil && len(summary.Sessions) > 0 {
+					// Use first session's transcript path (task checkpoints have only one session)
+					// SessionFilePaths now contains absolute paths with leading "/"
+					// Strip the leading "/" for tree.File() which expects paths without leading slash
+					if summary.Sessions[0].Transcript != "" {
+						transcriptPath = strings.TrimPrefix(summary.Sessions[0].Transcript, "/")
+					}
+				}
+			}
+		}
+
+		// Fall back to old format if sessions map not available
+		if transcriptPath == "" {
+			transcriptPath = checkpointPath + "/" + paths.TranscriptFileName
+		}
+
 		file, err := tree.File(transcriptPath)
 		if err != nil {
 			return nil, fmt.Errorf("failed to find transcript at %s: %w", transcriptPath, err)
@@ -844,12 +866,12 @@ func (s *AutoCommitStrategy) GetSessionContext(sessionID string) string {
 		return ""
 	}
 
-	result, err := store.ReadCommitted(context.Background(), cp.CheckpointID)
-	if err != nil || result == nil {
+	content, err := store.ReadSessionContentByID(context.Background(), cp.CheckpointID, sessionID)
+	if err != nil || content == nil {
 		return ""
 	}
 
-	return result.Context
+	return content.Context
 }
 
 // GetCheckpointLog returns the session transcript for a specific checkpoint.
@@ -864,15 +886,15 @@ func (s *AutoCommitStrategy) GetCheckpointLog(cp Checkpoint) ([]byte, error) {
 		return nil, fmt.Errorf("failed to get checkpoint store: %w", err)
 	}
 
-	result, err := store.ReadCommitted(context.Background(), cp.CheckpointID)
+	content, err := store.ReadLatestSessionContent(context.Background(), cp.CheckpointID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read checkpoint: %w", err)
 	}
-	if result == nil {
+	if content == nil {
 		return nil, ErrNoMetadata
 	}
 
-	return result.Transcript, nil
+	return content.Transcript, nil
 }
 
 // InitializeSession creates session state for a new session.
@@ -952,12 +974,12 @@ func (s *AutoCommitStrategy) ListOrphanedItems() ([]CleanupItem, error) {
 	// Filter to only auto-commit checkpoints (identified by strategy in metadata)
 	autoCommitCheckpoints := make(map[string]bool)
 	for _, cp := range checkpoints {
-		result, readErr := cpStore.ReadCommitted(context.Background(), cp.CheckpointID)
-		if readErr != nil || result == nil {
+		summary, readErr := cpStore.ReadCommitted(context.Background(), cp.CheckpointID)
+		if readErr != nil || summary == nil {
 			continue
 		}
 		// Only consider checkpoints created by this strategy
-		if result.Metadata.Strategy == StrategyNameAutoCommit {
+		if summary.Strategy == StrategyNameAutoCommit {
 			autoCommitCheckpoints[cp.CheckpointID.String()] = true
 		}
 	}

@@ -1198,6 +1198,23 @@ func ShardedCheckpointPath(checkpointID string) string {
 	return id.CheckpointID(checkpointID).Path()
 }
 
+// SessionFilePath returns the path to a session file within a checkpoint.
+// Session files are stored in numbered subdirectories using 0-based indexing (e.g., 0/full.jsonl).
+// This function constructs the path for the first (default) session.
+func SessionFilePath(checkpointID string, fileName string) string {
+	return id.CheckpointID(checkpointID).Path() + "/0/" + fileName
+}
+
+// CheckpointSummaryPath returns the path to the root metadata.json (CheckpointSummary) for a checkpoint.
+func CheckpointSummaryPath(checkpointID string) string {
+	return id.CheckpointID(checkpointID).Path() + "/" + paths.MetadataFileName
+}
+
+// SessionMetadataPath returns the path to the session-level metadata.json for a checkpoint.
+func SessionMetadataPath(checkpointID string) string {
+	return SessionFilePath(checkpointID, paths.MetadataFileName)
+}
+
 func findModuleRoot() string {
 	// Start from this source file's location and walk up to find go.mod
 	_, thisFile, _, ok := runtime.Caller(0)

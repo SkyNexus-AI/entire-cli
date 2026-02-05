@@ -1,12 +1,17 @@
 package strategy
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
+	"entire.io/cli/cmd/entire/cli/checkpoint"
 	"entire.io/cli/cmd/entire/cli/checkpoint/id"
+	"entire.io/cli/cmd/entire/cli/paths"
+
 	"github.com/go-git/go-git/v5"
 )
 
@@ -212,13 +217,48 @@ func GetSession(sessionID string) (*Session, error) {
 }
 
 // getDescriptionForCheckpoint reads the description for a checkpoint from the entire/sessions branch.
+// It reads from the latest session subdirectory in the new storage format.
 func getDescriptionForCheckpoint(repo *git.Repository, checkpointID id.CheckpointID) string {
 	tree, err := GetMetadataBranchTree(repo)
 	if err != nil {
 		return NoDescription
 	}
 
-	return getSessionDescriptionFromTree(tree, checkpointID.Path())
+	// Get the checkpoint tree
+	checkpointTree, err := tree.Tree(checkpointID.Path())
+	if err != nil {
+		return NoDescription
+	}
+
+	// Read root metadata.json to get session count and sessions map
+	metadataFile, err := checkpointTree.File(paths.MetadataFileName)
+	if err != nil {
+		return NoDescription
+	}
+
+	content, err := metadataFile.Contents()
+	if err != nil {
+		return NoDescription
+	}
+
+	var summary checkpoint.CheckpointSummary
+	if err := json.Unmarshal([]byte(content), &summary); err != nil {
+		return NoDescription
+	}
+
+	// Find the first session's prompt/context path
+	// Try to use the latest session for description (0-based indexing)
+	sessionDir := "0"
+	if len(summary.Sessions) > 0 {
+		sessionDir = strconv.Itoa(len(summary.Sessions) - 1) // Use latest session
+	}
+
+	sessionTree, err := checkpointTree.Tree(sessionDir)
+	if err != nil {
+		return NoDescription
+	}
+
+	return getSessionDescriptionFromTree(sessionTree, "")
 }
 
 // findSessionByID finds a session by exact ID or prefix match.

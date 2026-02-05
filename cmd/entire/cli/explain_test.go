@@ -868,7 +868,16 @@ func TestRunExplainCheckpoint_NotFound(t *testing.T) {
 }
 
 func TestFormatCheckpointOutput_Short(t *testing.T) {
-	result := &checkpoint.ReadCommittedResult{
+	summary := &checkpoint.CheckpointSummary{
+		CheckpointID:     id.MustCheckpointID("abc123def456"),
+		CheckpointsCount: 3,
+		FilesTouched:     []string{"main.go", "util.go"},
+		TokenUsage: &agent.TokenUsage{
+			InputTokens:  10000,
+			OutputTokens: 5000,
+		},
+	}
+	content := &checkpoint.SessionContent{
 		Metadata: checkpoint.CommittedMetadata{
 			CheckpointID:     "abc123def456",
 			SessionID:        "2026-01-21-test-session",
@@ -883,8 +892,8 @@ func TestFormatCheckpointOutput_Short(t *testing.T) {
 		Prompts: "Add a new feature",
 	}
 
-	// Default mode: nil associated commits (not shown anyway in default mode)
-	output := formatCheckpointOutput(result, id.MustCheckpointID("abc123def456"), nil, checkpoint.Author{}, false, false)
+	// Default mode: empty commit message (not shown anyway in default mode)
+	output := formatCheckpointOutput(summary, content, id.MustCheckpointID("abc123def456"), nil, checkpoint.Author{}, false, false)
 
 	// Should show checkpoint ID
 	if !strings.Contains(output, "abc123def456") {
@@ -921,24 +930,33 @@ func TestFormatCheckpointOutput_Verbose(t *testing.T) {
 {"type":"user","uuid":"u3","message":{"content":"Refactor the code"}}
 `)
 
-	result := &checkpoint.ReadCommittedResult{
+	summary := &checkpoint.CheckpointSummary{
+		CheckpointID:     id.MustCheckpointID("abc123def456"),
+		CheckpointsCount: 3,
+		FilesTouched:     []string{"main.go", "util.go", "config.yaml"},
+		TokenUsage: &agent.TokenUsage{
+			InputTokens:  10000,
+			OutputTokens: 5000,
+		},
+	}
+	content := &checkpoint.SessionContent{
 		Metadata: checkpoint.CommittedMetadata{
-			CheckpointID:     "abc123def456",
-			SessionID:        "2026-01-21-test-session",
-			CreatedAt:        time.Date(2026, 1, 21, 10, 30, 0, 0, time.UTC),
-			FilesTouched:     []string{"main.go", "util.go", "config.yaml"},
-			CheckpointsCount: 3,
+			CheckpointID:           "abc123def456",
+			SessionID:              "2026-01-21-test-session",
+			CreatedAt:              time.Date(2026, 1, 21, 10, 30, 0, 0, time.UTC),
+			FilesTouched:           []string{"main.go", "util.go", "config.yaml"},
+			CheckpointsCount:       3,
+			TranscriptLinesAtStart: 0, // All content is this checkpoint's
 			TokenUsage: &agent.TokenUsage{
 				InputTokens:  10000,
 				OutputTokens: 5000,
 			},
-			TranscriptLinesAtStart: 0, // All content is this checkpoint's
 		},
 		Prompts:    "Add a new feature\nFix the bug\nRefactor the code",
 		Transcript: transcriptContent,
 	}
 
-	output := formatCheckpointOutput(result, id.MustCheckpointID("abc123def456"), nil, checkpoint.Author{}, true, false)
+	output := formatCheckpointOutput(summary, content, id.MustCheckpointID("abc123def456"), nil, checkpoint.Author{}, true, false)
 
 	// Should show checkpoint ID (like default)
 	if !strings.Contains(output, "abc123def456") {
@@ -971,8 +989,13 @@ func TestFormatCheckpointOutput_Verbose(t *testing.T) {
 	}
 }
 
-func TestFormatCheckpointOutput_Verbose_NilAssociatedCommits(t *testing.T) {
-	result := &checkpoint.ReadCommittedResult{
+func TestFormatCheckpointOutput_Verbose_NoCommitMessage(t *testing.T) {
+	summary := &checkpoint.CheckpointSummary{
+		CheckpointID:     id.MustCheckpointID("abc123def456"),
+		CheckpointsCount: 1,
+		FilesTouched:     []string{"main.go"},
+	}
+	content := &checkpoint.SessionContent{
 		Metadata: checkpoint.CommittedMetadata{
 			CheckpointID:     "abc123def456",
 			SessionID:        "2026-01-21-test-session",
@@ -983,8 +1006,8 @@ func TestFormatCheckpointOutput_Verbose_NilAssociatedCommits(t *testing.T) {
 		Prompts: "Add a feature",
 	}
 
-	// When associated commits is nil (not searched), should not show Commits section at all
-	output := formatCheckpointOutput(result, id.MustCheckpointID("abc123def456"), nil, checkpoint.Author{}, true, false)
+	// When commit message is empty, should not show Commit section
+	output := formatCheckpointOutput(summary, content, id.MustCheckpointID("abc123def456"), nil, checkpoint.Author{}, true, false)
 
 	if strings.Contains(output, "Commits:") {
 		t.Error("verbose output should not show Commits section when nil (not searched)")
@@ -996,7 +1019,16 @@ func TestFormatCheckpointOutput_Full(t *testing.T) {
 	transcriptData := `{"type":"user","message":{"content":"Add a new feature"}}
 {"type":"assistant","message":{"content":[{"type":"text","text":"I'll add that feature for you."}]}}`
 
-	result := &checkpoint.ReadCommittedResult{
+	summary := &checkpoint.CheckpointSummary{
+		CheckpointID:     id.MustCheckpointID("abc123def456"),
+		CheckpointsCount: 3,
+		FilesTouched:     []string{"main.go", "util.go"},
+		TokenUsage: &agent.TokenUsage{
+			InputTokens:  10000,
+			OutputTokens: 5000,
+		},
+	}
+	content := &checkpoint.SessionContent{
 		Metadata: checkpoint.CommittedMetadata{
 			CheckpointID:     "abc123def456",
 			SessionID:        "2026-01-21-test-session",
@@ -1012,7 +1044,7 @@ func TestFormatCheckpointOutput_Full(t *testing.T) {
 		Transcript: []byte(transcriptData),
 	}
 
-	output := formatCheckpointOutput(result, id.MustCheckpointID("abc123def456"), nil, checkpoint.Author{}, false, true)
+	output := formatCheckpointOutput(summary, content, id.MustCheckpointID("abc123def456"), nil, checkpoint.Author{}, false, true)
 
 	// Should show checkpoint ID (like default)
 	if !strings.Contains(output, "abc123def456") {
@@ -1037,7 +1069,11 @@ func TestFormatCheckpointOutput_Full(t *testing.T) {
 
 func TestFormatCheckpointOutput_WithSummary(t *testing.T) {
 	cpID := id.MustCheckpointID("abc123456789")
-	result := &checkpoint.ReadCommittedResult{
+	summary := &checkpoint.CheckpointSummary{
+		CheckpointID: cpID,
+		FilesTouched: []string{"file1.go", "file2.go"},
+	}
+	content := &checkpoint.SessionContent{
 		Metadata: checkpoint.CommittedMetadata{
 			CheckpointID: cpID,
 			SessionID:    "2026-01-22-test-session",
@@ -1059,7 +1095,7 @@ func TestFormatCheckpointOutput_WithSummary(t *testing.T) {
 	}
 
 	// Test default output (non-verbose) with summary
-	output := formatCheckpointOutput(result, cpID, nil, checkpoint.Author{}, false, false)
+	output := formatCheckpointOutput(summary, content, cpID, nil, checkpoint.Author{}, false, false)
 
 	// Should show AI-generated intent and outcome
 	if !strings.Contains(output, "Intent: Implement user authentication") {
@@ -1074,7 +1110,7 @@ func TestFormatCheckpointOutput_WithSummary(t *testing.T) {
 	}
 
 	// Test verbose output with summary
-	verboseOutput := formatCheckpointOutput(result, cpID, nil, checkpoint.Author{}, true, false)
+	verboseOutput := formatCheckpointOutput(summary, content, cpID, nil, checkpoint.Author{}, true, false)
 
 	// Verbose should show learnings sections
 	if !strings.Contains(verboseOutput, "Learnings:") {
@@ -2057,7 +2093,11 @@ func TestFormatCheckpointOutput_UsesScopedPrompts(t *testing.T) {
 {"type":"assistant","uuid":"a2","message":{"content":[{"type":"text","text":"Second response"}]}}
 `)
 
-	result := &checkpoint.ReadCommittedResult{
+	summary := &checkpoint.CheckpointSummary{
+		CheckpointID: id.MustCheckpointID("abc123def456"),
+		FilesTouched: []string{"main.go"},
+	}
+	content := &checkpoint.SessionContent{
 		Metadata: checkpoint.CommittedMetadata{
 			CheckpointID:           "abc123def456",
 			SessionID:              "2026-01-30-test-session",
@@ -2070,7 +2110,7 @@ func TestFormatCheckpointOutput_UsesScopedPrompts(t *testing.T) {
 	}
 
 	// Verbose output should use scoped prompts
-	output := formatCheckpointOutput(result, id.MustCheckpointID("abc123def456"), nil, checkpoint.Author{}, true, false)
+	output := formatCheckpointOutput(summary, content, id.MustCheckpointID("abc123def456"), nil, checkpoint.Author{}, true, false)
 
 	// Should show ONLY the second prompt (scoped)
 	if !strings.Contains(output, "Second prompt - SHOULD appear") {
@@ -2085,7 +2125,11 @@ func TestFormatCheckpointOutput_UsesScopedPrompts(t *testing.T) {
 
 func TestFormatCheckpointOutput_FallsBackToStoredPrompts(t *testing.T) {
 	// Test backwards compatibility: when no transcript exists, use stored prompts
-	result := &checkpoint.ReadCommittedResult{
+	summary := &checkpoint.CheckpointSummary{
+		CheckpointID: id.MustCheckpointID("abc123def456"),
+		FilesTouched: []string{"main.go"},
+	}
+	content := &checkpoint.SessionContent{
 		Metadata: checkpoint.CommittedMetadata{
 			CheckpointID:           "abc123def456",
 			SessionID:              "2026-01-30-test-session",
@@ -2098,7 +2142,7 @@ func TestFormatCheckpointOutput_FallsBackToStoredPrompts(t *testing.T) {
 	}
 
 	// Verbose output should fall back to stored prompts
-	output := formatCheckpointOutput(result, id.MustCheckpointID("abc123def456"), nil, checkpoint.Author{}, true, false)
+	output := formatCheckpointOutput(summary, content, id.MustCheckpointID("abc123def456"), nil, checkpoint.Author{}, true, false)
 
 	// Intent should use stored prompt
 	if !strings.Contains(output, "Stored prompt from older checkpoint") {
@@ -2114,7 +2158,11 @@ func TestFormatCheckpointOutput_FullShowsEntireTranscript(t *testing.T) {
 {"type":"assistant","uuid":"a2","message":{"content":[{"type":"text","text":"Second response"}]}}
 `)
 
-	result := &checkpoint.ReadCommittedResult{
+	summary := &checkpoint.CheckpointSummary{
+		CheckpointID: id.MustCheckpointID("abc123def456"),
+		FilesTouched: []string{"main.go"},
+	}
+	content := &checkpoint.SessionContent{
 		Metadata: checkpoint.CommittedMetadata{
 			CheckpointID:           "abc123def456",
 			SessionID:              "2026-01-30-test-session",
@@ -2126,7 +2174,7 @@ func TestFormatCheckpointOutput_FullShowsEntireTranscript(t *testing.T) {
 	}
 
 	// Full mode should show the ENTIRE transcript (not scoped)
-	output := formatCheckpointOutput(result, id.MustCheckpointID("abc123def456"), nil, checkpoint.Author{}, false, true)
+	output := formatCheckpointOutput(summary, content, id.MustCheckpointID("abc123def456"), nil, checkpoint.Author{}, false, true)
 
 	// Should show the full transcript including first prompt (even though scoped prompts exclude it)
 	if !strings.Contains(output, "First prompt") {
@@ -2364,14 +2412,20 @@ func TestRunExplain_SessionWithCommitStillMutuallyExclusive(t *testing.T) {
 }
 
 func TestFormatCheckpointOutput_WithAuthor(t *testing.T) {
-	result := &checkpoint.ReadCommittedResult{
+	summary := &checkpoint.CheckpointSummary{
+		CheckpointID: id.MustCheckpointID("abc123def456"),
+		FilesTouched: []string{"main.go"},
+	}
+	content := &checkpoint.SessionContent{
 		Metadata: checkpoint.CommittedMetadata{
-			CheckpointID: "abc123def456",
-			SessionID:    "2026-01-30-test-session",
-			CreatedAt:    time.Date(2026, 1, 30, 10, 30, 0, 0, time.UTC),
-			FilesTouched: []string{"main.go"},
+			CheckpointID:           "abc123def456",
+			SessionID:              "2026-01-30-test-session",
+			CreatedAt:              time.Date(2026, 1, 30, 10, 30, 0, 0, time.UTC),
+			FilesTouched:           []string{"main.go"},
+			TranscriptLinesAtStart: 0,
 		},
-		Prompts: "Add a new feature",
+		Prompts:    "Add a new feature",
+		Transcript: nil, // No transcript available
 	}
 
 	author := checkpoint.Author{
@@ -2380,7 +2434,7 @@ func TestFormatCheckpointOutput_WithAuthor(t *testing.T) {
 	}
 
 	// With author, should show author line
-	output := formatCheckpointOutput(result, id.MustCheckpointID("abc123def456"), nil, author, true, false)
+	output := formatCheckpointOutput(summary, content, id.MustCheckpointID("abc123def456"), nil, author, true, false)
 
 	if !strings.Contains(output, "Author: Alice Developer <alice@example.com>") {
 		t.Errorf("expected author line in output, got:\n%s", output)
@@ -2388,20 +2442,27 @@ func TestFormatCheckpointOutput_WithAuthor(t *testing.T) {
 }
 
 func TestFormatCheckpointOutput_EmptyAuthor(t *testing.T) {
-	result := &checkpoint.ReadCommittedResult{
+	// Test backwards compatibility: when no transcript exists, use stored prompts
+	summary := &checkpoint.CheckpointSummary{
+		CheckpointID: id.MustCheckpointID("abc123def456"),
+		FilesTouched: []string{"main.go"},
+	}
+	content := &checkpoint.SessionContent{
 		Metadata: checkpoint.CommittedMetadata{
-			CheckpointID: "abc123def456",
-			SessionID:    "2026-01-30-test-session",
-			CreatedAt:    time.Date(2026, 1, 30, 10, 30, 0, 0, time.UTC),
-			FilesTouched: []string{"main.go"},
+			CheckpointID:           "abc123def456",
+			SessionID:              "2026-01-30-test-session",
+			CreatedAt:              time.Date(2026, 1, 30, 10, 30, 0, 0, time.UTC),
+			FilesTouched:           []string{"main.go"},
+			TranscriptLinesAtStart: 0,
 		},
-		Prompts: "Add a new feature",
+		Prompts:    "Add a new feature",
+		Transcript: nil, // No transcript available
 	}
 
 	// Empty author - should not show author line
 	author := checkpoint.Author{}
 
-	output := formatCheckpointOutput(result, id.MustCheckpointID("abc123def456"), nil, author, true, false)
+	output := formatCheckpointOutput(summary, content, id.MustCheckpointID("abc123def456"), nil, author, true, false)
 
 	if strings.Contains(output, "Author:") {
 		t.Errorf("expected no author line for empty author, got:\n%s", output)
@@ -2645,14 +2706,20 @@ func TestGetAssociatedCommits_MultipleMatches(t *testing.T) {
 }
 
 func TestFormatCheckpointOutput_WithAssociatedCommits(t *testing.T) {
-	result := &checkpoint.ReadCommittedResult{
+	summary := &checkpoint.CheckpointSummary{
+		CheckpointID: id.MustCheckpointID("abc123def456"),
+		FilesTouched: []string{"main.go"},
+	}
+	content := &checkpoint.SessionContent{
 		Metadata: checkpoint.CommittedMetadata{
-			CheckpointID: "abc123def456",
-			SessionID:    "2026-02-04-test-session",
-			CreatedAt:    time.Date(2026, 2, 4, 10, 30, 0, 0, time.UTC),
-			FilesTouched: []string{"main.go"},
+			CheckpointID:           "abc123def456",
+			SessionID:              "2026-02-04-test-session",
+			CreatedAt:              time.Date(2026, 2, 4, 10, 30, 0, 0, time.UTC),
+			FilesTouched:           []string{"main.go"},
+			TranscriptLinesAtStart: 0,
 		},
-		Prompts: "Add a new feature",
+		Prompts:    "Add a new feature",
+		Transcript: nil, // No transcript available
 	}
 
 	associatedCommits := []associatedCommit{
@@ -2672,7 +2739,7 @@ func TestFormatCheckpointOutput_WithAssociatedCommits(t *testing.T) {
 		},
 	}
 
-	output := formatCheckpointOutput(result, id.MustCheckpointID("abc123def456"), associatedCommits, checkpoint.Author{}, true, false)
+	output := formatCheckpointOutput(summary, content, id.MustCheckpointID("abc123def456"), associatedCommits, checkpoint.Author{}, true, false)
 
 	// Should show commits section with count
 	if !strings.Contains(output, "Commits: (2)") {
@@ -2698,20 +2765,26 @@ func TestFormatCheckpointOutput_WithAssociatedCommits(t *testing.T) {
 }
 
 func TestFormatCheckpointOutput_NoCommitsOnBranch(t *testing.T) {
-	result := &checkpoint.ReadCommittedResult{
+	summary := &checkpoint.CheckpointSummary{
+		CheckpointID: id.MustCheckpointID("abc123def456"),
+		FilesTouched: []string{"main.go"},
+	}
+	content := &checkpoint.SessionContent{
 		Metadata: checkpoint.CommittedMetadata{
-			CheckpointID: "abc123def456",
-			SessionID:    "2026-02-04-test-session",
-			CreatedAt:    time.Date(2026, 2, 4, 10, 30, 0, 0, time.UTC),
-			FilesTouched: []string{"main.go"},
+			CheckpointID:           "abc123def456",
+			SessionID:              "2026-02-04-test-session",
+			CreatedAt:              time.Date(2026, 2, 4, 10, 30, 0, 0, time.UTC),
+			FilesTouched:           []string{"main.go"},
+			TranscriptLinesAtStart: 0,
 		},
-		Prompts: "Add a new feature",
+		Prompts:    "Add a new feature",
+		Transcript: nil, // No transcript available
 	}
 
 	// No associated commits - use empty slice (not nil) to indicate "searched but found none"
 	associatedCommits := []associatedCommit{}
 
-	output := formatCheckpointOutput(result, id.MustCheckpointID("abc123def456"), associatedCommits, checkpoint.Author{}, true, false)
+	output := formatCheckpointOutput(summary, content, id.MustCheckpointID("abc123def456"), associatedCommits, checkpoint.Author{}, true, false)
 
 	// Should show message indicating no commits found
 	if !strings.Contains(output, "Commits: No commits found on this branch") {

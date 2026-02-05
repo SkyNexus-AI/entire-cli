@@ -85,18 +85,18 @@ func (s *ManualCommitStrategy) getCheckpointLog(checkpointID id.CheckpointID) ([
 		return nil, fmt.Errorf("failed to get checkpoint store: %w", err)
 	}
 
-	result, err := store.ReadCommitted(context.Background(), checkpointID)
+	content, err := store.ReadLatestSessionContent(context.Background(), checkpointID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read checkpoint: %w", err)
 	}
-	if result == nil {
+	if content == nil {
 		return nil, fmt.Errorf("checkpoint not found: %s", checkpointID)
 	}
-	if len(result.Transcript) == 0 {
+	if len(content.Transcript) == 0 {
 		return nil, fmt.Errorf("no transcript found for checkpoint: %s", checkpointID)
 	}
 
-	return result.Transcript, nil
+	return content.Transcript, nil
 }
 
 // CondenseSession condenses a session's shadow branch to permanent storage.
@@ -128,10 +128,67 @@ func (s *ManualCommitStrategy) CondenseSession(repo *git.Repository, checkpointI
 
 	// Get author info
 	authorName, authorEmail := GetGitAuthorFromRepo(repo)
-
+	attribution := calculateSessionAttributions(repo, ref, sessionData, state)
 	// Get current branch name
 	branchName := GetCurrentBranchName(repo)
 
+	// Generate summary if enabled
+	var summary *cpkg.Summary
+	if settings.IsSummarizeEnabled() && len(sessionData.Transcript) > 0 {
+		logCtx := logging.WithComponent(context.Background(), "attribution")
+		summarizeCtx := logging.WithComponent(logCtx, "summarize")
+
+		// Scope transcript to this checkpoint's portion
+		scopedTranscript := transcript.SliceFromLine(sessionData.Transcript, state.TranscriptLinesAtStart)
+		if len(scopedTranscript) > 0 {
+			var err error
+			summary, err = summarize.GenerateFromTranscript(summarizeCtx, scopedTranscript, sessionData.FilesTouched, nil)
+			if err != nil {
+				logging.Warn(summarizeCtx, "summary generation failed",
+					slog.String("session_id", state.SessionID),
+					slog.String("error", err.Error()))
+				// Continue without summary - non-blocking
+			} else {
+				logging.Info(summarizeCtx, "summary generated",
+					slog.String("session_id", state.SessionID))
+			}
+		}
+	}
+
+	// Write checkpoint metadata using the checkpoint store
+	if err := store.WriteCommitted(context.Background(), cpkg.WriteCommittedOptions{
+		CheckpointID:                checkpointID,
+		SessionID:                   state.SessionID,
+		Strategy:                    StrategyNameManualCommit,
+		Branch:                      branchName,
+		Transcript:                  sessionData.Transcript,
+		Prompts:                     sessionData.Prompts,
+		Context:                     sessionData.Context,
+		FilesTouched:                sessionData.FilesTouched,
+		CheckpointsCount:            state.CheckpointCount,
+		EphemeralBranch:             shadowBranchName,
+		AuthorName:                  authorName,
+		AuthorEmail:                 authorEmail,
+		Agent:                       state.AgentType,
+		TranscriptIdentifierAtStart: state.TranscriptIdentifierAtStart,
+		TranscriptLinesAtStart:      state.TranscriptLinesAtStart,
+		TokenUsage:                  sessionData.TokenUsage,
+		InitialAttribution:          attribution,
+		Summary:                     summary,
+	}); err != nil {
+		return nil, fmt.Errorf("failed to write checkpoint metadata: %w", err)
+	}
+
+	return &CondenseResult{
+		CheckpointID:         checkpointID,
+		SessionID:            state.SessionID,
+		CheckpointsCount:     state.CheckpointCount,
+		FilesTouched:         sessionData.FilesTouched,
+		TotalTranscriptLines: sessionData.FullTranscriptLines,
+	}, nil
+}
+
+func calculateSessionAttributions(repo *git.Repository, shadowRef *plumbing.Reference, sessionData *ExtractedSessionData, state *SessionState) *cpkg.InitialAttribution {
 	// Calculate initial attribution using accumulated prompt attribution data.
 	// This uses user edits captured at each prompt start (before agent works),
 	// plus any user edits after the final checkpoint (shadow → head).
@@ -153,11 +210,11 @@ func (s *ManualCommitStrategy) CondenseSession(repo *git.Repository, checkpointI
 					slog.String("error", treeErr.Error()))
 			} else {
 				// Get shadow branch tree (checkpoint tree - what the agent wrote)
-				shadowCommit, shadowErr := repo.CommitObject(ref.Hash())
+				shadowCommit, shadowErr := repo.CommitObject(shadowRef.Hash())
 				if shadowErr != nil {
 					logging.Debug(logCtx, "attribution skipped: failed to get shadow commit",
 						slog.String("error", shadowErr.Error()),
-						slog.String("shadow_ref", ref.Hash().String()))
+						slog.String("shadow_ref", shadowRef.Hash().String()))
 				} else {
 					shadowTree, shadowTreeErr := shadowCommit.Tree()
 					if shadowTreeErr != nil {
@@ -218,60 +275,7 @@ func (s *ManualCommitStrategy) CondenseSession(repo *git.Repository, checkpointI
 			}
 		}
 	}
-
-	// Generate summary if enabled
-	var summary *cpkg.Summary
-	if settings.IsSummarizeEnabled() && len(sessionData.Transcript) > 0 {
-		summarizeCtx := logging.WithComponent(logCtx, "summarize")
-
-		// Scope transcript to this checkpoint's portion
-		scopedTranscript := transcript.SliceFromLine(sessionData.Transcript, state.TranscriptLinesAtStart)
-		if len(scopedTranscript) > 0 {
-			var err error
-			summary, err = summarize.GenerateFromTranscript(summarizeCtx, scopedTranscript, sessionData.FilesTouched, nil)
-			if err != nil {
-				logging.Warn(summarizeCtx, "summary generation failed",
-					slog.String("session_id", state.SessionID),
-					slog.String("error", err.Error()))
-				// Continue without summary - non-blocking
-			} else {
-				logging.Info(summarizeCtx, "summary generated",
-					slog.String("session_id", state.SessionID))
-			}
-		}
-	}
-
-	// Write checkpoint metadata using the checkpoint store
-	if err := store.WriteCommitted(context.Background(), cpkg.WriteCommittedOptions{
-		CheckpointID:                checkpointID,
-		SessionID:                   state.SessionID,
-		Strategy:                    StrategyNameManualCommit,
-		Branch:                      branchName,
-		Transcript:                  sessionData.Transcript,
-		Prompts:                     sessionData.Prompts,
-		Context:                     sessionData.Context,
-		FilesTouched:                sessionData.FilesTouched,
-		CheckpointsCount:            state.CheckpointCount,
-		EphemeralBranch:             shadowBranchName,
-		AuthorName:                  authorName,
-		AuthorEmail:                 authorEmail,
-		Agent:                       state.AgentType,
-		TranscriptIdentifierAtStart: state.TranscriptIdentifierAtStart,
-		TranscriptLinesAtStart:      state.TranscriptLinesAtStart,
-		TokenUsage:                  sessionData.TokenUsage,
-		InitialAttribution:          attribution,
-		Summary:                     summary,
-	}); err != nil {
-		return nil, fmt.Errorf("failed to write checkpoint metadata: %w", err)
-	}
-
-	return &CondenseResult{
-		CheckpointID:         checkpointID,
-		SessionID:            state.SessionID,
-		CheckpointsCount:     state.CheckpointCount,
-		FilesTouched:         sessionData.FilesTouched,
-		TotalTranscriptLines: sessionData.FullTranscriptLines,
-	}, nil
+	return attribution
 }
 
 // extractSessionData extracts session data from the shadow branch.
@@ -293,6 +297,7 @@ func (s *ManualCommitStrategy) extractSessionData(repo *git.Repository, shadowRe
 	metadataDir := paths.SessionMetadataDirFromSessionID(sessionID)
 
 	// Extract transcript
+	// TODO: remove paths.TranscriptFileNameLegacy usage ?
 	var fullTranscript string
 	if file, fileErr := tree.File(metadataDir + "/" + paths.TranscriptFileName); fileErr == nil {
 		if content, contentErr := file.Contents(); contentErr == nil {
@@ -341,7 +346,9 @@ func (s *ManualCommitStrategy) extractSessionData(repo *git.Repository, shadowRe
 	data.FilesTouched = filesTouched
 
 	// Calculate token usage from the extracted transcript portion
+	// TODO: Missing Gemini token usage
 	if len(data.Transcript) > 0 {
+		// TODO: Calculate token usage per transcript slice (only checkpoint related)
 		transcriptLines, err := claudecode.ParseTranscript(data.Transcript)
 		if err == nil && len(transcriptLines) > 0 {
 			data.TokenUsage = claudecode.CalculateTokenUsage(transcriptLines)
