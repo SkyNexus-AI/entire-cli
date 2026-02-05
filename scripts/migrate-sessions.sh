@@ -13,14 +13,14 @@ set -e
 #
 # ARGUMENTS:
 #   CHECKPOINT_ID   Optional. Migrate only this checkpoint (e.g., "a1b2c3d4e5f6")
-#                   If omitted, migrates all checkpoints from entire/sessions branch.
+#                   If omitted, migrates all checkpoints from entire/sessions-legacy.
 #
 # DESCRIPTION:
 #   Migrates checkpoint data from the old format (latest session at root, archived
 #   sessions in numbered folders 1/, 2/, etc.) to the new v1 format (all sessions
 #   in 0-indexed folders 0/, 1/, 2/, with a CheckpointSummary at the root).
 #
-#   The script reads from 'entire/sessions' and writes to 'entire/sessions/v1',
+#   The script reads from 'entire/sessions-legacy' and writes to 'entire/sessions/v1',
 #   leaving the original branch untouched as a backup.
 #
 #   By default, runs in dry-run mode showing what would be migrated.
@@ -51,7 +51,7 @@ set -e
 # PREREQUISITES:
 #   - jq (JSON processor) must be installed
 #   - Clean working tree (no uncommitted changes)
-#   - The entire/sessions branch must exist
+#   - The entire/sessions-legacy branch must exist (renamed from entire/sessions)
 #   - DISABLE ALL YOUR ENTIRE GIT HOOKS FIRST (e.g., pre-commit, pre-push) to avoid issues during migration
 #
 # EXAMPLES:
@@ -67,22 +67,30 @@ set -e
 #   # Migrate a single checkpoint
 #   ./scripts/migrate-sessions.sh a1b2c3d4e5f6 --apply
 #
+# BEFORE MIGRATION:
+#   1. Rename local entire/sessions to entire/sessions-legacy:
+#      git branch -m entire/sessions entire/sessions-legacy
+#
 # AFTER MIGRATION:
 #   1. Verify the migration:
 #      git log entire/sessions/v1
 #      git show entire/sessions/v1:<checkpoint_path>/metadata.json
 #
-#   2. To switch to the new branch (DESTRUCTIVE - backup first!):
-#      git branch -m entire/sessions entire/sessions-backup
-#      git branch -m entire/sessions/v1 entire/sessions
+#   2. Rename remote entire/sessions to avoid conflict:
+#      git push origin entire/sessions:entire/sessions-old
+#      git push origin --delete entire/sessions
 #
-#   3. Push the new branch:
+#   3. Push new v1 branch to remote:
 #      git push origin entire/sessions/v1
 #
+#   4. (Optional) Delete local legacy branch:
+#      git branch -D entire/sessions-legacy
+#
 # ROLLBACK:
-#   The original entire/sessions branch is not modified. If migration fails
-#   or produces incorrect results, simply delete the v1 branch:
+#   The original branch is preserved as entire/sessions-legacy locally.
+#   If migration fails, delete the v1 branch and rename back:
 #      git branch -D entire/sessions/v1
+#      git branch -m entire/sessions-legacy entire/sessions
 #
 
 # Colors for output
