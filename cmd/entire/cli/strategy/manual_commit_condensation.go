@@ -332,10 +332,11 @@ func (s *ManualCommitStrategy) extractSessionData(repo *git.Repository, shadowRe
 		}
 	}
 
+	// Check if this is a Gemini CLI transcript (JSON format, not JSONL)
+	isGeminiFormat := agentType == agent.AgentTypeGemini || isGeminiJSONTranscript(fullTranscript)
+
 	// Process transcript based on agent type
 	if fullTranscript != "" {
-		// Check if this is a Gemini CLI transcript (JSON format, not JSONL)
-		isGeminiFormat := agentType == agent.AgentTypeGemini || isGeminiJSONTranscript(fullTranscript)
 
 		if isGeminiFormat {
 			// Gemini uses JSON format with a "messages" array
@@ -376,9 +377,8 @@ func (s *ManualCommitStrategy) extractSessionData(repo *git.Repository, shadowRe
 
 	// Calculate token usage from the extracted transcript portion
 	if len(data.Transcript) > 0 {
-		isGemini := agentType == agent.AgentTypeGemini || isGeminiJSONTranscript(string(data.Transcript))
 		// Use agent-specific parser for token calculation
-		if isGemini {
+		if isGeminiFormat {
 			// Gemini JSON format - use Gemini token parser
 			data.TokenUsage = geminicli.CalculateTokenUsage(data.Transcript, 0)
 		} else {
