@@ -895,6 +895,7 @@ func TestWriteCommitted_MultipleSessionsSameCheckpoint(t *testing.T) {
 	}
 	if summary == nil {
 		t.Fatal("ReadCommitted() returned nil summary")
+		return
 	}
 
 	// Verify Sessions array has 2 entries
@@ -983,6 +984,7 @@ func TestWriteCommitted_Aggregation(t *testing.T) {
 	}
 	if summary == nil {
 		t.Fatal("ReadCommitted() returned nil summary")
+		return
 	}
 
 	// Verify aggregated CheckpointsCount = 3 + 2 = 5
@@ -1052,6 +1054,7 @@ func TestReadCommitted_ReturnsCheckpointSummary(t *testing.T) {
 	}
 	if summary == nil {
 		t.Fatal("ReadCommitted() returned nil summary")
+		return
 	}
 
 	// Verify basic summary fields
@@ -1310,6 +1313,7 @@ func TestListCommitted_MultiSessionInfo(t *testing.T) {
 	}
 	if found == nil {
 		t.Fatal("checkpoint not found in ListCommitted() results")
+		return
 	}
 
 	// Verify SessionCount = 2
