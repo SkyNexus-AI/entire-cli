@@ -90,9 +90,9 @@ func (g *GeminiCLIAgent) InstallHooks(localDev bool, force bool) (int, error) {
 				return 0, fmt.Errorf("failed to parse hooks in settings.json: %w", err)
 			}
 		}
-		if toolsRaw, ok := rawSettings["tools"]; ok {
-			if err := json.Unmarshal(toolsRaw, &settings.Tools); err != nil {
-				return 0, fmt.Errorf("failed to parse tools in settings.json: %w", err)
+		if toolsRaw, ok := rawSettings["hooksConfig"]; ok {
+			if err := json.Unmarshal(toolsRaw, &settings.HooksConfig); err != nil {
+				return 0, fmt.Errorf("failed to parse hooksConfig in settings.json: %w", err)
 			}
 		}
 	} else {
@@ -101,8 +101,7 @@ func (g *GeminiCLIAgent) InstallHooks(localDev bool, force bool) (int, error) {
 
 	// Enable hooks in tools config and hooks config
 	// Both settings are required for Gemini CLI to execute hooks
-	settings.Tools.EnableHooks = true
-	settings.Hooks.Enabled = true
+	settings.HooksConfig.Enabled = true
 
 	// Define hook commands based on localDev mode
 	var cmdPrefix string
@@ -174,12 +173,12 @@ func (g *GeminiCLIAgent) InstallHooks(localDev bool, force bool) (int, error) {
 	// - notification (1)
 	count := 12
 
-	// Marshal tools and hooks back to raw settings
-	toolsJSON, err := json.Marshal(settings.Tools)
+	// Marshal hooksConfig and hooks back to raw settings
+	hooksConfigJSON, err := json.Marshal(settings.HooksConfig)
 	if err != nil {
-		return 0, fmt.Errorf("failed to marshal tools: %w", err)
+		return 0, fmt.Errorf("failed to marshal hooksConfig: %w", err)
 	}
-	rawSettings["tools"] = toolsJSON
+	rawSettings["hooksConfig"] = hooksConfigJSON
 
 	hooksJSON, err := json.Marshal(settings.Hooks)
 	if err != nil {
