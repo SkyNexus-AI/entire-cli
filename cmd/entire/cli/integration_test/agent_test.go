@@ -14,8 +14,8 @@ import (
 )
 
 // TestAgentDetection verifies agent detection and default behavior.
+// Not parallel - contains subtests that use os.Chdir which is process-global.
 func TestAgentDetection(t *testing.T) {
-	t.Parallel()
 
 	t.Run("defaults to claude-code when nothing configured", func(t *testing.T) {
 		t.Parallel()
@@ -33,7 +33,7 @@ func TestAgentDetection(t *testing.T) {
 	})
 
 	t.Run("claude-code detects presence when .claude exists", func(t *testing.T) {
-		t.Parallel()
+		// Not parallel - uses os.Chdir which is process-global
 		env := NewTestEnv(t)
 		env.InitRepo()
 
@@ -436,8 +436,8 @@ func TestClaudeCodeHelperMethods(t *testing.T) {
 }
 
 // TestGeminiCLIAgentDetection verifies Gemini CLI agent detection.
+// Not parallel - contains subtests that use os.Chdir which is process-global.
 func TestGeminiCLIAgentDetection(t *testing.T) {
-	t.Parallel()
 
 	t.Run("gemini agent is registered", func(t *testing.T) {
 		t.Parallel()
@@ -456,7 +456,7 @@ func TestGeminiCLIAgentDetection(t *testing.T) {
 	})
 
 	t.Run("gemini detects presence when .gemini exists", func(t *testing.T) {
-		t.Parallel()
+		// Not parallel - uses os.Chdir which is process-global
 		env := NewTestEnv(t)
 		env.InitRepo()
 
