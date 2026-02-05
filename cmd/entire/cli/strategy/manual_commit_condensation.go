@@ -375,12 +375,18 @@ func (s *ManualCommitStrategy) extractSessionData(repo *git.Repository, shadowRe
 	data.FilesTouched = filesTouched
 
 	// Calculate token usage from the extracted transcript portion
-	// TODO: Missing Gemini token usage
 	if len(data.Transcript) > 0 {
-		// TODO: Calculate token usage per transcript slice (only checkpoint related)
-		transcriptLines, err := claudecode.ParseTranscript(data.Transcript)
-		if err == nil && len(transcriptLines) > 0 {
-			data.TokenUsage = claudecode.CalculateTokenUsage(transcriptLines)
+		isGemini := agentType == agent.AgentTypeGemini || isGeminiJSONTranscript(string(data.Transcript))
+		// Use agent-specific parser for token calculation
+		if isGemini {
+			// Gemini JSON format - use Gemini token parser
+			data.TokenUsage = geminicli.CalculateTokenUsage(data.Transcript, 0)
+		} else {
+			// Claude JSONL format - use Claude token parser
+			transcriptLines, err := claudecode.ParseTranscript(data.Transcript)
+			if err == nil && len(transcriptLines) > 0 {
+				data.TokenUsage = claudecode.CalculateTokenUsage(transcriptLines)
+			}
 		}
 	}
 
