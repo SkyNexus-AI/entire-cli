@@ -26,9 +26,9 @@ func TestInstallHooks_FreshInstall(t *testing.T) {
 	// Verify settings.json was created with hooks
 	settings := readGeminiSettings(t, tempDir)
 
-	// Verify enableHooks is true
-	if !settings.Tools.EnableHooks {
-		t.Error("tools.enableHooks should be true")
+	// Verify HooksConfig.Enabled is true
+	if !settings.HooksConfig.Enabled {
+		t.Error("hooksConfig.enabled should be true")
 	}
 
 	// Verify all hooks are present

@@ -4,19 +4,18 @@ import "encoding/json"
 
 // GeminiSettings represents the .gemini/settings.json structure
 type GeminiSettings struct {
-	Tools GeminiToolsConfig `json:"tools,omitempty"`
-	Hooks GeminiHooks       `json:"hooks,omitempty"`
+	HooksConfig GeminiHooksConfig `json:"hooksConfig,omitempty"`
+	Hooks       GeminiHooks       `json:"hooks,omitempty"`
 }
 
-// GeminiToolsConfig contains tool-related settings
-type GeminiToolsConfig struct {
-	EnableHooks bool `json:"enableHooks,omitempty"`
+// GeminiHooksConfig contains tool-related settings
+type GeminiHooksConfig struct {
+	Enabled bool `json:"enabled,omitempty"`
 }
 
 // GeminiHooks contains all hook configurations
 type GeminiHooks struct {
-	// Enabled must be true for Gemini CLI to execute hooks (required in addition to tools.enableHooks)
-	Enabled             bool                `json:"enabled,omitempty"`
+	// Hooks are only executed when hooksConfig.enabled is true in .gemini/settings.json.
 	SessionStart        []GeminiHookMatcher `json:"SessionStart,omitempty"`
 	SessionEnd          []GeminiHookMatcher `json:"SessionEnd,omitempty"`
 	BeforeAgent         []GeminiHookMatcher `json:"BeforeAgent,omitempty"`
