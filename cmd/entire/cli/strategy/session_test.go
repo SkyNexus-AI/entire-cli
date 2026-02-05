@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -401,26 +402,52 @@ func createTestMultiSessionCheckpoint(t *testing.T, repo *git.Repository, checkp
 	entries := make(map[string]object.TreeEntry)
 	checkpointPath := checkpointID.Path()
 
-	// Create metadata.json with SessionIDs array
-	metadata := CheckpointInfo{
+	// Create session-level metadata for each session (0-based indexing)
+	var sessionFilePaths []checkpoint.SessionFilePaths
+	for i, sessionID := range allSessionIDs {
+		sessionDir := strconv.Itoa(i) // 0-based: 0, 1, 2, ...
+		sessionMetadata := checkpoint.CommittedMetadata{
+			CheckpointID: checkpointID,
+			SessionID:    sessionID,
+			CreatedAt:    time.Now(),
+		}
+		sessionMetadataJSON, err := json.Marshal(sessionMetadata)
+		if err != nil {
+			t.Fatalf("failed to marshal session metadata: %v", err)
+		}
+		sessionMetadataBlobHash, err := checkpoint.CreateBlobFromContent(repo, sessionMetadataJSON)
+		if err != nil {
+			t.Fatalf("failed to create session metadata blob: %v", err)
+		}
+		sessionMetadataPath := checkpointPath + "/" + sessionDir + "/" + paths.MetadataFileName
+		entries[sessionMetadataPath] = object.TreeEntry{
+			Name: sessionMetadataPath,
+			Mode: filemode.Regular,
+			Hash: sessionMetadataBlobHash,
+		}
+		// Use absolute paths with leading "/" as per new format
+		sessionFilePaths = append(sessionFilePaths, checkpoint.SessionFilePaths{
+			Metadata: "/" + checkpointPath + "/" + sessionDir + "/" + paths.MetadataFileName,
+		})
+	}
+
+	// Create root CheckpointSummary with Sessions array (using absolute paths)
+	summary := checkpoint.CheckpointSummary{
 		CheckpointID: checkpointID,
-		SessionID:    primarySessionID,
-		SessionCount: len(allSessionIDs),
-		SessionIDs:   allSessionIDs,
-		CreatedAt:    time.Now(),
+		Sessions:     sessionFilePaths,
 	}
-	metadataJSON, err := json.Marshal(metadata)
+	summaryJSON, err := json.Marshal(summary)
 	if err != nil {
-		t.Fatalf("failed to marshal metadata: %v", err)
+		t.Fatalf("failed to marshal summary: %v", err)
 	}
-	metadataBlobHash, err := checkpoint.CreateBlobFromContent(repo, metadataJSON)
+	summaryBlobHash, err := checkpoint.CreateBlobFromContent(repo, summaryJSON)
 	if err != nil {
-		t.Fatalf("failed to create metadata blob: %v", err)
+		t.Fatalf("failed to create summary blob: %v", err)
 	}
 	entries[checkpointPath+"/"+paths.MetadataFileName] = object.TreeEntry{
 		Name: checkpointPath + "/" + paths.MetadataFileName,
 		Mode: filemode.Regular,
-		Hash: metadataBlobHash,
+		Hash: summaryBlobHash,
 	}
 
 	// Build tree
@@ -473,38 +500,70 @@ func createTestMetadataBranchWithPrompt(t *testing.T, repo *git.Repository, sess
 	// Create empty tree for orphan commit
 	entries := make(map[string]object.TreeEntry)
 
-	// Add metadata.json
 	checkpointPath := checkpointID.Path()
-	metadata := CheckpointInfo{
+	sessionDir := "0" // First session (0-based indexing)
+
+	// Create session-level metadata in 1/ subdirectory
+	sessionMetadata := CheckpointInfo{
 		CheckpointID: checkpointID,
 		SessionID:    sessionID,
 		CreatedAt:    time.Now(),
 	}
-	metadataJSON, err := json.Marshal(metadata)
+	sessionMetadataJSON, err := json.Marshal(sessionMetadata)
 	if err != nil {
-		t.Fatalf("failed to marshal metadata: %v", err)
+		t.Fatalf("failed to marshal session metadata: %v", err)
 	}
-	metadataBlobHash, err := checkpoint.CreateBlobFromContent(repo, metadataJSON)
+	sessionMetadataBlobHash, err := checkpoint.CreateBlobFromContent(repo, sessionMetadataJSON)
 	if err != nil {
-		t.Fatalf("failed to create metadata blob: %v", err)
+		t.Fatalf("failed to create session metadata blob: %v", err)
 	}
-	entries[checkpointPath+"/"+paths.MetadataFileName] = object.TreeEntry{
-		Name: checkpointPath + "/" + paths.MetadataFileName,
+	sessionMetadataPath := checkpointPath + "/" + sessionDir + "/" + paths.MetadataFileName
+	entries[sessionMetadataPath] = object.TreeEntry{
+		Name: sessionMetadataPath,
 		Mode: filemode.Regular,
-		Hash: metadataBlobHash,
+		Hash: sessionMetadataBlobHash,
 	}
 
-	// Add prompt.txt if provided
+	// Add prompt.txt in session subdirectory if provided
+	promptAbsPath := ""
 	if prompt != "" {
 		promptBlobHash, promptErr := checkpoint.CreateBlobFromContent(repo, []byte(prompt))
 		if promptErr != nil {
 			t.Fatalf("failed to create prompt blob: %v", promptErr)
 		}
-		entries[checkpointPath+"/"+paths.PromptFileName] = object.TreeEntry{
-			Name: checkpointPath + "/" + paths.PromptFileName,
+		fullPromptPath := checkpointPath + "/" + sessionDir + "/" + paths.PromptFileName
+		entries[fullPromptPath] = object.TreeEntry{
+			Name: fullPromptPath,
 			Mode: filemode.Regular,
 			Hash: promptBlobHash,
 		}
+		// Use absolute path with leading "/"
+		promptAbsPath = "/" + fullPromptPath
+	}
+
+	// Create root CheckpointSummary with absolute paths
+	rootSummary := checkpoint.CheckpointSummary{
+		CheckpointID: checkpointID,
+		Sessions: []checkpoint.SessionFilePaths{
+			{
+				Metadata: "/" + checkpointPath + "/" + sessionDir + "/" + paths.MetadataFileName,
+				Prompt:   promptAbsPath,
+			},
+		},
+	}
+	summaryJSON, err := json.Marshal(rootSummary)
+	if err != nil {
+		t.Fatalf("failed to marshal root summary: %v", err)
+	}
+	summaryBlobHash, err := checkpoint.CreateBlobFromContent(repo, summaryJSON)
+	if err != nil {
+		t.Fatalf("failed to create summary blob: %v", err)
+	}
+	rootMetadataPath := checkpointPath + "/" + paths.MetadataFileName
+	entries[rootMetadataPath] = object.TreeEntry{
+		Name: rootMetadataPath,
+		Mode: filemode.Regular,
+		Hash: summaryBlobHash,
 	}
 
 	// Build tree

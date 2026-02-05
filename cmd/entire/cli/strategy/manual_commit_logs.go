@@ -1,10 +1,12 @@
 package strategy
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
 
+	"entire.io/cli/cmd/entire/cli/checkpoint"
 	"entire.io/cli/cmd/entire/cli/paths"
 	"entire.io/cli/cmd/entire/cli/trailers"
 
@@ -94,7 +96,7 @@ func (s *ManualCommitStrategy) GetSessionMetadataRef(_ string) string {
 }
 
 // GetSessionContext returns the context.md content for a session.
-// For manual-commit strategy, reads from the entire/sessions branch using sharded paths.
+// For manual-commit strategy, reads from the entire/sessions branch using the sessions map.
 func (s *ManualCommitStrategy) GetSessionContext(sessionID string) string {
 	// Find a checkpoint for this session
 	checkpoints, err := s.getCheckpointsForSession(sessionID)
@@ -130,8 +132,46 @@ func (s *ManualCommitStrategy) GetSessionContext(sessionID string) string {
 		return ""
 	}
 
-	// Context.md is at <sharded-path>/context.md
-	contextPath := paths.CheckpointPath(checkpointID) + "/" + paths.ContextFileName
+	// Get checkpoint tree to read the sessions summary
+	checkpointTree, err := tree.Tree(checkpointID.Path())
+	if err != nil {
+		return ""
+	}
+
+	// Read root metadata to find session's context path from sessions map
+	metadataFile, err := checkpointTree.File(paths.MetadataFileName)
+	if err != nil {
+		return ""
+	}
+
+	metadataContent, err := metadataFile.Contents()
+	if err != nil {
+		return ""
+	}
+
+	var summary checkpoint.CheckpointSummary
+	if err := json.Unmarshal([]byte(metadataContent), &summary); err != nil {
+		return ""
+	}
+
+	// Look up context path from sessions array
+	// Try to find the session by reading each session's metadata, or fall back to latest
+	var sessionPaths checkpoint.SessionFilePaths
+	if len(summary.Sessions) > 0 {
+		// Use the latest session by default (last entry in the array)
+		latestIndex := len(summary.Sessions) - 1
+		sessionPaths = summary.Sessions[latestIndex]
+	} else {
+		return ""
+	}
+
+	// Read context using absolute path from root tree
+	// SessionFilePaths now contains absolute paths like "/a1/b2c3d4e5f6/1/context.md"
+	if sessionPaths.Context == "" {
+		return ""
+	}
+	// Strip leading "/" for tree.File() which expects paths without leading slash
+	contextPath := strings.TrimPrefix(sessionPaths.Context, "/")
 	file, err := tree.File(contextPath)
 	if err != nil {
 		return ""

@@ -135,11 +135,40 @@ func ListCheckpoints() ([]CheckpointInfo, error) {
 				CheckpointID: checkpointID,
 			}
 
-			// Get details from metadata file
+			// Get details from metadata file (CheckpointSummary format)
 			if metadataFile, fileErr := checkpointTree.File(paths.MetadataFileName); fileErr == nil {
 				if content, contentErr := metadataFile.Contents(); contentErr == nil {
-					//nolint:errcheck,gosec // Best-effort parsing, defaults are fine
-					json.Unmarshal([]byte(content), &info)
+					var summary checkpoint.CheckpointSummary
+					if json.Unmarshal([]byte(content), &summary) == nil && len(summary.Sessions) > 0 {
+						info.CheckpointsCount = summary.CheckpointsCount
+						info.FilesTouched = summary.FilesTouched
+						info.SessionCount = len(summary.Sessions)
+
+						// Read session-level metadata for Agent, SessionID, CreatedAt, SessionIDs
+						for i, sessionPaths := range summary.Sessions {
+							if sessionPaths.Metadata != "" {
+								// SessionFilePaths now contains absolute paths with leading "/"
+								// Strip the leading "/" for tree.File() which expects paths without leading slash
+								sessionMetadataPath := strings.TrimPrefix(sessionPaths.Metadata, "/")
+								if sessionFile, sErr := tree.File(sessionMetadataPath); sErr == nil {
+									if sessionContent, scErr := sessionFile.Contents(); scErr == nil {
+										var sessionMetadata checkpoint.CommittedMetadata
+										if json.Unmarshal([]byte(sessionContent), &sessionMetadata) == nil {
+											info.SessionIDs = append(info.SessionIDs, sessionMetadata.SessionID)
+											// Use first session's metadata for Agent, SessionID, CreatedAt
+											if i == 0 {
+												info.Agent = sessionMetadata.Agent
+												info.SessionID = sessionMetadata.SessionID
+												info.CreatedAt = sessionMetadata.CreatedAt
+												info.IsTask = sessionMetadata.IsTask
+												info.ToolUseID = sessionMetadata.ToolUseID
+											}
+										}
+									}
+								}
+							}
+						}
+					}
 				}
 			}
 
@@ -225,6 +254,9 @@ func EnsureMetadataBranch(repo *git.Repository) error {
 }
 
 // readCheckpointMetadata reads metadata.json from a checkpoint path on entire/sessions.
+// With the new format, root metadata.json is a CheckpointSummary with Agents array.
+// This function reads the summary and extracts relevant fields into CheckpointInfo,
+// also reading session-level metadata for IsTask/ToolUseID fields.
 func ReadCheckpointMetadata(tree *object.Tree, checkpointPath string) (*CheckpointInfo, error) {
 	metadataPath := checkpointPath + "/metadata.json"
 	file, err := tree.File(metadataPath)
@@ -237,6 +269,50 @@ func ReadCheckpointMetadata(tree *object.Tree, checkpointPath string) (*Checkpoi
 		return nil, fmt.Errorf("failed to read metadata: %w", err)
 	}
 
+	// Try to parse as CheckpointSummary first (new format)
+	var summary checkpoint.CheckpointSummary
+	if err := json.Unmarshal([]byte(content), &summary); err == nil {
+		// If we have sessions array, this is the new format
+		if len(summary.Sessions) > 0 {
+			info := &CheckpointInfo{
+				CheckpointID:     summary.CheckpointID,
+				CheckpointsCount: summary.CheckpointsCount,
+				FilesTouched:     summary.FilesTouched,
+				SessionCount:     len(summary.Sessions),
+			}
+
+			// Read all sessions' metadata to populate SessionIDs and get other fields from first session
+			var sessionIDs []string
+			for i, sessionPaths := range summary.Sessions {
+				if sessionPaths.Metadata != "" {
+					// SessionFilePaths now contains absolute paths with leading "/"
+					// Strip the leading "/" for tree.File() which expects paths without leading slash
+					sessionMetadataPath := strings.TrimPrefix(sessionPaths.Metadata, "/")
+					if sessionFile, err := tree.File(sessionMetadataPath); err == nil {
+						if sessionContent, err := sessionFile.Contents(); err == nil {
+							var sessionMetadata checkpoint.CommittedMetadata
+							if json.Unmarshal([]byte(sessionContent), &sessionMetadata) == nil {
+								sessionIDs = append(sessionIDs, sessionMetadata.SessionID)
+								// Use first session for Agent, SessionID, CreatedAt, IsTask, ToolUseID
+								if i == 0 {
+									info.Agent = sessionMetadata.Agent
+									info.SessionID = sessionMetadata.SessionID
+									info.CreatedAt = sessionMetadata.CreatedAt
+									info.IsTask = sessionMetadata.IsTask
+									info.ToolUseID = sessionMetadata.ToolUseID
+								}
+							}
+						}
+					}
+				}
+			}
+			info.SessionIDs = sessionIDs
+
+			return info, nil
+		}
+	}
+
+	// Fall back to parsing as CheckpointInfo (old format or direct info)
 	var metadata CheckpointInfo
 	if err := json.Unmarshal([]byte(content), &metadata); err != nil {
 		return nil, fmt.Errorf("failed to parse metadata: %w", err)
@@ -334,13 +410,13 @@ func ReadAllSessionPromptsFromTree(tree *object.Tree, checkpointPath string, ses
 		return nil
 	}
 
-	// Multi-session: read prompts from archived folders (1/, 2/, etc.) and root
+	// Multi-session: read prompts from archived folders (0/, 1/, etc.) and root
 	prompts := make([]string, len(sessionIDs))
 
-	// Read archived session prompts (folders 1, 2, ... N-1)
-	for i := 1; i < sessionCount; i++ {
+	// Read archived session prompts (folders 0, 1, ... N-2)
+	for i := range sessionCount - 1 {
 		archivedPath := fmt.Sprintf("%s/%d", checkpointPath, i)
-		prompts[i-1] = ReadSessionPromptFromTree(tree, archivedPath)
+		prompts[i] = ReadSessionPromptFromTree(tree, archivedPath)
 	}
 
 	// Read the most recent session prompt (at root level)

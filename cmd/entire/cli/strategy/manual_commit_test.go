@@ -1775,11 +1775,11 @@ func TestCondenseSession_IncludesInitialAttribution(t *testing.T) {
 		t.Fatalf("failed to get tree: %v", err)
 	}
 
-	// Read metadata.json
-	metadataPath := checkpointID.Path() + "/" + paths.MetadataFileName
-	metadataFile, err := tree.File(metadataPath)
+	// InitialAttribution is stored in session-level metadata (0/metadata.json), not root (0-based indexing)
+	sessionMetadataPath := checkpointID.Path() + "/0/" + paths.MetadataFileName
+	metadataFile, err := tree.File(sessionMetadataPath)
 	if err != nil {
-		t.Fatalf("failed to find metadata.json at %s: %v", metadataPath, err)
+		t.Fatalf("failed to find session metadata.json at %s: %v", sessionMetadataPath, err)
 	}
 
 	content, err := metadataFile.Contents()
@@ -1803,7 +1803,7 @@ func TestCondenseSession_IncludesInitialAttribution(t *testing.T) {
 	}
 
 	if metadata.InitialAttribution == nil {
-		t.Fatal("InitialAttribution should be present in metadata.json for manual-commit")
+		t.Fatal("InitialAttribution should be present in session metadata.json for manual-commit")
 	}
 
 	// Verify the attribution values are reasonable
@@ -2106,10 +2106,11 @@ func TestMultiCheckpoint_UserEditsBetweenCheckpoints(t *testing.T) {
 		t.Fatalf("failed to get tree: %v", err)
 	}
 
-	metadataPath := checkpointID.Path() + "/" + paths.MetadataFileName
-	metadataFile, err := tree.File(metadataPath)
+	// InitialAttribution is stored in session-level metadata (0/metadata.json), not root (0-based indexing)
+	sessionMetadataPath := checkpointID.Path() + "/0/" + paths.MetadataFileName
+	metadataFile, err := tree.File(sessionMetadataPath)
 	if err != nil {
-		t.Fatalf("failed to find metadata.json at %s: %v", metadataPath, err)
+		t.Fatalf("failed to find session metadata.json at %s: %v", sessionMetadataPath, err)
 	}
 
 	content, err := metadataFile.Contents()
@@ -2132,7 +2133,7 @@ func TestMultiCheckpoint_UserEditsBetweenCheckpoints(t *testing.T) {
 	}
 
 	if metadata.InitialAttribution == nil {
-		t.Fatal("InitialAttribution should be present")
+		t.Fatal("InitialAttribution should be present in session metadata")
 	}
 
 	t.Logf("Final Attribution: agent=%d, human_added=%d, human_modified=%d, human_removed=%d, total=%d, percentage=%.1f%%",

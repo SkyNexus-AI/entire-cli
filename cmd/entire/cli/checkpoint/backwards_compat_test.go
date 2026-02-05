@@ -67,17 +67,17 @@ func TestReadCommitted_MissingTokenUsage(t *testing.T) {
 	}
 
 	// Reading should succeed with nil TokenUsage
-	result, err := store.ReadCommitted(context.Background(), checkpointID)
+	summary, err := store.ReadCommitted(context.Background(), checkpointID)
 	if err != nil {
 		t.Fatalf("ReadCommitted() error = %v", err)
 	}
 
-	if result.Metadata.CheckpointID != checkpointID {
-		t.Errorf("CheckpointID = %v, want %v", result.Metadata.CheckpointID, checkpointID)
+	if summary.CheckpointID != checkpointID {
+		t.Errorf("CheckpointID = %v, want %v", summary.CheckpointID, checkpointID)
 	}
 
 	// TokenUsage should be nil for old checkpoints without token tracking
-	if result.Metadata.TokenUsage != nil {
-		t.Errorf("TokenUsage should be nil for metadata without token_usage field, got %+v", result.Metadata.TokenUsage)
+	if summary.TokenUsage != nil {
+		t.Errorf("TokenUsage should be nil for metadata without token_usage field, got %+v", summary.TokenUsage)
 	}
 }

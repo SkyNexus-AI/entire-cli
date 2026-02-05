@@ -242,37 +242,40 @@ func runExplainCheckpoint(w, errW io.Writer, checkpointIDPrefix string, noPager,
 		return fmt.Errorf("ambiguous checkpoint prefix %q matches %d checkpoints: %s", checkpointIDPrefix, len(matches), strings.Join(examples, ", "))
 	}
 
-	// Load checkpoint data
-	result, err := store.ReadCommitted(context.Background(), fullCheckpointID)
+	// Load checkpoint summary
+	summary, err := store.ReadCommitted(context.Background(), fullCheckpointID)
 	if err != nil {
 		return fmt.Errorf("failed to read checkpoint: %w", err)
 	}
-	if result == nil {
+	if summary == nil {
 		return fmt.Errorf("checkpoint not found: %s", fullCheckpointID)
+	}
+
+	// Load latest session content (needed for transcript and metadata)
+	content, err := store.ReadLatestSessionContent(context.Background(), fullCheckpointID)
+	if err != nil {
+		return fmt.Errorf("failed to read checkpoint content: %w", err)
 	}
 
 	// Handle summary generation
 	if generate {
-		if err := generateCheckpointSummary(w, errW, store, fullCheckpointID, result, force); err != nil {
+		if err := generateCheckpointSummary(w, errW, store, fullCheckpointID, summary, content, force); err != nil {
 			return err
 		}
-		// Reload the result to get the updated summary
-		result, err = store.ReadCommitted(context.Background(), fullCheckpointID)
+		// Reload the content to get the updated summary
+		content, err = store.ReadLatestSessionContent(context.Background(), fullCheckpointID)
 		if err != nil {
 			return fmt.Errorf("failed to reload checkpoint: %w", err)
-		}
-		if result == nil {
-			return fmt.Errorf("checkpoint not found after save: %s", fullCheckpointID)
 		}
 	}
 
 	// Handle raw transcript output
 	if rawTranscript {
-		if len(result.Transcript) == 0 {
+		if len(content.Transcript) == 0 {
 			return fmt.Errorf("checkpoint %s has no transcript", fullCheckpointID)
 		}
 		// Output raw transcript directly (no pager, no formatting)
-		if _, err = w.Write(result.Transcript); err != nil {
+		if _, err = w.Write(content.Transcript); err != nil {
 			return fmt.Errorf("failed to write transcript: %w", err)
 		}
 		return nil
@@ -285,7 +288,7 @@ func runExplainCheckpoint(w, errW io.Writer, checkpointIDPrefix string, noPager,
 	associatedCommits, _ := getAssociatedCommits(repo, fullCheckpointID, searchAll) //nolint:errcheck // Best-effort
 
 	// Format and output
-	output := formatCheckpointOutput(result, fullCheckpointID, associatedCommits, author, verbose, full)
+	output := formatCheckpointOutput(summary, content, fullCheckpointID, associatedCommits, author, verbose, full)
 	outputExplainContent(w, output, noPager)
 	return nil
 }
@@ -293,19 +296,19 @@ func runExplainCheckpoint(w, errW io.Writer, checkpointIDPrefix string, noPager,
 // generateCheckpointSummary generates an AI summary for a checkpoint and persists it.
 // The summary is generated from the scoped transcript (only this checkpoint's portion),
 // not the entire session transcript.
-func generateCheckpointSummary(w, _ io.Writer, store *checkpoint.GitStore, checkpointID id.CheckpointID, result *checkpoint.ReadCommittedResult, force bool) error {
+func generateCheckpointSummary(w, _ io.Writer, store *checkpoint.GitStore, checkpointID id.CheckpointID, cpSummary *checkpoint.CheckpointSummary, content *checkpoint.SessionContent, force bool) error {
 	// Check if summary already exists
-	if result.Metadata.Summary != nil && !force {
+	if content.Metadata.Summary != nil && !force {
 		return fmt.Errorf("checkpoint %s already has a summary (use --force to regenerate)", checkpointID)
 	}
 
 	// Check if transcript exists
-	if len(result.Transcript) == 0 {
+	if len(content.Transcript) == 0 {
 		return fmt.Errorf("checkpoint %s has no transcript to summarize", checkpointID)
 	}
 
 	// Scope the transcript to only this checkpoint's portion
-	scopedTranscript := scopeTranscriptForCheckpoint(result.Transcript, result.Metadata.TranscriptLinesAtStart)
+	scopedTranscript := scopeTranscriptForCheckpoint(content.Transcript, content.Metadata.TranscriptLinesAtStart)
 	if len(scopedTranscript) == 0 {
 		return fmt.Errorf("checkpoint %s has no transcript content for this checkpoint (scoped)", checkpointID)
 	}
@@ -314,7 +317,7 @@ func generateCheckpointSummary(w, _ io.Writer, store *checkpoint.GitStore, check
 	ctx := context.Background()
 	logging.Info(ctx, "generating checkpoint summary")
 
-	summary, err := summarize.GenerateFromTranscript(ctx, scopedTranscript, result.Metadata.FilesTouched, nil)
+	summary, err := summarize.GenerateFromTranscript(ctx, scopedTranscript, cpSummary.FilesTouched, nil)
 	if err != nil {
 		return fmt.Errorf("failed to generate summary: %w", err)
 	}
@@ -578,14 +581,14 @@ func extractPromptsFromTranscript(transcriptBytes []byte) []string {
 //
 // Author is displayed when available (only for committed checkpoints).
 // Associated commits are git commits that reference this checkpoint via Entire-Checkpoint trailer.
-func formatCheckpointOutput(result *checkpoint.ReadCommittedResult, checkpointID id.CheckpointID, associatedCommits []associatedCommit, author checkpoint.Author, verbose, full bool) string {
+func formatCheckpointOutput(summary *checkpoint.CheckpointSummary, content *checkpoint.SessionContent, checkpointID id.CheckpointID, associatedCommits []associatedCommit, author checkpoint.Author, verbose, full bool) string {
 	var sb strings.Builder
-	meta := result.Metadata
+	meta := content.Metadata
 
 	// Scope the transcript to this checkpoint's portion
 	// If TranscriptLinesAtStart > 0, we slice the transcript to only include
 	// lines from that point onwards (excluding earlier checkpoint content)
-	scopedTranscript := scopeTranscriptForCheckpoint(result.Transcript, meta.TranscriptLinesAtStart)
+	scopedTranscript := scopeTranscriptForCheckpoint(content.Transcript, meta.TranscriptLinesAtStart)
 
 	// Extract prompts from the scoped transcript for intent extraction
 	scopedPrompts := extractPromptsFromTranscript(scopedTranscript)
@@ -601,10 +604,14 @@ func formatCheckpointOutput(result *checkpoint.ReadCommittedResult, checkpointID
 		fmt.Fprintf(&sb, "Author: %s <%s>\n", author.Name, author.Email)
 	}
 
-	// Token usage
-	if meta.TokenUsage != nil {
-		totalTokens := meta.TokenUsage.InputTokens + meta.TokenUsage.CacheCreationTokens +
-			meta.TokenUsage.CacheReadTokens + meta.TokenUsage.OutputTokens
+	// Token usage - prefer content metadata, fall back to summary
+	tokenUsage := meta.TokenUsage
+	if tokenUsage == nil && summary != nil {
+		tokenUsage = summary.TokenUsage
+	}
+	if tokenUsage != nil {
+		totalTokens := tokenUsage.InputTokens + tokenUsage.CacheCreationTokens +
+			tokenUsage.CacheReadTokens + tokenUsage.OutputTokens
 		fmt.Fprintf(&sb, "Tokens: %d\n", totalTokens)
 	}
 
@@ -632,9 +639,9 @@ func formatCheckpointOutput(result *checkpoint.ReadCommittedResult, checkpointID
 		intent := "(not generated)"
 		if len(scopedPrompts) > 0 && scopedPrompts[0] != "" {
 			intent = strategy.TruncateDescription(scopedPrompts[0], maxIntentDisplayLength)
-		} else if result.Prompts != "" {
+		} else if content.Prompts != "" {
 			// Backwards compatibility: use stored prompts if no transcript available
-			lines := strings.Split(result.Prompts, "\n")
+			lines := strings.Split(content.Prompts, "\n")
 			if len(lines) > 0 && lines[0] != "" {
 				intent = strategy.TruncateDescription(lines[0], maxIntentDisplayLength)
 			}
@@ -664,7 +671,7 @@ func formatCheckpointOutput(result *checkpoint.ReadCommittedResult, checkpointID
 	}
 
 	// Transcript section: full shows entire session, verbose shows checkpoint scope
-	appendTranscriptSection(&sb, verbose, full, result.Transcript, scopedTranscript, result.Prompts)
+	appendTranscriptSection(&sb, verbose, full, content.Transcript, scopedTranscript, content.Prompts)
 
 	return sb.String()
 }
@@ -920,12 +927,12 @@ func getBranchCheckpoints(repo *git.Repository, limit int) ([]strategy.RewindPoi
 			Agent:            cpInfo.Agent,
 		}
 		// Read session prompt from metadata branch (best-effort)
-		result, _ := store.ReadCommitted(context.Background(), cpID) //nolint:errcheck  // Best-effort
-		if result != nil {
+		content, _ := store.ReadLatestSessionContent(context.Background(), cpID) //nolint:errcheck  // Best-effort
+		if content != nil {
 			// Scope the transcript to this checkpoint's portion
 			// If TranscriptLinesAtStart > 0, we slice the transcript to only include
 			// lines from that point onwards (excluding earlier checkpoint content)
-			scopedTranscript := scopeTranscriptForCheckpoint(result.Transcript, result.Metadata.TranscriptLinesAtStart)
+			scopedTranscript := scopeTranscriptForCheckpoint(content.Transcript, content.Metadata.TranscriptLinesAtStart)
 			// Extract prompts from the scoped transcript (not the full session's prompts)
 			scopedPrompts := extractPromptsFromTranscript(scopedTranscript)
 			if len(scopedPrompts) > 0 && scopedPrompts[0] != "" {
