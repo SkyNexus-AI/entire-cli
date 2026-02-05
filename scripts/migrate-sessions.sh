@@ -173,6 +173,30 @@ checkpoint_to_path() {
     echo "${id:0:2}/${id:2}"
 }
 
+# Retry a git command with exponential backoff (handles index.lock race conditions)
+# Args: $@ = command to run
+git_retry() {
+    local max_attempts=5
+    local attempt=1
+    local wait_time=0.2
+
+    while [[ $attempt -le $max_attempts ]]; do
+        if "$@" 2>&1; then
+            return 0
+        fi
+
+        if [[ $attempt -lt $max_attempts ]]; then
+            echo "    Retrying in ${wait_time}s (attempt $attempt/$max_attempts)..." >&2
+            sleep "$wait_time"
+            wait_time=$(echo "$wait_time * 2" | bc)
+        fi
+        ((attempt++))
+    done
+
+    echo "    Failed after $max_attempts attempts" >&2
+    return 1
+}
+
 # Check if a checkpoint is up-to-date on target branch (same source commit)
 # Args: $1 = checkpoint path, $2 = source commit hash
 # Returns 0 if exists and up-to-date, 1 otherwise
@@ -479,10 +503,10 @@ if [[ -n "$CHECKPOINT_FILTER" ]]; then
     # Cleanup
     git worktree remove "$TEMP_DIR" --force 2>/dev/null || rm -rf "$TEMP_DIR"
 
-    # Commit with original author
-    git add "$CHECKPOINT_PATH"
+    # Commit with original author (with retry for lock issues)
+    git_retry git add "$CHECKPOINT_PATH"
     if ! git diff --cached --quiet; then
-        git commit --author="$COMMIT_AUTHOR" -m "Migrate checkpoint: $CHECKPOINT_FILTER"
+        git_retry git commit --author="$COMMIT_AUTHOR" -m "Migrate checkpoint: $CHECKPOINT_FILTER"
         echo -e "${GREEN}Committed (author: $COMMIT_AUTHOR)${NC}"
     else
         echo -e "${YELLOW}No changes${NC}"
@@ -609,14 +633,14 @@ for COMMIT in $COMMITS; do
     # Cleanup worktree
     git worktree remove "$TEMP_DIR" --force 2>/dev/null || rm -rf "$TEMP_DIR"
 
-    # Only add the specific checkpoint directories we processed
+    # Only add the specific checkpoint directories we processed (with retry for lock issues)
     for DIR in $PROCESSED_DIRS; do
-        git add "$DIR"
+        git_retry git add "$DIR"
     done
 
-    # Commit changes with original author
+    # Commit changes with original author (with retry for lock issues)
     if ! git diff --cached --quiet; then
-        git commit --author="$COMMIT_AUTHOR" -m "$COMMIT_MSG"
+        git_retry git commit --author="$COMMIT_AUTHOR" -m "$COMMIT_MSG"
         echo -e "  ${GREEN}Committed (author: $COMMIT_AUTHOR)${NC}"
     else
         echo -e "  ${YELLOW}No changes${NC}"
