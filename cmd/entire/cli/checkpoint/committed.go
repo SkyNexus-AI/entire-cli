@@ -21,6 +21,7 @@ import (
 	"github.com/entireio/cli/cmd/entire/cli/paths"
 	"github.com/entireio/cli/cmd/entire/cli/trailers"
 	"github.com/entireio/cli/cmd/entire/cli/validation"
+	"github.com/entireio/cli/redact"
 
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
@@ -153,6 +154,7 @@ func (s *GitStore) writeIncrementalTaskCheckpoint(opts WriteCommittedOptions, ta
 	if err != nil {
 		return "", fmt.Errorf("failed to marshal incremental checkpoint: %w", err)
 	}
+	cpData = redact.Bytes(cpData)
 	cpBlobHash, err := CreateBlobFromContent(s.repo, cpData)
 	if err != nil {
 		return "", fmt.Errorf("failed to create incremental checkpoint blob: %w", err)
@@ -196,6 +198,7 @@ func (s *GitStore) writeFinalTaskCheckpoint(opts WriteCommittedOptions, taskPath
 	if opts.SubagentTranscriptPath != "" && opts.AgentID != "" {
 		agentContent, readErr := os.ReadFile(opts.SubagentTranscriptPath)
 		if readErr == nil {
+			agentContent = redact.JSONLBytes(agentContent)
 			agentBlobHash, agentBlobErr := CreateBlobFromContent(s.repo, agentContent)
 			if agentBlobErr == nil {
 				agentPath := taskPath + "agent-" + opts.AgentID + ".jsonl"
@@ -276,7 +279,7 @@ func (s *GitStore) writeSessionToSubdirectory(opts WriteCommittedOptions, sessio
 
 	// Write prompts
 	if len(opts.Prompts) > 0 {
-		promptContent := strings.Join(opts.Prompts, "\n\n---\n\n")
+		promptContent := redact.String(strings.Join(opts.Prompts, "\n\n---\n\n"))
 		blobHash, err := CreateBlobFromContent(s.repo, []byte(promptContent))
 		if err != nil {
 			return filePaths, err
@@ -291,7 +294,7 @@ func (s *GitStore) writeSessionToSubdirectory(opts WriteCommittedOptions, sessio
 
 	// Write context
 	if len(opts.Context) > 0 {
-		blobHash, err := CreateBlobFromContent(s.repo, opts.Context)
+		blobHash, err := CreateBlobFromContent(s.repo, redact.Bytes(opts.Context))
 		if err != nil {
 			return filePaths, err
 		}
@@ -444,6 +447,9 @@ func (s *GitStore) writeTranscript(opts WriteCommittedOptions, basePath string, 
 	if len(transcript) == 0 {
 		return nil
 	}
+
+	// Redact secrets before chunking so content hash reflects redacted content
+	transcript = redact.JSONLBytes(transcript)
 
 	// Chunk the transcript if it's too large
 	chunks, err := agent.ChunkTranscript(transcript, opts.Agent)
@@ -1036,8 +1042,8 @@ func (s *GitStore) copyMetadataDir(metadataDir, basePath string, entries map[str
 			return fmt.Errorf("path traversal detected: %s", relPath)
 		}
 
-		// Create blob from file
-		blobHash, mode, err := createBlobFromFile(s.repo, path)
+		// Create blob from file with secrets redaction
+		blobHash, mode, err := createRedactedBlobFromFile(s.repo, path, relPath)
 		if err != nil {
 			return fmt.Errorf("failed to create blob for %s: %w", path, err)
 		}
@@ -1056,6 +1062,37 @@ func (s *GitStore) copyMetadataDir(metadataDir, basePath string, entries map[str
 		return fmt.Errorf("failed to walk metadata directory: %w", err)
 	}
 	return nil
+}
+
+// createRedactedBlobFromFile reads a file, applies secrets redaction, and creates a git blob.
+// JSONL files get JSONL-aware redaction; all other files get plain string redaction.
+func createRedactedBlobFromFile(repo *git.Repository, filePath, treePath string) (plumbing.Hash, filemode.FileMode, error) {
+	info, err := os.Stat(filePath)
+	if err != nil {
+		return plumbing.ZeroHash, 0, fmt.Errorf("failed to stat file: %w", err)
+	}
+
+	mode := filemode.Regular
+	if info.Mode()&0o111 != 0 {
+		mode = filemode.Executable
+	}
+
+	content, err := os.ReadFile(filePath) //nolint:gosec // filePath comes from walking the metadata directory
+	if err != nil {
+		return plumbing.ZeroHash, 0, fmt.Errorf("failed to read file: %w", err)
+	}
+
+	if strings.HasSuffix(treePath, ".jsonl") {
+		content = redact.JSONLBytes(content)
+	} else {
+		content = redact.Bytes(content)
+	}
+
+	hash, err := CreateBlobFromContent(repo, content)
+	if err != nil {
+		return plumbing.ZeroHash, 0, fmt.Errorf("failed to create blob: %w", err)
+	}
+	return hash, mode, nil
 }
 
 // getGitAuthorFromRepo retrieves the git user.name and user.email from the repository config.

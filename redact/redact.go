@@ -13,8 +13,8 @@ var secretPattern = regexp.MustCompile(`[A-Za-z0-9/+_=-]{10,}`)
 
 const entropyThreshold = 4.5
 
-// RedactString replaces high-entropy strings matching secretPattern with [REDACTED].
-func RedactString(s string) string {
+// String replaces high-entropy strings matching secretPattern with [REDACTED].
+func String(s string) string {
 	locs := secretPattern.FindAllStringIndex(s, -1)
 	if len(locs) == 0 {
 		return s
@@ -35,10 +35,30 @@ func RedactString(s string) string {
 	return b.String()
 }
 
-// RedactJSONLContent parses each line as JSON to determine which string values
+// Bytes is a convenience wrapper around String for []byte content.
+func Bytes(b []byte) []byte {
+	s := string(b)
+	redacted := String(s)
+	if redacted == s {
+		return b
+	}
+	return []byte(redacted)
+}
+
+// JSONLBytes is a convenience wrapper around JSONLContent for []byte content.
+func JSONLBytes(b []byte) []byte {
+	s := string(b)
+	redacted := JSONLContent(s)
+	if redacted == s {
+		return b
+	}
+	return []byte(redacted)
+}
+
+// JSONLContent parses each line as JSON to determine which string values
 // need redaction, then performs targeted replacements on the raw JSON bytes.
 // Lines with no secrets are returned unchanged, preserving original formatting.
-func RedactJSONLContent(content string) string {
+func JSONLContent(content string) string {
 	lines := strings.Split(content, "\n")
 	var b strings.Builder
 	for i, line := range lines {
@@ -94,7 +114,7 @@ func collectJSONLReplacements(v any) [][2]string {
 				walk(child)
 			}
 		case string:
-			redacted := RedactString(val)
+			redacted := String(val)
 			if redacted != val && !seen[val] {
 				seen[val] = true
 				repls = append(repls, [2]string{val, redacted})
@@ -141,39 +161,6 @@ func shannonEntropy(s string) float64 {
 		entropy -= p * math.Log2(p)
 	}
 	return entropy
-}
-
-// findSecrets calls onMatch for each high-entropy secret found in s.
-func findSecrets(s string, onMatch func(secret string)) {
-	for _, loc := range secretPattern.FindAllStringIndex(s, -1) {
-		match := s[loc[0]:loc[1]]
-		if isSecret(match) {
-			onMatch(match)
-		}
-	}
-}
-
-// scanJSONValue recursively walks a parsed JSON value, scanning string values
-// for high-entropy secrets. Fields with skipped keys are excluded.
-func scanJSONValue(v any, parentKey string, onMatch func(secret string)) {
-	switch val := v.(type) {
-	case map[string]any:
-		if shouldSkipJSONLObject(val) {
-			return
-		}
-		for k, child := range val {
-			if shouldSkipJSONLField(k) {
-				continue
-			}
-			scanJSONValue(child, k, onMatch)
-		}
-	case []any:
-		for _, child := range val {
-			scanJSONValue(child, parentKey, onMatch)
-		}
-	case string:
-		findSecrets(val, onMatch)
-	}
 }
 
 // jsonEncodeString returns the JSON encoding of s without HTML escaping.
