@@ -94,7 +94,7 @@ func collectJSONLReplacements(v any) [][2]string {
 				walk(child)
 			}
 		case string:
-			redacted := redactString(val)
+			redacted := RedactString(val)
 			if redacted != val && !seen[val] {
 				seen[val] = true
 				repls = append(repls, [2]string{val, redacted})
