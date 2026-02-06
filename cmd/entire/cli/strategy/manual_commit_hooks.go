@@ -789,12 +789,6 @@ func (s *ManualCommitStrategy) InitializeSession(sessionID string, agentType age
 		return fmt.Errorf("failed to open git repository: %w", err)
 	}
 
-	// Get current HEAD
-	head, err := repo.Head()
-	if err != nil {
-		return fmt.Errorf("failed to get HEAD: %w", err)
-	}
-
 	// Check if session already exists
 	state, err := s.loadSessionState(sessionID)
 	if err != nil {
@@ -835,38 +829,13 @@ func (s *ManualCommitStrategy) InitializeSession(sessionID string, agentType age
 		needSave = true
 
 		// Check if HEAD has moved (user pulled/rebased or committed)
-		if state.BaseCommit != head.Hash().String() {
-			oldBaseCommit := state.BaseCommit
-			newBaseCommit := head.Hash().String()
-
-			// Check if old shadow branch exists - if so, user did NOT commit (would have been deleted)
-			// This happens when user does: stash → pull → stash apply, or rebase, etc.
-			oldShadowBranch := getShadowBranchNameForCommit(oldBaseCommit, state.WorktreeID)
-			oldRefName := plumbing.NewBranchReferenceName(oldShadowBranch)
-			if oldRef, err := repo.Reference(oldRefName, true); err == nil {
-				// Old shadow branch exists - move it to new base commit
-				newShadowBranch := getShadowBranchNameForCommit(newBaseCommit, state.WorktreeID)
-				newRefName := plumbing.NewBranchReferenceName(newShadowBranch)
-
-				// Create new reference pointing to same commit
-				newRef := plumbing.NewHashReference(newRefName, oldRef.Hash())
-				if err := repo.Storer.SetReference(newRef); err != nil {
-					return fmt.Errorf("failed to create new shadow branch %s: %w", newShadowBranch, err)
-				}
-
-				// Delete old reference
-				if err := repo.Storer.RemoveReference(oldRefName); err != nil {
-					// Non-fatal: log but continue
-					fmt.Fprintf(os.Stderr, "Warning: failed to remove old shadow branch %s: %v\n", oldShadowBranch, err)
-				}
-
-				fmt.Fprintf(os.Stderr, "Moved shadow branch from %s to %s (base commit changed after pull/rebase)\n",
-					oldShadowBranch, newShadowBranch)
-			}
-
-			state.BaseCommit = newBaseCommit
+		// migrateShadowBranchIfNeeded handles renaming the shadow branch and updating state.BaseCommit
+		migrated, err := s.migrateShadowBranchIfNeeded(repo, state)
+		if err != nil {
+			return fmt.Errorf("failed to check/migrate shadow branch: %w", err)
+		}
+		if migrated {
 			needSave = true
-			fmt.Fprintf(os.Stderr, "Updated session base commit to %s\n", newBaseCommit[:7])
 		}
 
 		if needSave {

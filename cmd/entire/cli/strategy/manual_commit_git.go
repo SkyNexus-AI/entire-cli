@@ -47,6 +47,11 @@ func (s *ManualCommitStrategy) SaveChanges(ctx SaveContext) error {
 		}
 	}
 
+	// Check if HEAD has changed (e.g., Claude did a rebase via tool call) and migrate if needed
+	if err := s.migrateAndPersistIfNeeded(repo, state); err != nil {
+		return err
+	}
+
 	// Get checkpoint store
 	store, err := s.getCheckpointStore()
 	if err != nil {
@@ -179,6 +184,11 @@ func (s *ManualCommitStrategy) SaveTaskCheckpoint(ctx TaskCheckpointContext) err
 		if err != nil {
 			return fmt.Errorf("failed to initialize session for task checkpoint: %w", err)
 		}
+	}
+
+	// Check if HEAD has changed (e.g., Claude did a rebase via tool call) and migrate if needed
+	if err := s.migrateAndPersistIfNeeded(repo, state); err != nil {
+		return err
 	}
 
 	// Get checkpoint store
