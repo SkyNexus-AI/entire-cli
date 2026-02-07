@@ -18,7 +18,7 @@ var secretPattern = regexp.MustCompile(`[A-Za-z0-9/+_=-]{10,}`)
 // and tokens which tend to have entropy well above 5.0.
 const entropyThreshold = 4.5
 
-// String replaces high-entropy strings matching secretPattern with [REDACTED].
+// String replaces high-entropy strings matching secretPattern with REDACTED.
 func String(s string) string {
 	locs := secretPattern.FindAllStringIndex(s, -1)
 	if len(locs) == 0 {
@@ -30,7 +30,7 @@ func String(s string) string {
 		b.WriteString(s[prev:loc[0]])
 		match := s[loc[0]:loc[1]]
 		if isSecret(match) {
-			b.WriteString("[REDACTED]")
+			b.WriteString("REDACTED")
 		} else {
 			b.WriteString(match)
 		}

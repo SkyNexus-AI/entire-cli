@@ -24,7 +24,7 @@ func TestBytes_NoSecrets(t *testing.T) {
 func TestBytes_WithSecret(t *testing.T) {
 	input := []byte("my key is " + highEntropySecret + " ok")
 	result := Bytes(input)
-	expected := []byte("my key is [REDACTED] ok")
+	expected := []byte("my key is REDACTED ok")
 	if !bytes.Equal(result, expected) {
 		t.Errorf("got %q, want %q", result, expected)
 	}
@@ -50,7 +50,7 @@ func TestJSONLBytes_WithSecret(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	expected := []byte(`{"type":"text","content":"[REDACTED]"}`)
+	expected := []byte(`{"type":"text","content":"REDACTED"}`)
 	if !bytes.Equal(result, expected) {
 		t.Errorf("got %q, want %q", result, expected)
 	}
@@ -63,7 +63,7 @@ func TestJSONLContent_TopLevelArray(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	expected := `["[REDACTED]","normal text"]`
+	expected := `["REDACTED","normal text"]`
 	if result != expected {
 		t.Errorf("got %q, want %q", result, expected)
 	}
@@ -87,7 +87,7 @@ func TestJSONLContent_InvalidJSONLine(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	expected := `{"type":"text", "invalid [REDACTED] json`
+	expected := `{"type":"text", "invalid REDACTED json`
 	if result != expected {
 		t.Errorf("got %q, want %q", result, expected)
 	}
@@ -99,7 +99,7 @@ func TestCollectJSONLReplacements_Succeeds(t *testing.T) {
 	}
 	repls := collectJSONLReplacements(obj)
 	// expect one replacement for high-entropy secret
-	want := [][2]string{{"token=" + highEntropySecret, "[REDACTED]"}}
+	want := [][2]string{{"token=" + highEntropySecret, "REDACTED"}}
 	if !slices.Equal(repls, want) {
 		t.Errorf("got %q, want %q", repls, want)
 	}
@@ -226,7 +226,7 @@ func TestShouldSkipJSONLObject_RedactionBehavior(t *testing.T) {
 		"content": highEntropySecret,
 	}
 	repls2 := collectJSONLReplacements(obj2)
-	wantRepls2 := [][2]string{{highEntropySecret, "[REDACTED]"}}
+	wantRepls2 := [][2]string{{highEntropySecret, "REDACTED"}}
 	if !slices.Equal(repls2, wantRepls2) {
 		t.Errorf("got %q, want %q", repls2, wantRepls2)
 	}

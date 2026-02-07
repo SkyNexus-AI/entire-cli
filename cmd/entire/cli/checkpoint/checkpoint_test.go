@@ -2286,8 +2286,8 @@ func TestWriteCommitted_RedactsTranscriptSecrets(t *testing.T) {
 	if strings.Contains(string(content.Transcript), highEntropySecret) {
 		t.Error("transcript should not contain the secret after redaction")
 	}
-	if !strings.Contains(string(content.Transcript), "[REDACTED]") {
-		t.Error("transcript should contain [REDACTED] placeholder")
+	if !strings.Contains(string(content.Transcript), "REDACTED") {
+		t.Error("transcript should contain REDACTED placeholder")
 	}
 }
 
@@ -2318,8 +2318,8 @@ func TestWriteCommitted_RedactsPromptSecrets(t *testing.T) {
 	if strings.Contains(content.Prompts, highEntropySecret) {
 		t.Error("prompts should not contain the secret after redaction")
 	}
-	if !strings.Contains(content.Prompts, "[REDACTED]") {
-		t.Error("prompts should contain [REDACTED] placeholder")
+	if !strings.Contains(content.Prompts, "REDACTED") {
+		t.Error("prompts should contain REDACTED placeholder")
 	}
 }
 
@@ -2350,8 +2350,8 @@ func TestWriteCommitted_RedactsContextSecrets(t *testing.T) {
 	if strings.Contains(content.Context, highEntropySecret) {
 		t.Error("context should not contain the secret after redaction")
 	}
-	if !strings.Contains(content.Context, "[REDACTED]") {
-		t.Error("context should contain [REDACTED] placeholder")
+	if !strings.Contains(content.Context, "REDACTED") {
+		t.Error("context should contain REDACTED placeholder")
 	}
 }
 
@@ -2415,8 +2415,8 @@ func TestCopyMetadataDir_RedactsSecrets(t *testing.T) {
 		if strings.Contains(content, highEntropySecret) {
 			t.Errorf("%s should not contain the secret after redaction", path)
 		}
-		if !strings.Contains(content, "[REDACTED]") {
-			t.Errorf("%s should contain [REDACTED] placeholder", path)
+		if !strings.Contains(content, "REDACTED") {
+			t.Errorf("%s should contain REDACTED placeholder", path)
 		}
 	}
 }
