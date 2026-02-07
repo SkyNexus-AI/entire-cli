@@ -80,6 +80,19 @@ func TestJSONLContent_TopLevelArrayNoSecrets(t *testing.T) {
 	}
 }
 
+func TestJSONLContent_InvalidJSONLine(t *testing.T) {
+	// Lines that aren't valid JSON should be processed with normal string redaction.
+	input := `{"type":"text", "invalid ` + highEntropySecret + " json"
+	result, err := JSONLContent(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	expected := `{"type":"text", "invalid [REDACTED] json`
+	if result != expected {
+		t.Errorf("got %q, want %q", result, expected)
+	}
+}
+
 func TestCollectJSONLReplacements_Succeeds(t *testing.T) {
 	obj := map[string]any{
 		"content": "token=" + highEntropySecret,

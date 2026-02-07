@@ -80,7 +80,7 @@ func JSONLContent(content string) (string, error) {
 		}
 		var parsed any
 		if err := json.Unmarshal([]byte(trimmed), &parsed); err != nil {
-			b.WriteString(line)
+			b.WriteString(String(line))
 			continue
 		}
 		repls := collectJSONLReplacements(parsed)
