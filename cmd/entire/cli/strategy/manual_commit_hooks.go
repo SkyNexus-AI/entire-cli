@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/entireio/cli/cmd/entire/cli/agent"
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint"
@@ -783,7 +784,8 @@ func addCheckpointTrailerWithComment(message string, checkpointID id.CheckpointI
 //
 // agentType is the human-readable name of the agent (e.g., "Claude Code").
 // transcriptPath is the path to the live transcript file (for mid-session commit detection).
-func (s *ManualCommitStrategy) InitializeSession(sessionID string, agentType agent.AgentType, transcriptPath string) error {
+// userPrompt is the user's prompt text (stored truncated as FirstPrompt for display).
+func (s *ManualCommitStrategy) InitializeSession(sessionID string, agentType agent.AgentType, transcriptPath string, userPrompt string) error {
 	repo, err := OpenRepository()
 	if err != nil {
 		return fmt.Errorf("failed to open git repository: %w", err)
@@ -797,18 +799,24 @@ func (s *ManualCommitStrategy) InitializeSession(sessionID string, agentType age
 
 	if state != nil && state.BaseCommit != "" {
 		// Session is fully initialized
-		needSave := false
+
+		// Update last interaction timestamp on every prompt submit
+		now := time.Now()
+		state.LastInteractionAt = &now
 
 		// Backfill AgentType if empty (for sessions created before the agent_type field was added)
 		if state.AgentType == "" && agentType != "" {
 			state.AgentType = agentType
-			needSave = true
+		}
+
+		// Backfill FirstPrompt if empty (for sessions created before the first_prompt field was added)
+		if state.FirstPrompt == "" && userPrompt != "" {
+			state.FirstPrompt = truncatePromptForStorage(userPrompt)
 		}
 
 		// Update transcript path if provided (may change on session resume)
 		if transcriptPath != "" && state.TranscriptPath != transcriptPath {
 			state.TranscriptPath = transcriptPath
-			needSave = true
 		}
 
 		// Clear LastCheckpointID on every new prompt
@@ -816,7 +824,6 @@ func (s *ManualCommitStrategy) InitializeSession(sessionID string, agentType age
 		// cleared when the user enters a new prompt (starting fresh work)
 		if state.LastCheckpointID != "" {
 			state.LastCheckpointID = ""
-			needSave = true
 		}
 
 		// Calculate attribution at prompt start (BEFORE agent makes any changes)
@@ -826,22 +833,15 @@ func (s *ManualCommitStrategy) InitializeSession(sessionID string, agentType age
 		// nil lastCheckpointTree by falling back to baseTree.
 		promptAttr := s.calculatePromptAttributionAtStart(repo, state)
 		state.PendingPromptAttribution = &promptAttr
-		needSave = true
 
 		// Check if HEAD has moved (user pulled/rebased or committed)
 		// migrateShadowBranchIfNeeded handles renaming the shadow branch and updating state.BaseCommit
-		migrated, err := s.migrateShadowBranchIfNeeded(repo, state)
-		if err != nil {
+		if _, err := s.migrateShadowBranchIfNeeded(repo, state); err != nil {
 			return fmt.Errorf("failed to check/migrate shadow branch: %w", err)
 		}
-		if migrated {
-			needSave = true
-		}
 
-		if needSave {
-			if err := s.saveSessionState(state); err != nil {
-				return fmt.Errorf("failed to update session state: %w", err)
-			}
+		if err := s.saveSessionState(state); err != nil {
+			return fmt.Errorf("failed to update session state: %w", err)
 		}
 		return nil
 	}
@@ -849,7 +849,7 @@ func (s *ManualCommitStrategy) InitializeSession(sessionID string, agentType age
 	// Continue below to properly initialize it
 
 	// Initialize new session
-	state, err = s.initializeSession(repo, sessionID, agentType, transcriptPath)
+	state, err = s.initializeSession(repo, sessionID, agentType, transcriptPath, userPrompt)
 	if err != nil {
 		return fmt.Errorf("failed to initialize session: %w", err)
 	}

@@ -5,6 +5,7 @@ import (
 
 	"github.com/entireio/cli/cmd/entire/cli/agent"
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint/id"
+	"github.com/entireio/cli/cmd/entire/cli/stringutil"
 )
 
 const (
@@ -13,7 +14,16 @@ const (
 
 	// logsOnlyScanLimit is the maximum number of commits to scan for logs-only points.
 	logsOnlyScanLimit = 50
+
+	// maxFirstPromptRunes is the maximum rune length for FirstPrompt stored in session state.
+	maxFirstPromptRunes = 100
 )
+
+// truncatePromptForStorage collapses whitespace and truncates a user prompt
+// for storage in FirstPrompt fields.
+func truncatePromptForStorage(prompt string) string {
+	return stringutil.TruncateRunes(stringutil.CollapseWhitespace(prompt), maxFirstPromptRunes, "...")
+}
 
 // SessionState represents the state of an active session.
 type SessionState struct {
@@ -22,7 +32,8 @@ type SessionState struct {
 	WorktreePath             string          `json:"worktree_path,omitempty"` // Absolute path to the worktree root
 	WorktreeID               string          `json:"worktree_id,omitempty"`   // Internal git worktree identifier (empty for main worktree)
 	StartedAt                time.Time       `json:"started_at"`
-	EndedAt                  *time.Time      `json:"ended_at,omitempty"` // When the session was explicitly closed (nil = active or unclean exit)
+	EndedAt                  *time.Time      `json:"ended_at,omitempty"`            // When the session was explicitly closed (nil = active or unclean exit)
+	LastInteractionAt        *time.Time      `json:"last_interaction_at,omitempty"` // Last user prompt submit time
 	CheckpointCount          int             `json:"checkpoint_count"`
 	CondensedTranscriptLines int             `json:"condensed_transcript_lines,omitempty"` // Lines already included in previous condensation
 	UntrackedFilesAtStart    []string        `json:"untracked_files_at_start,omitempty"`   // Files that existed at session start (to preserve during rewind)
@@ -30,6 +41,7 @@ type SessionState struct {
 	LastCheckpointID         id.CheckpointID `json:"last_checkpoint_id,omitempty"`         // Checkpoint ID from last condensation, reused for subsequent commits without new content
 	AgentType                agent.AgentType `json:"agent_type,omitempty"`                 // Agent type identifier (e.g., "Claude Code", "Cursor")
 	TranscriptPath           string          `json:"transcript_path,omitempty"`            // Path to the live transcript file (for mid-session commit detection)
+	FirstPrompt              string          `json:"first_prompt,omitempty"`               // First user prompt that started this session (truncated for display)
 
 	// Token usage tracking (accumulated across all checkpoints in this session)
 	TokenUsage *agent.TokenUsage `json:"token_usage,omitempty"`

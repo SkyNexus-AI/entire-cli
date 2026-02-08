@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,7 +12,6 @@ import (
 	"github.com/entireio/cli/cmd/entire/cli/agent"
 	"github.com/entireio/cli/cmd/entire/cli/paths"
 	"github.com/entireio/cli/cmd/entire/cli/session"
-	"github.com/entireio/cli/cmd/entire/cli/settings"
 	"github.com/entireio/cli/cmd/entire/cli/strategy"
 
 	"github.com/charmbracelet/huh"
@@ -136,23 +134,6 @@ Use --uninstall to completely remove Entire from this repository, including:
 	cmd.Flags().BoolVar(&useProjectSettings, "project", false, "Update settings.json instead of settings.local.json")
 	cmd.Flags().BoolVar(&uninstall, "uninstall", false, "Completely remove Entire from this repository")
 	cmd.Flags().BoolVar(&force, "force", false, "Skip confirmation prompt (use with --uninstall)")
-
-	return cmd
-}
-
-func newStatusCmd() *cobra.Command {
-	var detailed bool
-
-	cmd := &cobra.Command{
-		Use:   "status",
-		Short: "Show Entire status",
-		Long:  "Show whether Entire is currently enabled or disabled",
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runStatus(cmd.OutOrStdout(), detailed)
-		},
-	}
-
-	cmd.Flags().BoolVar(&detailed, "detailed", false, "Show detailed status for each settings file")
 
 	return cmd
 }
@@ -427,113 +408,6 @@ func runDisable(w io.Writer, useProjectSettings bool) error {
 
 	fmt.Fprintln(w, "Entire is now disabled.")
 	return nil
-}
-
-func runStatus(w io.Writer, detailed bool) error {
-	// Check if we're in a git repository
-	if _, repoErr := paths.RepoRoot(); repoErr != nil {
-		fmt.Fprintln(w, "✕ not a git repository")
-		return nil //nolint:nilerr // Not being in a git repo is a valid status, not an error
-	}
-
-	// Get absolute paths for settings files
-	settingsPath, err := paths.AbsPath(EntireSettingsFile)
-	if err != nil {
-		settingsPath = EntireSettingsFile
-	}
-	localSettingsPath, err := paths.AbsPath(EntireSettingsLocalFile)
-	if err != nil {
-		localSettingsPath = EntireSettingsLocalFile
-	}
-
-	// Check which settings files exist
-	_, projectErr := os.Stat(settingsPath)
-	if projectErr != nil && !errors.Is(projectErr, fs.ErrNotExist) {
-		return fmt.Errorf("cannot access project settings file: %w", projectErr)
-	}
-	_, localErr := os.Stat(localSettingsPath)
-	if localErr != nil && !errors.Is(localErr, fs.ErrNotExist) {
-		return fmt.Errorf("cannot access local settings file: %w", localErr)
-	}
-	projectExists := projectErr == nil
-	localExists := localErr == nil
-
-	if !projectExists && !localExists {
-		fmt.Fprintln(w, "○ not set up (run `entire enable` to get started)")
-		return nil
-	}
-
-	if detailed {
-		return runStatusDetailed(w, settingsPath, localSettingsPath, projectExists, localExists)
-	}
-
-	// Short output: just show the effective/merged state
-	settings, err := LoadEntireSettings()
-	if err != nil {
-		return fmt.Errorf("failed to load settings: %w", err)
-	}
-
-	fmt.Fprintln(w, formatSettingsStatusShort(settings))
-	return nil
-}
-
-// runStatusDetailed shows the effective status plus detailed status for each settings file.
-func runStatusDetailed(w io.Writer, settingsPath, localSettingsPath string, projectExists, localExists bool) error {
-	// First show the effective/merged status
-	effectiveSettings, err := LoadEntireSettings()
-	if err != nil {
-		return fmt.Errorf("failed to load settings: %w", err)
-	}
-	fmt.Fprintln(w, formatSettingsStatusShort(effectiveSettings))
-	fmt.Fprintln(w) // blank line
-
-	// Show project settings if it exists
-	if projectExists {
-		projectSettings, err := settings.LoadFromFile(settingsPath)
-		if err != nil {
-			return fmt.Errorf("failed to load project settings: %w", err)
-		}
-		fmt.Fprintln(w, formatSettingsStatus("Project", projectSettings))
-	}
-
-	// Show local settings if it exists
-	if localExists {
-		localSettings, err := settings.LoadFromFile(localSettingsPath)
-		if err != nil {
-			return fmt.Errorf("failed to load local settings: %w", err)
-		}
-		fmt.Fprintln(w, formatSettingsStatus("Local", localSettings))
-	}
-
-	return nil
-}
-
-// formatSettingsStatusShort formats a short settings status line.
-// Output format: "Enabled (manual-commit)" or "Disabled (auto-commit)"
-func formatSettingsStatusShort(settings *EntireSettings) string {
-	displayName := settings.Strategy
-	if dn, ok := strategyInternalToDisplay[settings.Strategy]; ok {
-		displayName = dn
-	}
-
-	if settings.Enabled {
-		return fmt.Sprintf("Enabled (%s)", displayName)
-	}
-	return fmt.Sprintf("Disabled (%s)", displayName)
-}
-
-// formatSettingsStatus formats a settings status line with source prefix.
-// Output format: "Project, enabled (manual-commit)" or "Local, disabled (auto-commit)"
-func formatSettingsStatus(prefix string, settings *EntireSettings) string {
-	displayName := settings.Strategy
-	if dn, ok := strategyInternalToDisplay[settings.Strategy]; ok {
-		displayName = dn
-	}
-
-	if settings.Enabled {
-		return fmt.Sprintf("%s, enabled (%s)", prefix, displayName)
-	}
-	return fmt.Sprintf("%s, disabled (%s)", prefix, displayName)
 }
 
 // DisabledMessage is the message shown when Entire is disabled

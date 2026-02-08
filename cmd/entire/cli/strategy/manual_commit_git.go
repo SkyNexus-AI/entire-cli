@@ -41,7 +41,7 @@ func (s *ManualCommitStrategy) SaveChanges(ctx SaveContext) error {
 		if state != nil && state.AgentType != "" {
 			agentType = state.AgentType
 		}
-		state, err = s.initializeSession(repo, sessionID, agentType, "") // No transcript path in fallback
+		state, err = s.initializeSession(repo, sessionID, agentType, "", "") // No transcript/prompt in fallback
 		if err != nil {
 			return fmt.Errorf("failed to initialize session: %w", err)
 		}
@@ -180,7 +180,7 @@ func (s *ManualCommitStrategy) SaveTaskCheckpoint(ctx TaskCheckpointContext) err
 		if state != nil && state.AgentType != "" {
 			agentType = state.AgentType
 		}
-		state, err = s.initializeSession(repo, ctx.SessionID, agentType, "") // No transcript path in fallback
+		state, err = s.initializeSession(repo, ctx.SessionID, agentType, "", "") // No transcript/prompt in fallback
 		if err != nil {
 			return fmt.Errorf("failed to initialize session for task checkpoint: %w", err)
 		}

@@ -67,6 +67,7 @@ func sessionStateToStrategy(state *session.State) *SessionState {
 		WorktreeID:                  state.WorktreeID,
 		StartedAt:                   state.StartedAt,
 		EndedAt:                     state.EndedAt,
+		LastInteractionAt:           state.LastInteractionAt,
 		CheckpointCount:             state.CheckpointCount,
 		CondensedTranscriptLines:    state.CondensedTranscriptLines,
 		UntrackedFilesAtStart:       state.UntrackedFilesAtStart,
@@ -77,6 +78,7 @@ func sessionStateToStrategy(state *session.State) *SessionState {
 		TranscriptLinesAtStart:      state.TranscriptLinesAtStart,
 		TranscriptIdentifierAtStart: state.TranscriptIdentifierAtStart,
 		TranscriptPath:              state.TranscriptPath,
+		FirstPrompt:                 state.FirstPrompt,
 	}
 	// Convert PromptAttributions
 	for _, pa := range state.PromptAttributions {
@@ -115,6 +117,7 @@ func sessionStateFromStrategy(state *SessionState) *session.State {
 		WorktreeID:                  state.WorktreeID,
 		StartedAt:                   state.StartedAt,
 		EndedAt:                     state.EndedAt,
+		LastInteractionAt:           state.LastInteractionAt,
 		CheckpointCount:             state.CheckpointCount,
 		CondensedTranscriptLines:    state.CondensedTranscriptLines,
 		UntrackedFilesAtStart:       state.UntrackedFilesAtStart,
@@ -125,6 +128,7 @@ func sessionStateFromStrategy(state *SessionState) *session.State {
 		TranscriptLinesAtStart:      state.TranscriptLinesAtStart,
 		TranscriptIdentifierAtStart: state.TranscriptIdentifierAtStart,
 		TranscriptPath:              state.TranscriptPath,
+		FirstPrompt:                 state.FirstPrompt,
 	}
 	// Convert PromptAttributions
 	for _, pa := range state.PromptAttributions {

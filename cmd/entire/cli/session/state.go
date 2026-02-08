@@ -44,6 +44,9 @@ type State struct {
 	// nil means the session is still active or was not cleanly closed.
 	EndedAt *time.Time `json:"ended_at,omitempty"`
 
+	// LastInteractionAt is the last time a user prompt was submitted for this session.
+	LastInteractionAt *time.Time `json:"last_interaction_at,omitempty"`
+
 	// CheckpointCount is the number of checkpoints created in this session
 	CheckpointCount int `json:"checkpoint_count"`
 
@@ -71,6 +74,9 @@ type State struct {
 
 	// TranscriptPath is the path to the live transcript file (for mid-session commit detection)
 	TranscriptPath string `json:"transcript_path,omitempty"`
+
+	// FirstPrompt is the first user prompt that started this session (truncated for display)
+	FirstPrompt string `json:"first_prompt,omitempty"`
 
 	// PromptAttributions tracks user and agent line changes at each prompt start.
 	// This enables accurate attribution by capturing user edits between checkpoints.

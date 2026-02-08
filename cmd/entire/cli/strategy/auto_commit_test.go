@@ -700,7 +700,7 @@ func TestAutoCommitStrategy_InitializeSession_CreatesSessionState(t *testing.T) 
 	}
 
 	sessionID := "2025-12-22-test-session-init"
-	if err := initializer.InitializeSession(sessionID, "Claude Code", ""); err != nil {
+	if err := initializer.InitializeSession(sessionID, "Claude Code", "", ""); err != nil {
 		t.Fatalf("InitializeSession() error = %v", err)
 	}
 

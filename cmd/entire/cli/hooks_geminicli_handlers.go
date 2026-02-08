@@ -481,7 +481,7 @@ func handleGeminiBeforeAgent() error {
 	strat := GetStrategy()
 	if initializer, ok := strat.(strategy.SessionInitializer); ok {
 		agentType := ag.Type()
-		if err := initializer.InitializeSession(input.SessionID, agentType, input.SessionRef); err != nil {
+		if err := initializer.InitializeSession(input.SessionID, agentType, input.SessionRef, input.UserPrompt); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: failed to initialize session state: %v\n", err)
 		}
 	}

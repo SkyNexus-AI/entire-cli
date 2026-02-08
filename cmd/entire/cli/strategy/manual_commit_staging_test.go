@@ -70,7 +70,7 @@ func TestPromptAttribution_UsesWorktreeNotStagingArea(t *testing.T) {
 	}
 
 	// === PROMPT 1 START: Initialize session ===
-	if err := s.InitializeSession(sessionID, "Claude Code", ""); err != nil {
+	if err := s.InitializeSession(sessionID, "Claude Code", "", ""); err != nil {
 		t.Fatalf("InitializeSession() prompt 1 error = %v", err)
 	}
 
@@ -115,7 +115,7 @@ func TestPromptAttribution_UsesWorktreeNotStagingArea(t *testing.T) {
 
 	// === PROMPT 2 START: Initialize session again ===
 	// This should capture ALL 10 worktree lines to match what WriteTemporary will capture
-	if err := s.InitializeSession(sessionID, "Claude Code", ""); err != nil {
+	if err := s.InitializeSession(sessionID, "Claude Code", "", ""); err != nil {
 		t.Fatalf("InitializeSession() prompt 2 error = %v", err)
 	}
 
@@ -224,7 +224,7 @@ func TestPromptAttribution_UnstagedChanges(t *testing.T) {
 	}
 
 	// Initialize and create checkpoint 1
-	if err := s.InitializeSession(sessionID, "Claude Code", ""); err != nil {
+	if err := s.InitializeSession(sessionID, "Claude Code", "", ""); err != nil {
 		t.Fatalf("InitializeSession() prompt 1 error = %v", err)
 	}
 
@@ -258,7 +258,7 @@ func TestPromptAttribution_UnstagedChanges(t *testing.T) {
 
 	// === PROMPT 2 START ===
 	// Should read from worktree (since nothing is staged)
-	if err := s.InitializeSession(sessionID, "Claude Code", ""); err != nil {
+	if err := s.InitializeSession(sessionID, "Claude Code", "", ""); err != nil {
 		t.Fatalf("InitializeSession() prompt 2 error = %v", err)
 	}
 
@@ -324,7 +324,7 @@ func TestPromptAttribution_AlwaysStored(t *testing.T) {
 	}
 
 	// Initialize and create checkpoint 1
-	if err := s.InitializeSession(sessionID, "Claude Code", ""); err != nil {
+	if err := s.InitializeSession(sessionID, "Claude Code", "", ""); err != nil {
 		t.Fatalf("InitializeSession() prompt 1 error = %v", err)
 	}
 
@@ -352,7 +352,7 @@ func TestPromptAttribution_AlwaysStored(t *testing.T) {
 
 	// === PROMPT 2 START ===
 	// Even though user made no changes, PendingPromptAttribution should be stored
-	if err := s.InitializeSession(sessionID, "Claude Code", ""); err != nil {
+	if err := s.InitializeSession(sessionID, "Claude Code", "", ""); err != nil {
 		t.Fatalf("InitializeSession() prompt 2 error = %v", err)
 	}
 
@@ -479,7 +479,7 @@ func TestPromptAttribution_CapturesPrePromptEdits(t *testing.T) {
 
 	// === PROMPT 1 START ===
 	// This should capture the user's pre-prompt edits (2 lines)
-	if err := s.InitializeSession(sessionID, "Claude Code", ""); err != nil {
+	if err := s.InitializeSession(sessionID, "Claude Code", "", ""); err != nil {
 		t.Fatalf("InitializeSession() error = %v", err)
 	}
 

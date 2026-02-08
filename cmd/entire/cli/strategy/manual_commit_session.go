@@ -194,7 +194,8 @@ func (s *ManualCommitStrategy) CountOtherActiveSessionsWithCheckpoints(currentSe
 // A partial state may exist if the concurrent session warning was shown.
 // agentType is the human-readable name of the agent (e.g., "Claude Code").
 // transcriptPath is the path to the live transcript file (for mid-session commit detection).
-func (s *ManualCommitStrategy) initializeSession(repo *git.Repository, sessionID string, agentType agent.AgentType, transcriptPath string) (*SessionState, error) {
+// userPrompt is the user's prompt text (stored truncated as FirstPrompt for display).
+func (s *ManualCommitStrategy) initializeSession(repo *git.Repository, sessionID string, agentType agent.AgentType, transcriptPath string, userPrompt string) (*SessionState, error) {
 	head, err := repo.Head()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get HEAD: %w", err)
@@ -218,16 +219,19 @@ func (s *ManualCommitStrategy) initializeSession(repo *git.Repository, sessionID
 		untrackedFiles = nil
 	}
 
+	now := time.Now()
 	state := &SessionState{
 		SessionID:             sessionID,
 		BaseCommit:            head.Hash().String(),
 		WorktreePath:          worktreePath,
 		WorktreeID:            worktreeID,
-		StartedAt:             time.Now(),
+		StartedAt:             now,
+		LastInteractionAt:     &now,
 		CheckpointCount:       0,
 		UntrackedFilesAtStart: untrackedFiles,
 		AgentType:             agentType,
 		TranscriptPath:        transcriptPath,
+		FirstPrompt:           truncatePromptForStorage(userPrompt),
 	}
 
 	if err := s.saveSessionState(state); err != nil {
