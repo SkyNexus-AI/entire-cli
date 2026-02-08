@@ -217,12 +217,12 @@ func TestWriteActiveSessions(t *testing.T) {
 	// Create active sessions
 	states := []*session.State{
 		{
-			SessionID:         "abc-1234-session",
-			WorktreePath:      "/Users/test/repo",
-			StartedAt:         now.Add(-2 * time.Hour),
-			LastInteractionAt: &recentInteraction,
-			FirstPrompt:       "Fix auth bug in login flow",
-			AgentType:         agent.AgentType("Claude Code"),
+			SessionID:           "abc-1234-session",
+			WorktreePath:        "/Users/test/repo",
+			StartedAt:           now.Add(-2 * time.Hour),
+			LastInteractionTime: &recentInteraction,
+			FirstPrompt:         "Fix auth bug in login flow",
+			AgentType:           agent.AgentType("Claude Code"),
 		},
 		{
 			SessionID:    "def-5678-session",
@@ -296,17 +296,17 @@ func TestWriteActiveSessions(t *testing.T) {
 		}
 	}
 
-	// Should show "active X ago" for session with LastInteractionAt that differs from StartedAt
+	// Should show "active X ago" for session with LastInteractionTime that differs from StartedAt
 	if !strings.Contains(output, "active 5m ago") {
-		t.Errorf("Expected 'active 5m ago' for session with LastInteractionAt, got: %s", output)
+		t.Errorf("Expected 'active 5m ago' for session with LastInteractionTime, got: %s", output)
 	}
 
-	// Session started 15m ago with no LastInteractionAt should NOT show "active" text
+	// Session started 15m ago with no LastInteractionTime should NOT show "active" text
 	// Find the Cursor session line and verify no "active" in it
 	for _, line := range lines {
 		if strings.Contains(line, "[Cursor]") {
 			if strings.Contains(line, "active") {
-				t.Errorf("Session without LastInteractionAt should not show 'active', got: %s", line)
+				t.Errorf("Session without LastInteractionTime should not show 'active', got: %s", line)
 			}
 		}
 	}
@@ -321,17 +321,17 @@ func TestWriteActiveSessions_ActiveTimeOmittedWhenClose(t *testing.T) {
 	}
 
 	now := time.Now()
-	// LastInteractionAt is only 30 seconds after StartedAt — should be omitted
+	// LastInteractionTime is only 30 seconds after StartedAt — should be omitted
 	startedAt := now.Add(-10 * time.Minute)
 	lastInteraction := startedAt.Add(30 * time.Second)
 
 	state := &session.State{
-		SessionID:         "close-time-session",
-		WorktreePath:      "/Users/test/repo",
-		StartedAt:         startedAt,
-		LastInteractionAt: &lastInteraction,
-		FirstPrompt:       "test prompt",
-		AgentType:         agent.AgentType("Claude Code"),
+		SessionID:           "close-time-session",
+		WorktreePath:        "/Users/test/repo",
+		StartedAt:           startedAt,
+		LastInteractionTime: &lastInteraction,
+		FirstPrompt:         "test prompt",
+		AgentType:           agent.AgentType("Claude Code"),
 	}
 
 	if err := store.Save(context.Background(), state); err != nil {
@@ -343,7 +343,7 @@ func TestWriteActiveSessions_ActiveTimeOmittedWhenClose(t *testing.T) {
 
 	output := buf.String()
 	if strings.Contains(output, "active") {
-		t.Errorf("Expected no 'active' when LastInteractionAt is close to StartedAt, got: %s", output)
+		t.Errorf("Expected no 'active' when LastInteractionTime is close to StartedAt, got: %s", output)
 	}
 }
 

@@ -7,9 +7,9 @@ import (
 	"time"
 )
 
-// TestLastInteractionAt_SetOnFirstPrompt verifies that LastInteractionAt is set
+// TestLastInteractionTime_SetOnFirstPrompt verifies that LastInteractionTime is set
 // when a session is first initialized via UserPromptSubmit.
-func TestLastInteractionAt_SetOnFirstPrompt(t *testing.T) {
+func TestLastInteractionTime_SetOnFirstPrompt(t *testing.T) {
 	t.Parallel()
 	RunForAllStrategiesWithRepoEnv(t, func(t *testing.T, env *TestEnv, _ string) {
 		session := env.NewSession()
@@ -27,19 +27,19 @@ func TestLastInteractionAt_SetOnFirstPrompt(t *testing.T) {
 			t.Fatal("session state should exist after UserPromptSubmit")
 		}
 
-		if state.LastInteractionAt == nil {
-			t.Fatal("LastInteractionAt should be set after first prompt")
+		if state.LastInteractionTime == nil {
+			t.Fatal("LastInteractionTime should be set after first prompt")
 		}
-		if state.LastInteractionAt.Before(beforePrompt) {
-			t.Errorf("LastInteractionAt %v should be after test start %v",
-				*state.LastInteractionAt, beforePrompt)
+		if state.LastInteractionTime.Before(beforePrompt) {
+			t.Errorf("LastInteractionTime %v should be after test start %v",
+				*state.LastInteractionTime, beforePrompt)
 		}
 	})
 }
 
-// TestLastInteractionAt_UpdatedOnSubsequentPrompts verifies that LastInteractionAt
+// TestLastInteractionTime_UpdatedOnSubsequentPrompts verifies that LastInteractionTime
 // is updated on each subsequent UserPromptSubmit call.
-func TestLastInteractionAt_UpdatedOnSubsequentPrompts(t *testing.T) {
+func TestLastInteractionTime_UpdatedOnSubsequentPrompts(t *testing.T) {
 	t.Parallel()
 	RunForAllStrategiesWithRepoEnv(t, func(t *testing.T, env *TestEnv, _ string) {
 		session := env.NewSession()
@@ -53,10 +53,10 @@ func TestLastInteractionAt_UpdatedOnSubsequentPrompts(t *testing.T) {
 		if err != nil {
 			t.Fatalf("GetSessionState after first prompt failed: %v", err)
 		}
-		if state1.LastInteractionAt == nil {
-			t.Fatal("LastInteractionAt should be set after first prompt")
+		if state1.LastInteractionTime == nil {
+			t.Fatal("LastInteractionTime should be set after first prompt")
 		}
-		firstInteraction := *state1.LastInteractionAt
+		firstInteraction := *state1.LastInteractionTime
 
 		// Small delay to ensure timestamps differ
 		time.Sleep(10 * time.Millisecond)
@@ -70,20 +70,20 @@ func TestLastInteractionAt_UpdatedOnSubsequentPrompts(t *testing.T) {
 		if err != nil {
 			t.Fatalf("GetSessionState after second prompt failed: %v", err)
 		}
-		if state2.LastInteractionAt == nil {
-			t.Fatal("LastInteractionAt should be set after second prompt")
+		if state2.LastInteractionTime == nil {
+			t.Fatal("LastInteractionTime should be set after second prompt")
 		}
 
-		if !state2.LastInteractionAt.After(firstInteraction) {
-			t.Errorf("LastInteractionAt should be updated: first=%v, second=%v",
-				firstInteraction, *state2.LastInteractionAt)
+		if !state2.LastInteractionTime.After(firstInteraction) {
+			t.Errorf("LastInteractionTime should be updated: first=%v, second=%v",
+				firstInteraction, *state2.LastInteractionTime)
 		}
 	})
 }
 
-// TestLastInteractionAt_PreservedAcrossCheckpoints verifies that LastInteractionAt
+// TestLastInteractionTime_PreservedAcrossCheckpoints verifies that LastInteractionTime
 // survives a full checkpoint cycle (prompt → stop → prompt).
-func TestLastInteractionAt_PreservedAcrossCheckpoints(t *testing.T) {
+func TestLastInteractionTime_PreservedAcrossCheckpoints(t *testing.T) {
 	t.Parallel()
 	RunForAllStrategiesWithRepoEnv(t, func(t *testing.T, env *TestEnv, _ string) {
 		session := env.NewSession()
@@ -112,14 +112,14 @@ func TestLastInteractionAt_PreservedAcrossCheckpoints(t *testing.T) {
 		if err != nil {
 			t.Fatalf("GetSessionState failed: %v", err)
 		}
-		if state.LastInteractionAt == nil {
-			t.Fatal("LastInteractionAt should be set after second prompt")
+		if state.LastInteractionTime == nil {
+			t.Fatal("LastInteractionTime should be set after second prompt")
 		}
 
-		// LastInteractionAt should be after StartedAt (second prompt is later)
-		if !state.LastInteractionAt.After(state.StartedAt) {
-			t.Errorf("LastInteractionAt %v should be after StartedAt %v",
-				*state.LastInteractionAt, state.StartedAt)
+		// LastInteractionTime should be after StartedAt (second prompt is later)
+		if !state.LastInteractionTime.After(state.StartedAt) {
+			t.Errorf("LastInteractionTime %v should be after StartedAt %v",
+				*state.LastInteractionTime, state.StartedAt)
 		}
 	})
 }

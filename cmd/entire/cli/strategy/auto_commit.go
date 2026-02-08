@@ -926,7 +926,7 @@ func (s *AutoCommitStrategy) InitializeSession(sessionID string, agentType agent
 	if existing != nil {
 		// Session already initialized — update last interaction time on every prompt submit
 		now := time.Now()
-		existing.LastInteractionAt = &now
+		existing.LastInteractionTime = &now
 
 		// Backfill FirstPrompt if empty (for sessions
 		// created before the first_prompt field was added, or resumed sessions)
@@ -946,7 +946,7 @@ func (s *AutoCommitStrategy) InitializeSession(sessionID string, agentType agent
 		SessionID:                sessionID,
 		BaseCommit:               baseCommit,
 		StartedAt:                now,
-		LastInteractionAt:        &now,
+		LastInteractionTime:      &now,
 		CheckpointCount:          0,
 		CondensedTranscriptLines: 0, // Start from beginning of transcript
 		FilesTouched:             []string{},

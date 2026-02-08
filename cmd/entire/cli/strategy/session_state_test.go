@@ -131,8 +131,8 @@ func TestLoadSessionState_WithEndedAt(t *testing.T) {
 	}
 }
 
-// TestLoadSessionState_WithLastInteractionAt tests that LastInteractionAt serializes/deserializes correctly.
-func TestLoadSessionState_WithLastInteractionAt(t *testing.T) {
+// TestLoadSessionState_WithLastInteractionTime tests that LastInteractionTime serializes/deserializes correctly.
+func TestLoadSessionState_WithLastInteractionTime(t *testing.T) {
 	dir := t.TempDir()
 	_, err := git.PlainInit(dir, false)
 	if err != nil {
@@ -141,14 +141,14 @@ func TestLoadSessionState_WithLastInteractionAt(t *testing.T) {
 
 	t.Chdir(dir)
 
-	// Test with LastInteractionAt set
+	// Test with LastInteractionTime set
 	lastInteraction := time.Now().Add(-5 * time.Minute)
 	state := &SessionState{
-		SessionID:         "test-session-interaction",
-		BaseCommit:        "abc123def456",
-		StartedAt:         time.Now().Add(-2 * time.Hour),
-		LastInteractionAt: &lastInteraction,
-		CheckpointCount:   3,
+		SessionID:           "test-session-interaction",
+		BaseCommit:          "abc123def456",
+		StartedAt:           time.Now().Add(-2 * time.Hour),
+		LastInteractionTime: &lastInteraction,
+		CheckpointCount:     3,
 	}
 
 	err = SaveSessionState(state)
@@ -164,21 +164,21 @@ func TestLoadSessionState_WithLastInteractionAt(t *testing.T) {
 		t.Fatal("LoadSessionState() returned nil")
 	}
 
-	// Verify LastInteractionAt was preserved
-	if loaded.LastInteractionAt == nil {
-		t.Fatal("LastInteractionAt was nil after load, expected non-nil")
+	// Verify LastInteractionTime was preserved
+	if loaded.LastInteractionTime == nil {
+		t.Fatal("LastInteractionTime was nil after load, expected non-nil")
 	}
-	if !loaded.LastInteractionAt.Equal(lastInteraction) {
-		t.Errorf("LastInteractionAt = %v, want %v", *loaded.LastInteractionAt, lastInteraction)
+	if !loaded.LastInteractionTime.Equal(lastInteraction) {
+		t.Errorf("LastInteractionTime = %v, want %v", *loaded.LastInteractionTime, lastInteraction)
 	}
 
-	// Test with LastInteractionAt nil (old session without this field)
+	// Test with LastInteractionTime nil (old session without this field)
 	stateOld := &SessionState{
-		SessionID:         "test-session-no-interaction",
-		BaseCommit:        "xyz789",
-		StartedAt:         time.Now(),
-		LastInteractionAt: nil,
-		CheckpointCount:   1,
+		SessionID:           "test-session-no-interaction",
+		BaseCommit:          "xyz789",
+		StartedAt:           time.Now(),
+		LastInteractionTime: nil,
+		CheckpointCount:     1,
 	}
 
 	err = SaveSessionState(stateOld)
@@ -194,9 +194,9 @@ func TestLoadSessionState_WithLastInteractionAt(t *testing.T) {
 		t.Fatal("LoadSessionState() returned nil")
 	}
 
-	// Verify LastInteractionAt remains nil
-	if loadedOld.LastInteractionAt != nil {
-		t.Errorf("LastInteractionAt = %v, want nil for old session", *loadedOld.LastInteractionAt)
+	// Verify LastInteractionTime remains nil
+	if loadedOld.LastInteractionTime != nil {
+		t.Errorf("LastInteractionTime = %v, want nil for old session", *loadedOld.LastInteractionTime)
 	}
 }
 

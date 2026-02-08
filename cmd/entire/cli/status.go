@@ -263,10 +263,10 @@ func writeActiveSessions(w io.Writer) {
 
 			age := "started " + timeAgo(st.StartedAt)
 
-			// Show "active X ago" when LastInteractionAt differs meaningfully from StartedAt
+			// Show "active X ago" when LastInteractionTime differs meaningfully from StartedAt
 			activeStr := ""
-			if st.LastInteractionAt != nil && st.LastInteractionAt.Sub(st.StartedAt) > time.Minute {
-				activeStr = ", active " + timeAgo(*st.LastInteractionAt)
+			if st.LastInteractionTime != nil && st.LastInteractionTime.Sub(st.StartedAt) > time.Minute {
+				activeStr = ", active " + timeAgo(*st.LastInteractionTime)
 			}
 
 			fmt.Fprintf(w, "    [%s] %-9s %s%s\n",

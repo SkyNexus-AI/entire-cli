@@ -226,7 +226,7 @@ func (s *ManualCommitStrategy) initializeSession(repo *git.Repository, sessionID
 		WorktreePath:          worktreePath,
 		WorktreeID:            worktreeID,
 		StartedAt:             now,
-		LastInteractionAt:     &now,
+		LastInteractionTime:   &now,
 		CheckpointCount:       0,
 		UntrackedFilesAtStart: untrackedFiles,
 		AgentType:             agentType,

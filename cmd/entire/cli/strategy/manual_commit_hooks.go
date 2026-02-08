@@ -802,7 +802,7 @@ func (s *ManualCommitStrategy) InitializeSession(sessionID string, agentType age
 
 		// Update last interaction timestamp on every prompt submit
 		now := time.Now()
-		state.LastInteractionAt = &now
+		state.LastInteractionTime = &now
 
 		// Backfill AgentType if empty or set to the generic default "Agent"
 		if !isSpecificAgentType(state.AgentType) && agentType != "" {
