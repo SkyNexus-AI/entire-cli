@@ -635,8 +635,10 @@ func (s *ManualCommitStrategy) PostCommit() error {
 				// Deferred to pass 2 so condensation reads the old shadow branch first.
 				// Migration updates BaseCommit as part of the rename.
 				pendingMigrations = append(pendingMigrations, pendingMigration{state: state})
-			case session.ActionWarnStaleSession, session.ActionClearEndedAt, session.ActionUpdateLastInteraction:
+			case session.ActionClearEndedAt, session.ActionUpdateLastInteraction:
 				// Handled by session.ApplyCommonActions above
+			case session.ActionWarnStaleSession:
+				// Not produced by EventGitCommit; listed for switch exhaustiveness
 			}
 		}
 
