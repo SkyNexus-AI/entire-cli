@@ -1804,70 +1804,75 @@ func TestInitializeSession_BackfillsUnknownAgentType(t *testing.T) {
 	}
 }
 
-// TestIsGeminiJSONTranscript tests detection of Gemini JSON transcript format.
-func TestIsGeminiJSONTranscript(t *testing.T) {
+// TestCountTranscriptItems tests counting lines/messages in different transcript formats.
+func TestCountTranscriptItems(t *testing.T) {
 	tests := []struct {
-		name     string
-		content  string
-		expected bool
+		name      string
+		agentType agent.AgentType
+		content   string
+		expected  int
 	}{
 		{
-			name: "valid Gemini JSON",
+			name:      "Gemini JSON with messages",
+			agentType: agent.AgentTypeGemini,
 			content: `{
 				"messages": [
 					{"type": "user", "content": "Hello"},
 					{"type": "gemini", "content": "Hi there!"}
 				]
 			}`,
-			expected: true,
+			expected: 2,
 		},
 		{
-			name:     "empty messages array",
-			content:  `{"messages": []}`,
-			expected: true, // Empty array is still Gemini format
+			name:      "Gemini empty messages array",
+			agentType: agent.AgentTypeGemini,
+			content:   `{"messages": []}`,
+			expected:  0,
 		},
 		{
-			name: "JSONL format (Claude Code)",
+			name:      "Claude Code JSONL",
+			agentType: agent.AgentTypeClaudeCode,
 			content: `{"type":"human","message":{"content":"Hello"}}
 {"type":"assistant","message":{"content":"Hi"}}`,
-			expected: false,
+			expected: 2,
 		},
 		{
-			name:     "not JSON",
-			content:  "plain text",
-			expected: false,
+			name:      "Claude Code JSONL with trailing newline",
+			agentType: agent.AgentTypeClaudeCode,
+			content: `{"type":"human","message":{"content":"Hello"}}
+{"type":"assistant","message":{"content":"Hi"}}
+`,
+			expected: 2,
 		},
 		{
-			name:     "JSON without messages field",
-			content:  `{"foo": "bar"}`,
-			expected: false,
-		},
-		{
-			name:     "empty string",
-			content:  "",
-			expected: false,
+			name:      "empty string",
+			agentType: agent.AgentTypeClaudeCode,
+			content:   "",
+			expected:  0,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := isGeminiJSONTranscript(tt.content)
+			result := countTranscriptItems(tt.agentType, tt.content)
 			if result != tt.expected {
-				t.Errorf("isGeminiJSONTranscript() = %v, want %v", result, tt.expected)
+				t.Errorf("countTranscriptItems() = %v, want %v", result, tt.expected)
 			}
 		})
 	}
 }
 
-// TestExtractUserPromptsFromGeminiJSON tests extraction of user prompts from Gemini JSON format.
-func TestExtractUserPromptsFromGeminiJSON(t *testing.T) {
+// TestExtractUserPrompts tests extraction of user prompts from different transcript formats.
+func TestExtractUserPrompts(t *testing.T) {
 	tests := []struct {
-		name     string
-		content  string
-		expected []string
+		name      string
+		agentType agent.AgentType
+		content   string
+		expected  []string
 	}{
 		{
-			name: "single user prompt",
+			name:      "Gemini single user prompt",
+			agentType: agent.AgentTypeGemini,
 			content: `{
 				"messages": [
 					{"type": "user", "content": "Create a file called test.txt"}
@@ -1876,7 +1881,8 @@ func TestExtractUserPromptsFromGeminiJSON(t *testing.T) {
 			expected: []string{"Create a file called test.txt"},
 		},
 		{
-			name: "multiple user prompts",
+			name:      "Gemini multiple user prompts",
+			agentType: agent.AgentTypeGemini,
 			content: `{
 				"messages": [
 					{"type": "user", "content": "First prompt"},
@@ -1888,7 +1894,8 @@ func TestExtractUserPromptsFromGeminiJSON(t *testing.T) {
 			expected: []string{"First prompt", "Second prompt"},
 		},
 		{
-			name: "no user messages",
+			name:      "Gemini no user messages",
+			agentType: agent.AgentTypeGemini,
 			content: `{
 				"messages": [
 					{"type": "gemini", "content": "Hello!"}
@@ -1897,44 +1904,26 @@ func TestExtractUserPromptsFromGeminiJSON(t *testing.T) {
 			expected: nil,
 		},
 		{
-			name:     "empty messages",
-			content:  `{"messages": []}`,
-			expected: nil,
-		},
-		{
-			name: "user message with empty content",
-			content: `{
-				"messages": [
-					{"type": "user", "content": ""},
-					{"type": "user", "content": "Valid prompt"}
-				]
-			}`,
-			expected: []string{"Valid prompt"},
-		},
-		{
-			name:     "invalid JSON",
-			content:  "not json",
-			expected: nil,
-		},
-		{
-			name: "mixed message types",
-			content: `{
-				"sessionId": "abc123",
-				"messages": [
-					{"type": "user", "content": "Hello"},
-					{"type": "gemini", "content": "Hi!", "toolCalls": []},
-					{"type": "user", "content": "Goodbye"}
-				]
-			}`,
+			name:      "Claude Code JSONL with user messages",
+			agentType: agent.AgentTypeClaudeCode,
+			content: `{"type":"user","message":{"content":"Hello"}}
+{"type":"assistant","message":{"content":"Hi"}}
+{"type":"user","message":{"content":"Goodbye"}}`,
 			expected: []string{"Hello", "Goodbye"},
+		},
+		{
+			name:      "empty string",
+			agentType: agent.AgentTypeClaudeCode,
+			content:   "",
+			expected:  nil,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := extractUserPromptsFromGeminiJSON(tt.content)
+			result := extractUserPrompts(tt.agentType, tt.content)
 			if len(result) != len(tt.expected) {
-				t.Errorf("extractUserPromptsFromGeminiJSON() returned %d prompts, want %d", len(result), len(tt.expected))
+				t.Errorf("extractUserPrompts() returned %d prompts, want %d", len(result), len(tt.expected))
 				return
 			}
 			for i, prompt := range result {

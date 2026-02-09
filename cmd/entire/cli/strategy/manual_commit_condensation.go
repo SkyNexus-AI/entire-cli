@@ -334,39 +334,12 @@ func (s *ManualCommitStrategy) extractSessionData(repo *git.Repository, shadowRe
 		}
 	}
 
-	// Check if this is a Gemini CLI transcript (JSON format, not JSONL)
-	isGeminiFormat := agentType == agent.AgentTypeGemini || isGeminiJSONTranscript(fullTranscript)
-
 	// Process transcript based on agent type
 	if fullTranscript != "" {
-
-		if isGeminiFormat {
-			// Gemini uses JSON format with a "messages" array
-			data.Transcript = []byte(fullTranscript)
-			// Count messages for proper indexing (used for CheckpointTranscriptStart)
-			data.FullTranscriptLines = countGeminiMessages(fullTranscript)
-			data.Prompts = extractUserPromptsFromGeminiJSON(fullTranscript)
-			data.Context = generateContextFromPrompts(data.Prompts)
-		} else {
-			// Claude Code and others use JSONL format (one JSON object per line)
-			allLines := strings.Split(fullTranscript, "\n")
-
-			// Trim trailing empty lines (from final \n in JSONL)
-			for len(allLines) > 0 && strings.TrimSpace(allLines[len(allLines)-1]) == "" {
-				allLines = allLines[:len(allLines)-1]
-			}
-
-			data.FullTranscriptLines = len(allLines)
-
-			// Always store the full transcript for complete session history
-			data.Transcript = []byte(strings.Join(allLines, "\n"))
-
-			// Extract prompts from the full transcript
-			data.Prompts = extractUserPromptsFromLines(allLines)
-
-			// Generate context from prompts
-			data.Context = generateContextFromPrompts(data.Prompts)
-		}
+		data.Transcript = []byte(fullTranscript)
+		data.FullTranscriptLines = countTranscriptItems(agentType, fullTranscript)
+		data.Prompts = extractUserPrompts(agentType, fullTranscript)
+		data.Context = generateContextFromPrompts(data.Prompts)
 	}
 
 	// Use tracked files from session state (not all files in tree)
@@ -374,79 +347,85 @@ func (s *ManualCommitStrategy) extractSessionData(repo *git.Repository, shadowRe
 
 	// Calculate token usage from the extracted transcript portion
 	if len(data.Transcript) > 0 {
-		// Use agent-specific parser for token calculation
-		if isGeminiFormat {
-			// Gemini JSON format - use Gemini token parser with message index
-			data.TokenUsage = geminicli.CalculateTokenUsage(data.Transcript, checkpointTranscriptStart)
-		} else {
-			// Claude JSONL format - use Claude token parser
-			transcriptLines, err := claudecode.ParseTranscript(data.Transcript)
-			if err == nil && len(transcriptLines) > 0 {
-				data.TokenUsage = claudecode.CalculateTokenUsage(transcriptLines)
-			}
-		}
+		data.TokenUsage = calculateTokenUsage(agentType, data.Transcript, checkpointTranscriptStart)
 	}
 
 	return data, nil
 }
 
-// isGeminiJSONTranscript detects if the transcript is in Gemini's JSON format.
-// Gemini transcripts are JSON objects containing a "messages" array.
-// Returns true if the content has a valid "messages" field, even if empty.
-func isGeminiJSONTranscript(content string) bool {
-	content = strings.TrimSpace(content)
-	// Quick check: Gemini JSON starts with {
-	if !strings.HasPrefix(content, "{") {
-		return false
-	}
-	// Try to parse as Gemini format - check for messages field existence
-	var transcript struct {
-		Messages []json.RawMessage `json:"messages"`
-	}
-	if err := json.Unmarshal([]byte(content), &transcript); err != nil {
-		return false
-	}
-	return transcript.Messages != nil
-}
-
-// countGeminiMessages counts the number of messages in a Gemini JSON transcript.
-// Returns 0 if the content is not valid Gemini JSON.
-func countGeminiMessages(content string) int {
-	var transcript struct {
-		Messages []json.RawMessage `json:"messages"`
-	}
-	if err := json.Unmarshal([]byte(content), &transcript); err != nil {
+// countTranscriptItems counts lines (JSONL) or messages (JSON) in a transcript.
+// For Claude Code and JSONL-based agents, this counts lines.
+// For Gemini CLI and JSON-based agents, this counts messages.
+// Returns 0 if the content is empty or malformed.
+func countTranscriptItems(agentType agent.AgentType, content string) int {
+	if content == "" {
 		return 0
 	}
-	return len(transcript.Messages)
+
+	switch agentType {
+	case agent.AgentTypeGemini:
+		transcript, err := geminicli.ParseTranscript([]byte(content))
+		if err != nil || transcript == nil {
+			return 0
+		}
+		return len(transcript.Messages)
+
+	case agent.AgentTypeClaudeCode, agent.AgentTypeUnknown:
+		fallthrough
+	default: // JSONL-based agents
+		allLines := strings.Split(content, "\n")
+		// Trim trailing empty lines (from final \n in JSONL)
+		for len(allLines) > 0 && strings.TrimSpace(allLines[len(allLines)-1]) == "" {
+			allLines = allLines[:len(allLines)-1]
+		}
+		return len(allLines)
+	}
 }
 
-// extractUserPromptsFromGeminiJSON extracts user prompts from Gemini's JSON transcript format.
-// Gemini transcripts are structured as: {"messages": [{"type": "user", "content": "..."}, ...]}
-func extractUserPromptsFromGeminiJSON(content string) []string {
-	var transcript struct {
-		Messages []struct {
-			Type    string `json:"type"`
-			Content string `json:"content"`
-		} `json:"messages"`
-	}
-
-	if err := json.Unmarshal([]byte(content), &transcript); err != nil {
+// extractUserPrompts extracts all user prompts from transcript content.
+// Returns prompts with IDE context tags stripped (e.g., <ide_opened_file>).
+func extractUserPrompts(agentType agent.AgentType, content string) []string {
+	if content == "" {
 		return nil
 	}
 
-	var prompts []string
-	for _, msg := range transcript.Messages {
-		if msg.Type == "user" && msg.Content != "" {
-			// Strip IDE context tags for consistency with Claude Code handling
-			cleaned := textutil.StripIDEContextTags(msg.Content)
-			if cleaned != "" {
-				prompts = append(prompts, cleaned)
-			}
+	switch agentType {
+	case agent.AgentTypeGemini:
+		prompts, err := geminicli.ExtractAllUserPrompts([]byte(content))
+		if err != nil {
+			return nil
 		}
+		return prompts
+
+	case agent.AgentTypeClaudeCode, agent.AgentTypeUnknown:
+		fallthrough
+	default: // JSONL-based agents
+		return extractUserPromptsFromLines(strings.Split(content, "\n"))
+	}
+}
+
+// calculateTokenUsage calculates token usage from raw transcript data.
+// startOffset is the line number (Claude Code) or message index (Gemini CLI)
+// where the current checkpoint began, allowing calculation for only the portion
+// of the transcript since the last checkpoint.
+func calculateTokenUsage(agentType agent.AgentType, data []byte, startOffset int) *agent.TokenUsage {
+	if len(data) == 0 {
+		return &agent.TokenUsage{}
 	}
 
-	return prompts
+	switch agentType {
+	case agent.AgentTypeGemini:
+		return geminicli.CalculateTokenUsage(data, startOffset)
+
+	case agent.AgentTypeClaudeCode, agent.AgentTypeUnknown:
+		fallthrough
+	default: // JSONL-based agents
+		lines, err := claudecode.ParseTranscript(data)
+		if err != nil || len(lines) == 0 {
+			return &agent.TokenUsage{}
+		}
+		return claudecode.CalculateTokenUsage(lines)
+	}
 }
 
 // extractUserPromptsFromLines extracts user prompts from JSONL transcript lines.
