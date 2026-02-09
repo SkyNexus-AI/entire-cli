@@ -619,9 +619,11 @@ func TestShellCompletionTarget(t *testing.T) {
 			wantCompletion: "source <(entire completion bash)",
 		},
 		{
-			name:             "fish_unsupported",
-			shell:            "/usr/bin/fish",
-			wantErrUnsupport: true,
+			name:           "fish",
+			shell:          "/usr/bin/fish",
+			wantShell:      "Fish",
+			wantRCBase:     filepath.Join(".config", "fish", "config.fish"),
+			wantCompletion: "entire completion fish | source",
 		},
 		{
 			name:             "empty_shell",
@@ -656,15 +658,96 @@ func TestShellCompletionTarget(t *testing.T) {
 			if shellName != tt.wantShell {
 				t.Errorf("shellName = %q, want %q", shellName, tt.wantShell)
 			}
-			if filepath.Base(rcFile) != tt.wantRCBase {
-				t.Errorf("rcFile base = %q, want %q", filepath.Base(rcFile), tt.wantRCBase)
-			}
 			wantRC := filepath.Join(home, tt.wantRCBase)
 			if rcFile != wantRC {
 				t.Errorf("rcFile = %q, want %q", rcFile, wantRC)
 			}
 			if completion != tt.wantCompletion {
 				t.Errorf("completion = %q, want %q", completion, tt.wantCompletion)
+			}
+		})
+	}
+}
+
+func TestAppendShellCompletion(t *testing.T) {
+	tests := []struct {
+		name           string
+		rcFileRelPath  string
+		completionLine string
+		preExisting    string // existing content in rc file; empty means file doesn't exist
+		createParent   bool   // whether parent dir already exists
+	}{
+		{
+			name:           "zsh_new_file",
+			rcFileRelPath:  ".zshrc",
+			completionLine: "source <(entire completion zsh)",
+			createParent:   true,
+		},
+		{
+			name:           "zsh_existing_file",
+			rcFileRelPath:  ".zshrc",
+			completionLine: "source <(entire completion zsh)",
+			preExisting:    "# existing zshrc content\n",
+			createParent:   true,
+		},
+		{
+			name:           "fish_no_parent_dir",
+			rcFileRelPath:  filepath.Join(".config", "fish", "config.fish"),
+			completionLine: "entire completion fish | source",
+			createParent:   false,
+		},
+		{
+			name:           "fish_existing_dir",
+			rcFileRelPath:  filepath.Join(".config", "fish", "config.fish"),
+			completionLine: "entire completion fish | source",
+			createParent:   true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := t.TempDir()
+			rcFile := filepath.Join(home, tt.rcFileRelPath)
+
+			if tt.createParent {
+				if err := os.MkdirAll(filepath.Dir(rcFile), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tt.preExisting != "" {
+				if err := os.WriteFile(rcFile, []byte(tt.preExisting), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			if err := appendShellCompletion(rcFile, tt.completionLine); err != nil {
+				t.Fatalf("appendShellCompletion() error: %v", err)
+			}
+
+			// Verify the file was created and contains the completion line.
+			data, err := os.ReadFile(rcFile)
+			if err != nil {
+				t.Fatalf("reading rc file: %v", err)
+			}
+			content := string(data)
+
+			if !strings.Contains(content, shellCompletionComment) {
+				t.Errorf("rc file missing comment %q", shellCompletionComment)
+			}
+			if !strings.Contains(content, tt.completionLine) {
+				t.Errorf("rc file missing completion line %q", tt.completionLine)
+			}
+			if tt.preExisting != "" && !strings.HasPrefix(content, tt.preExisting) {
+				t.Errorf("pre-existing content was overwritten")
+			}
+
+			// Verify parent directory permissions.
+			info, err := os.Stat(filepath.Dir(rcFile))
+			if err != nil {
+				t.Fatalf("stat parent dir: %v", err)
+			}
+			if !info.IsDir() {
+				t.Fatal("parent path is not a directory")
 			}
 		})
 	}
