@@ -44,7 +44,6 @@ func newEnableCmd() *cobra.Command {
 	var agentName string
 	var strategyFlag string
 	var forceHooks bool
-	var setupShell bool
 	var skipPushSessions bool
 	var telemetry bool
 
@@ -78,9 +77,9 @@ Strategies: manual-commit (default), auto-commit`,
 			}
 			// If strategy is specified via flag, skip interactive selection
 			if strategyFlag != "" {
-				return runEnableWithStrategy(cmd.OutOrStdout(), strategyFlag, localDev, ignoreUntracked, useLocalSettings, useProjectSettings, forceHooks, setupShell, skipPushSessions, telemetry)
+				return runEnableWithStrategy(cmd.OutOrStdout(), strategyFlag, localDev, ignoreUntracked, useLocalSettings, useProjectSettings, forceHooks, skipPushSessions, telemetry)
 			}
-			return runEnableInteractive(cmd.OutOrStdout(), localDev, ignoreUntracked, useLocalSettings, useProjectSettings, forceHooks, setupShell, skipPushSessions, telemetry)
+			return runEnableInteractive(cmd.OutOrStdout(), localDev, ignoreUntracked, useLocalSettings, useProjectSettings, forceHooks, skipPushSessions, telemetry)
 		},
 	}
 
@@ -93,7 +92,6 @@ Strategies: manual-commit (default), auto-commit`,
 	cmd.Flags().StringVar(&agentName, "agent", "", "Agent to setup hooks for (e.g., claude-code). Enables non-interactive mode.")
 	cmd.Flags().StringVar(&strategyFlag, "strategy", "", "Strategy to use (manual-commit or auto-commit)")
 	cmd.Flags().BoolVarP(&forceHooks, "force", "f", false, "Force reinstall hooks (removes existing Entire hooks first)")
-	cmd.Flags().BoolVar(&setupShell, "setup-shell", false, "Add shell completion to your rc file (non-interactive)")
 	cmd.Flags().BoolVar(&skipPushSessions, "skip-push-sessions", false, "Disable automatic pushing of session logs on git push")
 	cmd.Flags().BoolVar(&telemetry, "telemetry", true, "Enable anonymous usage analytics")
 	//nolint:errcheck,gosec // completion is optional, flag is defined above
@@ -141,7 +139,7 @@ Use --uninstall to completely remove Entire from this repository, including:
 // runEnableWithStrategy enables Entire with a specified strategy (non-interactive).
 // The selectedStrategy can be either a display name (manual-commit, auto-commit)
 // or an internal name (manual-commit, auto-commit).
-func runEnableWithStrategy(w io.Writer, selectedStrategy string, localDev, _, useLocalSettings, useProjectSettings, forceHooks, setupShell, skipPushSessions, telemetry bool) error {
+func runEnableWithStrategy(w io.Writer, selectedStrategy string, localDev, _, useLocalSettings, useProjectSettings, forceHooks, skipPushSessions, telemetry bool) error {
 	// Map the strategy to internal name if it's a display name
 	internalStrategy := selectedStrategy
 	if mapped, ok := strategyDisplayToInternal[selectedStrategy]; ok {
@@ -240,14 +238,6 @@ func runEnableWithStrategy(w io.Writer, selectedStrategy string, localDev, _, us
 		return fmt.Errorf("failed to setup strategy: %w", err)
 	}
 
-	// Setup shell completion if --setup-shell flag was provided
-	if setupShell {
-		if err := setupShellCompletionNonInteractive(w); err != nil {
-			// Non-fatal - just log and continue
-			fmt.Fprintf(w, "Note: Shell completion setup skipped: %v\n", err)
-		}
-	}
-
 	// Show success message with display name
 	displayName := selectedStrategy
 	if dn, ok := strategyInternalToDisplay[internalStrategy]; ok {
@@ -259,7 +249,7 @@ func runEnableWithStrategy(w io.Writer, selectedStrategy string, localDev, _, us
 }
 
 // runEnableInteractive runs the interactive enable flow.
-func runEnableInteractive(w io.Writer, localDev, _, useLocalSettings, useProjectSettings, forceHooks, setupShell, skipPushSessions, telemetry bool) error {
+func runEnableInteractive(w io.Writer, localDev, _, useLocalSettings, useProjectSettings, forceHooks, skipPushSessions, telemetry bool) error {
 	// Use the default strategy (manual-commit)
 	internalStrategy := strategy.DefaultStrategyName
 	fmt.Fprintf(w, "Using %s strategy (use --strategy to change)\n\n", strategyInternalToDisplay[internalStrategy])
@@ -348,20 +338,6 @@ func runEnableInteractive(w io.Writer, localDev, _, useLocalSettings, useProject
 	}
 	if err := strat.EnsureSetup(); err != nil {
 		return fmt.Errorf("failed to setup strategy: %w", err)
-	}
-
-	// Setup shell completion - either non-interactively (if --setup-shell) or prompt
-	if setupShell {
-		if err := setupShellCompletionNonInteractive(w); err != nil {
-			// Non-fatal - just log and continue
-			fmt.Fprintf(w, "Note: Shell completion setup skipped: %v\n", err)
-		}
-	} else {
-		// Offer to setup shell completion (only if not already configured)
-		if err := promptShellCompletion(w); err != nil {
-			// Non-fatal - just log and continue
-			fmt.Fprintf(w, "Note: Shell completion setup skipped: %v\n", err)
-		}
 	}
 
 	// Show success message with display name
@@ -678,46 +654,78 @@ func newSetupGitHookCmd() *cobra.Command {
 	return cmd
 }
 
+func newCurlBashPostInstallCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:    "curl-bash-post-install",
+		Short:  "Post-install tasks for curl|bash installer",
+		Hidden: true,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			w := cmd.OutOrStdout()
+			if err := promptShellCompletion(w); err != nil {
+				fmt.Fprintf(w, "Note: Shell completion setup skipped: %v\n", err)
+			}
+			return nil
+		},
+	}
+}
+
 // shellCompletionComment is the comment preceding the completion line
 const shellCompletionComment = "# Entire CLI shell completion"
+
+// errUnsupportedShell is returned when the user's shell is not supported for completion.
+var errUnsupportedShell = errors.New("unsupported shell")
+
+// shellCompletionTarget returns the rc file path and completion lines for the
+// user's current shell.
+func shellCompletionTarget() (shellName, rcFile, completionLine string, err error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", "", "", fmt.Errorf("cannot determine home directory: %w", err)
+	}
+
+	shell := os.Getenv("SHELL")
+	switch {
+	case strings.Contains(shell, "zsh"):
+		return "Zsh",
+			filepath.Join(home, ".zshrc"),
+			"source <(entire completion zsh)",
+			nil
+	case strings.Contains(shell, "bash"):
+		bashRC := filepath.Join(home, ".bashrc")
+		if _, err := os.Stat(filepath.Join(home, ".bash_profile")); err == nil {
+			bashRC = filepath.Join(home, ".bash_profile")
+		}
+		return "Bash",
+			bashRC,
+			"source <(entire completion bash)",
+			nil
+	default:
+		return "", "", "", errUnsupportedShell
+	}
+}
 
 // promptShellCompletion offers to add shell completion to the user's rc file.
 // Only prompts if completion is not already configured.
 func promptShellCompletion(w io.Writer) error {
-	// Get user's home directory
-	home, err := os.UserHomeDir()
+	shellName, rcFile, completionLine, err := shellCompletionTarget()
 	if err != nil {
-		//nolint:nilerr // Skip silently if we can't determine home - not a fatal error
+		if errors.Is(err, errUnsupportedShell) {
+			fmt.Fprintf(w, "Note: Shell completion not available for your shell. Supported: zsh, bash.\n")
+			return nil
+		}
+		return fmt.Errorf("shell completion: %w", err)
+	}
+
+	if isCompletionConfigured(rcFile) {
+		fmt.Fprintf(w, "✓ Shell completion already configured in %s\n", rcFile)
 		return nil
 	}
 
-	// Determine shell and rc file
-	shell := os.Getenv("SHELL")
-	var rcFile string
-	var completionLine string
-
-	switch {
-	case strings.Contains(shell, "zsh"):
-		rcFile = filepath.Join(home, ".zshrc")
-		completionLine = "source <(entire completion zsh)"
-	case strings.Contains(shell, "bash"):
-		rcFile = filepath.Join(home, ".bashrc")
-		completionLine = "source <(entire completion bash)"
-	default:
-		return nil // Unsupported shell, skip silently
-	}
-
-	// Check if completion is already configured
-	if isCompletionConfigured(rcFile) {
-		return nil // Already configured, skip silently
-	}
-
-	// Prompt user with select-style picker (matching other prompts)
 	var selected string
 	form := NewAccessibleForm(
 		huh.NewGroup(
 			huh.NewSelect[string]().
-				Title("Enable shell completion?").
+				Title(fmt.Sprintf("Enable shell completion? (detected: %s)", shellName)).
 				Options(
 					huh.NewOption("Yes", "yes"),
 					huh.NewOption("No", "no"),
@@ -735,13 +743,12 @@ func promptShellCompletion(w io.Writer) error {
 		return nil
 	}
 
-	// Append completion to rc file
 	if err := appendShellCompletion(rcFile, completionLine); err != nil {
 		return fmt.Errorf("failed to update %s: %w", rcFile, err)
 	}
 
 	fmt.Fprintf(w, "✓ Shell completion added to %s\n", rcFile)
-	fmt.Fprintln(w, "  Run `source "+rcFile+"` or restart your shell to activate")
+	fmt.Fprintln(w, "  Restart your shell to activate")
 
 	return nil
 }
@@ -765,53 +772,10 @@ func appendShellCompletion(rcFile, completionLine string) error {
 	}
 	defer f.Close()
 
-	// Add newline, comment, and completion line
 	_, err = f.WriteString("\n" + shellCompletionComment + "\n" + completionLine + "\n")
 	if err != nil {
 		return fmt.Errorf("writing completion: %w", err)
 	}
-	return nil
-}
-
-// setupShellCompletionNonInteractive adds shell completion without prompting.
-// Used when --setup-shell flag is provided.
-func setupShellCompletionNonInteractive(w io.Writer) error {
-	// Get user's home directory
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return fmt.Errorf("cannot determine home directory: %w", err)
-	}
-
-	// Determine shell and rc file
-	shell := os.Getenv("SHELL")
-	var rcFile string
-	var completionLine string
-
-	switch {
-	case strings.Contains(shell, "zsh"):
-		rcFile = filepath.Join(home, ".zshrc")
-		completionLine = "source <(entire completion zsh)"
-	case strings.Contains(shell, "bash"):
-		rcFile = filepath.Join(home, ".bashrc")
-		completionLine = "source <(entire completion bash)"
-	default:
-		return fmt.Errorf("unsupported shell: %s (supported: zsh, bash)", shell)
-	}
-
-	// Check if completion is already configured
-	if isCompletionConfigured(rcFile) {
-		fmt.Fprintf(w, "✓ Shell completion already configured in %s\n", rcFile)
-		return nil
-	}
-
-	// Append completion to rc file
-	if err := appendShellCompletion(rcFile, completionLine); err != nil {
-		return fmt.Errorf("failed to update %s: %w", rcFile, err)
-	}
-
-	fmt.Fprintf(w, "✓ Shell completion added to %s\n", rcFile)
-	fmt.Fprintln(w, "  Run `source "+rcFile+"` or restart your shell to activate")
-
 	return nil
 }
 

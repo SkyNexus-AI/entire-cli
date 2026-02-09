@@ -355,7 +355,7 @@ func TestRunEnableWithStrategy_PreservesExistingSettings(t *testing.T) {
 
 	// Run enable with a different strategy
 	var stdout bytes.Buffer
-	err := runEnableWithStrategy(&stdout, "auto-commit", false, false, false, true, false, false, false, false)
+	err := runEnableWithStrategy(&stdout, "auto-commit", false, false, false, true, false, false, false)
 	if err != nil {
 		t.Fatalf("runEnableWithStrategy() error = %v", err)
 	}
@@ -399,7 +399,7 @@ func TestRunEnableWithStrategy_PreservesLocalSettings(t *testing.T) {
 
 	// Run enable with --local flag
 	var stdout bytes.Buffer
-	err := runEnableWithStrategy(&stdout, "auto-commit", false, false, true, false, false, false, false, false)
+	err := runEnableWithStrategy(&stdout, "auto-commit", false, false, true, false, false, false, false)
 	if err != nil {
 		t.Fatalf("runEnableWithStrategy() error = %v", err)
 	}
@@ -583,6 +583,90 @@ func TestRemoveEntireDirectory(t *testing.T) {
 	// Verify it's removed
 	if _, err := os.Stat(entireDir); !os.IsNotExist(err) {
 		t.Error(".entire directory should be removed")
+	}
+}
+
+func TestShellCompletionTarget(t *testing.T) {
+	tests := []struct {
+		name             string
+		shell            string
+		createBashProf   bool
+		wantShell        string
+		wantRCBase       string // basename of rc file
+		wantCompletion   string
+		wantErrUnsupport bool
+	}{
+		{
+			name:           "zsh",
+			shell:          "/bin/zsh",
+			wantShell:      "Zsh",
+			wantRCBase:     ".zshrc",
+			wantCompletion: "source <(entire completion zsh)",
+		},
+		{
+			name:           "bash_no_profile",
+			shell:          "/bin/bash",
+			wantShell:      "Bash",
+			wantRCBase:     ".bashrc",
+			wantCompletion: "source <(entire completion bash)",
+		},
+		{
+			name:           "bash_with_profile",
+			shell:          "/bin/bash",
+			createBashProf: true,
+			wantShell:      "Bash",
+			wantRCBase:     ".bash_profile",
+			wantCompletion: "source <(entire completion bash)",
+		},
+		{
+			name:             "fish_unsupported",
+			shell:            "/usr/bin/fish",
+			wantErrUnsupport: true,
+		},
+		{
+			name:             "empty_shell",
+			shell:            "",
+			wantErrUnsupport: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("SHELL", tt.shell)
+
+			if tt.createBashProf {
+				if err := os.WriteFile(filepath.Join(home, ".bash_profile"), []byte(""), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			shellName, rcFile, completion, err := shellCompletionTarget()
+
+			if tt.wantErrUnsupport {
+				if err != errUnsupportedShell {
+					t.Fatalf("got err=%v, want errUnsupportedShell", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if shellName != tt.wantShell {
+				t.Errorf("shellName = %q, want %q", shellName, tt.wantShell)
+			}
+			if filepath.Base(rcFile) != tt.wantRCBase {
+				t.Errorf("rcFile base = %q, want %q", filepath.Base(rcFile), tt.wantRCBase)
+			}
+			wantRC := filepath.Join(home, tt.wantRCBase)
+			if rcFile != wantRC {
+				t.Errorf("rcFile = %q, want %q", rcFile, wantRC)
+			}
+			if completion != tt.wantCompletion {
+				t.Errorf("completion = %q, want %q", completion, tt.wantCompletion)
+			}
+		})
 	}
 }
 
