@@ -293,6 +293,9 @@ mise run lint
 
 # Format the code
 mise run fmt
+
+# Install current code as the entire binary
+mise run dev:publish
 ```
 
 ### Project Structure
