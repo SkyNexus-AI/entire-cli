@@ -115,9 +115,10 @@ func (s *ManualCommitStrategy) SaveChanges(ctx SaveContext) error {
 	// Update session state
 	state.StepCount++
 
-	// Clear PendingCheckpointID — new content means the previous checkpoint cycle is over
-	// and a new ID will be generated on the next commit
-	state.PendingCheckpointID = ""
+	// Note: PendingCheckpointID is intentionally NOT cleared here.
+	// It is set by PostCommit (ACTIVE → ACTIVE_COMMITTED) and consumed by
+	// handleTurnEndCondense. Clearing it here would cause a mismatch between
+	// the checkpoint ID in the commit trailer and the condensed metadata.
 
 	// Store the prompt attribution we calculated before saving
 	state.PromptAttributions = append(state.PromptAttributions, promptAttr)

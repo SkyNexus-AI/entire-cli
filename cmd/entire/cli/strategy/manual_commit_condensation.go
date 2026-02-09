@@ -566,7 +566,7 @@ func (s *ManualCommitStrategy) CondenseSessionByID(sessionID string) error {
 	state.CheckpointTranscriptStart = result.TotalTranscriptLines
 	state.Phase = session.PhaseIdle
 	state.LastCheckpointID = checkpointID
-	state.PendingCheckpointID = checkpointID.String()
+	state.PendingCheckpointID = "" // Clear after condensation (amend handler uses LastCheckpointID)
 	state.PromptAttributions = nil
 	state.PendingPromptAttribution = nil
 
