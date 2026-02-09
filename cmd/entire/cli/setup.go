@@ -211,14 +211,10 @@ func runEnableWithStrategy(w io.Writer, selectedStrategy string, localDev, _, us
 	}
 	fmt.Fprintf(w, "Agent: %s (use --agent to change)\n\n", agentType)
 
-	// Setup Claude Code hooks + git hooks → combined "Hooks installed" message
+	// Setup Claude Code hooks (agent hooks don't depend on settings)
 	if _, err := setupClaudeCodeHook(localDev, forceHooks); err != nil {
 		return fmt.Errorf("failed to setup Claude Code hooks: %w", err)
 	}
-	if _, err := strategy.InstallGitHook(true); err != nil {
-		return fmt.Errorf("failed to install git hooks: %w", err)
-	}
-	fmt.Fprintln(w, "✓ Hooks installed")
 
 	// Setup .entire directory
 	if _, err := setupEntireDirectory(); err != nil {
@@ -274,6 +270,12 @@ func runEnableWithStrategy(w io.Writer, selectedStrategy string, localDev, _, us
 			return fmt.Errorf("failed to save settings: %w", err)
 		}
 	}
+
+	// Install git hooks AFTER saving settings (InstallGitHook reads local_dev from settings)
+	if _, err := strategy.InstallGitHook(true); err != nil {
+		return fmt.Errorf("failed to install git hooks: %w", err)
+	}
+	fmt.Fprintln(w, "✓ Hooks installed")
 	fmt.Fprintf(w, "✓ Project configured (%s)\n", configDisplay)
 
 	// Let the strategy handle its own setup requirements
@@ -309,14 +311,10 @@ func runEnableInteractive(w io.Writer, localDev, _, useLocalSettings, useProject
 	}
 	fmt.Fprintf(w, "Agent: %s (use --agent to change)\n\n", agentType)
 
-	// Install Claude Code hooks + git hooks → combined "Hooks installed" message
+	// Setup Claude Code hooks (agent hooks don't depend on settings)
 	if _, err := setupClaudeCodeHook(localDev, forceHooks); err != nil {
 		return fmt.Errorf("failed to setup Claude Code hooks: %w", err)
 	}
-	if _, err := strategy.InstallGitHook(true); err != nil {
-		return fmt.Errorf("failed to install git hooks: %w", err)
-	}
-	fmt.Fprintln(w, "✓ Hooks installed")
 
 	// Setup .entire directory
 	if _, err := setupEntireDirectory(); err != nil {
@@ -370,6 +368,13 @@ func runEnableInteractive(w io.Writer, localDev, _, useLocalSettings, useProject
 	if err := saveSettings(); err != nil {
 		return fmt.Errorf("failed to save settings: %w", err)
 	}
+
+	// Install git hooks AFTER saving settings (InstallGitHook reads local_dev from settings)
+	if _, err := strategy.InstallGitHook(true); err != nil {
+		return fmt.Errorf("failed to install git hooks: %w", err)
+	}
+	fmt.Fprintln(w, "✓ Hooks installed")
+
 	configDisplay := configDisplayProject
 	if shouldUseLocal {
 		configDisplay = configDisplayLocal
@@ -497,18 +502,9 @@ func setupAgentHooksNonInteractive(w io.Writer, agentName agent.AgentName, strat
 
 	fmt.Fprintf(w, "Agent: %s\n\n", ag.Type())
 
-	// Install agent hooks + git hooks
+	// Install agent hooks (agent hooks don't depend on settings)
 	if _, err := hookAgent.InstallHooks(localDev, forceHooks); err != nil {
 		return fmt.Errorf("failed to install hooks for %s: %w", agentName, err)
-	}
-	if _, err := strategy.InstallGitHook(true); err != nil {
-		return fmt.Errorf("failed to install git hooks: %w", err)
-	}
-
-	if agentName == agent.AgentNameGemini {
-		fmt.Fprintln(w, "✓ Hooks installed - This is a work in progress")
-	} else {
-		fmt.Fprintln(w, "✓ Hooks installed")
 	}
 
 	// Setup .entire directory
@@ -516,8 +512,12 @@ func setupAgentHooksNonInteractive(w io.Writer, agentName agent.AgentName, strat
 		return fmt.Errorf("failed to setup .entire directory: %w", err)
 	}
 
-	// Update settings to store the strategy
-	settings, _ := LoadEntireSettings() //nolint:errcheck // settings defaults are fine
+	// Load existing settings to preserve other options (like strategy_options.push)
+	settings, err := LoadEntireSettings()
+	if err != nil {
+		// If we can't load, start with defaults
+		settings = &EntireSettings{}
+	}
 	settings.Enabled = true
 	if localDev {
 		settings.LocalDev = localDev
@@ -554,6 +554,17 @@ func setupAgentHooksNonInteractive(w io.Writer, agentName agent.AgentName, strat
 
 	if err := SaveEntireSettings(settings); err != nil {
 		return fmt.Errorf("failed to save settings: %w", err)
+	}
+
+	// Install git hooks AFTER saving settings (InstallGitHook reads local_dev from settings)
+	if _, err := strategy.InstallGitHook(true); err != nil {
+		return fmt.Errorf("failed to install git hooks: %w", err)
+	}
+
+	if agentName == agent.AgentNameGemini {
+		fmt.Fprintln(w, "✓ Hooks installed - This is a work in progress")
+	} else {
+		fmt.Fprintln(w, "✓ Hooks installed")
 	}
 	fmt.Fprintf(w, "✓ Project configured (%s)\n", configDisplayProject)
 
