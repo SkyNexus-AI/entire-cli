@@ -115,9 +115,9 @@ Your Branch                    entire/checkpoints/v1
 [Base Commit]                           │
      │                                  │
      │  ┌─── Agent works ───┐           │
-     │  │  Checkpoint 1     │           │
-     │  │  Checkpoint 2     │           │ 
-     │  │  Checkpoint 3     │           │
+     │  │  Step 1           │           │
+     │  │  Step 2           │           │ 
+     │  │  Step 3           │           │
      │  └───────────────────┘           │
      │                                  │
      ▼                                  ▼
