@@ -59,7 +59,7 @@ Security advisories are issued when a confirmed vulnerability can be exploited b
 - Resource exhaustion that requires local access to trigger
 - Issues that cannot be exploited without direct access to the user's machine
 
-These should be filed as [bug reports](https://github.com/entire/cli/issues/new) instead
+Use [GitHub Issues](https://github.com/entireio/cli/issues) to report bugs.
 
 ---
 
