@@ -1544,6 +1544,124 @@ func TestGetBranchCheckpoints_ReadsPromptFromShadowBranch(t *testing.T) {
 	}
 }
 
+func TestGetCurrentWorktreeHash_MainWorktree(t *testing.T) {
+	// In a temp dir with a real .git directory (main worktree), getCurrentWorktreeHash
+	// should return the hash of empty string (main worktree ID is "").
+	tmpDir := t.TempDir()
+	t.Chdir(tmpDir)
+
+	if _, err := git.PlainInit(tmpDir, false); err != nil {
+		t.Fatalf("failed to init git repo: %v", err)
+	}
+
+	hash := getCurrentWorktreeHash()
+	expected := checkpoint.HashWorktreeID("") // Main worktree has empty ID
+	if hash != expected {
+		t.Errorf("getCurrentWorktreeHash() = %q, want %q (hash of empty worktree ID)", hash, expected)
+	}
+}
+
+func TestGetReachableTemporaryCheckpoints_FiltersByWorktree(t *testing.T) {
+	// Shadow branches are namespaced by worktree hash (entire/<commit>-<worktreeHash>).
+	// Only shadow branches matching the current worktree should be included.
+	tmpDir := t.TempDir()
+	t.Chdir(tmpDir)
+
+	repo, err := git.PlainInit(tmpDir, false)
+	if err != nil {
+		t.Fatalf("failed to init git repo: %v", err)
+	}
+
+	w, err := repo.Worktree()
+	if err != nil {
+		t.Fatalf("failed to get worktree: %v", err)
+	}
+
+	// Create initial commit
+	testFile := filepath.Join(tmpDir, "test.txt")
+	if err := os.WriteFile(testFile, []byte("initial"), 0o644); err != nil {
+		t.Fatalf("failed to write test file: %v", err)
+	}
+	if _, err := w.Add("test.txt"); err != nil {
+		t.Fatalf("failed to add test file: %v", err)
+	}
+	initialCommit, err := w.Commit("initial commit", &git.CommitOptions{
+		Author: &object.Signature{Name: "Test", Email: "test@test.com", When: time.Now()},
+	})
+	if err != nil {
+		t.Fatalf("failed to create initial commit: %v", err)
+	}
+
+	// Setup metadata for both sessions
+	sessionIDLocal := "2026-02-10-local-session"
+	sessionIDOther := "2026-02-10-other-session"
+	for _, sid := range []string{sessionIDLocal, sessionIDOther} {
+		metaDir := filepath.Join(tmpDir, ".entire", "metadata", sid)
+		if err := os.MkdirAll(metaDir, 0o755); err != nil {
+			t.Fatalf("failed to create metadata dir: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(metaDir, paths.PromptFileName), []byte("test"), 0o644); err != nil {
+			t.Fatalf("failed to write prompt: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(metaDir, "full.jsonl"), []byte(`{"test":true}`), 0o644); err != nil {
+			t.Fatalf("failed to write transcript: %v", err)
+		}
+	}
+
+	store := checkpoint.NewGitStore(repo)
+	baseCommit := initialCommit.String()[:7]
+
+	writeCheckpoints := func(sessionID, worktreeID string) {
+		t.Helper()
+		metaDirAbs := filepath.Join(tmpDir, ".entire", "metadata", sessionID)
+		// Baseline
+		if _, err := store.WriteTemporary(context.Background(), checkpoint.WriteTemporaryOptions{
+			SessionID: sessionID, BaseCommit: baseCommit, WorktreeID: worktreeID,
+			ModifiedFiles: []string{"test.txt"}, MetadataDir: ".entire/metadata/" + sessionID,
+			MetadataDirAbs: metaDirAbs, CommitMessage: "baseline", AuthorName: "Test",
+			AuthorEmail: "test@test.com", IsFirstCheckpoint: true,
+		}); err != nil {
+			t.Fatalf("WriteTemporary baseline error: %v", err)
+		}
+		// Code change checkpoint
+		if err := os.WriteFile(testFile, []byte(sessionID+" changes"), 0o644); err != nil {
+			t.Fatalf("failed to modify test file: %v", err)
+		}
+		if _, err := store.WriteTemporary(context.Background(), checkpoint.WriteTemporaryOptions{
+			SessionID: sessionID, BaseCommit: baseCommit, WorktreeID: worktreeID,
+			ModifiedFiles: []string{"test.txt"}, MetadataDir: ".entire/metadata/" + sessionID,
+			MetadataDirAbs: metaDirAbs, CommitMessage: "code changes", AuthorName: "Test",
+			AuthorEmail: "test@test.com", IsFirstCheckpoint: false,
+		}); err != nil {
+			t.Fatalf("WriteTemporary code changes error: %v", err)
+		}
+	}
+
+	writeCheckpoints(sessionIDLocal, "")               // Main worktree (matches test env)
+	writeCheckpoints(sessionIDOther, "other-worktree") // Different worktree
+
+	// getBranchCheckpoints should only include local worktree's checkpoints
+	points, err := getBranchCheckpoints(repo, 20)
+	if err != nil {
+		t.Fatalf("getBranchCheckpoints error: %v", err)
+	}
+
+	for _, p := range points {
+		if p.SessionID == sessionIDOther {
+			t.Errorf("found checkpoint from other worktree (session %s) - should be filtered out", sessionIDOther)
+		}
+	}
+	var foundLocal bool
+	for _, p := range points {
+		if p.SessionID == sessionIDLocal {
+			foundLocal = true
+		}
+	}
+	if !foundLocal {
+		t.Errorf("expected local worktree checkpoint (session %s), got: %+v", sessionIDLocal, points)
+	}
+}
+
 // TestRunExplainBranchDefault_ShowsBranchCheckpoints is covered by TestExplainDefault_ShowsBranchView
 // since runExplainDefault now calls runExplainBranchDefault directly.
 
@@ -2764,6 +2882,420 @@ func TestFormatCheckpointOutput_WithAssociatedCommits(t *testing.T) {
 	}
 }
 
+// createMergeCommit creates a merge commit with two parents using go-git plumbing APIs.
+// Returns the merge commit hash.
+func createMergeCommit(t *testing.T, repo *git.Repository, parent1, parent2 plumbing.Hash, treeHash plumbing.Hash, message string) plumbing.Hash {
+	t.Helper()
+
+	sig := object.Signature{
+		Name:  "Test",
+		Email: "test@example.com",
+		When:  time.Now(),
+	}
+	commit := object.Commit{
+		Author:       sig,
+		Committer:    sig,
+		Message:      message,
+		TreeHash:     treeHash,
+		ParentHashes: []plumbing.Hash{parent1, parent2},
+	}
+	obj := repo.Storer.NewEncodedObject()
+	if err := commit.Encode(obj); err != nil {
+		t.Fatalf("failed to encode merge commit: %v", err)
+	}
+	hash, err := repo.Storer.SetEncodedObject(obj)
+	if err != nil {
+		t.Fatalf("failed to store merge commit: %v", err)
+	}
+	return hash
+}
+
+func TestGetBranchCheckpoints_WithMergeFromMain(t *testing.T) {
+	// Regression test: when main is merged into a feature branch, getBranchCheckpoints
+	// should still find feature branch checkpoints from before the merge.
+	// The old repo.Log() approach did a full DAG walk, entering main's history through
+	// merge commits and eventually hitting consecutiveMainLimit, silently dropping
+	// older feature branch checkpoints.
+	tmpDir := t.TempDir()
+	t.Chdir(tmpDir)
+
+	repo, err := git.PlainInit(tmpDir, false)
+	if err != nil {
+		t.Fatalf("failed to init git repo: %v", err)
+	}
+
+	w, err := repo.Worktree()
+	if err != nil {
+		t.Fatalf("failed to get worktree: %v", err)
+	}
+
+	// Create initial commit on master
+	testFile := filepath.Join(tmpDir, "test.txt")
+	if err := os.WriteFile(testFile, []byte("initial"), 0o644); err != nil {
+		t.Fatalf("failed to write test file: %v", err)
+	}
+	if _, err := w.Add("test.txt"); err != nil {
+		t.Fatalf("failed to add test file: %v", err)
+	}
+	initialCommit, err := w.Commit("initial commit", &git.CommitOptions{
+		Author: &object.Signature{Name: "Test", Email: "test@example.com", When: time.Now().Add(-5 * time.Hour)},
+	})
+	if err != nil {
+		t.Fatalf("failed to create initial commit: %v", err)
+	}
+
+	// Create feature branch from initial commit
+	featureBranch := plumbing.NewBranchReferenceName("feature/test")
+	if err := w.Checkout(&git.CheckoutOptions{
+		Hash:   initialCommit,
+		Branch: featureBranch,
+		Create: true,
+	}); err != nil {
+		t.Fatalf("failed to create feature branch: %v", err)
+	}
+
+	// Create first feature checkpoint commit (BEFORE the merge)
+	cpID1 := id.MustCheckpointID("aaa111bbb222")
+	if err := os.WriteFile(testFile, []byte("feature work 1"), 0o644); err != nil {
+		t.Fatalf("failed to write test file: %v", err)
+	}
+	if _, err := w.Add("test.txt"); err != nil {
+		t.Fatalf("failed to add test file: %v", err)
+	}
+	featureCommit1, err := w.Commit(trailers.FormatCheckpoint("feat: first feature", cpID1), &git.CommitOptions{
+		Author: &object.Signature{Name: "Test", Email: "test@example.com", When: time.Now().Add(-4 * time.Hour)},
+	})
+	if err != nil {
+		t.Fatalf("failed to create first feature commit: %v", err)
+	}
+
+	// Switch to master and add commits (simulating work on main)
+	if err := w.Checkout(&git.CheckoutOptions{
+		Branch: plumbing.NewBranchReferenceName("master"),
+	}); err != nil {
+		t.Fatalf("failed to checkout master: %v", err)
+	}
+	if err := os.WriteFile(testFile, []byte("main work"), 0o644); err != nil {
+		t.Fatalf("failed to write test file: %v", err)
+	}
+	if _, err := w.Add("test.txt"); err != nil {
+		t.Fatalf("failed to add test file: %v", err)
+	}
+	mainCommit, err := w.Commit("main: add work", &git.CommitOptions{
+		Author: &object.Signature{Name: "Test", Email: "test@example.com", When: time.Now().Add(-3 * time.Hour)},
+	})
+	if err != nil {
+		t.Fatalf("failed to create main commit: %v", err)
+	}
+
+	// Switch back to feature branch
+	if err := w.Checkout(&git.CheckoutOptions{
+		Branch: featureBranch,
+	}); err != nil {
+		t.Fatalf("failed to checkout feature branch: %v", err)
+	}
+
+	// Create merge commit: merge main into feature (feature is first parent, main is second parent)
+	featureCommitObj, commitObjErr := repo.CommitObject(featureCommit1)
+	if commitObjErr != nil {
+		t.Fatalf("failed to get feature commit object: %v", commitObjErr)
+	}
+	featureTree, treeErr := featureCommitObj.Tree()
+	if treeErr != nil {
+		t.Fatalf("failed to get feature commit tree: %v", treeErr)
+	}
+	mergeHash := createMergeCommit(t, repo, featureCommit1, mainCommit, featureTree.Hash, "Merge branch 'master' into feature/test")
+
+	// Update feature branch ref to point to merge commit
+	ref := plumbing.NewHashReference(featureBranch, mergeHash)
+	if err := repo.Storer.SetReference(ref); err != nil {
+		t.Fatalf("failed to update feature branch ref: %v", err)
+	}
+
+	// Reset worktree to merge commit
+	if err := w.Reset(&git.ResetOptions{Commit: mergeHash, Mode: git.HardReset}); err != nil {
+		t.Fatalf("failed to reset to merge: %v", err)
+	}
+
+	// Create second feature checkpoint commit (AFTER the merge)
+	cpID2 := id.MustCheckpointID("ccc333ddd444")
+	if err := os.WriteFile(testFile, []byte("feature work 2"), 0o644); err != nil {
+		t.Fatalf("failed to write test file: %v", err)
+	}
+	if _, err := w.Add("test.txt"); err != nil {
+		t.Fatalf("failed to add test file: %v", err)
+	}
+	_, err = w.Commit(trailers.FormatCheckpoint("feat: second feature", cpID2), &git.CommitOptions{
+		Author:    &object.Signature{Name: "Test", Email: "test@example.com", When: time.Now().Add(-1 * time.Hour)},
+		Parents:   []plumbing.Hash{mergeHash},
+		Committer: &object.Signature{Name: "Test", Email: "test@example.com", When: time.Now().Add(-1 * time.Hour)},
+	})
+	if err != nil {
+		t.Fatalf("failed to create second feature commit: %v", err)
+	}
+
+	// Create .entire directory
+	if err := os.MkdirAll(".entire", 0o750); err != nil {
+		t.Fatalf("failed to create .entire dir: %v", err)
+	}
+
+	// Test getAssociatedCommits - should find BOTH feature checkpoint commits
+	// by walking first-parent chain (skipping the merge's second parent into main)
+	commits1, err := getAssociatedCommits(repo, cpID1, false)
+	if err != nil {
+		t.Fatalf("getAssociatedCommits for cpID1 error: %v", err)
+	}
+	if len(commits1) != 1 {
+		t.Errorf("expected 1 commit for cpID1 (first feature checkpoint), got %d", len(commits1))
+	}
+
+	commits2, err := getAssociatedCommits(repo, cpID2, false)
+	if err != nil {
+		t.Fatalf("getAssociatedCommits for cpID2 error: %v", err)
+	}
+	if len(commits2) != 1 {
+		t.Errorf("expected 1 commit for cpID2 (second feature checkpoint), got %d", len(commits2))
+	}
+}
+
+func TestGetBranchCheckpoints_MergeCommitAtHEAD(t *testing.T) {
+	// Test that when HEAD itself is a merge commit, walkFirstParentCommits
+	// correctly follows the first parent (feature branch history) and
+	// doesn't walk into the second parent (main branch history).
+	tmpDir := t.TempDir()
+	t.Chdir(tmpDir)
+
+	repo, err := git.PlainInit(tmpDir, false)
+	if err != nil {
+		t.Fatalf("failed to init git repo: %v", err)
+	}
+
+	w, err := repo.Worktree()
+	if err != nil {
+		t.Fatalf("failed to get worktree: %v", err)
+	}
+
+	// Create initial commit on master
+	testFile := filepath.Join(tmpDir, "test.txt")
+	if err := os.WriteFile(testFile, []byte("initial"), 0o644); err != nil {
+		t.Fatalf("failed to write test file: %v", err)
+	}
+	if _, err := w.Add("test.txt"); err != nil {
+		t.Fatalf("failed to add test file: %v", err)
+	}
+	initialCommit, err := w.Commit("initial commit", &git.CommitOptions{
+		Author: &object.Signature{Name: "Test", Email: "test@example.com", When: time.Now().Add(-5 * time.Hour)},
+	})
+	if err != nil {
+		t.Fatalf("failed to create initial commit: %v", err)
+	}
+
+	// Create feature branch
+	featureBranch := plumbing.NewBranchReferenceName("feature/merge-at-head")
+	if err := w.Checkout(&git.CheckoutOptions{
+		Hash:   initialCommit,
+		Branch: featureBranch,
+		Create: true,
+	}); err != nil {
+		t.Fatalf("failed to create feature branch: %v", err)
+	}
+
+	// Create feature checkpoint commit
+	cpID := id.MustCheckpointID("eee555fff666")
+	if err := os.WriteFile(testFile, []byte("feature work"), 0o644); err != nil {
+		t.Fatalf("failed to write test file: %v", err)
+	}
+	if _, err := w.Add("test.txt"); err != nil {
+		t.Fatalf("failed to add test file: %v", err)
+	}
+	featureCommit, err := w.Commit(trailers.FormatCheckpoint("feat: feature work", cpID), &git.CommitOptions{
+		Author: &object.Signature{Name: "Test", Email: "test@example.com", When: time.Now().Add(-3 * time.Hour)},
+	})
+	if err != nil {
+		t.Fatalf("failed to create feature commit: %v", err)
+	}
+
+	// Switch to master and add a commit
+	if err := w.Checkout(&git.CheckoutOptions{
+		Branch: plumbing.NewBranchReferenceName("master"),
+	}); err != nil {
+		t.Fatalf("failed to checkout master: %v", err)
+	}
+	mainFile := filepath.Join(tmpDir, "main.txt")
+	if err := os.WriteFile(mainFile, []byte("main work"), 0o644); err != nil {
+		t.Fatalf("failed to write main file: %v", err)
+	}
+	if _, err := w.Add("main.txt"); err != nil {
+		t.Fatalf("failed to add main file: %v", err)
+	}
+	mainCommit, err := w.Commit("main: add work", &git.CommitOptions{
+		Author: &object.Signature{Name: "Test", Email: "test@example.com", When: time.Now().Add(-2 * time.Hour)},
+	})
+	if err != nil {
+		t.Fatalf("failed to create main commit: %v", err)
+	}
+
+	// Switch back to feature and create merge commit AT HEAD
+	if err := w.Checkout(&git.CheckoutOptions{
+		Branch: featureBranch,
+	}); err != nil {
+		t.Fatalf("failed to checkout feature branch: %v", err)
+	}
+
+	featureCommitObj, commitObjErr := repo.CommitObject(featureCommit)
+	if commitObjErr != nil {
+		t.Fatalf("failed to get feature commit object: %v", commitObjErr)
+	}
+	featureTree, treeErr := featureCommitObj.Tree()
+	if treeErr != nil {
+		t.Fatalf("failed to get feature commit tree: %v", treeErr)
+	}
+	mergeHash := createMergeCommit(t, repo, featureCommit, mainCommit, featureTree.Hash, "Merge branch 'master' into feature/merge-at-head")
+
+	// Update feature branch ref to merge commit (HEAD IS the merge)
+	ref := plumbing.NewHashReference(featureBranch, mergeHash)
+	if err := repo.Storer.SetReference(ref); err != nil {
+		t.Fatalf("failed to update feature branch ref: %v", err)
+	}
+
+	// Create .entire directory
+	if err := os.MkdirAll(".entire", 0o750); err != nil {
+		t.Fatalf("failed to create .entire dir: %v", err)
+	}
+
+	// HEAD is the merge commit itself.
+	// getAssociatedCommits should walk: merge -> featureCommit -> initial
+	// and find the checkpoint on featureCommit.
+	commits, err := getAssociatedCommits(repo, cpID, false)
+	if err != nil {
+		t.Fatalf("getAssociatedCommits error: %v", err)
+	}
+	if len(commits) != 1 {
+		t.Fatalf("expected 1 associated commit when HEAD is merge commit, got %d", len(commits))
+	}
+	if !strings.Contains(commits[0].Message, "feat: feature work") {
+		t.Errorf("expected feature commit message, got %q", commits[0].Message)
+	}
+}
+
+func TestWalkFirstParentCommits_SkipsMergeParents(t *testing.T) {
+	// Verify that walkFirstParentCommits follows only first parents and doesn't
+	// enter the second parent (merge source) of merge commits.
+	tmpDir := t.TempDir()
+	t.Chdir(tmpDir)
+
+	repo, err := git.PlainInit(tmpDir, false)
+	if err != nil {
+		t.Fatalf("failed to init git repo: %v", err)
+	}
+
+	w, err := repo.Worktree()
+	if err != nil {
+		t.Fatalf("failed to get worktree: %v", err)
+	}
+
+	// Create initial commit (shared ancestor)
+	testFile := filepath.Join(tmpDir, "test.txt")
+	if err := os.WriteFile(testFile, []byte("initial"), 0o644); err != nil {
+		t.Fatalf("failed to write test file: %v", err)
+	}
+	if _, err := w.Add("test.txt"); err != nil {
+		t.Fatalf("failed to add test file: %v", err)
+	}
+	initialCommit, err := w.Commit("A: initial", &git.CommitOptions{
+		Author: &object.Signature{Name: "Test", Email: "test@example.com", When: time.Now().Add(-5 * time.Hour)},
+	})
+	if err != nil {
+		t.Fatalf("failed to create initial commit: %v", err)
+	}
+
+	// Create feature branch with one commit
+	featureBranch := plumbing.NewBranchReferenceName("feature/walk-test")
+	if err := w.Checkout(&git.CheckoutOptions{
+		Hash:   initialCommit,
+		Branch: featureBranch,
+		Create: true,
+	}); err != nil {
+		t.Fatalf("failed to create feature branch: %v", err)
+	}
+	if err := os.WriteFile(testFile, []byte("feature"), 0o644); err != nil {
+		t.Fatalf("failed to write test file: %v", err)
+	}
+	if _, err := w.Add("test.txt"); err != nil {
+		t.Fatalf("failed to add test file: %v", err)
+	}
+	featureCommit, err := w.Commit("B: feature work", &git.CommitOptions{
+		Author: &object.Signature{Name: "Test", Email: "test@example.com", When: time.Now().Add(-4 * time.Hour)},
+	})
+	if err != nil {
+		t.Fatalf("failed to create feature commit: %v", err)
+	}
+
+	// Create main branch commit (will be merge source)
+	if err := w.Checkout(&git.CheckoutOptions{
+		Branch: plumbing.NewBranchReferenceName("master"),
+	}); err != nil {
+		t.Fatalf("failed to checkout master: %v", err)
+	}
+	mainFile := filepath.Join(tmpDir, "main.txt")
+	if err := os.WriteFile(mainFile, []byte("main"), 0o644); err != nil {
+		t.Fatalf("failed to write main file: %v", err)
+	}
+	if _, err := w.Add("main.txt"); err != nil {
+		t.Fatalf("failed to add main file: %v", err)
+	}
+	mainCommit, err := w.Commit("C: main work", &git.CommitOptions{
+		Author: &object.Signature{Name: "Test", Email: "test@example.com", When: time.Now().Add(-3 * time.Hour)},
+	})
+	if err != nil {
+		t.Fatalf("failed to create main commit: %v", err)
+	}
+
+	// Switch to feature and create merge commit
+	if err := w.Checkout(&git.CheckoutOptions{
+		Branch: featureBranch,
+	}); err != nil {
+		t.Fatalf("failed to checkout feature: %v", err)
+	}
+	featureCommitObj, commitObjErr := repo.CommitObject(featureCommit)
+	if commitObjErr != nil {
+		t.Fatalf("failed to get feature commit object: %v", commitObjErr)
+	}
+	featureTree, treeErr := featureCommitObj.Tree()
+	if treeErr != nil {
+		t.Fatalf("failed to get feature commit tree: %v", treeErr)
+	}
+	mergeHash := createMergeCommit(t, repo, featureCommit, mainCommit, featureTree.Hash, "M: merge main into feature")
+
+	// Walk should visit: M (merge) -> B (feature) -> A (initial)
+	// It should NOT visit C (main work), because that's the second parent of the merge.
+	var visited []string
+	err = walkFirstParentCommits(repo, mergeHash, 0, func(c *object.Commit) error {
+		visited = append(visited, strings.Split(c.Message, "\n")[0])
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walkFirstParentCommits error: %v", err)
+	}
+
+	expected := []string{"M: merge main into feature", "B: feature work", "A: initial"}
+	if len(visited) != len(expected) {
+		t.Fatalf("expected %d commits visited, got %d: %v", len(expected), len(visited), visited)
+	}
+	for i, msg := range expected {
+		if visited[i] != msg {
+			t.Errorf("commit %d: expected %q, got %q", i, msg, visited[i])
+		}
+	}
+
+	// Verify C was NOT visited
+	for _, msg := range visited {
+		if strings.Contains(msg, "C: main work") {
+			t.Error("walkFirstParentCommits visited main branch commit (second parent of merge) - should only follow first parents")
+		}
+	}
+}
+
 func TestFormatCheckpointOutput_NoCommitsOnBranch(t *testing.T) {
 	summary := &checkpoint.CheckpointSummary{
 		CheckpointID: id.MustCheckpointID("abc123def456"),
@@ -2790,4 +3322,144 @@ func TestFormatCheckpointOutput_NoCommitsOnBranch(t *testing.T) {
 	if !strings.Contains(output, "Commits: No commits found on this branch") {
 		t.Errorf("expected 'Commits: No commits found on this branch' in output, got:\n%s", output)
 	}
+}
+
+func TestGetAssociatedCommits_SearchAllFindsMergedBranchCommits(t *testing.T) {
+	// Regression test: --search-all should find checkpoint commits that live on
+	// a feature branch merged into main via a true merge commit. These commits
+	// are on the second parent of the merge, so first-parent-only traversal
+	// won't find them — but --search-all should use full DAG walk.
+	tmpDir := t.TempDir()
+	t.Chdir(tmpDir)
+
+	repo, err := git.PlainInit(tmpDir, false)
+	if err != nil {
+		t.Fatalf("failed to init git repo: %v", err)
+	}
+
+	w, err := repo.Worktree()
+	if err != nil {
+		t.Fatalf("failed to get worktree: %v", err)
+	}
+
+	checkpointID := id.MustCheckpointID("aabb11223344")
+
+	// Create initial commit on main
+	testFile := filepath.Join(tmpDir, "test.txt")
+	if err := os.WriteFile(testFile, []byte("initial"), 0o644); err != nil {
+		t.Fatalf("failed to write file: %v", err)
+	}
+	if _, err := w.Add("test.txt"); err != nil {
+		t.Fatalf("failed to add file: %v", err)
+	}
+	mainBase, err := w.Commit("initial commit", &git.CommitOptions{
+		Author: &object.Signature{Name: "Test", Email: "test@example.com", When: time.Now().Add(-4 * time.Hour)},
+	})
+	if err != nil {
+		t.Fatalf("failed to create initial commit: %v", err)
+	}
+
+	// Create a "feature branch" commit with checkpoint trailer (will become second parent)
+	if err := os.WriteFile(testFile, []byte("feature work"), 0o644); err != nil {
+		t.Fatalf("failed to write file: %v", err)
+	}
+	if _, err := w.Add("test.txt"); err != nil {
+		t.Fatalf("failed to add file: %v", err)
+	}
+	featureMsg := trailers.FormatCheckpoint("feat: add feature", checkpointID)
+	featureCommit, err := w.Commit(featureMsg, &git.CommitOptions{
+		Author: &object.Signature{Name: "Feature Dev", Email: "dev@example.com", When: time.Now().Add(-3 * time.Hour)},
+	})
+	if err != nil {
+		t.Fatalf("failed to create feature commit: %v", err)
+	}
+
+	// Move HEAD back to mainBase to simulate being on main
+	// Create a new commit on "main" that diverges
+	if err := os.WriteFile(testFile, []byte("main work"), 0o644); err != nil {
+		t.Fatalf("failed to write file: %v", err)
+	}
+	if _, err := w.Add("test.txt"); err != nil {
+		t.Fatalf("failed to add file: %v", err)
+	}
+	mainCommitObj, err := repo.CommitObject(mainBase)
+	if err != nil {
+		t.Fatalf("failed to get main base commit: %v", err)
+	}
+	mainTree, err := mainCommitObj.Tree()
+	if err != nil {
+		t.Fatalf("failed to get tree: %v", err)
+	}
+
+	// Create a second main commit (to diverge from feature)
+	mainTip := createCommitWithTree(t, repo, mainTree.Hash, []plumbing.Hash{mainBase}, "main: parallel work")
+
+	// Create merge commit: first parent = mainTip, second parent = featureCommit
+	featureCommitObj, err := repo.CommitObject(featureCommit)
+	if err != nil {
+		t.Fatalf("failed to get feature commit: %v", err)
+	}
+	featureTree, err := featureCommitObj.Tree()
+	if err != nil {
+		t.Fatalf("failed to get feature tree: %v", err)
+	}
+	mergeHash := createMergeCommit(t, repo, mainTip, featureCommit, featureTree.Hash, "Merge feature into main")
+
+	// Point HEAD at merge commit
+	ref := plumbing.NewHashReference("refs/heads/main", mergeHash)
+	if err := repo.Storer.SetReference(ref); err != nil {
+		t.Fatalf("failed to set HEAD: %v", err)
+	}
+	headRef := plumbing.NewSymbolicReference("HEAD", "refs/heads/main")
+	if err := repo.Storer.SetReference(headRef); err != nil {
+		t.Fatalf("failed to set HEAD: %v", err)
+	}
+
+	// Without --search-all (first-parent only): should NOT find the feature commit
+	// because it's on the second parent of the merge
+	commits, err := getAssociatedCommits(repo, checkpointID, false)
+	if err != nil {
+		t.Fatalf("getAssociatedCommits error: %v", err)
+	}
+	if len(commits) != 0 {
+		t.Errorf("expected 0 commits without --search-all (first-parent only), got %d", len(commits))
+	}
+
+	// With --search-all (full DAG walk): SHOULD find the feature commit
+	commits, err = getAssociatedCommits(repo, checkpointID, true)
+	if err != nil {
+		t.Fatalf("getAssociatedCommits --search-all error: %v", err)
+	}
+	if len(commits) != 1 {
+		t.Fatalf("expected 1 commit with --search-all, got %d", len(commits))
+	}
+	if commits[0].Author != "Feature Dev" {
+		t.Errorf("expected author 'Feature Dev', got %q", commits[0].Author)
+	}
+}
+
+// createCommitWithTree creates a commit with a specific tree and parent hashes.
+func createCommitWithTree(t *testing.T, repo *git.Repository, treeHash plumbing.Hash, parents []plumbing.Hash, message string) plumbing.Hash {
+	t.Helper()
+	sig := object.Signature{
+		Name:  "Test",
+		Email: "test@example.com",
+		When:  time.Now(),
+	}
+	commit := object.Commit{
+		Author:       sig,
+		Committer:    sig,
+		Message:      message,
+		TreeHash:     treeHash,
+		ParentHashes: parents,
+	}
+	obj := repo.Storer.NewEncodedObject()
+	if err := commit.Encode(obj); err != nil {
+		t.Fatalf("failed to encode commit: %v", err)
+	}
+	hash, err := repo.Storer.SetEncodedObject(obj)
+	if err != nil {
+		t.Fatalf("failed to store commit: %v", err)
+	}
+	return hash
 }

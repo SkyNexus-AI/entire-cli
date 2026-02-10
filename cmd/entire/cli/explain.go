@@ -15,6 +15,7 @@ import (
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint"
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint/id"
 	"github.com/entireio/cli/cmd/entire/cli/logging"
+	"github.com/entireio/cli/cmd/entire/cli/paths"
 	"github.com/entireio/cli/cmd/entire/cli/strategy"
 	"github.com/entireio/cli/cmd/entire/cli/summarize"
 	"github.com/entireio/cli/cmd/entire/cli/trailers"
@@ -451,80 +452,23 @@ func explainTemporaryCheckpoint(w io.Writer, repo *git.Repository, store *checkp
 
 // getAssociatedCommits finds git commits that reference the given checkpoint ID.
 // Searches commits on the current branch for Entire-Checkpoint trailer matches.
-// When searchAll is true, removes the commit scan limit (may be slow).
+// When searchAll is true, uses full DAG walk with no depth limit (may be slow).
+// This finds checkpoint commits on merged feature branches (second parents of merges).
 func getAssociatedCommits(repo *git.Repository, checkpointID id.CheckpointID, searchAll bool) ([]associatedCommit, error) {
 	head, err := repo.Head()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get HEAD: %w", err)
 	}
 
-	// Determine scan limit
-	limit := commitScanLimit
-	if searchAll {
-		limit = 0 // No limit
-	}
-
-	// Check if on default branch for filtering
-	isOnDefault, _ := strategy.IsOnDefaultBranch(repo)
-	var mainBranchHash plumbing.Hash
-	if !isOnDefault {
-		mainBranchHash = strategy.GetMainBranchHash(repo)
-	}
-
-	// Precompute main branch commits for filtering (same logic as getBranchCheckpoints)
-	reachableFromMain := make(map[plumbing.Hash]bool)
-	if mainBranchHash != plumbing.ZeroHash {
-		mainIter, mainErr := repo.Log(&git.LogOptions{From: mainBranchHash})
-		if mainErr == nil {
-			mainCount := 0
-			_ = mainIter.ForEach(func(c *object.Commit) error { //nolint:errcheck // Best-effort main branch detection
-				mainCount++
-				if mainCount > 1000 {
-					return errStopIteration
-				}
-				reachableFromMain[c.Hash] = true
-				return nil
-			})
-			mainIter.Close()
-		}
-	}
-
-	iter, err := repo.Log(&git.LogOptions{
-		From:  head.Hash(),
-		Order: git.LogOrderCommitterTime,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to get commit log: %w", err)
-	}
-	defer iter.Close()
-
 	commits := []associatedCommit{} // Initialize as empty slice, not nil (nil means "not searched")
-	count := 0
 	targetID := checkpointID.String()
 
-	err = iter.ForEach(func(c *object.Commit) error {
-		if limit > 0 && count >= limit {
-			return errStopIteration
-		}
-		count++
-
-		// Skip commits on main when on feature branch (same filtering as list view)
-		if len(reachableFromMain) > 0 && reachableFromMain[c.Hash] {
-			return nil
-		}
-
-		// Check for matching checkpoint trailer
-		cpID, found := trailers.ParseCheckpoint(c.Message)
-		if !found || cpID.String() != targetID {
-			return nil
-		}
-
+	collectCommit := func(c *object.Commit) {
 		fullSHA := c.Hash.String()
 		shortSHA := fullSHA
 		if len(fullSHA) >= 7 {
 			shortSHA = fullSHA[:7]
 		}
-
 		commits = append(commits, associatedCommit{
 			SHA:      fullSHA,
 			ShortSHA: shortSHA,
@@ -532,11 +476,48 @@ func getAssociatedCommits(repo *git.Repository, checkpointID id.CheckpointID, se
 			Author:   c.Author.Name,
 			Date:     c.Author.When,
 		})
+	}
 
-		return nil
-	})
+	if searchAll {
+		// Full DAG walk: follows all parents of merge commits, no depth limit.
+		// This finds checkpoint commits on merged feature branches.
+		iter, iterErr := repo.Log(&git.LogOptions{
+			From:  head.Hash(),
+			Order: git.LogOrderCommitterTime,
+		})
+		if iterErr != nil {
+			return nil, fmt.Errorf("failed to get commit log: %w", iterErr)
+		}
+		defer iter.Close()
 
-	if err != nil && !errors.Is(err, errStopIteration) {
+		err = iter.ForEach(func(c *object.Commit) error {
+			cpID, found := trailers.ParseCheckpoint(c.Message)
+			if found && cpID.String() == targetID {
+				collectCommit(c)
+			}
+			return nil
+		})
+	} else {
+		// First-parent walk with depth limit and branch filtering.
+		// Avoids walking into main's history through merge commit parents.
+		reachableFromMain := computeReachableFromMain(repo)
+
+		err = walkFirstParentCommits(repo, head.Hash(), commitScanLimit, func(c *object.Commit) error {
+			// Once we hit a commit reachable from main on the first-parent chain,
+			// all earlier ancestors are also shared-with-main, so stop scanning.
+			if reachableFromMain[c.Hash] {
+				return errStopIteration
+			}
+
+			cpID, found := trailers.ParseCheckpoint(c.Message)
+			if found && cpID.String() == targetID {
+				collectCommit(c)
+			}
+			return nil
+		})
+	}
+
+	if err != nil {
 		return nil, fmt.Errorf("error iterating commits: %w", err)
 	}
 
@@ -786,12 +767,95 @@ const branchCheckpointsLimit = 100
 // commitScanLimit is how far back to scan git history for checkpoints
 const commitScanLimit = 500
 
-// consecutiveMainLimit stops scanning after this many consecutive commits on main
-// (indicates we've likely exhausted feature branch commits)
-const consecutiveMainLimit = 100
-
 // errStopIteration is used to stop commit iteration early
 var errStopIteration = errors.New("stop iteration")
+
+// getCurrentWorktreeHash returns the hashed worktree ID for the current working directory.
+// This is used to filter shadow branches to only those belonging to this worktree.
+func getCurrentWorktreeHash() string {
+	repoRoot, err := paths.RepoRoot()
+	if err != nil {
+		return ""
+	}
+	worktreeID, err := paths.GetWorktreeID(repoRoot)
+	if err != nil {
+		return ""
+	}
+	return checkpoint.HashWorktreeID(worktreeID)
+}
+
+// computeReachableFromMain returns a set of commit hashes on the main/default branch's first-parent chain.
+// On the default branch itself, returns an empty map (no filtering needed).
+// Only first-parent commits are included — commits from side branches merged into main are excluded,
+// since those could be feature branch commits that shouldn't be filtered out.
+func computeReachableFromMain(repo *git.Repository) map[plumbing.Hash]bool {
+	reachableFromMain := make(map[plumbing.Hash]bool)
+
+	isOnDefault, _ := strategy.IsOnDefaultBranch(repo)
+	if isOnDefault {
+		return reachableFromMain // No filtering needed on default branch
+	}
+
+	// Resolve main branch hash
+	var mainBranchHash plumbing.Hash
+	if defaultBranchName := strategy.GetDefaultBranchName(repo); defaultBranchName != "" {
+		ref, refErr := repo.Reference(plumbing.ReferenceName("refs/heads/"+defaultBranchName), true)
+		if refErr != nil {
+			ref, refErr = repo.Reference(plumbing.ReferenceName("refs/remotes/origin/"+defaultBranchName), true)
+		}
+		if refErr == nil {
+			mainBranchHash = ref.Hash()
+		}
+	}
+	if mainBranchHash == plumbing.ZeroHash {
+		mainBranchHash = strategy.GetMainBranchHash(repo)
+	}
+	if mainBranchHash == plumbing.ZeroHash {
+		return reachableFromMain
+	}
+
+	// Walk main's first-parent chain to build the set
+	_ = walkFirstParentCommits(repo, mainBranchHash, 1000, func(c *object.Commit) error { //nolint:errcheck // Best-effort
+		reachableFromMain[c.Hash] = true
+		return nil
+	})
+
+	return reachableFromMain
+}
+
+// walkFirstParentCommits walks the first-parent chain starting from `from`,
+// calling fn for each commit. It stops after visiting `limit` commits (0 = no limit).
+// This avoids the full DAG traversal that repo.Log() does, which follows ALL parents
+// of merge commits and can walk into unrelated branch history (e.g., main's full
+// history after merging main into a feature branch).
+func walkFirstParentCommits(repo *git.Repository, from plumbing.Hash, limit int, fn func(*object.Commit) error) error {
+	current, err := repo.CommitObject(from)
+	if err != nil {
+		return fmt.Errorf("failed to get commit %s: %w", from, err)
+	}
+
+	for count := 0; limit <= 0 || count < limit; count++ {
+		if err := fn(current); err != nil {
+			if errors.Is(err, errStopIteration) {
+				return nil
+			}
+			return err
+		}
+
+		// Follow first parent only (skip merge parents).
+		// When there are no parents or parent lookup fails, we've reached the
+		// end of the chain — this is a normal termination, not an error.
+		if current.NumParents() == 0 {
+			return nil
+		}
+		parentHash := current.Hash
+		current, err = current.Parent(0)
+		if err != nil {
+			return fmt.Errorf("failed to load first parent of commit %s: %w", parentHash, err)
+		}
+	}
+	return nil
+}
 
 // getBranchCheckpoints returns checkpoints relevant to the current branch.
 // This is strategy-agnostic - it queries checkpoints directly from the checkpoint store.
@@ -826,79 +890,24 @@ func getBranchCheckpoints(repo *git.Repository, limit int) ([]strategy.RewindPoi
 		return nil, fmt.Errorf("failed to get HEAD: %w", err)
 	}
 
-	// Check if we're on the default branch (use repo-aware version)
+	// Check if we're on the default branch (needed for getReachableTemporaryCheckpoints)
 	isOnDefault, _ := strategy.IsOnDefaultBranch(repo)
-	var mainBranchHash plumbing.Hash
-	if !isOnDefault {
-		// Prefer the actual default branch name (which may not be main/master)
-		if defaultBranchName := strategy.GetDefaultBranchName(repo); defaultBranchName != "" {
-			// Try local default branch first: refs/heads/<name>
-			ref, refErr := repo.Reference(plumbing.ReferenceName("refs/heads/"+defaultBranchName), true)
-			if refErr != nil {
-				// Fall back to remote default branch: refs/remotes/origin/<name>
-				ref, refErr = repo.Reference(plumbing.ReferenceName("refs/remotes/origin/"+defaultBranchName), true)
-			}
-			if refErr == nil {
-				mainBranchHash = ref.Hash()
-			}
-		}
 
-		// Fall back to main/master detection if default branch resolution failed
-		if mainBranchHash == plumbing.ZeroHash {
-			mainBranchHash = strategy.GetMainBranchHash(repo)
-		}
-	}
+	// Precompute main branch commits for filtering (skip commits shared with main on feature branches)
+	reachableFromMain := computeReachableFromMain(repo)
 
-	// Precompute commits reachable from main (for O(1) filtering instead of O(N) per commit)
-	// This changes the filtering from O(N*M) to O(N+M) where N=commits scanned, M=main history depth
-	reachableFromMain := make(map[plumbing.Hash]bool)
-	if mainBranchHash != plumbing.ZeroHash {
-		mainIter, mainErr := repo.Log(&git.LogOptions{From: mainBranchHash})
-		if mainErr == nil {
-			mainCount := 0
-			_ = mainIter.ForEach(func(c *object.Commit) error { //nolint:errcheck // Best-effort
-				mainCount++
-				if mainCount > 1000 { // Same depth limit as before
-					return errStopIteration
-				}
-				reachableFromMain[c.Hash] = true
-				return nil
-			})
-			mainIter.Close()
-		}
-	}
-
-	// Walk git history and collect checkpoints
-	iter, err := repo.Log(&git.LogOptions{
-		From:  head.Hash(),
-		Order: git.LogOrderCommitterTime,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to get commit log: %w", err)
-	}
-	defer iter.Close()
-
+	// Walk first-parent chain to collect checkpoints.
+	// First-parent traversal follows only the "main line" of commits on this branch,
+	// skipping merge parents. This avoids walking into main's full history when main
+	// has been merged into a feature branch.
+	// reachableFromMain filtering skips commits that are on main (before the branch point).
 	var points []strategy.RewindPoint
-	count := 0
-	consecutiveMainCount := 0
 
-	err = iter.ForEach(func(c *object.Commit) error {
-		if count >= commitScanLimit {
+	err = walkFirstParentCommits(repo, head.Hash(), commitScanLimit, func(c *object.Commit) error {
+		// Once we hit a commit reachable from main on the first-parent chain,
+		// all earlier ancestors are also shared-with-main, so stop scanning.
+		if reachableFromMain[c.Hash] {
 			return errStopIteration
-		}
-		count++
-
-		// On feature branches, skip commits that are reachable from main
-		// (but continue scanning - there may be more feature branch commits)
-		if len(reachableFromMain) > 0 {
-			if reachableFromMain[c.Hash] {
-				consecutiveMainCount++
-				if consecutiveMainCount >= consecutiveMainLimit {
-					return errStopIteration // Likely exhausted feature branch commits
-				}
-				return nil // Skip this commit, continue scanning
-			}
-			consecutiveMainCount = 0 // Reset on feature branch commit
 		}
 
 		// Extract checkpoint ID from Entire-Checkpoint trailer
@@ -930,10 +939,7 @@ func getBranchCheckpoints(repo *git.Repository, limit int) ([]strategy.RewindPoi
 		content, _ := store.ReadLatestSessionContent(context.Background(), cpID) //nolint:errcheck  // Best-effort
 		if content != nil {
 			// Scope the transcript to this checkpoint's portion
-			// If CheckpointTranscriptStart > 0, we slice the transcript to only include
-			// lines from that point onwards (excluding earlier checkpoint content)
 			scopedTranscript := scopeTranscriptForCheckpoint(content.Transcript, content.Metadata.GetTranscriptStart())
-			// Extract prompts from the scoped transcript (not the full session's prompts)
 			scopedPrompts := extractPromptsFromTranscript(scopedTranscript)
 			if len(scopedPrompts) > 0 && scopedPrompts[0] != "" {
 				point.SessionPrompt = scopedPrompts[0]
@@ -944,7 +950,7 @@ func getBranchCheckpoints(repo *git.Repository, limit int) ([]strategy.RewindPoi
 		return nil
 	})
 
-	if err != nil && !errors.Is(err, errStopIteration) {
+	if err != nil {
 		return nil, fmt.Errorf("error iterating commits: %w", err)
 	}
 
@@ -966,14 +972,25 @@ func getBranchCheckpoints(repo *git.Repository, limit int) ([]strategy.RewindPoi
 }
 
 // getReachableTemporaryCheckpoints returns temporary checkpoints from shadow branches
-// whose base commit is reachable from the given HEAD hash.
-// For default branches, all shadow branches are included.
+// whose base commit is reachable from the given HEAD hash and that belong to this worktree.
+// For default branches, all shadow branches for this worktree are included.
 // For feature branches, only shadow branches whose base commit is in HEAD's history are included.
 func getReachableTemporaryCheckpoints(repo *git.Repository, store *checkpoint.GitStore, headHash plumbing.Hash, isOnDefault bool, limit int) []strategy.RewindPoint {
 	var points []strategy.RewindPoint
 
+	// Compute current worktree's hash for filtering shadow branches
+	currentWorktreeHash := getCurrentWorktreeHash()
+
 	shadowBranches, _ := store.ListTemporary(context.Background()) //nolint:errcheck // Best-effort
 	for _, sb := range shadowBranches {
+		// Filter by worktree: only show shadow branches belonging to this worktree.
+		// Skip filtering if currentWorktreeHash is empty (error computing it) to avoid
+		// accidentally filtering out ALL shadow branches.
+		_, branchWorktreeHash, parsed := checkpoint.ParseShadowBranchName(sb.BranchName)
+		if currentWorktreeHash != "" && parsed && branchWorktreeHash != "" && branchWorktreeHash != currentWorktreeHash {
+			continue
+		}
+
 		// Check if this shadow branch's base commit is reachable from current HEAD
 		if !isShadowBranchReachable(repo, sb.BaseCommit, headHash, isOnDefault) {
 			continue
@@ -1001,20 +1018,9 @@ func isShadowBranchReachable(repo *git.Repository, baseCommit string, headHash p
 		return true
 	}
 
-	// Check if base commit hash prefix matches any commit in HEAD's history
-	baseCommitIter, baseErr := repo.Log(&git.LogOptions{From: headHash})
-	if baseErr != nil {
-		return false
-	}
-	defer baseCommitIter.Close()
-
-	baseCount := 0
+	// Check if base commit hash prefix matches any commit in HEAD's first-parent chain
 	found := false
-	_ = baseCommitIter.ForEach(func(c *object.Commit) error { //nolint:errcheck // Best-effort
-		baseCount++
-		if baseCount > commitScanLimit {
-			return errStopIteration
-		}
+	_ = walkFirstParentCommits(repo, headHash, commitScanLimit, func(c *object.Commit) error { //nolint:errcheck // Best-effort
 		if strings.HasPrefix(c.Hash.String(), baseCommit) {
 			found = true
 			return errStopIteration
