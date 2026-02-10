@@ -188,12 +188,26 @@ const (
 	entireGitignore    = ".entire/.gitignore"
 	entireDir          = ".entire"
 	gitDir             = ".git"
-	claudeDir          = ".claude"
 	shadowBranchPrefix = "entire/"
 
 	// DefaultAgentType is the generic fallback agent type name
 	DefaultAgentType = agent.AgentTypeUnknown
 )
+
+// protectedDirs are directories that should never be modified or deleted during
+// rewind, file collection, or other destructive operations. These include git
+// internals, the entire metadata directory, and agent config directories.
+var protectedDirs = []string{gitDir, entireDir, ".claude", ".gemini"}
+
+// isProtectedPath returns true if relPath is inside a protected directory.
+func isProtectedPath(relPath string) bool {
+	for _, dir := range protectedDirs {
+		if relPath == dir || strings.HasPrefix(relPath, dir+"/") {
+			return true
+		}
+	}
+	return false
+}
 
 // isSpecificAgentType returns true if the agent type is a known, specific value
 // (not empty and not the generic "Agent" fallback).
@@ -1197,16 +1211,14 @@ func collectUntrackedFiles() ([]string, error) {
 
 		// Skip directories
 		if info.IsDir() {
-			// Skip .git, .claude, and .entire directories
-			if relPath == gitDir || relPath == claudeDir || relPath == entireDir ||
-				strings.HasPrefix(relPath, gitDir+"/") || strings.HasPrefix(relPath, claudeDir+"/") || strings.HasPrefix(relPath, entireDir+"/") {
+			if isProtectedPath(relPath) {
 				return filepath.SkipDir
 			}
 			return nil
 		}
 
-		// Skip files in special directories (shouldn't reach here due to SkipDir, but safety check)
-		if strings.HasPrefix(relPath, gitDir+"/") || strings.HasPrefix(relPath, claudeDir+"/") || strings.HasPrefix(relPath, entireDir+"/") {
+		// Skip files in protected directories (shouldn't reach here due to SkipDir, but safety check)
+		if isProtectedPath(relPath) {
 			return nil
 		}
 

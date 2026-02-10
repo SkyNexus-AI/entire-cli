@@ -340,16 +340,16 @@ func (s *ManualCommitStrategy) Rewind(point RewindPoint) error {
 			return nil //nolint:nilerr // Skip paths we can't make relative
 		}
 
-		// Skip directories and special paths
+		// Skip directories and protected paths
 		if info.IsDir() {
-			if relPath == gitDir || relPath == claudeDir || relPath == entireDir || strings.HasPrefix(relPath, gitDir+"/") || strings.HasPrefix(relPath, claudeDir+"/") || strings.HasPrefix(relPath, entireDir+"/") {
+			if isProtectedPath(relPath) {
 				return filepath.SkipDir
 			}
 			return nil
 		}
 
-		// Skip if path is a special directory
-		if strings.HasPrefix(relPath, gitDir+"/") || strings.HasPrefix(relPath, claudeDir+"/") || strings.HasPrefix(relPath, entireDir+"/") {
+		// Skip files in protected directories
+		if isProtectedPath(relPath) {
 			return nil
 		}
 
@@ -561,21 +561,16 @@ func (s *ManualCommitStrategy) PreviewRewind(point RewindPoint) (*RewindPreview,
 			return nil //nolint:nilerr // Skip paths we can't make relative
 		}
 
-		// Skip directories and special paths
+		// Skip directories and protected paths
 		if info.IsDir() {
-			if relPath == gitDir || relPath == claudeDir || relPath == entireDir ||
-				strings.HasPrefix(relPath, gitDir+"/") ||
-				strings.HasPrefix(relPath, claudeDir+"/") ||
-				strings.HasPrefix(relPath, entireDir+"/") {
+			if isProtectedPath(relPath) {
 				return filepath.SkipDir
 			}
 			return nil
 		}
 
-		// Skip special directories
-		if strings.HasPrefix(relPath, gitDir+"/") ||
-			strings.HasPrefix(relPath, claudeDir+"/") ||
-			strings.HasPrefix(relPath, entireDir+"/") {
+		// Skip files in protected directories
+		if isProtectedPath(relPath) {
 			return nil
 		}
 
