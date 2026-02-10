@@ -3438,6 +3438,118 @@ func TestGetAssociatedCommits_SearchAllFindsMergedBranchCommits(t *testing.T) {
 	}
 }
 
+func TestGetBranchCheckpoints_DefaultBranchFindsMergedCheckpoints(t *testing.T) {
+	// Regression test: on the default branch, getBranchCheckpoints should find
+	// checkpoint commits that came in via merge commits (second parents).
+	// First-parent-only traversal would miss these.
+	tmpDir := t.TempDir()
+	t.Chdir(tmpDir)
+
+	repo, err := git.PlainInit(tmpDir, false)
+	if err != nil {
+		t.Fatalf("failed to init git repo: %v", err)
+	}
+
+	w, err := repo.Worktree()
+	if err != nil {
+		t.Fatalf("failed to get worktree: %v", err)
+	}
+
+	// Create initial commit on master (this is the default branch)
+	testFile := filepath.Join(tmpDir, "test.txt")
+	if err := os.WriteFile(testFile, []byte("initial"), 0o644); err != nil {
+		t.Fatalf("failed to write file: %v", err)
+	}
+	if _, err := w.Add("test.txt"); err != nil {
+		t.Fatalf("failed to add file: %v", err)
+	}
+	masterBase, err := w.Commit("initial commit", &git.CommitOptions{
+		Author: &object.Signature{Name: "Test", Email: "test@example.com", When: time.Now().Add(-4 * time.Hour)},
+	})
+	if err != nil {
+		t.Fatalf("failed to create initial commit: %v", err)
+	}
+
+	// Create a feature branch commit with checkpoint trailer
+	cpID := id.MustCheckpointID("fea112233344")
+	if err := os.WriteFile(testFile, []byte("feature work"), 0o644); err != nil {
+		t.Fatalf("failed to write file: %v", err)
+	}
+	if _, err := w.Add("test.txt"); err != nil {
+		t.Fatalf("failed to add file: %v", err)
+	}
+	featureCommit, err := w.Commit(trailers.FormatCheckpoint("feat: add feature", cpID), &git.CommitOptions{
+		Author: &object.Signature{Name: "Feature Dev", Email: "dev@example.com", When: time.Now().Add(-3 * time.Hour)},
+	})
+	if err != nil {
+		t.Fatalf("failed to create feature commit: %v", err)
+	}
+
+	// Get tree hashes for creating commits via plumbing
+	masterBaseObj, err := repo.CommitObject(masterBase)
+	if err != nil {
+		t.Fatalf("failed to get master base: %v", err)
+	}
+	masterTree, err := masterBaseObj.Tree()
+	if err != nil {
+		t.Fatalf("failed to get tree: %v", err)
+	}
+	featureObj, err := repo.CommitObject(featureCommit)
+	if err != nil {
+		t.Fatalf("failed to get feature commit: %v", err)
+	}
+	featureTree, err := featureObj.Tree()
+	if err != nil {
+		t.Fatalf("failed to get feature tree: %v", err)
+	}
+
+	// Create a second commit on master (diverge from feature)
+	masterTip := createCommitWithTree(t, repo, masterTree.Hash, []plumbing.Hash{masterBase}, "main: parallel work")
+
+	// Create merge commit on master: first parent = masterTip, second parent = featureCommit
+	mergeHash := createMergeCommit(t, repo, masterTip, featureCommit, featureTree.Hash, "Merge feature into master")
+
+	// Point master at merge commit
+	ref := plumbing.NewHashReference("refs/heads/master", mergeHash)
+	if err := repo.Storer.SetReference(ref); err != nil {
+		t.Fatalf("failed to set ref: %v", err)
+	}
+	headRef := plumbing.NewSymbolicReference("HEAD", "refs/heads/master")
+	if err := repo.Storer.SetReference(headRef); err != nil {
+		t.Fatalf("failed to set HEAD: %v", err)
+	}
+
+	// Write committed checkpoint metadata so getBranchCheckpoints can find it
+	store := checkpoint.NewGitStore(repo)
+	if err := store.WriteCommitted(context.Background(), checkpoint.WriteCommittedOptions{
+		CheckpointID: cpID,
+		SessionID:    "test-session",
+		Strategy:     "auto-commit",
+		FilesTouched: []string{"test.txt"},
+		Prompts:      []string{"add feature"},
+	}); err != nil {
+		t.Fatalf("failed to write committed checkpoint: %v", err)
+	}
+
+	// getBranchCheckpoints on master should find the checkpoint from the merged feature branch
+	points, err := getBranchCheckpoints(repo, 100)
+	if err != nil {
+		t.Fatalf("getBranchCheckpoints error: %v", err)
+	}
+
+	// Should find at least the checkpoint from the merged feature branch
+	var found bool
+	for _, p := range points {
+		if p.CheckpointID == cpID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected to find checkpoint %s from merged feature branch on default branch, got %d points: %v", cpID, len(points), points)
+	}
+}
+
 // createCommitWithTree creates a commit with a specific tree and parent hashes.
 func createCommitWithTree(t *testing.T, repo *git.Repository, treeHash plumbing.Hash, parents []plumbing.Hash, message string) plumbing.Hash {
 	t.Helper()
