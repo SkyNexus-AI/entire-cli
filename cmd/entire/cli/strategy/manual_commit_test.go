@@ -863,7 +863,7 @@ func TestShadowStrategy_PrepareCommitMsg_SkipSources(t *testing.T) {
 
 func TestAddCheckpointTrailer_NoComment(t *testing.T) {
 	// Test that addCheckpointTrailer adds trailer without any comment lines
-	message := "Test commit message\n"
+	message := "Test commit message\n" //nolint:goconst // already present in codebase
 
 	result := addCheckpointTrailer(message, testTrailerCheckpointID)
 
@@ -1479,6 +1479,7 @@ func TestShadowStrategy_CondenseSession_EphemeralBranchTrailer(t *testing.T) {
 		t.Fatalf("failed to create metadata dir: %v", err)
 	}
 
+	//nolint:goconst // already present in codebase
 	transcript := `{"type":"human","message":{"content":"test prompt"}}
 {"type":"assistant","message":{"content":"test response"}}
 `

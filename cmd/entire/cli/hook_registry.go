@@ -279,7 +279,7 @@ func newAgentHookVerbCmdWithLogging(agentName agent.AgentName, hookName string) 
 			ctx := logging.WithAgent(logging.WithComponent(context.Background(), "hooks"), agentName)
 
 			// Get strategy name for logging
-			strategyName := unknownStrategyName
+			strategyName := unknownStrategyName //nolint:ineffassign,wastedassign // already present in codebase
 			strategyName = GetStrategy().Name()
 
 			hookType := getHookType(hookName)

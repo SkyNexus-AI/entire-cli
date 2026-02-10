@@ -2,9 +2,7 @@ version: "2"
 issues:
   max-issues-per-linter: 0
   max-same-issues: 0
-  new: true
   fix: true
-  new-from-merge-base: main
 linters:
   default: standard
   enable:
@@ -14,7 +12,6 @@ linters:
     - canonicalheader
     - copyloopvar
     - decorder
-    - dupl
     - durationcheck
     - embeddedstructfieldcheck
     - errchkjson
@@ -105,8 +102,7 @@ linters:
         - empty
         - stdlib
         - grpc.DialOption
-        - entire.io/server.GitLoader
-        - entire.io/cli/cmd/entire/cli/agent.Agent
+        - github.com/entireio/cli/cmd/entire/cli/agent.Agent
         - github.com/go-git/go-git/v6/plumbing/storer.ReferenceIter
         - github.com/go-git/go-git/v6/plumbing.EncodedObject
         - github.com/go-git/go-git/v6/storage.Storer
