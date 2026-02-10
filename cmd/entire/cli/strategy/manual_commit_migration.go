@@ -63,8 +63,8 @@ func (s *ManualCommitStrategy) migrateShadowBranchIfNeeded(repo *git.Repository,
 		return false, fmt.Errorf("failed to create new shadow branch %s: %w", newShadowBranch, err)
 	}
 
-	// Delete old reference
-	if err := repo.Storer.RemoveReference(oldRefName); err != nil {
+	// Delete old reference via CLI (go-git v5's RemoveReference doesn't persist with packed refs/worktrees)
+	if err := DeleteBranchCLI(oldShadowBranch); err != nil {
 		// Non-fatal: log but continue - the important thing is the new branch exists
 		fmt.Fprintf(os.Stderr, "Warning: failed to remove old shadow branch %s: %v\n", oldShadowBranch, err)
 	}

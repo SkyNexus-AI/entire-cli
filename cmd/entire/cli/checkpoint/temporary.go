@@ -612,11 +612,13 @@ func (s *GitStore) ShadowBranchExists(baseCommit, worktreeID string) bool {
 
 // DeleteShadowBranch deletes the shadow branch for the given base commit and worktree.
 // worktreeID should be empty for main worktree or the internal git worktree name for linked worktrees.
+// Uses git CLI instead of go-git's RemoveReference because go-git v5 doesn't properly
+// persist deletions with packed refs or worktrees.
 func (s *GitStore) DeleteShadowBranch(baseCommit, worktreeID string) error {
 	shadowBranchName := ShadowBranchNameForCommit(baseCommit, worktreeID)
-	refName := plumbing.NewBranchReferenceName(shadowBranchName)
-	if err := s.repo.Storer.RemoveReference(refName); err != nil {
-		return fmt.Errorf("failed to delete shadow branch %s: %w", shadowBranchName, err)
+	cmd := exec.CommandContext(context.Background(), "git", "branch", "-D", "--", shadowBranchName) //nolint:gosec // shadowBranchName is constructed from commit hash, not user input
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to delete shadow branch %s: %s: %w", shadowBranchName, strings.TrimSpace(string(output)), err)
 	}
 	return nil
 }

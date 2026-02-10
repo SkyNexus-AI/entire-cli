@@ -1,6 +1,9 @@
 package strategy
 
 import (
+	"context"
+	"os/exec"
+	"strings"
 	"testing"
 	"time"
 
@@ -224,12 +227,16 @@ func TestDeleteShadowBranches(t *testing.T) {
 		t.Errorf("DeleteShadowBranches() failed %d branches, want 0: %v", len(failed), failed)
 	}
 
-	// Verify branches are actually deleted
+	// Verify branches are actually deleted using git CLI
+	// (go-git may have stale cached refs, so use the same mechanism as production code)
 	for _, b := range shadowBranches {
-		refName := plumbing.NewBranchReferenceName(b)
-		_, err := repo.Reference(refName, true)
-		if err == nil {
-			t.Errorf("Branch %s still exists after deletion", b)
+		cmd := exec.CommandContext(context.Background(), "git", "branch", "--list", b)
+		output, cmdErr := cmd.Output()
+		if cmdErr != nil {
+			t.Fatalf("git branch --list failed: %v", cmdErr)
+		}
+		if strings.TrimSpace(string(output)) != "" {
+			t.Errorf("Branch %s still exists after deletion (git branch --list returned: %q)", b, strings.TrimSpace(string(output)))
 		}
 	}
 }

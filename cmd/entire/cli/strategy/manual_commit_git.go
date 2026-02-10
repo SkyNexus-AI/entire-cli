@@ -2,6 +2,7 @@ package strategy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -15,7 +16,6 @@ import (
 	"github.com/entireio/cli/cmd/entire/cli/trailers"
 
 	"github.com/go-git/go-git/v5"
-	"github.com/go-git/go-git/v5/plumbing"
 )
 
 // SaveChanges saves a checkpoint to the shadow branch.
@@ -346,22 +346,18 @@ func accumulateTokenUsage(existing, incoming *agent.TokenUsage) *agent.TokenUsag
 	return existing
 }
 
-// deleteShadowBranch deletes a shadow branch by name using an existing repo handle.
+// deleteShadowBranch deletes a shadow branch by name.
 // Returns nil if the branch doesn't exist (idempotent).
-func deleteShadowBranch(repo *git.Repository, branchName string) error {
-	refName := plumbing.NewBranchReferenceName(branchName)
-
-	// Check if reference exists
-	ref, err := repo.Reference(refName, true)
+// Uses git CLI instead of go-git's RemoveReference because go-git v5
+// doesn't properly persist deletions with packed refs or worktrees.
+func deleteShadowBranch(_ *git.Repository, branchName string) error {
+	err := DeleteBranchCLI(branchName)
 	if err != nil {
-		// Branch doesn't exist - nothing to delete (idempotent)
-		return nil //nolint:nilerr // Not an error condition - branch already gone
+		// If the branch doesn't exist, treat as idempotent - not an error condition.
+		if errors.Is(err, ErrBranchNotFound) {
+			return nil
+		}
+		return err
 	}
-
-	// Delete the reference
-	if err := repo.Storer.RemoveReference(ref.Name()); err != nil {
-		return fmt.Errorf("failed to delete branch %s: %w", branchName, err)
-	}
-
 	return nil
 }

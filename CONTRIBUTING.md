@@ -267,11 +267,11 @@ type -a entire
 
 Join the Entire community:
 
-- **Slack** - [Join our workspace][slack] for discussions and support
-- **Events & Meetups** - [See upcoming events][events]
+- **Discord** - [Join our server][discord] for discussions and support
+- **GitHub Discussions** - [Join the conversation][discussions]
 
-[slack]: https://entire-community.slack.com
-[events]: https://entire.io/events
+[discord]: https://discord.gg/4WXDu2Ph
+[discussions]: https://github.com/entireio/cli/discussions
 
 ---
 

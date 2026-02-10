@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/entireio/cli/cmd/entire/cli/logging"
 	"github.com/entireio/cli/cmd/entire/cli/strategy"
 	"github.com/spf13/cobra"
 )
@@ -47,6 +48,13 @@ The entire/checkpoints/v1 branch itself is never deleted.`,
 }
 
 func runClean(w io.Writer, force bool) error {
+	// Initialize logging so structured logs go to .entire/logs/ instead of stderr.
+	// Error is non-fatal: if logging init fails, logs go to stderr (acceptable fallback).
+	logging.SetLogLevelGetter(GetLogLevel)
+	if err := logging.Init(""); err == nil {
+		defer logging.Close()
+	}
+
 	// List all cleanup items
 	items, err := strategy.ListAllCleanupItems()
 	if err != nil {

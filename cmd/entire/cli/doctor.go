@@ -260,7 +260,7 @@ func promptSessionAction(ss stuckSession, canCondense bool) (string, error) {
 }
 
 // discardSession removes session state and cleans up the shadow branch.
-func discardSession(ss stuckSession, repo *git.Repository, errW io.Writer) error {
+func discardSession(ss stuckSession, _ *git.Repository, errW io.Writer) error {
 	// Clear session state file
 	if err := strategy.ClearSessionState(ss.State.SessionID); err != nil {
 		return fmt.Errorf("failed to clear session state: %w", err)
@@ -271,10 +271,9 @@ func discardSession(ss stuckSession, repo *git.Repository, errW io.Writer) error
 		if shouldDelete, err := canDeleteShadowBranch(ss.ShadowBranch, ss.State.SessionID); err != nil {
 			fmt.Fprintf(errW, "Warning: could not check other sessions for shadow branch: %v\n", err)
 		} else if shouldDelete {
-			refName := plumbing.NewBranchReferenceName(ss.ShadowBranch)
-			ref, refErr := repo.Reference(refName, true)
-			if refErr == nil {
-				if err := repo.Storer.RemoveReference(ref.Name()); err != nil {
+			if err := strategy.DeleteBranchCLI(ss.ShadowBranch); err != nil {
+				// Branch already gone is not an error — keeps discard idempotent
+				if !errors.Is(err, strategy.ErrBranchNotFound) {
 					return fmt.Errorf("failed to delete shadow branch: %w", err)
 				}
 			}

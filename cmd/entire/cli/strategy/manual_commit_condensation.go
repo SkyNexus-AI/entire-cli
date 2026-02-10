@@ -3,6 +3,7 @@ package strategy
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -600,7 +601,7 @@ func (s *ManualCommitStrategy) CondenseSessionByID(sessionID string) error {
 }
 
 // cleanupShadowBranchIfUnused deletes a shadow branch if no other active sessions reference it.
-func (s *ManualCommitStrategy) cleanupShadowBranchIfUnused(repo *git.Repository, shadowBranchName, excludeSessionID string) error {
+func (s *ManualCommitStrategy) cleanupShadowBranchIfUnused(_ *git.Repository, shadowBranchName, excludeSessionID string) error {
 	// List all session states to check if any other session uses this shadow branch
 	allStates, err := s.listAllSessionStates()
 	if err != nil {
@@ -618,15 +619,14 @@ func (s *ManualCommitStrategy) cleanupShadowBranchIfUnused(repo *git.Repository,
 		}
 	}
 
-	// No other sessions need it, delete the shadow branch
-	refName := plumbing.NewBranchReferenceName(shadowBranchName)
-	ref, refErr := repo.Reference(refName, true)
-	if refErr != nil {
-		// Branch already gone, nothing to clean up
-		return nil //nolint:nilerr // intentional: missing branch is not an error
-	}
-	if err := repo.Storer.RemoveReference(ref.Name()); err != nil {
-		return fmt.Errorf("failed to remove shadow branch reference: %w", err)
+	// No other sessions need it, delete the shadow branch via CLI
+	// (go-git v5's RemoveReference doesn't persist with packed refs/worktrees)
+	if err := DeleteBranchCLI(shadowBranchName); err != nil {
+		// Branch already gone is not an error
+		if errors.Is(err, ErrBranchNotFound) {
+			return nil
+		}
+		return fmt.Errorf("failed to remove shadow branch: %w", err)
 	}
 	return nil
 }

@@ -1105,6 +1105,52 @@ func getTaskTranscriptFromTree(point RewindPoint) ([]byte, error) {
 	return []byte(content), nil
 }
 
+// ErrBranchNotFound is returned by DeleteBranchCLI when the branch does not exist.
+var ErrBranchNotFound = errors.New("branch not found")
+
+// DeleteBranchCLI deletes a git branch using the git CLI.
+// Uses `git branch -D` instead of go-git's RemoveReference because go-git v5
+// doesn't properly persist deletions when refs are packed (.git/packed-refs)
+// or in a worktree context. This is the same class of go-git v5 bug that
+// affects checkout and reset --hard (see HardResetWithProtection).
+//
+// Returns ErrBranchNotFound if the branch does not exist, allowing callers
+// to use errors.Is for idempotent deletion patterns.
+func DeleteBranchCLI(branchName string) error {
+	ctx := context.Background()
+
+	// Pre-check: verify the branch exists so callers get a structured error
+	// instead of parsing git's output string (which varies across locales).
+	// git show-ref exits 1 for "not found" and 128+ for fatal errors (corrupt
+	// repo, permissions, not a git directory). Only map exit code 1 to
+	// ErrBranchNotFound; propagate other failures as-is.
+	check := exec.CommandContext(ctx, "git", "show-ref", "--verify", "--quiet", "refs/heads/"+branchName) //nolint:gosec // branchName comes from internal shadow branch naming
+	if err := check.Run(); err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+			return fmt.Errorf("%w: %s", ErrBranchNotFound, branchName)
+		}
+		return fmt.Errorf("failed to check branch %s: %w", branchName, err)
+	}
+
+	cmd := exec.CommandContext(ctx, "git", "branch", "-D", "--", branchName)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to delete branch %s: %s: %w", branchName, strings.TrimSpace(string(output)), err)
+	}
+	return nil
+}
+
+// branchExistsCLI checks if a branch exists using git CLI.
+// Returns nil if the branch exists, or an error if it does not.
+func branchExistsCLI(branchName string) error {
+	ctx := context.Background()
+	cmd := exec.CommandContext(ctx, "git", "show-ref", "--verify", "--quiet", "refs/heads/"+branchName) //nolint:gosec // branchName comes from internal shadow branch naming
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("branch %s not found: %w", branchName, err)
+	}
+	return nil
+}
+
 // HardResetWithProtection performs a git reset --hard to the specified commit.
 // Uses the git CLI instead of go-git because go-git's HardReset incorrectly
 // deletes untracked directories (like .entire/) even when they're in .gitignore.
