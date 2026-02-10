@@ -123,19 +123,15 @@ func printStrategyInfo(w io.Writer, strat strategy.Strategy, isAutoCommit bool) 
 func printSessionState(w io.Writer) string {
 	fmt.Fprintln(w, "=== Session State ===")
 
-	currentSession, err := paths.ReadCurrentSession()
-	switch {
-	case err != nil:
-		fmt.Fprintf(w, "Current session: (error: %v)\n", err)
-		return ""
-	case currentSession == "":
+	currentSession := strategy.FindMostRecentSession()
+	if currentSession == "" {
 		fmt.Fprintln(w, "Current session: (none - no active session)")
 		return ""
-	default:
-		fmt.Fprintf(w, "Current session: %s\n", currentSession)
-		printPrePromptState(w, currentSession)
-		return currentSession
 	}
+
+	fmt.Fprintf(w, "Current session: %s\n", currentSession)
+	printPrePromptState(w, currentSession)
+	return currentSession
 }
 
 func printPrePromptState(w io.Writer, sessionID string) {

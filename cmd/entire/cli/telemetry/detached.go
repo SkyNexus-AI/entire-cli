@@ -96,7 +96,6 @@ func TrackCommandDetached(cmd *cobra.Command, strategy, agent string, isEntireEn
 		return
 	}
 
-	// Skip hidden commands
 	if cmd.Hidden {
 		return
 	}

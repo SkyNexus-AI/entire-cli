@@ -5,6 +5,7 @@ import (
 	"runtime"
 
 	"github.com/entireio/cli/cmd/entire/cli/telemetry"
+	"github.com/entireio/cli/cmd/entire/cli/versioncheck"
 	"github.com/spf13/cobra"
 )
 
@@ -43,12 +44,12 @@ func NewRootCmd() *cobra.Command {
 			HiddenDefaultCmd: true,
 		},
 		PersistentPostRun: func(cmd *cobra.Command, _ []string) {
-			// Skip analytics for the analytics command itself (prevents recursion)
-			if cmd.Name() == "__send_analytics" {
+			// Skip for hidden commands
+			if cmd.Hidden {
 				return
 			}
 
-			// Load telemetry preference from settings (ignore errors - nil defaults to disabled)
+			// Load settings once for telemetry and version check
 			var telemetryEnabled *bool
 			settings, err := LoadEntireSettings()
 			if err == nil {
@@ -56,14 +57,16 @@ func NewRootCmd() *cobra.Command {
 			}
 
 			// Check if telemetry is enabled
-			if telemetryEnabled == nil || !*telemetryEnabled {
-				return
+			if telemetryEnabled != nil && *telemetryEnabled {
+				// Use detached tracking (non-blocking)
+				installedAgents := GetAgentsWithHooksInstalled()
+				agentStr := JoinAgentNames(installedAgents)
+				telemetry.TrackCommandDetached(cmd, settings.Strategy, agentStr, settings.Enabled, Version)
 			}
 
-			// Use detached tracking (non-blocking)
-			installedAgents := GetAgentsWithHooksInstalled()
-			agentStr := JoinAgentNames(installedAgents)
-			telemetry.TrackCommandDetached(cmd, settings.Strategy, agentStr, settings.Enabled, Version)
+			// Version check and notification (synchronous with 2s timeout)
+			// Runs AFTER command completes to avoid interfering with interactive modes
+			versioncheck.CheckAndNotify(cmd, Version)
 		},
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return cmd.Help()
@@ -82,7 +85,9 @@ func NewRootCmd() *cobra.Command {
 	cmd.AddCommand(newVersionCmd())
 	cmd.AddCommand(newExplainCmd())
 	cmd.AddCommand(newDebugCmd())
+	cmd.AddCommand(newSessionsCmd())
 	cmd.AddCommand(newSendAnalyticsCmd())
+	cmd.AddCommand(newCurlBashPostInstallCmd())
 
 	// Replace default help command with custom one that supports -t flag
 	cmd.SetHelpCommand(NewHelpCmd(cmd))

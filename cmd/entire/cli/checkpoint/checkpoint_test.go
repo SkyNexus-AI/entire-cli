@@ -676,7 +676,7 @@ func TestUpdateSummary_NotFound(t *testing.T) {
 }
 
 // TestListCommitted_FallsBackToRemote verifies that ListCommitted can find
-// checkpoints when only origin/entire/sessions exists (simulating post-clone state).
+// checkpoints when only origin/entire/checkpoints/v1 exists (simulating post-clone state).
 func TestListCommitted_FallsBackToRemote(t *testing.T) {
 	// Create "remote" repo (non-bare, so we can make commits)
 	remoteDir := t.TempDir()
@@ -703,7 +703,7 @@ func TestListCommitted_FallsBackToRemote(t *testing.T) {
 		t.Fatalf("failed to create initial commit: %v", err)
 	}
 
-	// Create entire/sessions branch on the remote with a checkpoint
+	// Create entire/checkpoints/v1 branch on the remote with a checkpoint
 	remoteStore := NewGitStore(remoteRepo)
 	cpID := id.MustCheckpointID("abcdef123456")
 	err = remoteStore.WriteCommitted(context.Background(), WriteCommittedOptions{
@@ -718,7 +718,7 @@ func TestListCommitted_FallsBackToRemote(t *testing.T) {
 		t.Fatalf("failed to write checkpoint to remote: %v", err)
 	}
 
-	// Clone the repo (this clones main, but not entire/sessions by default)
+	// Clone the repo (this clones main, but not entire/checkpoints/v1 by default)
 	localDir := t.TempDir()
 	localRepo, err := git.PlainClone(localDir, false, &git.CloneOptions{
 		URL: remoteDir,
@@ -727,7 +727,7 @@ func TestListCommitted_FallsBackToRemote(t *testing.T) {
 		t.Fatalf("failed to clone repo: %v", err)
 	}
 
-	// Fetch the entire/sessions branch to origin/entire/sessions
+	// Fetch the entire/checkpoints/v1 branch to origin/entire/checkpoints/v1
 	// (but don't create local branch - simulating post-clone state)
 	refSpec := fmt.Sprintf("+refs/heads/%s:refs/remotes/origin/%s", paths.MetadataBranchName, paths.MetadataBranchName)
 	err = localRepo.Fetch(&git.FetchOptions{
@@ -735,19 +735,19 @@ func TestListCommitted_FallsBackToRemote(t *testing.T) {
 		RefSpecs:   []config.RefSpec{config.RefSpec(refSpec)},
 	})
 	if err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) {
-		t.Fatalf("failed to fetch entire/sessions: %v", err)
+		t.Fatalf("failed to fetch entire/checkpoints/v1: %v", err)
 	}
 
 	// Verify local branch doesn't exist
 	_, err = localRepo.Reference(plumbing.NewBranchReferenceName(paths.MetadataBranchName), true)
 	if err == nil {
-		t.Fatal("local entire/sessions branch should not exist")
+		t.Fatal("local entire/checkpoints/v1 branch should not exist")
 	}
 
 	// Verify remote-tracking branch exists
 	_, err = localRepo.Reference(plumbing.NewRemoteReferenceName("origin", paths.MetadataBranchName), true)
 	if err != nil {
-		t.Fatalf("origin/entire/sessions should exist: %v", err)
+		t.Fatalf("origin/entire/checkpoints/v1 should exist: %v", err)
 	}
 
 	// ListCommitted should find the checkpoint by falling back to remote
@@ -765,7 +765,7 @@ func TestListCommitted_FallsBackToRemote(t *testing.T) {
 }
 
 // TestGetCheckpointAuthor verifies that GetCheckpointAuthor retrieves the
-// author of the commit that created the checkpoint on the entire/sessions branch.
+// author of the commit that created the checkpoint on the entire/checkpoints/v1 branch.
 func TestGetCheckpointAuthor(t *testing.T) {
 	repo, _ := setupBranchTestRepo(t)
 	store := NewGitStore(repo)
@@ -823,7 +823,7 @@ func TestGetCheckpointAuthor_NotFound(t *testing.T) {
 }
 
 // TestGetCheckpointAuthor_NoSessionsBranch verifies that GetCheckpointAuthor
-// returns empty author when the entire/sessions branch doesn't exist.
+// returns empty author when the entire/checkpoints/v1 branch doesn't exist.
 func TestGetCheckpointAuthor_NoSessionsBranch(t *testing.T) {
 	// Create a fresh repo without sessions branch
 	tempDir := t.TempDir()
@@ -1381,6 +1381,49 @@ func TestWriteCommitted_SessionWithNoPrompts(t *testing.T) {
 	// Verify context is present
 	if content.Context != "Some context" {
 		t.Errorf("Context = %q, want %q", content.Context, "Some context")
+	}
+}
+
+// TestWriteCommitted_SessionWithSummary verifies that a non-nil Summary
+// in WriteCommittedOptions is persisted in the session-level metadata.json.
+// Regression test for ENT-243 where Summary was omitted from the struct literal.
+func TestWriteCommitted_SessionWithSummary(t *testing.T) {
+	repo, _ := setupBranchTestRepo(t)
+	store := NewGitStore(repo)
+	checkpointID := id.MustCheckpointID("aabbccddeeff")
+
+	summary := &Summary{
+		Intent:  "User wanted to fix a bug",
+		Outcome: "Bug was fixed",
+	}
+
+	err := store.WriteCommitted(context.Background(), WriteCommittedOptions{
+		CheckpointID:     checkpointID,
+		SessionID:        "summary-session",
+		Strategy:         "manual-commit",
+		Transcript:       []byte(`{"test": true}`),
+		CheckpointsCount: 1,
+		AuthorName:       "Test Author",
+		AuthorEmail:      "test@example.com",
+		Summary:          summary,
+	})
+	if err != nil {
+		t.Fatalf("WriteCommitted() error = %v", err)
+	}
+
+	content, err := store.ReadSessionContent(context.Background(), checkpointID, 0)
+	if err != nil {
+		t.Fatalf("ReadSessionContent() error = %v", err)
+	}
+
+	if content.Metadata.Summary == nil {
+		t.Fatal("Summary should not be nil")
+	}
+	if content.Metadata.Summary.Intent != "User wanted to fix a bug" {
+		t.Errorf("Summary.Intent = %q, want %q", content.Metadata.Summary.Intent, "User wanted to fix a bug")
+	}
+	if content.Metadata.Summary.Outcome != "Bug was fixed" {
+		t.Errorf("Summary.Outcome = %q, want %q", content.Metadata.Summary.Outcome, "Bug was fixed")
 	}
 }
 
@@ -2252,5 +2295,563 @@ func TestWriteTemporary_FirstCheckpoint_FilenamesWithSpaces(t *testing.T) {
 	// "file with spaces.txt" should be in the tree with correct name
 	if _, err := tree.File("file with spaces.txt"); err != nil {
 		t.Errorf("'file with spaces.txt' should be in checkpoint tree: %v", err)
+	}
+}
+
+// =============================================================================
+// Duplicate Session ID Tests - Tests for ENT-252 where the same session ID
+// written twice to the same checkpoint should update in-place, not append.
+// =============================================================================
+
+// TestWriteCommitted_DuplicateSessionIDUpdatesInPlace verifies that writing
+// the same session ID twice to the same checkpoint updates the existing slot
+// rather than creating a duplicate subdirectory.
+func TestWriteCommitted_DuplicateSessionIDUpdatesInPlace(t *testing.T) {
+	t.Parallel()
+	repo, _ := setupBranchTestRepo(t)
+	store := NewGitStore(repo)
+	checkpointID := id.MustCheckpointID("deda01234567")
+
+	// Write session "X" with initial data
+	err := store.WriteCommitted(context.Background(), WriteCommittedOptions{
+		CheckpointID:     checkpointID,
+		SessionID:        "session-X",
+		Strategy:         "manual-commit",
+		Transcript:       []byte(`{"message": "session X v1"}`),
+		FilesTouched:     []string{"a.go"},
+		CheckpointsCount: 3,
+		TokenUsage: &agent.TokenUsage{
+			InputTokens:  100,
+			OutputTokens: 50,
+			APICallCount: 5,
+		},
+		AuthorName:  "Test Author",
+		AuthorEmail: "test@example.com",
+	})
+	if err != nil {
+		t.Fatalf("WriteCommitted() session X v1 error = %v", err)
+	}
+
+	// Write session "Y"
+	err = store.WriteCommitted(context.Background(), WriteCommittedOptions{
+		CheckpointID:     checkpointID,
+		SessionID:        "session-Y",
+		Strategy:         "manual-commit",
+		Transcript:       []byte(`{"message": "session Y"}`),
+		FilesTouched:     []string{"b.go"},
+		CheckpointsCount: 2,
+		TokenUsage: &agent.TokenUsage{
+			InputTokens:  50,
+			OutputTokens: 25,
+			APICallCount: 3,
+		},
+		AuthorName:  "Test Author",
+		AuthorEmail: "test@example.com",
+	})
+	if err != nil {
+		t.Fatalf("WriteCommitted() session Y error = %v", err)
+	}
+
+	// Write session "X" again with updated data (should replace, not append)
+	err = store.WriteCommitted(context.Background(), WriteCommittedOptions{
+		CheckpointID:     checkpointID,
+		SessionID:        "session-X",
+		Strategy:         "manual-commit",
+		Transcript:       []byte(`{"message": "session X v2"}`),
+		FilesTouched:     []string{"a.go", "c.go"},
+		CheckpointsCount: 5,
+		TokenUsage: &agent.TokenUsage{
+			InputTokens:  200,
+			OutputTokens: 100,
+			APICallCount: 10,
+		},
+		AuthorName:  "Test Author",
+		AuthorEmail: "test@example.com",
+	})
+	if err != nil {
+		t.Fatalf("WriteCommitted() session X v2 error = %v", err)
+	}
+
+	// Read the checkpoint summary
+	summary, err := store.ReadCommitted(context.Background(), checkpointID)
+	if err != nil {
+		t.Fatalf("ReadCommitted() error = %v", err)
+	}
+	if summary == nil {
+		t.Fatal("ReadCommitted() returned nil summary")
+	}
+
+	// Should have 2 sessions, not 3
+	if len(summary.Sessions) != 2 {
+		t.Errorf("len(summary.Sessions) = %d, want 2 (not 3 - duplicate should be replaced)", len(summary.Sessions))
+	}
+
+	// Verify session 0 has updated data (session X v2)
+	content0, err := store.ReadSessionContent(context.Background(), checkpointID, 0)
+	if err != nil {
+		t.Fatalf("ReadSessionContent(0) error = %v", err)
+	}
+	if content0.Metadata.SessionID != "session-X" {
+		t.Errorf("session 0 SessionID = %q, want %q", content0.Metadata.SessionID, "session-X")
+	}
+	if content0.Metadata.CheckpointsCount != 5 {
+		t.Errorf("session 0 CheckpointsCount = %d, want 5", content0.Metadata.CheckpointsCount)
+	}
+	if !strings.Contains(string(content0.Transcript), "session X v2") {
+		t.Errorf("session 0 transcript should contain 'session X v2', got %s", string(content0.Transcript))
+	}
+
+	// Verify session 1 is still "Y" (unchanged)
+	content1, err := store.ReadSessionContent(context.Background(), checkpointID, 1)
+	if err != nil {
+		t.Fatalf("ReadSessionContent(1) error = %v", err)
+	}
+	if content1.Metadata.SessionID != "session-Y" {
+		t.Errorf("session 1 SessionID = %q, want %q", content1.Metadata.SessionID, "session-Y")
+	}
+
+	// Verify aggregated stats: count = 5 (X v2) + 2 (Y) = 7
+	if summary.CheckpointsCount != 7 {
+		t.Errorf("summary.CheckpointsCount = %d, want 7", summary.CheckpointsCount)
+	}
+
+	// Verify merged files: [a.go, b.go, c.go]
+	expectedFiles := []string{"a.go", "b.go", "c.go"}
+	if len(summary.FilesTouched) != len(expectedFiles) {
+		t.Errorf("len(summary.FilesTouched) = %d, want %d", len(summary.FilesTouched), len(expectedFiles))
+	}
+	for i, want := range expectedFiles {
+		if i < len(summary.FilesTouched) && summary.FilesTouched[i] != want {
+			t.Errorf("summary.FilesTouched[%d] = %q, want %q", i, summary.FilesTouched[i], want)
+		}
+	}
+
+	// Verify aggregated tokens: 200 (X v2) + 50 (Y) = 250
+	if summary.TokenUsage == nil {
+		t.Fatal("summary.TokenUsage should not be nil")
+	}
+	if summary.TokenUsage.InputTokens != 250 {
+		t.Errorf("summary.TokenUsage.InputTokens = %d, want 250", summary.TokenUsage.InputTokens)
+	}
+	if summary.TokenUsage.OutputTokens != 125 {
+		t.Errorf("summary.TokenUsage.OutputTokens = %d, want 125", summary.TokenUsage.OutputTokens)
+	}
+	if summary.TokenUsage.APICallCount != 13 {
+		t.Errorf("summary.TokenUsage.APICallCount = %d, want 13", summary.TokenUsage.APICallCount)
+	}
+}
+
+// TestWriteCommitted_DuplicateSessionIDSingleSession verifies that writing
+// the same session ID twice when it's the only session updates in-place.
+func TestWriteCommitted_DuplicateSessionIDSingleSession(t *testing.T) {
+	t.Parallel()
+	repo, _ := setupBranchTestRepo(t)
+	store := NewGitStore(repo)
+	checkpointID := id.MustCheckpointID("dedb07654321")
+
+	// Write session "X" with initial data
+	err := store.WriteCommitted(context.Background(), WriteCommittedOptions{
+		CheckpointID:     checkpointID,
+		SessionID:        "session-X",
+		Strategy:         "manual-commit",
+		Transcript:       []byte(`{"message": "v1"}`),
+		FilesTouched:     []string{"old.go"},
+		CheckpointsCount: 1,
+		AuthorName:       "Test Author",
+		AuthorEmail:      "test@example.com",
+	})
+	if err != nil {
+		t.Fatalf("WriteCommitted() v1 error = %v", err)
+	}
+
+	// Write session "X" again with updated data
+	err = store.WriteCommitted(context.Background(), WriteCommittedOptions{
+		CheckpointID:     checkpointID,
+		SessionID:        "session-X",
+		Strategy:         "manual-commit",
+		Transcript:       []byte(`{"message": "v2"}`),
+		FilesTouched:     []string{"new.go"},
+		CheckpointsCount: 5,
+		AuthorName:       "Test Author",
+		AuthorEmail:      "test@example.com",
+	})
+	if err != nil {
+		t.Fatalf("WriteCommitted() v2 error = %v", err)
+	}
+
+	// Read the checkpoint summary
+	summary, err := store.ReadCommitted(context.Background(), checkpointID)
+	if err != nil {
+		t.Fatalf("ReadCommitted() error = %v", err)
+	}
+	if summary == nil {
+		t.Fatal("ReadCommitted() returned nil summary")
+	}
+
+	// Should have 1 session, not 2
+	if len(summary.Sessions) != 1 {
+		t.Errorf("len(summary.Sessions) = %d, want 1 (duplicate should be replaced)", len(summary.Sessions))
+	}
+
+	// Verify session has updated data
+	content, err := store.ReadSessionContent(context.Background(), checkpointID, 0)
+	if err != nil {
+		t.Fatalf("ReadSessionContent(0) error = %v", err)
+	}
+	if content.Metadata.SessionID != "session-X" {
+		t.Errorf("session 0 SessionID = %q, want %q", content.Metadata.SessionID, "session-X")
+	}
+	if content.Metadata.CheckpointsCount != 5 {
+		t.Errorf("session 0 CheckpointsCount = %d, want 5 (updated value)", content.Metadata.CheckpointsCount)
+	}
+	if !strings.Contains(string(content.Transcript), "v2") {
+		t.Errorf("session 0 transcript should contain 'v2', got %s", string(content.Transcript))
+	}
+
+	// Verify aggregated stats match the single session
+	if summary.CheckpointsCount != 5 {
+		t.Errorf("summary.CheckpointsCount = %d, want 5", summary.CheckpointsCount)
+	}
+	expectedFiles := []string{"new.go"}
+	if len(summary.FilesTouched) != 1 || summary.FilesTouched[0] != "new.go" {
+		t.Errorf("summary.FilesTouched = %v, want %v", summary.FilesTouched, expectedFiles)
+	}
+}
+
+// TestWriteCommitted_DuplicateSessionIDReusesIndex verifies that when a session ID
+// already exists at index 0, writing it again reuses index 0 (not index 2).
+// The session file paths in the summary must point to /0/, not /2/.
+func TestWriteCommitted_DuplicateSessionIDReusesIndex(t *testing.T) {
+	t.Parallel()
+	repo, _ := setupBranchTestRepo(t)
+	store := NewGitStore(repo)
+	checkpointID := id.MustCheckpointID("dedc0abcdef1")
+
+	// Write session A at index 0
+	err := store.WriteCommitted(context.Background(), WriteCommittedOptions{
+		CheckpointID:     checkpointID,
+		SessionID:        "session-A",
+		Strategy:         "manual-commit",
+		Transcript:       []byte(`{"v": 1}`),
+		CheckpointsCount: 1,
+		AuthorName:       "Test",
+		AuthorEmail:      "test@example.com",
+	})
+	if err != nil {
+		t.Fatalf("WriteCommitted() session A error = %v", err)
+	}
+
+	// Write session B at index 1
+	err = store.WriteCommitted(context.Background(), WriteCommittedOptions{
+		CheckpointID:     checkpointID,
+		SessionID:        "session-B",
+		Strategy:         "manual-commit",
+		Transcript:       []byte(`{"v": 2}`),
+		CheckpointsCount: 1,
+		AuthorName:       "Test",
+		AuthorEmail:      "test@example.com",
+	})
+	if err != nil {
+		t.Fatalf("WriteCommitted() session B error = %v", err)
+	}
+
+	// Write session A again — should reuse index 0, not create index 2
+	err = store.WriteCommitted(context.Background(), WriteCommittedOptions{
+		CheckpointID:     checkpointID,
+		SessionID:        "session-A",
+		Strategy:         "manual-commit",
+		Transcript:       []byte(`{"v": 3}`),
+		CheckpointsCount: 2,
+		AuthorName:       "Test",
+		AuthorEmail:      "test@example.com",
+	})
+	if err != nil {
+		t.Fatalf("WriteCommitted() session A v2 error = %v", err)
+	}
+
+	summary, err := store.ReadCommitted(context.Background(), checkpointID)
+	if err != nil {
+		t.Fatalf("ReadCommitted() error = %v", err)
+	}
+
+	// Must still be 2 sessions
+	if len(summary.Sessions) != 2 {
+		t.Fatalf("len(summary.Sessions) = %d, want 2", len(summary.Sessions))
+	}
+
+	// Session A's file paths must point to subdirectory /0/, not /2/
+	if !strings.Contains(summary.Sessions[0].Transcript, "/0/") {
+		t.Errorf("session A should be at index 0, got transcript path %s", summary.Sessions[0].Transcript)
+	}
+
+	// Session B stays at /1/
+	if !strings.Contains(summary.Sessions[1].Transcript, "/1/") {
+		t.Errorf("session B should be at index 1, got transcript path %s", summary.Sessions[1].Transcript)
+	}
+
+	// Verify index 0 has the updated content
+	content, err := store.ReadSessionContent(context.Background(), checkpointID, 0)
+	if err != nil {
+		t.Fatalf("ReadSessionContent(0) error = %v", err)
+	}
+	if content.Metadata.SessionID != "session-A" {
+		t.Errorf("session 0 SessionID = %q, want %q", content.Metadata.SessionID, "session-A")
+	}
+	if !strings.Contains(string(content.Transcript), `"v": 3`) {
+		t.Errorf("session 0 should have updated transcript, got %s", string(content.Transcript))
+	}
+}
+
+// TestWriteCommitted_DuplicateSessionIDClearsStaleFiles verifies that when a session
+// is overwritten in-place, optional files from the previous write (prompts, context)
+// do not persist if the new write omits them, and sibling session data is untouched.
+func TestWriteCommitted_DuplicateSessionIDClearsStaleFiles(t *testing.T) {
+	t.Parallel()
+	repo, _ := setupBranchTestRepo(t)
+	store := NewGitStore(repo)
+	checkpointID := id.MustCheckpointID("dedd0abcdef2")
+
+	// Write session A with prompts and context
+	err := store.WriteCommitted(context.Background(), WriteCommittedOptions{
+		CheckpointID:     checkpointID,
+		SessionID:        "session-A",
+		Strategy:         "manual-commit",
+		Transcript:       []byte(`{"v": 1}`),
+		Prompts:          []string{"original prompt"},
+		Context:          []byte("original context"),
+		CheckpointsCount: 1,
+		AuthorName:       "Test",
+		AuthorEmail:      "test@example.com",
+	})
+	if err != nil {
+		t.Fatalf("WriteCommitted() A v1 error = %v", err)
+	}
+
+	// Write session B with prompts and context
+	err = store.WriteCommitted(context.Background(), WriteCommittedOptions{
+		CheckpointID:     checkpointID,
+		SessionID:        "session-B",
+		Strategy:         "manual-commit",
+		Transcript:       []byte(`{"session": "B"}`),
+		Prompts:          []string{"B prompt"},
+		Context:          []byte("B context"),
+		CheckpointsCount: 1,
+		AuthorName:       "Test",
+		AuthorEmail:      "test@example.com",
+	})
+	if err != nil {
+		t.Fatalf("WriteCommitted() B error = %v", err)
+	}
+
+	// Overwrite session A WITHOUT prompts or context
+	err = store.WriteCommitted(context.Background(), WriteCommittedOptions{
+		CheckpointID:     checkpointID,
+		SessionID:        "session-A",
+		Strategy:         "manual-commit",
+		Transcript:       []byte(`{"v": 2}`),
+		Prompts:          nil,
+		Context:          nil,
+		CheckpointsCount: 2,
+		AuthorName:       "Test",
+		AuthorEmail:      "test@example.com",
+	})
+	if err != nil {
+		t.Fatalf("WriteCommitted() A v2 error = %v", err)
+	}
+
+	// Session A: stale prompts and context should be cleared
+	contentA, err := store.ReadSessionContent(context.Background(), checkpointID, 0)
+	if err != nil {
+		t.Fatalf("ReadSessionContent(0) error = %v", err)
+	}
+	if contentA.Prompts != "" {
+		t.Errorf("session A stale prompts should be cleared, got %q", contentA.Prompts)
+	}
+	if contentA.Context != "" {
+		t.Errorf("session A stale context should be cleared, got %q", contentA.Context)
+	}
+	if !strings.Contains(string(contentA.Transcript), `"v": 2`) {
+		t.Errorf("session A transcript should be updated, got %s", string(contentA.Transcript))
+	}
+
+	// Session B: data must be untouched
+	contentB, err := store.ReadSessionContent(context.Background(), checkpointID, 1)
+	if err != nil {
+		t.Fatalf("ReadSessionContent(1) error = %v", err)
+	}
+	if contentB.Metadata.SessionID != "session-B" {
+		t.Errorf("session B SessionID = %q, want %q", contentB.Metadata.SessionID, "session-B")
+	}
+	if !strings.Contains(contentB.Prompts, "B prompt") {
+		t.Errorf("session B prompts should be preserved, got %q", contentB.Prompts)
+	}
+	if !strings.Contains(contentB.Context, "B context") {
+		t.Errorf("session B context should be preserved, got %q", contentB.Context)
+	}
+}
+
+// highEntropySecret is a string with Shannon entropy > 4.5 that will trigger redaction.
+const highEntropySecret = "sk-ant-api03-xK9mZ2vL8nQ5rT1wY4bC7dF0gH3jE6pA"
+
+func TestWriteCommitted_RedactsTranscriptSecrets(t *testing.T) {
+	repo, _ := setupBranchTestRepo(t)
+	store := NewGitStore(repo)
+	checkpointID := id.MustCheckpointID("aabbccddeef1")
+
+	transcript := []byte(`{"role":"assistant","content":"Here is your key: ` + highEntropySecret + `"}` + "\n")
+
+	err := store.WriteCommitted(context.Background(), WriteCommittedOptions{
+		CheckpointID:     checkpointID,
+		SessionID:        "redact-transcript-session",
+		Strategy:         "manual-commit",
+		Transcript:       transcript,
+		CheckpointsCount: 1,
+		AuthorName:       "Test Author",
+		AuthorEmail:      "test@example.com",
+	})
+	if err != nil {
+		t.Fatalf("WriteCommitted() error = %v", err)
+	}
+
+	content, err := store.ReadSessionContent(context.Background(), checkpointID, 0)
+	if err != nil {
+		t.Fatalf("ReadSessionContent() error = %v", err)
+	}
+
+	if strings.Contains(string(content.Transcript), highEntropySecret) {
+		t.Error("transcript should not contain the secret after redaction")
+	}
+	if !strings.Contains(string(content.Transcript), "REDACTED") {
+		t.Error("transcript should contain REDACTED placeholder")
+	}
+}
+
+func TestWriteCommitted_RedactsPromptSecrets(t *testing.T) {
+	repo, _ := setupBranchTestRepo(t)
+	store := NewGitStore(repo)
+	checkpointID := id.MustCheckpointID("aabbccddeef2")
+
+	err := store.WriteCommitted(context.Background(), WriteCommittedOptions{
+		CheckpointID:     checkpointID,
+		SessionID:        "redact-prompt-session",
+		Strategy:         "manual-commit",
+		Transcript:       []byte(`{"msg":"safe"}`),
+		Prompts:          []string{"Set API_KEY=" + highEntropySecret},
+		CheckpointsCount: 1,
+		AuthorName:       "Test Author",
+		AuthorEmail:      "test@example.com",
+	})
+	if err != nil {
+		t.Fatalf("WriteCommitted() error = %v", err)
+	}
+
+	content, err := store.ReadSessionContent(context.Background(), checkpointID, 0)
+	if err != nil {
+		t.Fatalf("ReadSessionContent() error = %v", err)
+	}
+
+	if strings.Contains(content.Prompts, highEntropySecret) {
+		t.Error("prompts should not contain the secret after redaction")
+	}
+	if !strings.Contains(content.Prompts, "REDACTED") {
+		t.Error("prompts should contain REDACTED placeholder")
+	}
+}
+
+func TestWriteCommitted_RedactsContextSecrets(t *testing.T) {
+	repo, _ := setupBranchTestRepo(t)
+	store := NewGitStore(repo)
+	checkpointID := id.MustCheckpointID("aabbccddeef3")
+
+	err := store.WriteCommitted(context.Background(), WriteCommittedOptions{
+		CheckpointID:     checkpointID,
+		SessionID:        "redact-context-session",
+		Strategy:         "manual-commit",
+		Transcript:       []byte(`{"msg":"safe"}`),
+		Context:          []byte("DB_PASSWORD=" + highEntropySecret),
+		CheckpointsCount: 1,
+		AuthorName:       "Test Author",
+		AuthorEmail:      "test@example.com",
+	})
+	if err != nil {
+		t.Fatalf("WriteCommitted() error = %v", err)
+	}
+
+	content, err := store.ReadSessionContent(context.Background(), checkpointID, 0)
+	if err != nil {
+		t.Fatalf("ReadSessionContent() error = %v", err)
+	}
+
+	if strings.Contains(content.Context, highEntropySecret) {
+		t.Error("context should not contain the secret after redaction")
+	}
+	if !strings.Contains(content.Context, "REDACTED") {
+		t.Error("context should contain REDACTED placeholder")
+	}
+}
+
+func TestCopyMetadataDir_RedactsSecrets(t *testing.T) {
+	tempDir := t.TempDir()
+
+	repo, err := git.PlainInit(tempDir, false)
+	if err != nil {
+		t.Fatalf("failed to init git repo: %v", err)
+	}
+
+	metadataDir := filepath.Join(tempDir, "metadata")
+	if err := os.MkdirAll(metadataDir, 0o755); err != nil {
+		t.Fatalf("failed to create metadata dir: %v", err)
+	}
+
+	// Write a JSONL file with a secret
+	jsonlFile := filepath.Join(metadataDir, "agent.jsonl")
+	if err := os.WriteFile(jsonlFile, []byte(`{"content":"key=`+highEntropySecret+`"}`+"\n"), 0o644); err != nil {
+		t.Fatalf("failed to write jsonl file: %v", err)
+	}
+
+	// Write a plain text file with a secret
+	txtFile := filepath.Join(metadataDir, "notes.txt")
+	if err := os.WriteFile(txtFile, []byte("secret: "+highEntropySecret), 0o644); err != nil {
+		t.Fatalf("failed to write txt file: %v", err)
+	}
+
+	store := NewGitStore(repo)
+	entries := make(map[string]object.TreeEntry)
+
+	if err := store.copyMetadataDir(metadataDir, "cp/", entries); err != nil {
+		t.Fatalf("copyMetadataDir() error = %v", err)
+	}
+
+	// Verify both files were added
+	if _, ok := entries["cp/agent.jsonl"]; !ok {
+		t.Fatal("agent.jsonl should be in entries")
+	}
+	if _, ok := entries["cp/notes.txt"]; !ok {
+		t.Fatal("notes.txt should be in entries")
+	}
+
+	// Read back the blob content and verify redaction
+	for path, entry := range entries {
+		blob, bErr := repo.BlobObject(entry.Hash)
+		if bErr != nil {
+			t.Fatalf("failed to read blob for %s: %v", path, bErr)
+		}
+		reader, rErr := blob.Reader()
+		if rErr != nil {
+			t.Fatalf("failed to get reader for %s: %v", path, rErr)
+		}
+		buf := make([]byte, blob.Size)
+		if _, rErr = reader.Read(buf); rErr != nil && rErr.Error() != "EOF" {
+			t.Fatalf("failed to read blob content for %s: %v", path, rErr)
+		}
+		reader.Close()
+
+		content := string(buf)
+		if strings.Contains(content, highEntropySecret) {
+			t.Errorf("%s should not contain the secret after redaction", path)
+		}
+		if !strings.Contains(content, "REDACTED") {
+			t.Errorf("%s should contain REDACTED placeholder", path)
+		}
 	}
 }

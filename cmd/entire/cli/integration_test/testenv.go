@@ -901,11 +901,25 @@ func (env *TestEnv) GetLatestCommitMessageOnBranch(branchName string) string {
 	return commit.Message
 }
 
-// GitCommitWithShadowHooks stages and commits files, simulating the prepare-commit-msg and post-commit hooks.
-// This is used for testing manual-commit strategy which needs:
-// - prepare-commit-msg hook: adds the Entire-Checkpoint trailer
-// - post-commit hook: condenses session data if trailer is present
+// GitCommitWithShadowHooks stages and commits files, simulating the prepare-commit-msg
+// and post-commit hooks as a human (with TTY). This is the default for tests.
 func (env *TestEnv) GitCommitWithShadowHooks(message string, files ...string) {
+	env.T.Helper()
+	env.gitCommitWithShadowHooks(message, true, files...)
+}
+
+// GitCommitWithShadowHooksAsAgent is like GitCommitWithShadowHooks but simulates
+// an agent commit (no TTY). This triggers the fast path in PrepareCommitMsg that
+// skips content detection and interactive prompts for ACTIVE sessions.
+func (env *TestEnv) GitCommitWithShadowHooksAsAgent(message string, files ...string) {
+	env.T.Helper()
+	env.gitCommitWithShadowHooks(message, false, files...)
+}
+
+// gitCommitWithShadowHooks is the shared implementation for committing with shadow hooks.
+// When simulateTTY is true, sets ENTIRE_TEST_TTY=1 to simulate a human at the terminal.
+// When false, filters it out to simulate an agent subprocess (no controlling terminal).
+func (env *TestEnv) gitCommitWithShadowHooks(message string, simulateTTY bool, files ...string) {
 	env.T.Helper()
 
 	// Stage files using go-git
@@ -919,9 +933,19 @@ func (env *TestEnv) GitCommitWithShadowHooks(message string, files ...string) {
 		env.T.Fatalf("failed to write commit message file: %v", err)
 	}
 
-	// Run prepare-commit-msg hook using the shared binary
-	prepCmd := exec.Command(getTestBinary(), "hooks", "git", "prepare-commit-msg", msgFile)
+	// Run prepare-commit-msg hook using the shared binary.
+	// Pass source="message" to match real `git commit -m` behavior.
+	prepCmd := exec.Command(getTestBinary(), "hooks", "git", "prepare-commit-msg", msgFile, "message")
 	prepCmd.Dir = env.RepoDir
+	if simulateTTY {
+		// Simulate human at terminal: ENTIRE_TEST_TTY=1 makes hasTTY() return true
+		// and askConfirmTTY() return defaultYes without reading from /dev/tty.
+		prepCmd.Env = append(os.Environ(), "ENTIRE_TEST_TTY=1")
+	} else {
+		// Simulate agent: ENTIRE_TEST_TTY=0 makes hasTTY() return false,
+		// triggering the fast path that adds trailers for ACTIVE sessions.
+		prepCmd.Env = append(os.Environ(), "ENTIRE_TEST_TTY=0")
+	}
 	if output, err := prepCmd.CombinedOutput(); err != nil {
 		env.T.Logf("prepare-commit-msg output: %s", output)
 		// Don't fail - hook may silently succeed
@@ -965,6 +989,69 @@ func (env *TestEnv) GitCommitWithShadowHooks(message string, files ...string) {
 	}
 }
 
+// GitCommitAmendWithShadowHooks amends the last commit with shadow hooks.
+// This simulates `git commit --amend` with the prepare-commit-msg and post-commit hooks.
+// The prepare-commit-msg hook is called with "commit" source to indicate an amend.
+func (env *TestEnv) GitCommitAmendWithShadowHooks(message string, files ...string) {
+	env.T.Helper()
+
+	// Stage any additional files
+	for _, file := range files {
+		env.GitAdd(file)
+	}
+
+	// Write commit message to temp file
+	msgFile := filepath.Join(env.RepoDir, ".git", "COMMIT_EDITMSG")
+	if err := os.WriteFile(msgFile, []byte(message), 0o644); err != nil {
+		env.T.Fatalf("failed to write commit message file: %v", err)
+	}
+
+	// Run prepare-commit-msg hook with "commit" source (indicates amend).
+	// Set ENTIRE_TEST_TTY=1 to simulate human (amend is always a human operation).
+	prepCmd := exec.Command(getTestBinary(), "hooks", "git", "prepare-commit-msg", msgFile, "commit")
+	prepCmd.Dir = env.RepoDir
+	prepCmd.Env = append(os.Environ(), "ENTIRE_TEST_TTY=1")
+	if output, err := prepCmd.CombinedOutput(); err != nil {
+		env.T.Logf("prepare-commit-msg (amend) output: %s", output)
+	}
+
+	// Read the modified message
+	modifiedMsg, err := os.ReadFile(msgFile)
+	if err != nil {
+		env.T.Fatalf("failed to read modified commit message: %v", err)
+	}
+
+	// Amend the commit using go-git
+	repo, err := git.PlainOpen(env.RepoDir)
+	if err != nil {
+		env.T.Fatalf("failed to open git repo: %v", err)
+	}
+
+	worktree, err := repo.Worktree()
+	if err != nil {
+		env.T.Fatalf("failed to get worktree: %v", err)
+	}
+
+	_, err = worktree.Commit(string(modifiedMsg), &git.CommitOptions{
+		Author: &object.Signature{
+			Name:  "Test User",
+			Email: "test@example.com",
+			When:  time.Now(),
+		},
+		Amend: true,
+	})
+	if err != nil {
+		env.T.Fatalf("failed to amend commit: %v", err)
+	}
+
+	// Run post-commit hook
+	postCmd := exec.Command(getTestBinary(), "hooks", "git", "post-commit")
+	postCmd.Dir = env.RepoDir
+	if output, err := postCmd.CombinedOutput(); err != nil {
+		env.T.Logf("post-commit (amend) output: %s", output)
+	}
+}
+
 // GitCommitWithTrailerRemoved stages and commits files, simulating what happens when
 // a user removes the Entire-Checkpoint trailer during commit message editing.
 // This tests the opt-out behavior where removing the trailer skips condensation.
@@ -982,9 +1069,12 @@ func (env *TestEnv) GitCommitWithTrailerRemoved(message string, files ...string)
 		env.T.Fatalf("failed to write commit message file: %v", err)
 	}
 
-	// Run prepare-commit-msg hook using the shared binary
+	// Run prepare-commit-msg hook using the shared binary.
+	// Set ENTIRE_TEST_TTY=1 to simulate human (this tests the editor flow where
+	// the user removes the trailer before committing).
 	prepCmd := exec.Command(getTestBinary(), "hooks", "git", "prepare-commit-msg", msgFile)
 	prepCmd.Dir = env.RepoDir
+	prepCmd.Env = append(os.Environ(), "ENTIRE_TEST_TTY=1")
 	if output, err := prepCmd.CombinedOutput(); err != nil {
 		env.T.Logf("prepare-commit-msg output: %s", output)
 	}
@@ -1069,7 +1159,7 @@ func (env *TestEnv) ListBranchesWithPrefix(prefix string) []string {
 	return branches
 }
 
-// GetLatestCheckpointID returns the most recent checkpoint ID from the entire/sessions branch.
+// GetLatestCheckpointID returns the most recent checkpoint ID from the entire/checkpoints/v1 branch.
 // This is used by tests that previously extracted the checkpoint ID from commit message trailers.
 // Now that active branch commits are clean (no trailers), we get the ID from the sessions branch.
 // Fatals if the checkpoint ID cannot be found, with detailed context about what was found.
@@ -1081,7 +1171,7 @@ func (env *TestEnv) GetLatestCheckpointID() string {
 		env.T.Fatalf("failed to open git repo: %v", err)
 	}
 
-	// Get the entire/sessions branch
+	// Get the entire/checkpoints/v1 branch
 	refName := plumbing.NewBranchReferenceName(paths.MetadataBranchName)
 	ref, err := repo.Reference(refName, true)
 	if err != nil {
@@ -1107,7 +1197,7 @@ func (env *TestEnv) GetLatestCheckpointID() string {
 	return ""
 }
 
-// TryGetLatestCheckpointID returns the most recent checkpoint ID from the entire/sessions branch.
+// TryGetLatestCheckpointID returns the most recent checkpoint ID from the entire/checkpoints/v1 branch.
 // Returns empty string if the branch doesn't exist or has no checkpoint commits yet.
 // Use this when you need to check if a checkpoint exists without failing the test.
 func (env *TestEnv) TryGetLatestCheckpointID() string {
@@ -1118,7 +1208,7 @@ func (env *TestEnv) TryGetLatestCheckpointID() string {
 		return ""
 	}
 
-	// Get the entire/sessions branch
+	// Get the entire/checkpoints/v1 branch
 	refName := plumbing.NewBranchReferenceName(paths.MetadataBranchName)
 	ref, err := repo.Reference(refName, true)
 	if err != nil {

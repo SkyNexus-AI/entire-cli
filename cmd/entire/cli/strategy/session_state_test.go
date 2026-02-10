@@ -1,6 +1,7 @@
 package strategy
 
 import (
+	"os"
 	"testing"
 	"time"
 
@@ -19,11 +20,11 @@ func TestLoadSessionState_PackageLevel(t *testing.T) {
 
 	// Create and save a session state using the package-level function
 	state := &SessionState{
-		SessionID:                "test-session-pkg-123",
-		BaseCommit:               "abc123def456",
-		StartedAt:                time.Now(),
-		CheckpointCount:          3,
-		CondensedTranscriptLines: 150,
+		SessionID:                 "test-session-pkg-123",
+		BaseCommit:                "abc123def456",
+		StartedAt:                 time.Now(),
+		StepCount:                 3,
+		CheckpointTranscriptStart: 150,
 	}
 
 	// Save using package-level function
@@ -54,11 +55,11 @@ func verifySessionState(t *testing.T, loaded, expected *SessionState) {
 	if loaded.BaseCommit != expected.BaseCommit {
 		t.Errorf("BaseCommit = %q, want %q", loaded.BaseCommit, expected.BaseCommit)
 	}
-	if loaded.CheckpointCount != expected.CheckpointCount {
-		t.Errorf("CheckpointCount = %d, want %d", loaded.CheckpointCount, expected.CheckpointCount)
+	if loaded.StepCount != expected.StepCount {
+		t.Errorf("StepCount = %d, want %d", loaded.StepCount, expected.StepCount)
 	}
-	if loaded.CondensedTranscriptLines != expected.CondensedTranscriptLines {
-		t.Errorf("CondensedTranscriptLines = %d, want %d", loaded.CondensedTranscriptLines, expected.CondensedTranscriptLines)
+	if loaded.CheckpointTranscriptStart != expected.CheckpointTranscriptStart {
+		t.Errorf("CheckpointTranscriptStart = %d, want %d", loaded.CheckpointTranscriptStart, expected.CheckpointTranscriptStart)
 	}
 }
 
@@ -75,11 +76,11 @@ func TestLoadSessionState_WithEndedAt(t *testing.T) {
 	// Test with EndedAt set
 	endedAt := time.Now().Add(-time.Hour) // 1 hour ago
 	state := &SessionState{
-		SessionID:       "test-session-ended",
-		BaseCommit:      "abc123def456",
-		StartedAt:       time.Now().Add(-2 * time.Hour),
-		EndedAt:         &endedAt,
-		CheckpointCount: 5,
+		SessionID:  "test-session-ended",
+		BaseCommit: "abc123def456",
+		StartedAt:  time.Now().Add(-2 * time.Hour),
+		EndedAt:    &endedAt,
+		StepCount:  5,
 	}
 
 	err = SaveSessionState(state)
@@ -105,11 +106,11 @@ func TestLoadSessionState_WithEndedAt(t *testing.T) {
 
 	// Test with EndedAt nil (active session)
 	stateActive := &SessionState{
-		SessionID:       "test-session-active",
-		BaseCommit:      "xyz789",
-		StartedAt:       time.Now(),
-		EndedAt:         nil,
-		CheckpointCount: 1,
+		SessionID:  "test-session-active",
+		BaseCommit: "xyz789",
+		StartedAt:  time.Now(),
+		EndedAt:    nil,
+		StepCount:  1,
 	}
 
 	err = SaveSessionState(stateActive)
@@ -128,6 +129,75 @@ func TestLoadSessionState_WithEndedAt(t *testing.T) {
 	// Verify EndedAt remains nil
 	if loadedActive.EndedAt != nil {
 		t.Errorf("EndedAt = %v, want nil for active session", *loadedActive.EndedAt)
+	}
+}
+
+// TestLoadSessionState_WithLastInteractionTime tests that LastInteractionTime serializes/deserializes correctly.
+func TestLoadSessionState_WithLastInteractionTime(t *testing.T) {
+	dir := t.TempDir()
+	_, err := git.PlainInit(dir, false)
+	if err != nil {
+		t.Fatalf("failed to init git repo: %v", err)
+	}
+
+	t.Chdir(dir)
+
+	// Test with LastInteractionTime set
+	lastInteraction := time.Now().Add(-5 * time.Minute)
+	state := &SessionState{
+		SessionID:           "test-session-interaction",
+		BaseCommit:          "abc123def456",
+		StartedAt:           time.Now().Add(-2 * time.Hour),
+		LastInteractionTime: &lastInteraction,
+		StepCount:           3,
+	}
+
+	err = SaveSessionState(state)
+	if err != nil {
+		t.Fatalf("SaveSessionState() error = %v", err)
+	}
+
+	loaded, err := LoadSessionState("test-session-interaction")
+	if err != nil {
+		t.Fatalf("LoadSessionState() error = %v", err)
+	}
+	if loaded == nil {
+		t.Fatal("LoadSessionState() returned nil")
+	}
+
+	// Verify LastInteractionTime was preserved
+	if loaded.LastInteractionTime == nil {
+		t.Fatal("LastInteractionTime was nil after load, expected non-nil")
+	}
+	if !loaded.LastInteractionTime.Equal(lastInteraction) {
+		t.Errorf("LastInteractionTime = %v, want %v", *loaded.LastInteractionTime, lastInteraction)
+	}
+
+	// Test with LastInteractionTime nil (old session without this field)
+	stateOld := &SessionState{
+		SessionID:           "test-session-no-interaction",
+		BaseCommit:          "xyz789",
+		StartedAt:           time.Now(),
+		LastInteractionTime: nil,
+		StepCount:           1,
+	}
+
+	err = SaveSessionState(stateOld)
+	if err != nil {
+		t.Fatalf("SaveSessionState() error = %v", err)
+	}
+
+	loadedOld, err := LoadSessionState("test-session-no-interaction")
+	if err != nil {
+		t.Fatalf("LoadSessionState() error = %v", err)
+	}
+	if loadedOld == nil {
+		t.Fatal("LoadSessionState() returned nil")
+	}
+
+	// Verify LastInteractionTime remains nil
+	if loadedOld.LastInteractionTime != nil {
+		t.Errorf("LastInteractionTime = %v, want nil for old session", *loadedOld.LastInteractionTime)
 	}
 }
 
@@ -163,10 +233,10 @@ func TestManualCommitStrategy_SessionState_UsesPackageFunctions(t *testing.T) {
 
 	// Save using package-level function
 	state := &SessionState{
-		SessionID:       "cross-usage-test",
-		BaseCommit:      "xyz789",
-		StartedAt:       time.Now(),
-		CheckpointCount: 2,
+		SessionID:  "cross-usage-test",
+		BaseCommit: "xyz789",
+		StartedAt:  time.Now(),
+		StepCount:  2,
 	}
 	if err := SaveSessionState(state); err != nil {
 		t.Fatalf("SaveSessionState() error = %v", err)
@@ -190,10 +260,10 @@ func TestManualCommitStrategy_SessionState_UsesPackageFunctions(t *testing.T) {
 
 	// Save using ManualCommitStrategy method
 	state2 := &SessionState{
-		SessionID:       "cross-usage-test-2",
-		BaseCommit:      "abc123",
-		StartedAt:       time.Now(),
-		CheckpointCount: 1,
+		SessionID:  "cross-usage-test-2",
+		BaseCommit: "abc123",
+		StartedAt:  time.Now(),
+		StepCount:  1,
 	}
 	if err := s.saveSessionState(state2); err != nil {
 		t.Fatalf("ManualCommitStrategy.saveSessionState() error = %v", err)
@@ -212,5 +282,101 @@ func TestManualCommitStrategy_SessionState_UsesPackageFunctions(t *testing.T) {
 
 	if loaded2.SessionID != state2.SessionID {
 		t.Errorf("SessionID = %q, want %q", loaded2.SessionID, state2.SessionID)
+	}
+}
+
+// TestFindMostRecentSession_FiltersByWorktree tests that FindMostRecentSession
+// returns sessions from the current worktree, not from other worktrees.
+func TestFindMostRecentSession_FiltersByWorktree(t *testing.T) {
+	dir := t.TempDir()
+	_, err := git.PlainInit(dir, false)
+	if err != nil {
+		t.Fatalf("failed to init git repo: %v", err)
+	}
+
+	t.Chdir(dir)
+
+	// Get the resolved worktree path (git resolves symlinks, e.g. /var → /private/var on macOS)
+	resolvedDir, err := GetWorktreePath()
+	if err != nil {
+		t.Fatalf("GetWorktreePath() error = %v", err)
+	}
+
+	older := time.Now().Add(-1 * time.Hour)
+	newer := time.Now()
+
+	// Session from a different worktree (more recent)
+	otherWorktree := &SessionState{
+		SessionID:           "other-worktree-session",
+		BaseCommit:          "abc1234",
+		WorktreePath:        "/some/other/worktree",
+		StartedAt:           newer,
+		LastInteractionTime: &newer,
+		Phase:               "idle",
+	}
+
+	// Session from current worktree (older)
+	currentWorktree := &SessionState{
+		SessionID:           "current-worktree-session",
+		BaseCommit:          "xyz7890",
+		WorktreePath:        resolvedDir, // matches current worktree
+		StartedAt:           older,
+		LastInteractionTime: &older,
+		Phase:               "idle",
+	}
+
+	if err := SaveSessionState(otherWorktree); err != nil {
+		t.Fatalf("SaveSessionState() error = %v", err)
+	}
+	if err := SaveSessionState(currentWorktree); err != nil {
+		t.Fatalf("SaveSessionState() error = %v", err)
+	}
+
+	// FindMostRecentSession should return the current worktree's session,
+	// not the other worktree's session (even though it's more recent).
+	result := FindMostRecentSession()
+	if result != "current-worktree-session" {
+		t.Errorf("FindMostRecentSession() = %q, want %q (should prefer current worktree)",
+			result, "current-worktree-session")
+	}
+}
+
+// TestFindMostRecentSession_FallsBackWhenNoWorktreeMatch tests that
+// FindMostRecentSession falls back to all sessions when none match the current worktree.
+func TestFindMostRecentSession_FallsBackWhenNoWorktreeMatch(t *testing.T) {
+	dir := t.TempDir()
+	_, err := git.PlainInit(dir, false)
+	if err != nil {
+		t.Fatalf("failed to init git repo: %v", err)
+	}
+
+	t.Chdir(dir)
+
+	newer := time.Now()
+
+	// Session from a different worktree only (no sessions for current worktree)
+	otherWorktree := &SessionState{
+		SessionID:           "only-session",
+		BaseCommit:          "abc1234",
+		WorktreePath:        "/some/other/worktree",
+		StartedAt:           newer,
+		LastInteractionTime: &newer,
+		Phase:               "idle",
+	}
+
+	if err := SaveSessionState(otherWorktree); err != nil {
+		t.Fatalf("SaveSessionState() error = %v", err)
+	}
+
+	// Should fall back to the only available session since none match current worktree
+	result := FindMostRecentSession()
+	if result != "only-session" {
+		t.Errorf("FindMostRecentSession() = %q, want %q (should fall back when no worktree match)",
+			result, "only-session")
+	}
+
+	// Cleanup
+	if err := os.Remove(dir + "/.git/entire-sessions/only-session.json"); err != nil && !os.IsNotExist(err) {
+		t.Logf("cleanup warning: %v", err)
 	}
 }

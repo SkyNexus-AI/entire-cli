@@ -7,6 +7,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/entireio/cli/cmd/entire/cli/agent"
+	_ "github.com/entireio/cli/cmd/entire/cli/agent/claudecode"
+	_ "github.com/entireio/cli/cmd/entire/cli/agent/geminicli"
 	"github.com/entireio/cli/cmd/entire/cli/paths"
 	"github.com/entireio/cli/cmd/entire/cli/strategy"
 	"github.com/go-git/go-git/v5"
@@ -116,64 +119,6 @@ func TestRunDisable_AlreadyDisabled(t *testing.T) {
 
 	if !strings.Contains(stdout.String(), "disabled") {
 		t.Errorf("Expected output to mention disabled state, got: %s", stdout.String())
-	}
-}
-
-func TestRunStatus_Enabled(t *testing.T) {
-	setupTestRepo(t)
-	writeSettings(t, testSettingsEnabled)
-
-	var stdout bytes.Buffer
-	if err := runStatus(&stdout, false); err != nil {
-		t.Fatalf("runStatus() error = %v", err)
-	}
-
-	if !strings.Contains(stdout.String(), "Enabled") {
-		t.Errorf("Expected output to show 'Enabled', got: %s", stdout.String())
-	}
-}
-
-func TestRunStatus_Disabled(t *testing.T) {
-	setupTestRepo(t)
-	writeSettings(t, testSettingsDisabled)
-
-	var stdout bytes.Buffer
-	if err := runStatus(&stdout, false); err != nil {
-		t.Fatalf("runStatus() error = %v", err)
-	}
-
-	if !strings.Contains(stdout.String(), "Disabled") {
-		t.Errorf("Expected output to show 'Disabled', got: %s", stdout.String())
-	}
-}
-
-func TestRunStatus_NotSetUp(t *testing.T) {
-	setupTestRepo(t)
-
-	var stdout bytes.Buffer
-	if err := runStatus(&stdout, false); err != nil {
-		t.Fatalf("runStatus() error = %v", err)
-	}
-
-	output := stdout.String()
-	if !strings.Contains(output, "○ not set up") {
-		t.Errorf("Expected output to show '○ not set up', got: %s", output)
-	}
-	if !strings.Contains(output, "entire enable") {
-		t.Errorf("Expected output to mention 'entire enable', got: %s", output)
-	}
-}
-
-func TestRunStatus_NotGitRepository(t *testing.T) {
-	setupTestDir(t) // No git init
-
-	var stdout bytes.Buffer
-	if err := runStatus(&stdout, false); err != nil {
-		t.Fatalf("runStatus() error = %v", err)
-	}
-
-	if !strings.Contains(stdout.String(), "✕ not a git repository") {
-		t.Errorf("Expected output to show '✕ not a git repository', got: %s", stdout.String())
 	}
 }
 
@@ -413,7 +358,7 @@ func TestRunEnableWithStrategy_PreservesExistingSettings(t *testing.T) {
 
 	// Run enable with a different strategy
 	var stdout bytes.Buffer
-	err := runEnableWithStrategy(&stdout, "auto-commit", false, false, false, true, false, false, false, false)
+	err := runEnableWithStrategy(&stdout, "auto-commit", false, false, false, true, false, false, false)
 	if err != nil {
 		t.Fatalf("runEnableWithStrategy() error = %v", err)
 	}
@@ -457,7 +402,7 @@ func TestRunEnableWithStrategy_PreservesLocalSettings(t *testing.T) {
 
 	// Run enable with --local flag
 	var stdout bytes.Buffer
-	err := runEnableWithStrategy(&stdout, "auto-commit", false, false, true, false, false, false, false, false)
+	err := runEnableWithStrategy(&stdout, "auto-commit", false, false, true, false, false, false, false)
 	if err != nil {
 		t.Fatalf("runEnableWithStrategy() error = %v", err)
 	}
@@ -479,111 +424,6 @@ func TestRunEnableWithStrategy_PreservesLocalSettings(t *testing.T) {
 	}
 	if settings.StrategyOptions["push"] != true {
 		t.Errorf("strategy_options.push should be true, got %v", settings.StrategyOptions["push"])
-	}
-}
-
-func TestRunStatus_LocalSettingsOnly(t *testing.T) {
-	setupTestRepo(t)
-	writeLocalSettings(t, `{"strategy": "auto-commit", "enabled": true}`)
-
-	var stdout bytes.Buffer
-	if err := runStatus(&stdout, true); err != nil {
-		t.Fatalf("runStatus() error = %v", err)
-	}
-
-	output := stdout.String()
-	// Should show effective status first
-	if !strings.Contains(output, "Enabled (auto-commit)") {
-		t.Errorf("Expected output to show effective 'Enabled (auto-commit)', got: %s", output)
-	}
-	// Should show per-file details
-	if !strings.Contains(output, "Local, enabled") {
-		t.Errorf("Expected output to show 'Local, enabled', got: %s", output)
-	}
-	if strings.Contains(output, "Project,") {
-		t.Errorf("Should not show Project settings when only local exists, got: %s", output)
-	}
-}
-
-func TestRunStatus_BothProjectAndLocal(t *testing.T) {
-	setupTestRepo(t)
-	// Project: enabled=true, strategy=manual-commit
-	// Local: enabled=false, strategy=auto-commit
-	// Detailed mode shows effective status first, then each file separately
-	writeSettings(t, `{"strategy": "manual-commit", "enabled": true}`)
-	writeLocalSettings(t, `{"strategy": "auto-commit", "enabled": false}`)
-
-	var stdout bytes.Buffer
-	if err := runStatus(&stdout, true); err != nil {
-		t.Fatalf("runStatus() error = %v", err)
-	}
-
-	output := stdout.String()
-	// Should show effective status first (local overrides project)
-	if !strings.Contains(output, "Disabled (auto-commit)") {
-		t.Errorf("Expected output to show effective 'Disabled (auto-commit)', got: %s", output)
-	}
-	// Should show both settings separately
-	if !strings.Contains(output, "Project, enabled (manual-commit)") {
-		t.Errorf("Expected output to show 'Project, enabled (manual-commit)', got: %s", output)
-	}
-	if !strings.Contains(output, "Local, disabled (auto-commit)") {
-		t.Errorf("Expected output to show 'Local, disabled (auto-commit)', got: %s", output)
-	}
-}
-
-func TestRunStatus_BothProjectAndLocal_Short(t *testing.T) {
-	setupTestRepo(t)
-	// Project: enabled=true, strategy=manual-commit
-	// Local: enabled=false, strategy=auto-commit
-	// Short mode shows merged/effective settings
-	writeSettings(t, `{"strategy": "manual-commit", "enabled": true}`)
-	writeLocalSettings(t, `{"strategy": "auto-commit", "enabled": false}`)
-
-	var stdout bytes.Buffer
-	if err := runStatus(&stdout, false); err != nil {
-		t.Fatalf("runStatus() error = %v", err)
-	}
-
-	output := stdout.String()
-	// Should show merged/effective state (local overrides project)
-	if !strings.Contains(output, "Disabled (auto-commit)") {
-		t.Errorf("Expected output to show 'Disabled (auto-commit)', got: %s", output)
-	}
-}
-
-func TestRunStatus_ShowsStrategy(t *testing.T) {
-	setupTestRepo(t)
-	writeSettings(t, `{"strategy": "auto-commit", "enabled": true}`)
-
-	var stdout bytes.Buffer
-	if err := runStatus(&stdout, false); err != nil {
-		t.Fatalf("runStatus() error = %v", err)
-	}
-
-	output := stdout.String()
-	if !strings.Contains(output, "(auto-commit)") {
-		t.Errorf("Expected output to show strategy '(auto-commit)', got: %s", output)
-	}
-}
-
-func TestRunStatus_ShowsManualCommitStrategy(t *testing.T) {
-	setupTestRepo(t)
-	writeSettings(t, `{"strategy": "manual-commit", "enabled": false}`)
-
-	var stdout bytes.Buffer
-	if err := runStatus(&stdout, true); err != nil {
-		t.Fatalf("runStatus() error = %v", err)
-	}
-
-	output := stdout.String()
-	// Should show effective status first
-	if !strings.Contains(output, "Disabled (manual-commit)") {
-		t.Errorf("Expected output to show effective 'Disabled (manual-commit)', got: %s", output)
-	}
-	// Should show per-file details
-	if !strings.Contains(output, "Project, disabled (manual-commit)") {
-		t.Errorf("Expected output to show 'Project, disabled (manual-commit)', got: %s", output)
 	}
 }
 
@@ -706,6 +546,26 @@ func TestCheckEntireDirExists(t *testing.T) {
 	}
 }
 
+func TestIsFullyEnabled_NotEnabled(t *testing.T) {
+	setupTestDir(t)
+
+	// No settings, no hooks, no directory - should not be fully enabled
+	enabled, _, _ := isFullyEnabled()
+	if enabled {
+		t.Error("isFullyEnabled() should return false when nothing is set up")
+	}
+}
+
+func TestIsFullyEnabled_SettingsDisabled(t *testing.T) {
+	setupTestDir(t)
+	writeSettings(t, testSettingsDisabled)
+
+	enabled, _, _ := isFullyEnabled()
+	if enabled {
+		t.Error("isFullyEnabled() should return false when settings have enabled=false")
+	}
+}
+
 func TestCountSessionStates(t *testing.T) {
 	setupTestRepo(t)
 
@@ -749,11 +609,271 @@ func TestRemoveEntireDirectory(t *testing.T) {
 	}
 }
 
+func TestShellCompletionTarget(t *testing.T) {
+	tests := []struct {
+		name             string
+		shell            string
+		createBashProf   bool
+		wantShell        string
+		wantRCBase       string // basename of rc file
+		wantCompletion   string
+		wantErrUnsupport bool
+	}{
+		{
+			name:           "zsh",
+			shell:          "/bin/zsh",
+			wantShell:      "Zsh",
+			wantRCBase:     ".zshrc",
+			wantCompletion: "autoload -Uz compinit && compinit && source <(entire completion zsh)",
+		},
+		{
+			name:           "bash_no_profile",
+			shell:          "/bin/bash",
+			wantShell:      "Bash",
+			wantRCBase:     ".bashrc",
+			wantCompletion: "source <(entire completion bash)",
+		},
+		{
+			name:           "bash_with_profile",
+			shell:          "/bin/bash",
+			createBashProf: true,
+			wantShell:      "Bash",
+			wantRCBase:     ".bash_profile",
+			wantCompletion: "source <(entire completion bash)",
+		},
+		{
+			name:           "fish",
+			shell:          "/usr/bin/fish",
+			wantShell:      "Fish",
+			wantRCBase:     filepath.Join(".config", "fish", "config.fish"),
+			wantCompletion: "entire completion fish | source",
+		},
+		{
+			name:             "empty_shell",
+			shell:            "",
+			wantErrUnsupport: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("SHELL", tt.shell)
+
+			if tt.createBashProf {
+				if err := os.WriteFile(filepath.Join(home, ".bash_profile"), []byte(""), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			shellName, rcFile, completion, err := shellCompletionTarget()
+
+			if tt.wantErrUnsupport {
+				if err != errUnsupportedShell {
+					t.Fatalf("got err=%v, want errUnsupportedShell", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if shellName != tt.wantShell {
+				t.Errorf("shellName = %q, want %q", shellName, tt.wantShell)
+			}
+			wantRC := filepath.Join(home, tt.wantRCBase)
+			if rcFile != wantRC {
+				t.Errorf("rcFile = %q, want %q", rcFile, wantRC)
+			}
+			if completion != tt.wantCompletion {
+				t.Errorf("completion = %q, want %q", completion, tt.wantCompletion)
+			}
+		})
+	}
+}
+
+func TestAppendShellCompletion(t *testing.T) {
+	tests := []struct {
+		name           string
+		rcFileRelPath  string
+		completionLine string
+		preExisting    string // existing content in rc file; empty means file doesn't exist
+		createParent   bool   // whether parent dir already exists
+	}{
+		{
+			name:           "zsh_new_file",
+			rcFileRelPath:  ".zshrc",
+			completionLine: "source <(entire completion zsh)",
+			createParent:   true,
+		},
+		{
+			name:           "zsh_existing_file",
+			rcFileRelPath:  ".zshrc",
+			completionLine: "source <(entire completion zsh)",
+			preExisting:    "# existing zshrc content\n",
+			createParent:   true,
+		},
+		{
+			name:           "fish_no_parent_dir",
+			rcFileRelPath:  filepath.Join(".config", "fish", "config.fish"),
+			completionLine: "entire completion fish | source",
+			createParent:   false,
+		},
+		{
+			name:           "fish_existing_dir",
+			rcFileRelPath:  filepath.Join(".config", "fish", "config.fish"),
+			completionLine: "entire completion fish | source",
+			createParent:   true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := t.TempDir()
+			rcFile := filepath.Join(home, tt.rcFileRelPath)
+
+			if tt.createParent {
+				if err := os.MkdirAll(filepath.Dir(rcFile), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tt.preExisting != "" {
+				if err := os.WriteFile(rcFile, []byte(tt.preExisting), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			if err := appendShellCompletion(rcFile, tt.completionLine); err != nil {
+				t.Fatalf("appendShellCompletion() error: %v", err)
+			}
+
+			// Verify the file was created and contains the completion line.
+			data, err := os.ReadFile(rcFile)
+			if err != nil {
+				t.Fatalf("reading rc file: %v", err)
+			}
+			content := string(data)
+
+			if !strings.Contains(content, shellCompletionComment) {
+				t.Errorf("rc file missing comment %q", shellCompletionComment)
+			}
+			if !strings.Contains(content, tt.completionLine) {
+				t.Errorf("rc file missing completion line %q", tt.completionLine)
+			}
+			if tt.preExisting != "" && !strings.HasPrefix(content, tt.preExisting) {
+				t.Errorf("pre-existing content was overwritten")
+			}
+
+			// Verify parent directory permissions.
+			info, err := os.Stat(filepath.Dir(rcFile))
+			if err != nil {
+				t.Fatalf("stat parent dir: %v", err)
+			}
+			if !info.IsDir() {
+				t.Fatal("parent path is not a directory")
+			}
+		})
+	}
+}
+
 func TestRemoveEntireDirectory_NotExists(t *testing.T) {
 	setupTestDir(t)
 
 	// Should not error when directory doesn't exist
 	if err := removeEntireDirectory(); err != nil {
 		t.Fatalf("removeEntireDirectory() should not error when directory doesn't exist: %v", err)
+	}
+}
+
+func TestPrintMissingAgentError(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	printMissingAgentError(&buf)
+	output := buf.String()
+
+	if !strings.Contains(output, "Missing agent name") {
+		t.Error("expected 'Missing agent name' in output")
+	}
+	for _, a := range agent.List() {
+		if !strings.Contains(output, string(a)) {
+			t.Errorf("expected agent %q listed in output", a)
+		}
+	}
+	if !strings.Contains(output, "(default)") {
+		t.Error("expected default annotation in output")
+	}
+	if !strings.Contains(output, "Usage: entire enable --agent") {
+		t.Error("expected usage line in output")
+	}
+}
+
+func TestPrintWrongAgentError(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	printWrongAgentError(&buf, "not-an-agent")
+	output := buf.String()
+
+	if !strings.Contains(output, `Unknown agent "not-an-agent"`) {
+		t.Error("expected unknown agent name in output")
+	}
+	for _, a := range agent.List() {
+		if !strings.Contains(output, string(a)) {
+			t.Errorf("expected agent %q listed in output", a)
+		}
+	}
+	if !strings.Contains(output, "(default)") {
+		t.Error("expected default annotation in output")
+	}
+	if !strings.Contains(output, "Usage: entire enable --agent") {
+		t.Error("expected usage line in output")
+	}
+}
+
+func TestEnableCmd_AgentFlagNoValue(t *testing.T) {
+	setupTestRepo(t)
+
+	cmd := newEnableCmd()
+	var stderr bytes.Buffer
+	cmd.SetErr(&stderr)
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--agent"})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error when --agent is used without a value")
+	}
+
+	output := stderr.String()
+	if !strings.Contains(output, "Missing agent name") {
+		t.Errorf("expected helpful error message, got: %s", output)
+	}
+	if !strings.Contains(output, string(agent.DefaultAgentName)) {
+		t.Errorf("expected default agent listed, got: %s", output)
+	}
+	if strings.Contains(output, "flag needs an argument") {
+		t.Error("should not contain default cobra/pflag error message")
+	}
+}
+
+func TestEnableCmd_AgentFlagEmptyValue(t *testing.T) {
+	setupTestRepo(t)
+
+	cmd := newEnableCmd()
+	var stderr bytes.Buffer
+	cmd.SetErr(&stderr)
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--agent="})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error when --agent= is used with empty value")
+	}
+
+	output := stderr.String()
+	if !strings.Contains(output, "Missing agent name") {
+		t.Errorf("expected helpful error message, got: %s", output)
+	}
+	if strings.Contains(output, "flag needs an argument") {
+		t.Error("should not contain default cobra/pflag error message")
 	}
 }

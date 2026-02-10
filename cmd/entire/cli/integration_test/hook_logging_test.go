@@ -3,13 +3,16 @@
 package integration
 
 import (
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/entireio/cli/cmd/entire/cli/paths"
+	"github.com/entireio/cli/cmd/entire/cli/session"
 )
 
 func TestHookLogging_WritesToSessionLogFile(t *testing.T) {
@@ -19,12 +22,9 @@ func TestHookLogging_WritesToSessionLogFile(t *testing.T) {
 	env.InitRepo()
 	env.InitEntire("manual-commit") // Use manual-commit strategy (doesn't matter for logging)
 
-	// Create a current_session file with a known session ID
+	// Create a session state file in .git/entire-sessions/ with a known session ID
 	sessionID := "test-logging-session-123"
-	sessionFile := filepath.Join(env.RepoDir, paths.CurrentSessionFile)
-	if err := os.WriteFile(sessionFile, []byte(sessionID), 0o600); err != nil {
-		t.Fatalf("failed to write current_session file: %v", err)
-	}
+	writeTestSessionStateForLogging(t, env.RepoDir, sessionID)
 
 	// Create the logs directory (Init should create it, but ensure it exists)
 	logsDir := filepath.Join(env.RepoDir, paths.EntireDir, "logs")
@@ -47,8 +47,8 @@ func TestHookLogging_WritesToSessionLogFile(t *testing.T) {
 		// Don't fail - hook may succeed even with warnings
 	}
 
-	// Verify log file was created
-	logFile := filepath.Join(logsDir, sessionID+".log")
+	// Verify log file was created (all logs go to entire.log)
+	logFile := filepath.Join(logsDir, "entire.log")
 	if _, err := os.Stat(logFile); os.IsNotExist(err) {
 		t.Errorf("expected log file at %s but it doesn't exist", logFile)
 		t.Logf("hook stderr/stdout: %s", output)
@@ -81,14 +81,14 @@ func TestHookLogging_WritesToSessionLogFile(t *testing.T) {
 	}
 }
 
-func TestHookLogging_FallsBackToStderrWithoutSession(t *testing.T) {
+func TestHookLogging_WritesWithoutSession(t *testing.T) {
 	t.Parallel()
 
 	env := NewTestEnv(t)
 	env.InitRepo()
 	env.InitEntire("manual-commit")
 
-	// Don't create a current_session file - logging should fall back to stderr
+	// Don't create a session state file - logging should still write to entire.log
 
 	// Run a hook with ENTIRE_LOG_LEVEL=debug
 	cmd := exec.Command(getTestBinary(), "hooks", "git", "post-commit")
@@ -101,18 +101,45 @@ func TestHookLogging_FallsBackToStderrWithoutSession(t *testing.T) {
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		// Don't fail - hook may succeed
+		_ = output
 	}
 
-	// Output should contain log content (stderr fallback)
-	outputStr := string(output)
-	if !strings.Contains(outputStr, "post-commit") {
-		t.Logf("expected stderr to contain hook logs, got: %s", outputStr)
-		// This is expected behavior - without session, logs go to stderr
-	}
-
-	// Logs directory should NOT have any files (no session = no file logging)
+	// Log file should still be created (entire.log is fixed, not session-dependent)
 	logsDir := filepath.Join(env.RepoDir, paths.EntireDir, "logs")
-	if entries, err := os.ReadDir(logsDir); err == nil && len(entries) > 0 {
-		t.Errorf("expected no log files without session, found: %v", entries)
+	logFile := filepath.Join(logsDir, "entire.log")
+	content, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatalf("expected entire.log to be created even without session: %v", err)
+	}
+
+	// Logs should NOT contain session_id (no session was active)
+	logContent := string(content)
+	if strings.Contains(logContent, `"session_id"`) {
+		t.Error("logs without an active session should not contain session_id")
+	}
+}
+
+// writeTestSessionStateForLogging creates a session state file for hook logging tests.
+func writeTestSessionStateForLogging(t *testing.T, repoDir, sessionID string) {
+	t.Helper()
+	stateDir := filepath.Join(repoDir, ".git", session.SessionStateDirName)
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		t.Fatalf("failed to create session state directory: %v", err)
+	}
+
+	now := time.Now()
+	state := session.State{
+		SessionID:           sessionID,
+		StartedAt:           now,
+		LastInteractionTime: &now,
+		Phase:               session.PhaseActive,
+	}
+	data, err := json.Marshal(state)
+	if err != nil {
+		t.Fatalf("failed to marshal state: %v", err)
+	}
+	stateFile := filepath.Join(stateDir, sessionID+".json")
+	if err := os.WriteFile(stateFile, data, 0o600); err != nil {
+		t.Fatalf("failed to write session state file: %v", err)
 	}
 }

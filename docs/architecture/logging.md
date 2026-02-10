@@ -2,7 +2,7 @@
 
 ## Overview
 
-The CLI uses Go's `log/slog` package for structured JSON logging. Logs are written to `.entire/logs/<session-id>.log` and help debug hook execution and CLI behavior.
+The CLI uses Go's `log/slog` package for structured JSON logging. All logs are written to a single file `.entire/logs/entire.log` and help debug hook execution and CLI behavior. When a session ID is known, the `session_id` attribute on each log line allows filtering by session.
 
 ## Log Levels
 
@@ -53,13 +53,16 @@ session_id: 2025-12-31-abc123           ← root trace (all logs)
 
 ```bash
 # All logs for a session
-jq 'select(.session_id == "2025-12-31-abc123")' .entire/logs/*.log
+jq 'select(.session_id == "2025-12-31-abc123")' .entire/logs/entire.log
 
 # All logs for a specific subagent task
-jq 'select(.tool_use_id == "X")' .entire/logs/*.log
+jq 'select(.tool_use_id == "X")' .entire/logs/entire.log
 
 # All subagent activity
-jq 'select(.hook_type == "subagent")' .entire/logs/*.log
+jq 'select(.hook_type == "subagent")' .entire/logs/entire.log
+
+# Tail logs in real time
+tail -f .entire/logs/entire.log | jq .
 ```
 
 ## Current Gaps

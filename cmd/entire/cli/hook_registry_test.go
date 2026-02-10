@@ -10,9 +10,12 @@ import (
 	"strings"
 	"testing"
 
+	"time"
+
 	"github.com/entireio/cli/cmd/entire/cli/agent"
 	"github.com/entireio/cli/cmd/entire/cli/logging"
 	"github.com/entireio/cli/cmd/entire/cli/paths"
+	"github.com/entireio/cli/cmd/entire/cli/session"
 
 	"github.com/spf13/cobra"
 )
@@ -42,13 +45,9 @@ func TestNewAgentHookVerbCmd_LogsInvocation(t *testing.T) {
 		t.Fatalf("failed to create logs directory: %v", err)
 	}
 
-	// Create session file
+	// Create session state file in .git/entire-sessions/
 	sessionID := "test-claudecode-hook-session"
-	sessionFile := filepath.Join(tmpDir, paths.CurrentSessionFile)
-	if err := os.WriteFile(sessionFile, []byte(sessionID), 0o600); err != nil {
-		t.Fatalf("failed to write session file: %v", err)
-	}
-	defer os.Remove(sessionFile)
+	writeTestSessionState(t, tmpDir, sessionID)
 
 	// Enable debug logging
 	t.Setenv(logging.LogLevelEnvVar, "DEBUG")
@@ -81,7 +80,7 @@ func TestNewAgentHookVerbCmd_LogsInvocation(t *testing.T) {
 	cleanup()
 
 	// Verify log file was created and contains expected content
-	logFile := filepath.Join(logsDir, sessionID+".log")
+	logFile := filepath.Join(logsDir, "entire.log")
 	content, err := os.ReadFile(logFile)
 	if err != nil {
 		t.Fatalf("failed to read log file: %v", err)
@@ -162,13 +161,9 @@ func TestNewAgentHookVerbCmd_LogsFailure(t *testing.T) {
 		t.Fatalf("failed to create logs directory: %v", err)
 	}
 
-	// Create session file
+	// Create session state file in .git/entire-sessions/
 	sessionID := "test-claudecode-failure-session"
-	sessionFile := filepath.Join(tmpDir, paths.CurrentSessionFile)
-	if err := os.WriteFile(sessionFile, []byte(sessionID), 0o600); err != nil {
-		t.Fatalf("failed to write session file: %v", err)
-	}
-	defer os.Remove(sessionFile)
+	writeTestSessionState(t, tmpDir, sessionID)
 
 	// Enable debug logging
 	t.Setenv(logging.LogLevelEnvVar, "DEBUG")
@@ -196,7 +191,7 @@ func TestNewAgentHookVerbCmd_LogsFailure(t *testing.T) {
 	cleanup()
 
 	// Verify log file contains failure status
-	logFile := filepath.Join(logsDir, sessionID+".log")
+	logFile := filepath.Join(logsDir, "entire.log")
 	content, err := os.ReadFile(logFile)
 	if err != nil {
 		t.Fatalf("failed to read log file: %v", err)
@@ -331,4 +326,30 @@ func TestHookCommand_SetsCurrentHookAgentName(t *testing.T) {
 			}
 		})
 	}
+}
+
+// writeTestSessionState creates a session state file in .git/entire-sessions/ for testing.
+func writeTestSessionState(t *testing.T, repoDir, sessionID string) {
+	t.Helper()
+	stateDir := filepath.Join(repoDir, ".git", session.SessionStateDirName)
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		t.Fatalf("failed to create session state directory: %v", err)
+	}
+
+	now := time.Now()
+	state := session.State{
+		SessionID:           sessionID,
+		StartedAt:           now,
+		LastInteractionTime: &now,
+		Phase:               session.PhaseActive,
+	}
+	data, err := json.Marshal(state)
+	if err != nil {
+		t.Fatalf("failed to marshal state: %v", err)
+	}
+	stateFile := filepath.Join(stateDir, sessionID+".json")
+	if err := os.WriteFile(stateFile, data, 0o600); err != nil {
+		t.Fatalf("failed to write session state file: %v", err)
+	}
+	t.Cleanup(func() { os.Remove(stateFile) })
 }

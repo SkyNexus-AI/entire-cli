@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/entireio/cli/cmd/entire/cli/logging"
-	"github.com/entireio/cli/cmd/entire/cli/paths"
 	"github.com/entireio/cli/cmd/entire/cli/strategy"
 
 	"github.com/spf13/cobra"
@@ -58,17 +57,14 @@ func (g *gitHookContext) logCompleted(err error, extraAttrs ...any) {
 	logging.LogDuration(g.ctx, slog.LevelDebug, g.hookName+" hook completed", g.start, append(attrs, extraAttrs...)...)
 }
 
-// initHookLogging initializes logging for hooks by reading the current session ID.
+// initHookLogging initializes logging for hooks by finding the most recent session.
 // Returns a cleanup function that should be deferred.
 func initHookLogging() func() {
 	// Set up log level getter so logging can read from settings
 	logging.SetLogLevelGetter(GetLogLevel)
 
-	sessionID, err := paths.ReadCurrentSession()
-	if err != nil || sessionID == "" {
-		// No session file or empty - logging will use stderr fallback
-		return func() {}
-	}
+	// Read session ID for the slog attribute (empty string is fine - log file is fixed)
+	sessionID := strategy.FindMostRecentSession()
 	if err := logging.Init(sessionID); err != nil {
 		// Init failed - logging will use stderr fallback
 		return func() {}

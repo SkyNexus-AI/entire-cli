@@ -20,10 +20,7 @@ import (
 // This is a regression test for the EnableDotGitCommonDir fix.
 // Without that fix, go-git commits silently fail in worktrees.
 //
-// NOTE: This test uses os.Chdir() because it creates a HookRunner that operates
-// in the worktree directory. The hook runner and strategy code need to read from
-// the current working directory to properly detect the worktree context. This test
-// cannot be parallelized due to the working directory change.
+// NOTE: This test uses os.Chdir() so it cannot use t.Parallel().
 func TestWorktreeCommitPersistence(t *testing.T) {
 	// Only test auto-commit strategy - it creates commits on the working branch
 	worktreeStrategies := []string{
@@ -144,9 +141,7 @@ func TestWorktreeCommitPersistence(t *testing.T) {
 // TestWorktreeOpenRepository verifies that OpenRepository() works correctly
 // in a worktree context by checking it can read HEAD and refs.
 //
-// NOTE: This test uses os.Chdir() because strategy.OpenRepository() reads from
-// the current working directory to find the git repository. This test cannot be
-// parallelized due to the working directory change.
+// NOTE: This test uses os.Chdir() so it cannot use t.Parallel().
 func TestWorktreeOpenRepository(t *testing.T) {
 	env := NewTestEnv(t)
 	env.InitRepo()

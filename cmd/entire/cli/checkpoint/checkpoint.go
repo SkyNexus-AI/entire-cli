@@ -53,7 +53,7 @@ const (
 	Temporary Type = iota
 
 	// Committed checkpoints contain metadata + commit reference and are stored
-	// on the entire/sessions branch. They are the permanent record.
+	// on the entire/checkpoints/v1 branch. They are the permanent record.
 	Committed
 )
 
@@ -80,7 +80,7 @@ type Store interface {
 	// ListTemporary lists all shadow branches with their checkpoint info.
 	ListTemporary(ctx context.Context) ([]TemporaryInfo, error)
 
-	// WriteCommitted writes a committed checkpoint to the entire/sessions branch.
+	// WriteCommitted writes a committed checkpoint to the entire/checkpoints/v1 branch.
 	// Checkpoints are stored at sharded paths: <id[:2]>/<id[2:]>/
 	WriteCommitted(ctx context.Context, opts WriteCommittedOptions) error
 
@@ -257,7 +257,10 @@ type WriteCommittedOptions struct {
 
 	// Transcript position at checkpoint start - tracks what was added during this checkpoint
 	TranscriptIdentifierAtStart string // Last identifier when checkpoint started (UUID for Claude, message ID for Gemini)
-	TranscriptLinesAtStart      int    // Line count when checkpoint started
+	CheckpointTranscriptStart   int    // Transcript line offset at start of this checkpoint's data
+
+	// CheckpointTranscriptStart is written to both CommittedMetadata.CheckpointTranscriptStart
+	// and the deprecated CommittedMetadata.TranscriptLinesAtStart for backward compatibility.
 
 	// TokenUsage contains the token usage for this checkpoint
 	TokenUsage *agent.TokenUsage
@@ -342,7 +345,10 @@ type CommittedMetadata struct {
 
 	// Transcript position at checkpoint start - tracks what was added during this checkpoint
 	TranscriptIdentifierAtStart string `json:"transcript_identifier_at_start,omitempty"` // Last identifier when checkpoint started (UUID for Claude, message ID for Gemini)
-	TranscriptLinesAtStart      int    `json:"transcript_lines_at_start,omitempty"`      // Line/message count when checkpoint started
+	CheckpointTranscriptStart   int    `json:"checkpoint_transcript_start,omitempty"`    // Transcript line offset at start of this checkpoint's data
+
+	// Deprecated: Use CheckpointTranscriptStart instead. Written for backward compatibility with older CLI versions.
+	TranscriptLinesAtStart int `json:"transcript_lines_at_start,omitempty"`
 
 	// Token usage for this checkpoint
 	TokenUsage *agent.TokenUsage `json:"token_usage,omitempty"`
@@ -352,6 +358,16 @@ type CommittedMetadata struct {
 
 	// InitialAttribution is line-level attribution calculated at commit time
 	InitialAttribution *InitialAttribution `json:"initial_attribution,omitempty"`
+}
+
+// GetTranscriptStart returns the transcript line offset at which this checkpoint's data begins.
+// Returns 0 for new checkpoints (start from beginning). For data written by older CLI versions,
+// falls back to the deprecated TranscriptLinesAtStart field.
+func (m CommittedMetadata) GetTranscriptStart() int {
+	if m.CheckpointTranscriptStart > 0 {
+		return m.CheckpointTranscriptStart
+	}
+	return m.TranscriptLinesAtStart
 }
 
 // SessionFilePaths contains the absolute paths to session files from the git tree root.
@@ -370,7 +386,7 @@ type SessionFilePaths struct {
 // to their file paths. Session-specific data (including initial_attribution)
 // is stored in the session's subdirectory metadata.json.
 //
-// Structure on entire/sessions branch:
+// Structure on entire/checkpoints/v1 branch:
 //
 //	<checkpoint-id[:2]>/<checkpoint-id[2:]>/
 //	├── metadata.json         # This CheckpointSummary

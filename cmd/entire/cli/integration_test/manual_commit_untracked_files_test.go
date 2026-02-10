@@ -20,6 +20,7 @@ import (
 // 3. Files created after the first checkpoint are deleted during rewind
 // 4. Tracked files are never deleted
 func TestShadow_UntrackedFilePreservation(t *testing.T) {
+	t.Parallel()
 	env := NewTestEnv(t)
 	defer env.Cleanup()
 
@@ -219,6 +220,7 @@ func TestShadow_UntrackedFilePreservation(t *testing.T) {
 // TestShadow_UntrackedFilesAcrossMultipleSessions tests that each session
 // captures its own set of untracked files independently.
 func TestShadow_UntrackedFilesAcrossMultipleSessions(t *testing.T) {
+	t.Parallel()
 	env := NewTestEnv(t)
 	defer env.Cleanup()
 

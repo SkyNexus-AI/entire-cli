@@ -72,14 +72,17 @@ func SetLogLevelGetter(getter func() string) {
 }
 
 // Init initializes the logger for a session, writing JSON logs to
-// .entire/logs/<session-id>.log.
+// .entire/logs/entire.log.
 //
+// If sessionID is non-empty, it is stored as an slog attribute on every log line for filtering.
 // If the log file cannot be created, falls back to stderr.
 // Log level is controlled by ENTIRE_LOG_LEVEL environment variable.
 func Init(sessionID string) error {
-	// Validate session ID to prevent path traversal attacks
-	if err := validation.ValidateSessionID(sessionID); err != nil {
-		return fmt.Errorf("invalid session ID for logging: %w", err)
+	// Validate session ID if provided (used only for the slog attribute, not the filename)
+	if sessionID != "" {
+		if err := validation.ValidateSessionID(sessionID); err != nil {
+			return fmt.Errorf("invalid session ID for logging: %w", err)
+		}
 	}
 
 	mu.Lock()
@@ -121,8 +124,8 @@ func Init(sessionID string) error {
 		return nil
 	}
 
-	logFilePath := filepath.Join(logsPath, sessionID+".log")
-	f, err := os.OpenFile(logFilePath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600) //nolint:gosec // sessionID validated above
+	logFilePath := filepath.Join(logsPath, "entire.log")
+	f, err := os.OpenFile(logFilePath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600) //nolint:gosec // fixed filename, not user-controlled
 	if err != nil {
 		// Fall back to stderr
 		logger = createLogger(os.Stderr, level)

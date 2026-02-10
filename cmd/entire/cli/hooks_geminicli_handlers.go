@@ -32,33 +32,39 @@ func handleGeminiSessionStart() error {
 // SessionEnd serves as a cleanup/fallback - it will commit any uncommitted changes that
 // weren't captured by AfterAgent (e.g., if the user exits mid-response).
 func handleGeminiSessionEnd() error {
-	// Set up logging context
-	ag, err := GetCurrentHookAgent()
-	if err != nil {
-		return fmt.Errorf("failed to get agent: %w", err)
+	if skip, branchName := ShouldSkipOnDefaultBranchForStrategy(); skip {
+		fmt.Fprintf(os.Stderr, "Entire: skipping on branch '%s' - create a feature branch to use Entire tracking\n", branchName)
+		return nil
 	}
-	logCtx := logging.WithAgent(logging.WithComponent(context.Background(), "hooks"), ag.Name())
 
-	// Commit any uncommitted changes (consumes stdin)
-	if err := commitWithMetadataGemini(); err != nil {
+	// Parse stdin once upfront — all subsequent steps use ctx.sessionID
+	ctx, err := parseGeminiSessionEnd()
+	if err != nil {
+		if errors.Is(err, ErrSessionSkipped) {
+			return nil
+		}
+		return fmt.Errorf("failed to parse session-end input: %w", err)
+	}
+
+	logCtx := logging.WithComponent(context.Background(), "hooks")
+	logging.Info(logCtx, "session-end",
+		slog.String("hook", "session-end"),
+		slog.String("hook_type", "agent"),
+		slog.String("session_id", ctx.sessionID),
+	)
+
+	// Best-effort commit of any uncommitted changes
+	if err := setupGeminiSessionDir(ctx); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to setup session dir: %v\n", err)
+	} else if err := extractGeminiMetadata(ctx); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to extract metadata: %v\n", err)
+	} else if err := commitGeminiSession(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: failed to commit metadata: %v\n", err)
 	}
 
-	// Mark session as ended (use persisted session ID since stdin consumed)
-	entireSessionID, err := paths.ReadCurrentSession()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: failed to read current session: %v\n", err)
-	}
-	if entireSessionID != "" {
-		logging.Info(logCtx, "session-end-mark",
-			slog.String("hook", "session-end"),
-			slog.String("hook_type", "agent"),
-			slog.String("entire_session_id", entireSessionID),
-		)
-
-		if err := markSessionEnded(entireSessionID); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to mark session ended: %v\n", err)
-		}
+	// Mark session as ended using the parsed session ID
+	if err := markSessionEnded(ctx.sessionID); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to mark session ended: %v\n", err)
 	}
 
 	return nil
@@ -271,20 +277,20 @@ func commitGeminiSession(ctx *geminiSessionContext) error {
 	}
 
 	saveCtx := strategy.SaveContext{
-		SessionID:                   ctx.sessionID,
-		ModifiedFiles:               relModifiedFiles,
-		NewFiles:                    relNewFiles,
-		DeletedFiles:                relDeletedFiles,
-		MetadataDir:                 ctx.sessionDir,
-		MetadataDirAbs:              ctx.sessionDirAbs,
-		CommitMessage:               ctx.commitMessage,
-		TranscriptPath:              ctx.transcriptPath,
-		AuthorName:                  author.Name,
-		AuthorEmail:                 author.Email,
-		AgentType:                   agentType,
-		TranscriptLinesAtStart:      startMessageIndex,
-		TranscriptIdentifierAtStart: transcriptIdentifierAtStart,
-		TokenUsage:                  tokenUsage,
+		SessionID:                ctx.sessionID,
+		ModifiedFiles:            relModifiedFiles,
+		NewFiles:                 relNewFiles,
+		DeletedFiles:             relDeletedFiles,
+		MetadataDir:              ctx.sessionDir,
+		MetadataDirAbs:           ctx.sessionDirAbs,
+		CommitMessage:            ctx.commitMessage,
+		TranscriptPath:           ctx.transcriptPath,
+		AuthorName:               author.Name,
+		AuthorEmail:              author.Email,
+		AgentType:                agentType,
+		StepTranscriptStart:      startMessageIndex,
+		StepTranscriptIdentifier: transcriptIdentifierAtStart,
+		TokenUsage:               tokenUsage,
 	}
 
 	if err := strat.SaveChanges(saveCtx); err != nil {
@@ -317,33 +323,6 @@ func logFileChanges(modified, newFiles, deleted []string) {
 			fmt.Fprintf(os.Stderr, "  - %s\n", file)
 		}
 	}
-}
-
-// commitWithMetadataGemini commits the Gemini session changes with metadata.
-// This is a Gemini-specific version that parses JSON transcripts correctly.
-func commitWithMetadataGemini() error {
-	if skip, branchName := ShouldSkipOnDefaultBranchForStrategy(); skip {
-		fmt.Fprintf(os.Stderr, "Entire: skipping on branch '%s' - create a feature branch to use Entire tracking\n", branchName)
-		return nil
-	}
-
-	ctx, err := parseGeminiSessionEnd()
-	if err != nil {
-		if errors.Is(err, ErrSessionSkipped) {
-			return nil // Skip signaled
-		}
-		return err
-	}
-
-	if err := setupGeminiSessionDir(ctx); err != nil {
-		return err
-	}
-
-	if err := extractGeminiMetadata(ctx); err != nil {
-		return err
-	}
-
-	return commitGeminiSession(ctx)
 }
 
 // createContextFileForGemini creates a context.md file for Gemini sessions.
@@ -481,7 +460,7 @@ func handleGeminiBeforeAgent() error {
 	strat := GetStrategy()
 	if initializer, ok := strat.(strategy.SessionInitializer); ok {
 		agentType := ag.Type()
-		if err := initializer.InitializeSession(input.SessionID, agentType, input.SessionRef); err != nil {
+		if err := initializer.InitializeSession(input.SessionID, agentType, input.SessionRef, input.UserPrompt); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: failed to initialize session state: %v\n", err)
 		}
 	}
@@ -546,7 +525,14 @@ func handleGeminiAfterAgent() error {
 		return err
 	}
 
-	return commitGeminiSession(ctx)
+	if err := commitGeminiSession(ctx); err != nil {
+		return err
+	}
+
+	// Transition session ACTIVE → IDLE (equivalent to Claude's transitionSessionTurnEnd)
+	transitionSessionTurnEnd(sessionID)
+
+	return nil
 }
 
 // handleGeminiBeforeModel handles the BeforeModel hook for Gemini CLI.

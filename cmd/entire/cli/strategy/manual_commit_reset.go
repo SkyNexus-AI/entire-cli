@@ -86,3 +86,44 @@ func (s *ManualCommitStrategy) Reset() error {
 
 	return nil
 }
+
+// ResetSession clears a single session's state and removes the shadow branch
+// if no other sessions reference it. File changes remain in the working directory.
+func (s *ManualCommitStrategy) ResetSession(sessionID string) error {
+	// Load the session state
+	state, err := s.loadSessionState(sessionID)
+	if err != nil {
+		return fmt.Errorf("failed to load session state: %w", err)
+	}
+	if state == nil {
+		return fmt.Errorf("session not found: %s", sessionID)
+	}
+
+	// Clear the session state file
+	if err := s.clearSessionState(sessionID); err != nil {
+		return fmt.Errorf("failed to clear session state: %w", err)
+	}
+	fmt.Fprintf(os.Stderr, "Cleared session state for %s\n", sessionID)
+
+	// Determine the shadow branch for this session
+	shadowBranchName := getShadowBranchNameForCommit(state.BaseCommit, state.WorktreeID)
+
+	// Open repository
+	repo, err := OpenRepository()
+	if err != nil {
+		return fmt.Errorf("failed to open repository: %w", err)
+	}
+
+	// Clean up shadow branch if no other sessions need it
+	if err := s.cleanupShadowBranchIfUnused(repo, shadowBranchName, sessionID); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to clean up shadow branch %s: %v\n", shadowBranchName, err)
+	} else {
+		// Check if it was actually deleted (branch no longer exists)
+		refName := plumbing.NewBranchReferenceName(shadowBranchName)
+		if _, refErr := repo.Reference(refName, true); refErr != nil {
+			fmt.Fprintf(os.Stderr, "Deleted shadow branch %s\n", shadowBranchName)
+		}
+	}
+
+	return nil
+}

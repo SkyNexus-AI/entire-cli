@@ -15,10 +15,9 @@ import (
 
 // Directory constants
 const (
-	EntireDir          = ".entire"
-	EntireTmpDir       = ".entire/tmp"
-	EntireMetadataDir  = ".entire/metadata"
-	CurrentSessionFile = ".entire/current_session"
+	EntireDir         = ".entire"
+	EntireTmpDir      = ".entire/tmp"
+	EntireMetadataDir = ".entire/metadata"
 )
 
 // Metadata file names
@@ -198,51 +197,4 @@ func ExtractSessionIDFromTranscriptPath(transcriptPath string) string {
 		}
 	}
 	return ""
-}
-
-// ReadCurrentSession reads the current session ID from .entire/current_session.
-// Returns an empty string (not error) if the file doesn't exist.
-// Works correctly from any subdirectory within the repository.
-func ReadCurrentSession() (string, error) {
-	sessionFile, err := AbsPath(CurrentSessionFile)
-	if err != nil {
-		// Fallback to relative path if not in a git repo
-		sessionFile = CurrentSessionFile
-	}
-	data, err := os.ReadFile(sessionFile) //nolint:gosec // path is from AbsPath or constant
-	if os.IsNotExist(err) {
-		return "", nil
-	}
-	if err != nil {
-		return "", fmt.Errorf("failed to read current session file: %w", err)
-	}
-	return strings.TrimSpace(string(data)), nil
-}
-
-// WriteCurrentSession writes the session ID to .entire/current_session.
-// Creates the .entire directory if it doesn't exist.
-// Works correctly from any subdirectory within the repository.
-func WriteCurrentSession(sessionID string) error {
-	// Get absolute paths for the directory and file
-	entireDirAbs, err := AbsPath(EntireDir)
-	if err != nil {
-		// Fallback to relative path if not in a git repo
-		entireDirAbs = EntireDir
-	}
-	sessionFileAbs, err := AbsPath(CurrentSessionFile)
-	if err != nil {
-		sessionFileAbs = CurrentSessionFile
-	}
-
-	// Ensure .entire directory exists
-	if err := os.MkdirAll(entireDirAbs, 0o750); err != nil {
-		return fmt.Errorf("failed to create .entire directory: %w", err)
-	}
-
-	// Write session ID to file (no newline, just the ID)
-	if err := os.WriteFile(sessionFileAbs, []byte(sessionID), 0o600); err != nil {
-		return fmt.Errorf("failed to write current session file: %w", err)
-	}
-
-	return nil
 }

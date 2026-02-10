@@ -29,10 +29,18 @@ type ClaudeHookEntry struct {
 	Command string `json:"command"`
 }
 
-// sessionInfoRaw is the JSON structure from SessionStart/UserPromptSubmit/Stop hooks
+// sessionInfoRaw is the JSON structure from SessionStart/SessionEnd/Stop hooks
 type sessionInfoRaw struct {
 	SessionID      string `json:"session_id"`
 	TranscriptPath string `json:"transcript_path"`
+}
+
+// userPromptSubmitRaw is the JSON structure from UserPromptSubmit hooks.
+// Unlike other session hooks, this includes the user's prompt text.
+type userPromptSubmitRaw struct {
+	SessionID      string `json:"session_id"`
+	TranscriptPath string `json:"transcript_path"`
+	Prompt         string `json:"prompt"`
 }
 
 // taskHookInputRaw is the JSON structure from PreToolUse[Task] hook

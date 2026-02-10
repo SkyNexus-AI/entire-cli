@@ -21,6 +21,7 @@ import (
 // TestSessionIDConflict_OrphanedBranchIsReset tests that starting a new session
 // resets an orphaned shadow branch (one with no session state file).
 func TestSessionIDConflict_OrphanedBranchIsReset(t *testing.T) {
+	t.Parallel()
 	env := NewTestEnv(t)
 	defer env.Cleanup()
 
@@ -86,16 +87,17 @@ func TestSessionIDConflict_OrphanedBranchIsReset(t *testing.T) {
 
 	// Verify shadow branch now has session2's checkpoint
 	state2, _ := env.GetSessionState(session2.ID)
-	if state2 == nil || state2.CheckpointCount == 0 {
+	if state2 == nil || state2.StepCount == 0 {
 		t.Error("Session 2 should have checkpoints after orphaned branch was reset")
 	} else {
-		t.Logf("Session 2 has %d checkpoint(s)", state2.CheckpointCount)
+		t.Logf("Session 2 has %d checkpoint(s)", state2.StepCount)
 	}
 }
 
 // TestSessionIDConflict_NoConflictWithSameSession tests that resuming the same session
 // (same session ID) does not trigger a conflict error.
 func TestSessionIDConflict_NoConflictWithSameSession(t *testing.T) {
+	t.Parallel()
 	env := NewTestEnv(t)
 	defer env.Cleanup()
 
@@ -131,6 +133,7 @@ func TestSessionIDConflict_NoConflictWithSameSession(t *testing.T) {
 // TestSessionIDConflict_NoShadowBranch tests that starting a new session succeeds
 // when no shadow branch exists (fresh start).
 func TestSessionIDConflict_NoShadowBranch(t *testing.T) {
+	t.Parallel()
 	env := NewTestEnv(t)
 	defer env.Cleanup()
 
@@ -162,6 +165,7 @@ func TestSessionIDConflict_NoShadowBranch(t *testing.T) {
 // TestSessionIDConflict_ManuallyCreatedOrphanedBranch tests that a manually created
 // orphaned shadow branch (simulating a crash scenario) is reset when a new session starts.
 func TestSessionIDConflict_ManuallyCreatedOrphanedBranch(t *testing.T) {
+	t.Parallel()
 	env := NewTestEnv(t)
 	defer env.Cleanup()
 
@@ -202,10 +206,10 @@ func TestSessionIDConflict_ManuallyCreatedOrphanedBranch(t *testing.T) {
 
 	// Verify session has checkpoints
 	state, _ := env.GetSessionState(session.ID)
-	if state == nil || state.CheckpointCount == 0 {
+	if state == nil || state.StepCount == 0 {
 		t.Error("Session should have checkpoints after orphaned branch was reset")
 	} else {
-		t.Logf("New session has %d checkpoint(s)", state.CheckpointCount)
+		t.Logf("New session has %d checkpoint(s)", state.StepCount)
 	}
 }
 
@@ -275,6 +279,7 @@ func createOrphanedShadowBranch(t *testing.T, repoDir, branchName, sessionID str
 // TestSessionIDConflict_ShadowBranchWithoutTrailer tests that a shadow branch without
 // an Entire-Session trailer does not cause a conflict (backwards compatibility).
 func TestSessionIDConflict_ShadowBranchWithoutTrailer(t *testing.T) {
+	t.Parallel()
 	env := NewTestEnv(t)
 	defer env.Cleanup()
 
@@ -309,6 +314,7 @@ func TestSessionIDConflict_ShadowBranchWithoutTrailer(t *testing.T) {
 // TestSessionStart_InformationalMessage tests that the session start informational message
 // contains the expected base text and concurrent session count when another session has uncommitted checkpoints.
 func TestSessionStart_InformationalMessage(t *testing.T) {
+	t.Parallel()
 	env := NewTestEnv(t)
 	defer env.Cleanup()
 
@@ -321,7 +327,7 @@ func TestSessionStart_InformationalMessage(t *testing.T) {
 	env.GitCheckoutNewBranch("feature/test")
 	env.InitEntire(strategy.StrategyNameManualCommit)
 
-	// Create first session and save a checkpoint (so CheckpointCount > 0)
+	// Create first session and save a checkpoint (so StepCount > 0)
 	session1 := env.NewSession()
 	if err := env.SimulateUserPromptSubmit(session1.ID); err != nil {
 		t.Fatalf("SimulateUserPromptSubmit (session1) failed: %v", err)
@@ -338,10 +344,10 @@ func TestSessionStart_InformationalMessage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to get session1 state: %v", err)
 	}
-	if state1 == nil || state1.CheckpointCount == 0 {
+	if state1 == nil || state1.StepCount == 0 {
 		t.Fatal("Session 1 should have checkpoints")
 	}
-	t.Logf("Session 1 (%s) has %d checkpoint(s)", session1.EntireID, state1.CheckpointCount)
+	t.Logf("Session 1 (%s) has %d checkpoint(s)", session1.EntireID, state1.StepCount)
 
 	// Start a second session (different session ID, same base commit)
 	session2 := env.NewSession()
@@ -405,6 +411,7 @@ func TestSessionStart_InformationalMessage(t *testing.T) {
 // TestSessionStart_InformationalMessageNoConcurrentSessions tests that the base informational message
 // is shown even when there are no concurrent sessions.
 func TestSessionStart_InformationalMessageNoConcurrentSessions(t *testing.T) {
+	t.Parallel()
 	env := NewTestEnv(t)
 	defer env.Cleanup()
 

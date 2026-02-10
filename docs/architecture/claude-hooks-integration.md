@@ -65,7 +65,7 @@ Fires every time the user submits a prompt. Prepares the repository state tracki
     - Runs `git status` to get a list of all **untracked files** in the repository.
     - Saves this list to `.entire/tmp/pre-prompt-<session-id>.json`.
     - This baseline is compared later (in the `Stop` hook) to determine which files were newly created by Claude.
-    - Records the current transcript line count (`TranscriptLinesAtStart`) for incremental token usage calculation.
+    - Records the current transcript line count (`StepTranscriptStart`) for incremental token usage calculation.
 
 3.  **Initialize Session Strategy**:
     - For strategies that implement `SessionInitializer`, calls `InitializeSession()`.
@@ -84,7 +84,7 @@ Fires when Claude finishes responding. Does **not** fire on user interrupt (Ctrl
 1.  **Parse Transcript**:
 
     - Reads the JSONL transcript from the path provided by Claude Code.
-    - Parses the full transcript. `CondensedTranscriptLines` is used only to detect whether new content exists since the last checkpoint.
+    - Parses the full transcript. `CheckpointTranscriptStart` (or `StepTranscriptStart` from pre-prompt state) is used to detect whether new content exists since the last checkpoint.
     - Extracts **modified files** by scanning for Write/Edit tool uses in the transcript.
 
 2.  **Extract and Save Metadata** (to `.entire/metadata/<session-id>/`):
@@ -105,7 +105,7 @@ Fires when Claude finishes responding. Does **not** fire on user interrupt (Ctrl
 
 5.  **Calculate Token Usage**:
 
-    - Parses the transcript from `TranscriptLinesAtStart` (captured at prompt start) to calculate tokens used in this turn.
+    - Parses the transcript from `StepTranscriptStart` (captured at prompt start) to calculate tokens used in this turn.
     - Extracts token counts from assistant messages: input tokens, cache creation/read tokens, output tokens.
     - Deduplicates by message ID (streaming creates multiple rows per message; uses highest output_tokens).
     - Finds spawned subagents by scanning for `agentId:` in Task tool results.
@@ -120,7 +120,7 @@ Fires when Claude finishes responding. Does **not** fire on user interrupt (Ctrl
     - **Auto-commit**: Creates a commit on the active branch with the `Entire-Checkpoint` trailer.
     - Token usage is stored in `metadata.json` for later analysis and reporting.
 
-7.  **Update Session State**: Updates `CondensedTranscriptLines` to track transcript position for detecting new content in future checkpoints.
+7.  **Update Session State**: Updates `CheckpointTranscriptStart` to track transcript position for detecting new content in future checkpoints (auto-commit strategy only).
 
 8.  **Cleanup**: Deletes the temporary `.entire/tmp/pre-prompt-<session-id>.json` file.
 

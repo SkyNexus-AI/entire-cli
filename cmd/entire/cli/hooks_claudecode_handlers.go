@@ -4,6 +4,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"github.com/entireio/cli/cmd/entire/cli/agent/claudecode"
 	"github.com/entireio/cli/cmd/entire/cli/logging"
 	"github.com/entireio/cli/cmd/entire/cli/paths"
+	"github.com/entireio/cli/cmd/entire/cli/session"
 	"github.com/entireio/cli/cmd/entire/cli/strategy"
 )
 
@@ -77,7 +79,7 @@ func captureInitialState() error {
 	strat := GetStrategy()
 	if initializer, ok := strat.(strategy.SessionInitializer); ok {
 		agentType := hookData.agent.Type()
-		if err := initializer.InitializeSession(hookData.sessionID, agentType, hookData.input.SessionRef); err != nil {
+		if err := initializer.InitializeSession(hookData.sessionID, agentType, hookData.input.SessionRef, hookData.input.UserPrompt); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: failed to initialize session state: %v\n", err)
 		}
 	}
@@ -134,6 +136,12 @@ func commitWithMetadata() error {
 		return fmt.Errorf("failed to create session directory: %w", err)
 	}
 
+	// Wait for Claude Code to flush the transcript file.
+	// The stop hook fires before the transcript is fully written to disk.
+	// We poll for our own hook_progress sentinel entry in the file tail,
+	// which guarantees all prior entries have been flushed.
+	waitForTranscriptFlush(transcriptPath, time.Now())
+
 	// Copy transcript
 	logFile := filepath.Join(sessionDirAbs, paths.TranscriptFileName)
 	if err := copyFile(transcriptPath, logFile); err != nil {
@@ -141,16 +149,30 @@ func commitWithMetadata() error {
 	}
 	fmt.Fprintf(os.Stderr, "Copied transcript to: %s\n", sessionDir+"/"+paths.TranscriptFileName)
 
-	// Load session state to get transcript offset (for strategies that track it)
-	// This is used to only parse NEW transcript lines since the last checkpoint
-	var transcriptOffset int
-	sessionState, loadErr := strategy.LoadSessionState(sessionID)
-	if loadErr != nil {
-		fmt.Fprintf(os.Stderr, "Warning: failed to load session state: %v\n", loadErr)
+	// Load pre-prompt state (captured on UserPromptSubmit)
+	// Needed for transcript offset and file change detection
+	preState, err := LoadPrePromptState(sessionID)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to load pre-prompt state: %v\n", err)
 	}
-	if sessionState != nil {
-		transcriptOffset = sessionState.CondensedTranscriptLines
-		fmt.Fprintf(os.Stderr, "Session state found: parsing transcript from line %d\n", transcriptOffset)
+
+	// Determine transcript offset: prefer pre-prompt state, fall back to session state.
+	// Pre-prompt state has the offset when the transcript path was available at prompt time.
+	// Session state has the offset updated after each successful checkpoint save (auto-commit).
+	var transcriptOffset int
+	if preState != nil && preState.StepTranscriptStart > 0 {
+		transcriptOffset = preState.StepTranscriptStart
+		fmt.Fprintf(os.Stderr, "Pre-prompt state found: parsing transcript from line %d\n", transcriptOffset)
+	} else {
+		// Fall back to session state (e.g., auto-commit strategy updates it after each save)
+		sessionState, loadErr := strategy.LoadSessionState(sessionID)
+		if loadErr != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to load session state: %v\n", loadErr)
+		}
+		if sessionState != nil && sessionState.CheckpointTranscriptStart > 0 {
+			transcriptOffset = sessionState.CheckpointTranscriptStart
+			fmt.Fprintf(os.Stderr, "Session state found: parsing transcript from line %d\n", transcriptOffset)
+		}
 	}
 
 	// Parse transcript (optionally from offset for strategies that track transcript position)
@@ -208,13 +230,8 @@ func commitWithMetadata() error {
 		return fmt.Errorf("failed to get repo root: %w", err)
 	}
 
-	// Load pre-prompt state (captured on UserPromptSubmit)
-	preState, err := LoadPrePromptState(sessionID)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: failed to load pre-prompt state: %v\n", err)
-	}
 	if preState != nil {
-		fmt.Fprintf(os.Stderr, "Loaded pre-prompt state: %d pre-existing untracked files\n", len(preState.UntrackedFiles))
+		fmt.Fprintf(os.Stderr, "Pre-prompt state: %d pre-existing untracked files\n", len(preState.UntrackedFiles))
 	}
 
 	// Compute new and deleted files (single git status call)
@@ -233,6 +250,8 @@ func commitWithMetadata() error {
 	if totalChanges == 0 {
 		fmt.Fprintf(os.Stderr, "No files were modified during this session\n")
 		fmt.Fprintf(os.Stderr, "Skipping commit\n")
+		// Still transition phase even when skipping commit — the turn is ending.
+		transitionSessionTurnEnd(sessionID)
 		// Clean up state even when skipping
 		if err := CleanupPrePromptState(sessionID); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: failed to cleanup pre-prompt state: %v\n", err)
@@ -284,12 +303,12 @@ func commitWithMetadata() error {
 		agentType = hookAgent.Type()
 	}
 
-	// Get transcript position from pre-prompt state (captured at checkpoint start)
+	// Get transcript position from pre-prompt state (captured at step/turn start)
 	var transcriptIdentifierAtStart string
 	var transcriptLinesAtStart int
 	if preState != nil {
 		transcriptIdentifierAtStart = preState.LastTranscriptIdentifier
-		transcriptLinesAtStart = preState.LastTranscriptLineCount
+		transcriptLinesAtStart = preState.StepTranscriptStart
 	}
 
 	// Calculate token usage for this checkpoint (Claude Code specific)
@@ -307,20 +326,20 @@ func commitWithMetadata() error {
 
 	// Build fully-populated save context and delegate to strategy
 	ctx := strategy.SaveContext{
-		SessionID:                   sessionID,
-		ModifiedFiles:               relModifiedFiles,
-		NewFiles:                    relNewFiles,
-		DeletedFiles:                relDeletedFiles,
-		MetadataDir:                 sessionDir,
-		MetadataDirAbs:              sessionDirAbs,
-		CommitMessage:               commitMessage,
-		TranscriptPath:              transcriptPath,
-		AuthorName:                  author.Name,
-		AuthorEmail:                 author.Email,
-		AgentType:                   agentType,
-		TranscriptIdentifierAtStart: transcriptIdentifierAtStart,
-		TranscriptLinesAtStart:      transcriptLinesAtStart,
-		TokenUsage:                  tokenUsage,
+		SessionID:                sessionID,
+		ModifiedFiles:            relModifiedFiles,
+		NewFiles:                 relNewFiles,
+		DeletedFiles:             relDeletedFiles,
+		MetadataDir:              sessionDir,
+		MetadataDirAbs:           sessionDirAbs,
+		CommitMessage:            commitMessage,
+		TranscriptPath:           transcriptPath,
+		AuthorName:               author.Name,
+		AuthorEmail:              author.Email,
+		AgentType:                agentType,
+		StepTranscriptIdentifier: transcriptIdentifierAtStart,
+		StepTranscriptStart:      transcriptLinesAtStart,
+		TokenUsage:               tokenUsage,
 	}
 
 	if err := strat.SaveChanges(ctx); err != nil {
@@ -330,10 +349,15 @@ func commitWithMetadata() error {
 	// Update session state with new transcript position for strategies that create
 	// commits on the active branch (auto-commit strategy). This prevents parsing old transcript
 	// lines on subsequent checkpoints.
-	// Note: Shadow strategy doesn't create commits on the active branch, so its
-	// checkpoints don't "consume" the transcript in the same way. Shadow should
-	// continue parsing the full transcript to capture all files touched in the session.
+	// Note: Shadow strategy tracks transcript position per-step via StepTranscriptStart in
+	// pre-prompt state, but doesn't advance CheckpointTranscriptStart in session state because
+	// its checkpoints accumulate all files touched across the entire session.
 	if strat.Name() == strategy.StrategyNameAutoCommit {
+		// Load session state for updating transcript position
+		sessionState, loadErr := strategy.LoadSessionState(sessionID)
+		if loadErr != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to load session state: %v\n", loadErr)
+		}
 		// Create session state lazily if it doesn't exist (backward compat for resumed sessions
 		// or if InitializeSession was never called/failed)
 		if sessionState == nil {
@@ -341,15 +365,20 @@ func commitWithMetadata() error {
 				SessionID: sessionID,
 			}
 		}
-		sessionState.CondensedTranscriptLines = totalLines
-		sessionState.CheckpointCount++
+		sessionState.CheckpointTranscriptStart = totalLines
+		sessionState.StepCount++
 		if updateErr := strategy.SaveSessionState(sessionState); updateErr != nil {
 			fmt.Fprintf(os.Stderr, "Warning: failed to update session state: %v\n", updateErr)
 		} else {
 			fmt.Fprintf(os.Stderr, "Updated session state: transcript position=%d, checkpoint=%d\n",
-				totalLines, sessionState.CheckpointCount)
+				totalLines, sessionState.StepCount)
 		}
 	}
+
+	// Fire EventTurnEnd to transition session phase (all strategies).
+	// This moves ACTIVE → IDLE or ACTIVE_COMMITTED → IDLE.
+	// For ACTIVE_COMMITTED → IDLE, HandleTurnEnd dispatches ActionCondense.
+	transitionSessionTurnEnd(sessionID)
 
 	// Clean up pre-prompt state (CLI responsibility)
 	if err := CleanupPrePromptState(sessionID); err != nil {
@@ -713,7 +742,36 @@ func handleClaudeCodeSessionEnd() error {
 	return nil
 }
 
-// markSessionEnded updates the session state with the current time as EndedAt.
+// transitionSessionTurnEnd fires EventTurnEnd to move the session from
+// ACTIVE → IDLE (or ACTIVE_COMMITTED → IDLE). Best-effort: logs warnings
+// on failure rather than returning errors.
+func transitionSessionTurnEnd(sessionID string) {
+	turnState, loadErr := strategy.LoadSessionState(sessionID)
+	if loadErr != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to load session state for turn end: %v\n", loadErr)
+		return
+	}
+	if turnState == nil {
+		return
+	}
+	remaining := strategy.TransitionAndLog(turnState, session.EventTurnEnd, session.TransitionContext{})
+
+	// Dispatch strategy-specific actions (e.g., ActionCondense for ACTIVE_COMMITTED → IDLE)
+	if len(remaining) > 0 {
+		strat := GetStrategy()
+		if handler, ok := strat.(strategy.TurnEndHandler); ok {
+			if err := handler.HandleTurnEnd(turnState, remaining); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: turn-end action dispatch failed: %v\n", err)
+			}
+		}
+	}
+
+	if updateErr := strategy.SaveSessionState(turnState); updateErr != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to update session phase on turn end: %v\n", updateErr)
+	}
+}
+
+// markSessionEnded transitions the session to ENDED phase via the state machine.
 func markSessionEnded(sessionID string) error {
 	state, err := strategy.LoadSessionState(sessionID)
 	if err != nil {
@@ -723,6 +781,8 @@ func markSessionEnded(sessionID string) error {
 		return nil // No state file, nothing to update
 	}
 
+	strategy.TransitionAndLog(state, session.EventSessionStop, session.TransitionContext{})
+
 	now := time.Now()
 	state.EndedAt = &now
 
@@ -730,4 +790,99 @@ func markSessionEnded(sessionID string) error {
 		return fmt.Errorf("failed to save session state: %w", err)
 	}
 	return nil
+}
+
+// stopHookSentinel is the string that appears in Claude Code's hook_progress
+// transcript entry when it launches our stop hook. Used to detect that the
+// transcript file has been fully flushed before we copy it.
+const stopHookSentinel = "hooks claude-code stop"
+
+// waitForTranscriptFlush polls the transcript file tail for the hook_progress
+// sentinel entry that Claude Code writes when launching the stop hook.
+// Once this entry appears in the file, all prior entries (assistant replies,
+// tool results) are guaranteed to have been flushed.
+//
+// hookStartTime is the approximate time our process started, used to avoid
+// matching stale sentinel entries from previous stop hook invocations.
+//
+// Falls back silently after a timeout — the transcript copy will proceed
+// with whatever data is available.
+func waitForTranscriptFlush(transcriptPath string, hookStartTime time.Time) {
+	const (
+		maxWait      = 3 * time.Second
+		pollInterval = 50 * time.Millisecond
+		tailBytes    = 4096 // Read last 4KB — sentinel is near the end
+		maxSkew      = 2 * time.Second
+	)
+
+	logCtx := logging.WithComponent(context.Background(), "hooks")
+	deadline := time.Now().Add(maxWait)
+	for time.Now().Before(deadline) {
+		if checkStopSentinel(transcriptPath, tailBytes, hookStartTime, maxSkew) {
+			logging.Debug(logCtx, "transcript flush sentinel found",
+				slog.Duration("wait", time.Since(hookStartTime)),
+			)
+			return
+		}
+		time.Sleep(pollInterval)
+	}
+	// Timeout — proceed with whatever is on disk.
+	logging.Warn(logCtx, "transcript flush sentinel not found within timeout, proceeding",
+		slog.Duration("timeout", maxWait),
+	)
+}
+
+// checkStopSentinel reads the tail of the transcript file and looks for a
+// hook_progress entry containing the stop hook sentinel, with a timestamp
+// close to hookStartTime.
+func checkStopSentinel(path string, tailBytes int64, hookStartTime time.Time, maxSkew time.Duration) bool {
+	f, err := os.Open(path) //nolint:gosec // path comes from agent hook input
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+
+	// Seek to tail
+	info, err := f.Stat()
+	if err != nil {
+		return false
+	}
+	offset := info.Size() - tailBytes
+	if offset < 0 {
+		offset = 0
+	}
+	buf := make([]byte, info.Size()-offset)
+	if _, err := f.ReadAt(buf, offset); err != nil {
+		return false
+	}
+
+	// Scan lines from the tail for the sentinel
+	lines := strings.Split(string(buf), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || !strings.Contains(line, stopHookSentinel) {
+			continue
+		}
+
+		// Parse timestamp to check recency
+		var entry struct {
+			Timestamp string `json:"timestamp"`
+		}
+		if json.Unmarshal([]byte(line), &entry) != nil || entry.Timestamp == "" {
+			continue
+		}
+		ts, err := time.Parse(time.RFC3339Nano, entry.Timestamp)
+		if err != nil {
+			ts, err = time.Parse(time.RFC3339, entry.Timestamp)
+			if err != nil {
+				continue
+			}
+		}
+
+		// Check timestamp is within skew window of our start time
+		if ts.After(hookStartTime.Add(-maxSkew)) && ts.Before(hookStartTime.Add(maxSkew)) {
+			return true
+		}
+	}
+	return false
 }

@@ -21,6 +21,7 @@ import (
 	"github.com/entireio/cli/cmd/entire/cli/paths"
 	"github.com/entireio/cli/cmd/entire/cli/trailers"
 	"github.com/entireio/cli/cmd/entire/cli/validation"
+	"github.com/entireio/cli/redact"
 
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
@@ -307,6 +308,13 @@ func (s *GitStore) addTaskMetadataToTree(baseTreeHash plumbing.Hash, opts WriteT
 	if opts.IsIncremental {
 		// Incremental checkpoint: only add the checkpoint file
 		// Use proper JSON marshaling to handle nil/empty IncrementalData correctly
+		var incData []byte
+		if opts.IncrementalData != nil {
+			incData, err = redact.JSONLBytes(opts.IncrementalData)
+			if err != nil {
+				return plumbing.ZeroHash, fmt.Errorf("failed to redact incremental checkpoint: %w", err)
+			}
+		}
 		incrementalCheckpoint := struct {
 			Type      string          `json:"type"`
 			ToolUseID string          `json:"tool_use_id"`
@@ -316,7 +324,7 @@ func (s *GitStore) addTaskMetadataToTree(baseTreeHash plumbing.Hash, opts WriteT
 			Type:      opts.IncrementalType,
 			ToolUseID: opts.ToolUseID,
 			Timestamp: time.Now().UTC(),
-			Data:      opts.IncrementalData,
+			Data:      incData,
 		}
 		cpData, err := jsonutil.MarshalIndentWithNewline(incrementalCheckpoint, "", "  ")
 		if err != nil {
@@ -548,7 +556,7 @@ var errStop = errors.New("stop iteration")
 
 // GetTranscriptFromCommit retrieves the transcript from a specific commit's tree.
 // This is used for shadow branch checkpoints where the transcript is stored in the commit tree
-// rather than on the entire/sessions branch.
+// rather than on the entire/checkpoints/v1 branch.
 // commitHash is the commit to read from, metadataDir is the path within the tree.
 // agentType is used for reassembling chunked transcripts in the correct format.
 // Handles both chunked and non-chunked transcripts.

@@ -19,6 +19,7 @@ import (
 // 2. User commits (triggers condensation, shadow branch pruned)
 // 3. Verify commit appears in rewind list with IsLogsOnly=true
 func TestLogsOnlyRewind_AppearsInRewindList(t *testing.T) {
+	t.Parallel()
 	env := NewTestEnv(t)
 	defer env.Cleanup()
 
@@ -63,7 +64,7 @@ func TestLogsOnlyRewind_AppearsInRewindList(t *testing.T) {
 
 	env.GitCommitWithShadowHooks("Add main.go", "main.go")
 
-	// Get commit hash and condensation ID (now from entire/sessions branch, not commit trailer)
+	// Get commit hash and condensation ID (now from entire/checkpoints/v1 branch, not commit trailer)
 	commitHash := env.GetHeadHash()
 	condensationID := env.GetLatestCondensationID()
 	t.Logf("Condensation ID: %s", condensationID)
@@ -106,6 +107,7 @@ func TestLogsOnlyRewind_AppearsInRewindList(t *testing.T) {
 // TestLogsOnlyRewind_RestoresTranscript verifies that restoring from a logs-only
 // point copies the session transcript to Claude's project directory.
 func TestLogsOnlyRewind_RestoresTranscript(t *testing.T) {
+	t.Parallel()
 	env := NewTestEnv(t)
 	defer env.Cleanup()
 
@@ -212,6 +214,7 @@ func TestLogsOnlyRewind_RestoresTranscript(t *testing.T) {
 // TestLogsOnlyRewind_DoesNotModifyWorkingDirectory verifies that logs-only
 // rewind does NOT modify the working directory files.
 func TestLogsOnlyRewind_DoesNotModifyWorkingDirectory(t *testing.T) {
+	t.Parallel()
 	env := NewTestEnv(t)
 	defer env.Cleanup()
 
@@ -314,6 +317,7 @@ func TestLogsOnlyRewind_DoesNotModifyWorkingDirectory(t *testing.T) {
 // TestLogsOnlyRewind_DeduplicationWithCheckpoints verifies that a commit
 // that still has an active checkpoint is NOT shown as logs-only.
 func TestLogsOnlyRewind_DeduplicationWithCheckpoints(t *testing.T) {
+	t.Parallel()
 	env := NewTestEnv(t)
 	defer env.Cleanup()
 
@@ -393,6 +397,7 @@ func TestLogsOnlyRewind_DeduplicationWithCheckpoints(t *testing.T) {
 // TestLogsOnlyRewind_MultipleCommits verifies logs-only points from
 // multiple commits in history.
 func TestLogsOnlyRewind_MultipleCommits(t *testing.T) {
+	t.Parallel()
 	env := NewTestEnv(t)
 	defer env.Cleanup()
 
@@ -466,6 +471,7 @@ func filterLogsOnlyPoints(points []RewindPoint) []RewindPoint {
 
 // TestLogsOnlyRewind_Reset verifies that --reset flag performs git reset --hard.
 func TestLogsOnlyRewind_Reset(t *testing.T) {
+	t.Parallel()
 	env := NewTestEnv(t)
 	defer env.Cleanup()
 
@@ -570,6 +576,7 @@ func TestLogsOnlyRewind_Reset(t *testing.T) {
 
 // TestLogsOnlyRewind_ResetRestoresTranscript verifies that reset also restores transcript.
 func TestLogsOnlyRewind_ResetRestoresTranscript(t *testing.T) {
+	t.Parallel()
 	env := NewTestEnv(t)
 	defer env.Cleanup()
 

@@ -27,10 +27,22 @@ type PrePromptState struct {
 	// Only set for Gemini sessions. Zero means not set or session just started.
 	StartMessageIndex int `json:"start_message_index,omitempty"`
 
-	// Transcript position at prompt start - tracks what was added during this checkpoint
+	// Transcript position at prompt start - tracks what was added during this step/turn.
 	// Used for Claude Code sessions.
 	LastTranscriptIdentifier string `json:"last_transcript_identifier,omitempty"` // Last identifier when prompt started (UUID for Claude, message ID for Gemini)
-	LastTranscriptLineCount  int    `json:"last_transcript_line_count,omitempty"` // Line count when prompt started
+	StepTranscriptStart      int    `json:"step_transcript_start,omitempty"`      // Transcript line count when this step/turn started
+
+	// Deprecated: LastTranscriptLineCount is the old name for StepTranscriptStart.
+	// Kept for backward compatibility when reading state files written by older CLI versions.
+	LastTranscriptLineCount int `json:"last_transcript_line_count,omitempty"`
+}
+
+// normalizePrePromptState migrates deprecated fields after loading from JSON.
+func (s *PrePromptState) normalizePrePromptState() {
+	if s.StepTranscriptStart == 0 && s.LastTranscriptLineCount > 0 {
+		s.StepTranscriptStart = s.LastTranscriptLineCount
+	}
+	s.LastTranscriptLineCount = 0
 }
 
 // CapturePrePromptState captures current untracked files and transcript position before a prompt
@@ -76,7 +88,7 @@ func CapturePrePromptState(sessionID, transcriptPath string) error {
 		Timestamp:                time.Now().UTC().Format(time.RFC3339),
 		UntrackedFiles:           untrackedFiles,
 		LastTranscriptIdentifier: transcriptPos.LastUUID,
-		LastTranscriptLineCount:  transcriptPos.LineCount,
+		StepTranscriptStart:      transcriptPos.LineCount,
 	}
 
 	data, err := jsonutil.MarshalIndentWithNewline(state, "", "  ")
@@ -181,6 +193,8 @@ func LoadPrePromptState(sessionID string) (*PrePromptState, error) {
 	if err := json.Unmarshal(data, &state); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal state: %w", err)
 	}
+
+	state.normalizePrePromptState()
 
 	return &state, nil
 }

@@ -941,12 +941,12 @@ func TestFormatCheckpointOutput_Verbose(t *testing.T) {
 	}
 	content := &checkpoint.SessionContent{
 		Metadata: checkpoint.CommittedMetadata{
-			CheckpointID:           "abc123def456",
-			SessionID:              "2026-01-21-test-session",
-			CreatedAt:              time.Date(2026, 1, 21, 10, 30, 0, 0, time.UTC),
-			FilesTouched:           []string{"main.go", "util.go", "config.yaml"},
-			CheckpointsCount:       3,
-			TranscriptLinesAtStart: 0, // All content is this checkpoint's
+			CheckpointID:              "abc123def456",
+			SessionID:                 "2026-01-21-test-session",
+			CreatedAt:                 time.Date(2026, 1, 21, 10, 30, 0, 0, time.UTC),
+			FilesTouched:              []string{"main.go", "util.go", "config.yaml"},
+			CheckpointsCount:          3,
+			CheckpointTranscriptStart: 0, // All content is this checkpoint's
 			TokenUsage: &agent.TokenUsage{
 				InputTokens:  10000,
 				OutputTokens: 5000,
@@ -1995,14 +1995,14 @@ func TestGetBranchCheckpoints_FiltersMainCommits(t *testing.T) {
 	}
 
 	// Get checkpoints - should only include feature branch commits, not main
-	// Note: Without actual checkpoint data in entire/sessions, this returns empty
+	// Note: Without actual checkpoint data in entire/checkpoints/v1, this returns empty
 	// but the important thing is it doesn't error and the filtering logic runs
 	points, err := getBranchCheckpoints(repo, 20)
 	if err != nil {
 		t.Fatalf("getBranchCheckpoints() error = %v", err)
 	}
 
-	// Without checkpoint data (no entire/sessions branch), should return 0 checkpoints
+	// Without checkpoint data (no entire/checkpoints/v1 branch), should return 0 checkpoints
 	// This validates the filtering code path runs without error
 	if len(points) != 0 {
 		t.Errorf("expected 0 checkpoints without checkpoint data, got %d", len(points))
@@ -2099,11 +2099,11 @@ func TestFormatCheckpointOutput_UsesScopedPrompts(t *testing.T) {
 	}
 	content := &checkpoint.SessionContent{
 		Metadata: checkpoint.CommittedMetadata{
-			CheckpointID:           "abc123def456",
-			SessionID:              "2026-01-30-test-session",
-			CreatedAt:              time.Date(2026, 1, 30, 10, 30, 0, 0, time.UTC),
-			FilesTouched:           []string{"main.go"},
-			TranscriptLinesAtStart: 2, // Checkpoint starts at line 2
+			CheckpointID:              "abc123def456",
+			SessionID:                 "2026-01-30-test-session",
+			CreatedAt:                 time.Date(2026, 1, 30, 10, 30, 0, 0, time.UTC),
+			FilesTouched:              []string{"main.go"},
+			CheckpointTranscriptStart: 2, // Checkpoint starts at line 2
 		},
 		Prompts:    "First prompt - should NOT appear\nSecond prompt - SHOULD appear", // Full prompts (not scoped yet)
 		Transcript: fullTranscript,
@@ -2131,11 +2131,11 @@ func TestFormatCheckpointOutput_FallsBackToStoredPrompts(t *testing.T) {
 	}
 	content := &checkpoint.SessionContent{
 		Metadata: checkpoint.CommittedMetadata{
-			CheckpointID:           "abc123def456",
-			SessionID:              "2026-01-30-test-session",
-			CreatedAt:              time.Date(2026, 1, 30, 10, 30, 0, 0, time.UTC),
-			FilesTouched:           []string{"main.go"},
-			TranscriptLinesAtStart: 0,
+			CheckpointID:              "abc123def456",
+			SessionID:                 "2026-01-30-test-session",
+			CreatedAt:                 time.Date(2026, 1, 30, 10, 30, 0, 0, time.UTC),
+			FilesTouched:              []string{"main.go"},
+			CheckpointTranscriptStart: 0,
 		},
 		Prompts:    "Stored prompt from older checkpoint",
 		Transcript: nil, // No transcript available
@@ -2164,11 +2164,11 @@ func TestFormatCheckpointOutput_FullShowsEntireTranscript(t *testing.T) {
 	}
 	content := &checkpoint.SessionContent{
 		Metadata: checkpoint.CommittedMetadata{
-			CheckpointID:           "abc123def456",
-			SessionID:              "2026-01-30-test-session",
-			CreatedAt:              time.Date(2026, 1, 30, 10, 30, 0, 0, time.UTC),
-			FilesTouched:           []string{"main.go"},
-			TranscriptLinesAtStart: 2, // Checkpoint starts at line 2
+			CheckpointID:              "abc123def456",
+			SessionID:                 "2026-01-30-test-session",
+			CreatedAt:                 time.Date(2026, 1, 30, 10, 30, 0, 0, time.UTC),
+			FilesTouched:              []string{"main.go"},
+			CheckpointTranscriptStart: 2, // Checkpoint starts at line 2
 		},
 		Transcript: fullTranscript,
 	}
@@ -2418,11 +2418,11 @@ func TestFormatCheckpointOutput_WithAuthor(t *testing.T) {
 	}
 	content := &checkpoint.SessionContent{
 		Metadata: checkpoint.CommittedMetadata{
-			CheckpointID:           "abc123def456",
-			SessionID:              "2026-01-30-test-session",
-			CreatedAt:              time.Date(2026, 1, 30, 10, 30, 0, 0, time.UTC),
-			FilesTouched:           []string{"main.go"},
-			TranscriptLinesAtStart: 0,
+			CheckpointID:              "abc123def456",
+			SessionID:                 "2026-01-30-test-session",
+			CreatedAt:                 time.Date(2026, 1, 30, 10, 30, 0, 0, time.UTC),
+			FilesTouched:              []string{"main.go"},
+			CheckpointTranscriptStart: 0,
 		},
 		Prompts:    "Add a new feature",
 		Transcript: nil, // No transcript available
@@ -2449,11 +2449,11 @@ func TestFormatCheckpointOutput_EmptyAuthor(t *testing.T) {
 	}
 	content := &checkpoint.SessionContent{
 		Metadata: checkpoint.CommittedMetadata{
-			CheckpointID:           "abc123def456",
-			SessionID:              "2026-01-30-test-session",
-			CreatedAt:              time.Date(2026, 1, 30, 10, 30, 0, 0, time.UTC),
-			FilesTouched:           []string{"main.go"},
-			TranscriptLinesAtStart: 0,
+			CheckpointID:              "abc123def456",
+			SessionID:                 "2026-01-30-test-session",
+			CreatedAt:                 time.Date(2026, 1, 30, 10, 30, 0, 0, time.UTC),
+			FilesTouched:              []string{"main.go"},
+			CheckpointTranscriptStart: 0,
 		},
 		Prompts:    "Add a new feature",
 		Transcript: nil, // No transcript available
@@ -2712,11 +2712,11 @@ func TestFormatCheckpointOutput_WithAssociatedCommits(t *testing.T) {
 	}
 	content := &checkpoint.SessionContent{
 		Metadata: checkpoint.CommittedMetadata{
-			CheckpointID:           "abc123def456",
-			SessionID:              "2026-02-04-test-session",
-			CreatedAt:              time.Date(2026, 2, 4, 10, 30, 0, 0, time.UTC),
-			FilesTouched:           []string{"main.go"},
-			TranscriptLinesAtStart: 0,
+			CheckpointID:              "abc123def456",
+			SessionID:                 "2026-02-04-test-session",
+			CreatedAt:                 time.Date(2026, 2, 4, 10, 30, 0, 0, time.UTC),
+			FilesTouched:              []string{"main.go"},
+			CheckpointTranscriptStart: 0,
 		},
 		Prompts:    "Add a new feature",
 		Transcript: nil, // No transcript available
@@ -2771,11 +2771,11 @@ func TestFormatCheckpointOutput_NoCommitsOnBranch(t *testing.T) {
 	}
 	content := &checkpoint.SessionContent{
 		Metadata: checkpoint.CommittedMetadata{
-			CheckpointID:           "abc123def456",
-			SessionID:              "2026-02-04-test-session",
-			CreatedAt:              time.Date(2026, 2, 4, 10, 30, 0, 0, time.UTC),
-			FilesTouched:           []string{"main.go"},
-			TranscriptLinesAtStart: 0,
+			CheckpointID:              "abc123def456",
+			SessionID:                 "2026-02-04-test-session",
+			CreatedAt:                 time.Date(2026, 2, 4, 10, 30, 0, 0, time.UTC),
+			FilesTouched:              []string{"main.go"},
+			CheckpointTranscriptStart: 0,
 		},
 		Prompts:    "Add a new feature",
 		Transcript: nil, // No transcript available

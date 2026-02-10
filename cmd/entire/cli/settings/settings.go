@@ -4,10 +4,13 @@
 package settings
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 
+	"github.com/entireio/cli/cmd/entire/cli/jsonutil"
 	"github.com/entireio/cli/cmd/entire/cli/paths"
 )
 
@@ -87,6 +90,13 @@ func Load() (*EntireSettings, error) {
 	return settings, nil
 }
 
+// LoadFromFile loads settings from a specific file path without merging local overrides.
+// Returns default settings if the file doesn't exist.
+// Use this when you need to display individual settings files separately.
+func LoadFromFile(filePath string) (*EntireSettings, error) {
+	return loadFromFile(filePath)
+}
+
 // loadFromFile loads settings from a specific file path.
 // Returns default settings if the file doesn't exist.
 func loadFromFile(filePath string) (*EntireSettings, error) {
@@ -103,7 +113,9 @@ func loadFromFile(filePath string) (*EntireSettings, error) {
 		return nil, fmt.Errorf("%w", err)
 	}
 
-	if err := json.Unmarshal(data, settings); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(settings); err != nil {
 		return nil, fmt.Errorf("parsing settings file: %w", err)
 	}
 	applyDefaults(settings)
@@ -114,6 +126,14 @@ func loadFromFile(filePath string) (*EntireSettings, error) {
 // mergeJSON merges JSON data into existing settings.
 // Only non-zero values from the JSON override existing settings.
 func mergeJSON(settings *EntireSettings, data []byte) error {
+	// First, validate that there are no unknown keys using strict decoding
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	var temp EntireSettings
+	if err := dec.Decode(&temp); err != nil {
+		return fmt.Errorf("parsing JSON: %w", err)
+	}
+
 	// Parse into a map to check which fields are present
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(data, &raw); err != nil {
@@ -217,4 +237,56 @@ func (s *EntireSettings) IsSummarizeEnabled() bool {
 		return false
 	}
 	return enabled
+}
+
+// IsPushSessionsDisabled checks if push_sessions is disabled in settings.
+// Returns true if push_sessions is explicitly set to false.
+func (s *EntireSettings) IsPushSessionsDisabled() bool {
+	if s.StrategyOptions == nil {
+		return false
+	}
+	val, exists := s.StrategyOptions["push_sessions"]
+	if !exists {
+		return false
+	}
+	if boolVal, ok := val.(bool); ok {
+		return !boolVal // disabled = !push_sessions
+	}
+	return false
+}
+
+// Save saves the settings to .entire/settings.json.
+func Save(settings *EntireSettings) error {
+	return saveToFile(settings, EntireSettingsFile)
+}
+
+// SaveLocal saves the settings to .entire/settings.local.json.
+func SaveLocal(settings *EntireSettings) error {
+	return saveToFile(settings, EntireSettingsLocalFile)
+}
+
+// saveToFile saves settings to the specified file path.
+func saveToFile(settings *EntireSettings, filePath string) error {
+	// Get absolute path for the file
+	filePathAbs, err := paths.AbsPath(filePath)
+	if err != nil {
+		filePathAbs = filePath // Fallback to relative
+	}
+
+	// Ensure directory exists
+	dir := filepath.Dir(filePathAbs)
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		return fmt.Errorf("creating settings directory: %w", err)
+	}
+
+	data, err := jsonutil.MarshalIndentWithNewline(settings, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshaling settings: %w", err)
+	}
+
+	//nolint:gosec // G306: settings file is config, not secrets; 0o644 is appropriate
+	if err := os.WriteFile(filePathAbs, data, 0o644); err != nil {
+		return fmt.Errorf("writing settings file: %w", err)
+	}
+	return nil
 }

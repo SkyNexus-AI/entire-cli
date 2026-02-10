@@ -11,6 +11,7 @@ import (
 
 	"github.com/entireio/cli/cmd/entire/cli/agent"
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint/id"
+	"github.com/entireio/cli/cmd/entire/cli/session"
 )
 
 // ErrNoMetadata is returned when a commit does not have an Entire metadata trailer.
@@ -89,11 +90,11 @@ type RewindPoint struct {
 	ToolUseID string
 
 	// IsLogsOnly indicates this is a commit with session logs but no shadow branch state.
-	// The logs can be restored from entire/sessions, but file state requires git checkout.
+	// The logs can be restored from entire/checkpoints/v1, but file state requires git checkout.
 	IsLogsOnly bool
 
 	// CheckpointID is the stable 12-hex-char identifier for logs-only points.
-	// Used to retrieve logs from entire/sessions/<id[:2]>/<id[2:]>/full.jsonl
+	// Used to retrieve logs from entire/checkpoints/v1/<id[:2]>/<id[2:]>/full.jsonl
 	// Empty for shadow branch checkpoints (uncommitted).
 	CheckpointID id.CheckpointID
 
@@ -178,9 +179,9 @@ type SaveContext struct {
 	// AgentType is the human-readable agent name (e.g., "Claude Code", "Cursor")
 	AgentType agent.AgentType
 
-	// Transcript position at checkpoint start - tracks what was added during this checkpoint
-	TranscriptIdentifierAtStart string // Last identifier when checkpoint started (UUID for Claude, message ID for Gemini)
-	TranscriptLinesAtStart      int    // Line count when checkpoint started
+	// Transcript position at step/turn start - tracks what was added during this step
+	StepTranscriptIdentifier string // Last identifier when step started (UUID for Claude, message ID for Gemini)
+	StepTranscriptStart      int    // Transcript line count when this step/turn started
 
 	// TokenUsage contains the token usage for this checkpoint
 	TokenUsage *agent.TokenUsage
@@ -380,15 +381,15 @@ type Strategy interface {
 	EnsureSetup() error
 
 	// NOTE: ListSessions and GetSession are standalone functions in session.go.
-	// They read from entire/sessions and merge with SessionSource if implemented.
+	// They read from entire/checkpoints/v1 and merge with SessionSource if implemented.
 
 	// GetMetadataRef returns a reference to the metadata commit for the given checkpoint.
-	// Format: "<branch>@<commit-sha>" (e.g., "entire/sessions@abc123").
+	// Format: "<branch>@<commit-sha>" (e.g., "entire/checkpoints/v1@abc123").
 	// Returns empty string if not applicable (e.g., commit strategy with filesystem metadata).
 	GetMetadataRef(checkpoint Checkpoint) string
 
 	// GetSessionMetadataRef returns a reference to the most recent metadata commit for a session.
-	// Format: "<branch>@<commit-sha>" (e.g., "entire/sessions@abc123").
+	// Format: "<branch>@<commit-sha>" (e.g., "entire/checkpoints/v1@abc123").
 	// Returns empty string if not applicable or session not found.
 	GetSessionMetadataRef(sessionID string) string
 
@@ -413,7 +414,8 @@ type SessionInitializer interface {
 	// Called during UserPromptSubmit hook before any checkpoints are created.
 	// agentType is the human-readable name of the agent (e.g., "Claude Code").
 	// transcriptPath is the path to the live transcript file (for mid-session commit detection).
-	InitializeSession(sessionID string, agentType agent.AgentType, transcriptPath string) error
+	// userPrompt is the user's prompt text (stored truncated as FirstPrompt for display).
+	InitializeSession(sessionID string, agentType agent.AgentType, transcriptPath string, userPrompt string) error
 }
 
 // PrepareCommitMsgHandler is an optional interface for strategies that need to
@@ -453,10 +455,22 @@ type CommitMsgHandler interface {
 // handle the git pre-push hook.
 type PrePushHandler interface {
 	// PrePush is called by the git pre-push hook before pushing to a remote.
-	// Used to push session branches (e.g., entire/sessions) alongside user pushes.
+	// Used to push session branches (e.g., entire/checkpoints/v1) alongside user pushes.
 	// The remote parameter is the name of the remote being pushed to.
 	// Should return nil on errors to not block pushes (log warnings to stderr).
 	PrePush(remote string) error
+}
+
+// TurnEndHandler is an optional interface for strategies that need to
+// handle deferred actions when an agent turn ends.
+// For example, manual-commit strategy uses this to condense session data
+// that was deferred during ACTIVE_COMMITTED → IDLE transitions.
+type TurnEndHandler interface {
+	// HandleTurnEnd dispatches strategy-specific actions emitted by the
+	// ACTIVE_COMMITTED → IDLE (or other) turn-end transition.
+	// The state has already been updated by ApplyCommonActions; the caller
+	// saves it after this method returns.
+	HandleTurnEnd(state *session.State, actions []session.Action) error
 }
 
 // LogsOnlyRestorer is an optional interface for strategies that support
@@ -473,12 +487,28 @@ type LogsOnlyRestorer interface {
 
 // SessionResetter is an optional interface for strategies that support
 // resetting session state and shadow branches.
-// This is used by the "rewind reset" command to clean up shadow branches
+// This is used by the "reset" command to clean up shadow branches
 // and session state when a user wants to start fresh.
 type SessionResetter interface {
 	// Reset deletes the shadow branch and session state for the current HEAD.
 	// Returns nil if there's nothing to reset (no shadow branch).
 	Reset() error
+
+	// ResetSession clears the state for a single session and cleans up
+	// the shadow branch if no other sessions reference it.
+	// File changes remain in the working directory.
+	ResetSession(sessionID string) error
+}
+
+// SessionCondenser is an optional interface for strategies that support
+// force-condensing a session. This is used by "entire sessions fix" to
+// salvage stuck sessions by condensing their data to permanent storage.
+type SessionCondenser interface {
+	// CondenseSessionByID force-condenses a session and cleans up.
+	// Generates a new checkpoint ID, condenses to entire/checkpoints/v1,
+	// updates the session state, and removes the shadow branch
+	// if no other active sessions need it.
+	CondenseSessionByID(sessionID string) error
 }
 
 // ConcurrentSessionChecker is an optional interface for strategies that support
@@ -493,14 +523,14 @@ type ConcurrentSessionChecker interface {
 }
 
 // SessionSource is an optional interface for strategies that provide additional
-// sessions beyond those stored on the entire/sessions branch.
+// sessions beyond those stored on the entire/checkpoints/v1 branch.
 // For example, manual-commit strategy provides active sessions from .git/entire-sessions/
-// that haven't yet been condensed to entire/sessions.
+// that haven't yet been condensed to entire/checkpoints/v1.
 //
 // ListSessions() automatically discovers all registered strategies, checks if they
 // implement SessionSource, and merges their additional sessions by ID.
 type SessionSource interface {
-	// GetAdditionalSessions returns sessions not yet on entire/sessions branch.
+	// GetAdditionalSessions returns sessions not yet on entire/checkpoints/v1 branch.
 	GetAdditionalSessions() ([]*Session, error)
 }
 

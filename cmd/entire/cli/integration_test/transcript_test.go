@@ -11,6 +11,7 @@ import (
 )
 
 func TestTranscriptBuilder_Basic(t *testing.T) {
+	t.Parallel()
 	builder := NewTranscriptBuilder()
 
 	builder.AddUserMessage("Hello")
@@ -33,6 +34,7 @@ func TestTranscriptBuilder_Basic(t *testing.T) {
 }
 
 func TestTranscriptBuilder_ToolUse(t *testing.T) {
+	t.Parallel()
 	builder := NewTranscriptBuilder()
 
 	builder.AddUserMessage("Create a file")
@@ -57,6 +59,7 @@ func TestTranscriptBuilder_ToolUse(t *testing.T) {
 }
 
 func TestTranscriptBuilder_TaskToolUse(t *testing.T) {
+	t.Parallel()
 	builder := NewTranscriptBuilder()
 
 	builder.AddUserMessage("Do something with a subagent")
@@ -80,6 +83,7 @@ func TestTranscriptBuilder_TaskToolUse(t *testing.T) {
 }
 
 func TestTranscriptBuilder_WriteToFile(t *testing.T) {
+	t.Parallel()
 	builder := NewTranscriptBuilder()
 	builder.AddUserMessage("Test prompt")
 	builder.AddAssistantMessage("Test response")
@@ -118,6 +122,7 @@ func TestTranscriptBuilder_WriteToFile(t *testing.T) {
 }
 
 func TestTranscriptBuilder_LastUUID(t *testing.T) {
+	t.Parallel()
 	builder := NewTranscriptBuilder()
 
 	if builder.LastUUID() != "" {
@@ -139,6 +144,7 @@ func TestTranscriptBuilder_LastUUID(t *testing.T) {
 }
 
 func TestTranscriptBuilder_ToolUseIDsAreUnique(t *testing.T) {
+	t.Parallel()
 	builder := NewTranscriptBuilder()
 
 	id1 := builder.AddToolUse("Write", "/file1.txt", "content1")

@@ -1,11 +1,16 @@
 package cli
 
 import (
+	"context"
+	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/entireio/cli/cmd/entire/cli/paths"
+	"github.com/entireio/cli/cmd/entire/cli/session"
 )
 
 func TestInitHookLogging(t *testing.T) {
@@ -15,12 +20,14 @@ func TestInitHookLogging(t *testing.T) {
 	// Change to temp dir (automatically restored after test)
 	t.Chdir(tmpDir)
 
-	// Initialize git repo (required for paths.AbsPath to work)
-	if err := os.MkdirAll(".git", 0o755); err != nil {
-		t.Fatalf("failed to create .git directory: %v", err)
+	// Initialize git repo (required for session state store to find .git common dir)
+	gitInit := exec.CommandContext(context.Background(), "git", "init")
+	gitInit.Dir = tmpDir
+	if err := gitInit.Run(); err != nil {
+		t.Fatalf("failed to init git repo: %v", err)
 	}
 
-	t.Run("returns cleanup func when no session file exists", func(t *testing.T) {
+	t.Run("returns cleanup func when no session state exists", func(t *testing.T) {
 		cleanup := initHookLogging()
 		if cleanup == nil {
 			t.Fatal("expected cleanup function, got nil")
@@ -28,19 +35,36 @@ func TestInitHookLogging(t *testing.T) {
 		cleanup() // Should not panic
 	})
 
-	t.Run("initializes logging when session file exists", func(t *testing.T) {
-		// Create .entire directory and session file
+	t.Run("initializes logging when session state exists", func(t *testing.T) {
+		// Create .entire directory
 		entireDir := filepath.Join(tmpDir, paths.EntireDir)
 		if err := os.MkdirAll(entireDir, 0o755); err != nil {
 			t.Fatalf("failed to create .entire directory: %v", err)
 		}
 
+		// Create session state file in .git/entire-sessions/
 		sessionID := "test-session-12345"
-		sessionFile := filepath.Join(tmpDir, paths.CurrentSessionFile)
-		if err := os.WriteFile(sessionFile, []byte(sessionID), 0o600); err != nil {
-			t.Fatalf("failed to write session file: %v", err)
+		stateDir := filepath.Join(tmpDir, ".git", session.SessionStateDirName)
+		if err := os.MkdirAll(stateDir, 0o755); err != nil {
+			t.Fatalf("failed to create session state directory: %v", err)
 		}
-		defer os.Remove(sessionFile)
+
+		now := time.Now()
+		state := session.State{
+			SessionID:           sessionID,
+			StartedAt:           now,
+			LastInteractionTime: &now,
+			Phase:               session.PhaseActive,
+		}
+		data, err := json.Marshal(state)
+		if err != nil {
+			t.Fatalf("failed to marshal state: %v", err)
+		}
+		stateFile := filepath.Join(stateDir, sessionID+".json")
+		if err := os.WriteFile(stateFile, data, 0o600); err != nil {
+			t.Fatalf("failed to write session state file: %v", err)
+		}
+		defer os.Remove(stateFile)
 
 		// Create logs directory (logging.Init will try to create the log file)
 		logsDir := filepath.Join(entireDir, "logs")
@@ -55,24 +79,9 @@ func TestInitHookLogging(t *testing.T) {
 		defer cleanup()
 
 		// Verify log file was created
-		logFile := filepath.Join(logsDir, sessionID+".log")
+		logFile := filepath.Join(logsDir, "entire.log")
 		if _, err := os.Stat(logFile); os.IsNotExist(err) {
 			t.Errorf("expected log file to be created at %s", logFile)
 		}
-	})
-
-	t.Run("returns cleanup func when session file is empty", func(t *testing.T) {
-		// Create empty session file
-		sessionFile := filepath.Join(tmpDir, paths.CurrentSessionFile)
-		if err := os.WriteFile(sessionFile, []byte(""), 0o600); err != nil {
-			t.Fatalf("failed to write empty session file: %v", err)
-		}
-		defer os.Remove(sessionFile)
-
-		cleanup := initHookLogging()
-		if cleanup == nil {
-			t.Fatal("expected cleanup function, got nil")
-		}
-		cleanup() // Should not panic
 	})
 }

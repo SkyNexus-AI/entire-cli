@@ -5,73 +5,30 @@ import (
 
 	"github.com/entireio/cli/cmd/entire/cli/agent"
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint/id"
+	"github.com/entireio/cli/cmd/entire/cli/session"
+	"github.com/entireio/cli/cmd/entire/cli/stringutil"
 )
 
 const (
-	// sessionStateDirName is the directory name for session state files within git common dir.
-	sessionStateDirName = "entire-sessions"
-
 	// logsOnlyScanLimit is the maximum number of commits to scan for logs-only points.
 	logsOnlyScanLimit = 50
+
+	// maxFirstPromptRunes is the maximum rune length for FirstPrompt stored in session state.
+	maxFirstPromptRunes = 100
 )
 
-// SessionState represents the state of an active session.
-type SessionState struct {
-	SessionID                string          `json:"session_id"`
-	BaseCommit               string          `json:"base_commit"`
-	WorktreePath             string          `json:"worktree_path,omitempty"` // Absolute path to the worktree root
-	WorktreeID               string          `json:"worktree_id,omitempty"`   // Internal git worktree identifier (empty for main worktree)
-	StartedAt                time.Time       `json:"started_at"`
-	EndedAt                  *time.Time      `json:"ended_at,omitempty"` // When the session was explicitly closed (nil = active or unclean exit)
-	CheckpointCount          int             `json:"checkpoint_count"`
-	CondensedTranscriptLines int             `json:"condensed_transcript_lines,omitempty"` // Lines already included in previous condensation
-	UntrackedFilesAtStart    []string        `json:"untracked_files_at_start,omitempty"`   // Files that existed at session start (to preserve during rewind)
-	FilesTouched             []string        `json:"files_touched,omitempty"`              // Files modified/created/deleted during this session
-	LastCheckpointID         id.CheckpointID `json:"last_checkpoint_id,omitempty"`         // Checkpoint ID from last condensation, reused for subsequent commits without new content
-	AgentType                agent.AgentType `json:"agent_type,omitempty"`                 // Agent type identifier (e.g., "Claude Code", "Cursor")
-	TranscriptPath           string          `json:"transcript_path,omitempty"`            // Path to the live transcript file (for mid-session commit detection)
-
-	// Token usage tracking (accumulated across all checkpoints in this session)
-	TokenUsage *agent.TokenUsage `json:"token_usage,omitempty"`
-
-	// Transcript position when session started (for multi-session checkpoints on entire/sessions)
-	TranscriptLinesAtStart      int    `json:"transcript_lines_at_start,omitempty"`
-	TranscriptIdentifierAtStart string `json:"transcript_identifier_at_start,omitempty"`
-
-	// PromptAttributions tracks user and agent line changes at each prompt start.
-	PromptAttributions []PromptAttribution `json:"prompt_attributions,omitempty"`
-
-	// PendingPromptAttribution holds attribution calculated at prompt start (before agent runs).
-	// This is moved to PromptAttributions when SaveChanges is called.
-	PendingPromptAttribution *PromptAttribution `json:"pending_prompt_attribution,omitempty"`
+// truncatePromptForStorage collapses whitespace and truncates a user prompt
+// for storage in FirstPrompt fields.
+func truncatePromptForStorage(prompt string) string {
+	return stringutil.TruncateRunes(stringutil.CollapseWhitespace(prompt), maxFirstPromptRunes, "...")
 }
 
-// PromptAttribution captures line-level attribution data at the start of each prompt,
-// calculated BEFORE the agent runs. This allows us to separate user edits (made between
-// prompts) from agent edits (made during prompt execution).
-//
-// Fields:
-//   - CheckpointNumber: Which checkpoint this attribution is for (1-indexed)
-//   - UserLinesAdded/Removed: User edits since the last checkpoint (lastCheckpoint → worktree)
-//   - AgentLinesAdded/Removed: Cumulative agent work so far (base → lastCheckpoint)
-//   - UserAddedPerFile: Per-file breakdown of user additions (for accurate modification tracking)
-//
-// Note: For checkpoint 1, AgentLinesAdded/Removed are always 0 because there is no previous
-// checkpoint to compare against. This doesn't mean the agent hasn't done work yet - it means
-// we can't measure cumulative agent work until after the first checkpoint is created.
-// These fields become meaningful starting from checkpoint 2.
-//
-// UserAddedPerFile enables accurate tracking of user self-modifications. When a user modifies
-// their own previously-added lines (not agent lines), we shouldn't subtract from the agent's
-// contribution. See docs/architecture/attribution.md for details.
-type PromptAttribution struct {
-	CheckpointNumber  int            `json:"checkpoint_number"`
-	UserLinesAdded    int            `json:"user_lines_added"`
-	UserLinesRemoved  int            `json:"user_lines_removed"`
-	AgentLinesAdded   int            `json:"agent_lines_added"`             // Always 0 for checkpoint 1 (no previous checkpoint)
-	AgentLinesRemoved int            `json:"agent_lines_removed"`           // Always 0 for checkpoint 1 (no previous checkpoint)
-	UserAddedPerFile  map[string]int `json:"user_added_per_file,omitempty"` // Per-file user additions for modification tracking
-}
+// SessionState is an alias for session.State.
+// Previously this was a separate struct with manual conversion functions.
+type SessionState = session.State
+
+// PromptAttribution is an alias for session.PromptAttribution.
+type PromptAttribution = session.PromptAttribution
 
 // CheckpointInfo represents checkpoint metadata stored on the sessions branch.
 // Metadata is stored at sharded path: <checkpoint_id[:2]>/<checkpoint_id[2:]>/
@@ -104,5 +61,5 @@ type ExtractedSessionData struct {
 	Prompts             []string // All user prompts from this portion
 	Context             []byte   // Generated context.md content
 	FilesTouched        []string
-	TokenUsage          *agent.TokenUsage // Token usage calculated from transcript (since TranscriptLinesAtStart)
+	TokenUsage          *agent.TokenUsage // Token usage calculated from transcript (since CheckpointTranscriptStart)
 }

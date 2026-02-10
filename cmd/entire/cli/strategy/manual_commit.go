@@ -55,102 +55,6 @@ func (s *ManualCommitStrategy) getCheckpointStore() (*checkpoint.GitStore, error
 	return s.checkpointStore, s.checkpointStoreErr
 }
 
-// sessionStateToStrategy converts session.State to strategy.SessionState.
-func sessionStateToStrategy(state *session.State) *SessionState {
-	if state == nil {
-		return nil
-	}
-	result := &SessionState{
-		SessionID:                   state.SessionID,
-		BaseCommit:                  state.BaseCommit,
-		WorktreePath:                state.WorktreePath,
-		WorktreeID:                  state.WorktreeID,
-		StartedAt:                   state.StartedAt,
-		EndedAt:                     state.EndedAt,
-		CheckpointCount:             state.CheckpointCount,
-		CondensedTranscriptLines:    state.CondensedTranscriptLines,
-		UntrackedFilesAtStart:       state.UntrackedFilesAtStart,
-		FilesTouched:                state.FilesTouched,
-		LastCheckpointID:            state.LastCheckpointID,
-		AgentType:                   state.AgentType,
-		TokenUsage:                  state.TokenUsage,
-		TranscriptLinesAtStart:      state.TranscriptLinesAtStart,
-		TranscriptIdentifierAtStart: state.TranscriptIdentifierAtStart,
-		TranscriptPath:              state.TranscriptPath,
-	}
-	// Convert PromptAttributions
-	for _, pa := range state.PromptAttributions {
-		result.PromptAttributions = append(result.PromptAttributions, PromptAttribution{
-			CheckpointNumber:  pa.CheckpointNumber,
-			UserLinesAdded:    pa.UserLinesAdded,
-			UserLinesRemoved:  pa.UserLinesRemoved,
-			AgentLinesAdded:   pa.AgentLinesAdded,
-			AgentLinesRemoved: pa.AgentLinesRemoved,
-			UserAddedPerFile:  pa.UserAddedPerFile,
-		})
-	}
-	// Convert PendingPromptAttribution
-	if state.PendingPromptAttribution != nil {
-		result.PendingPromptAttribution = &PromptAttribution{
-			CheckpointNumber:  state.PendingPromptAttribution.CheckpointNumber,
-			UserLinesAdded:    state.PendingPromptAttribution.UserLinesAdded,
-			UserLinesRemoved:  state.PendingPromptAttribution.UserLinesRemoved,
-			AgentLinesAdded:   state.PendingPromptAttribution.AgentLinesAdded,
-			AgentLinesRemoved: state.PendingPromptAttribution.AgentLinesRemoved,
-			UserAddedPerFile:  state.PendingPromptAttribution.UserAddedPerFile,
-		}
-	}
-	return result
-}
-
-// sessionStateFromStrategy converts strategy.SessionState to session.State.
-func sessionStateFromStrategy(state *SessionState) *session.State {
-	if state == nil {
-		return nil
-	}
-	result := &session.State{
-		SessionID:                   state.SessionID,
-		BaseCommit:                  state.BaseCommit,
-		WorktreePath:                state.WorktreePath,
-		WorktreeID:                  state.WorktreeID,
-		StartedAt:                   state.StartedAt,
-		EndedAt:                     state.EndedAt,
-		CheckpointCount:             state.CheckpointCount,
-		CondensedTranscriptLines:    state.CondensedTranscriptLines,
-		UntrackedFilesAtStart:       state.UntrackedFilesAtStart,
-		FilesTouched:                state.FilesTouched,
-		LastCheckpointID:            state.LastCheckpointID,
-		AgentType:                   state.AgentType,
-		TokenUsage:                  state.TokenUsage,
-		TranscriptLinesAtStart:      state.TranscriptLinesAtStart,
-		TranscriptIdentifierAtStart: state.TranscriptIdentifierAtStart,
-		TranscriptPath:              state.TranscriptPath,
-	}
-	// Convert PromptAttributions
-	for _, pa := range state.PromptAttributions {
-		result.PromptAttributions = append(result.PromptAttributions, session.PromptAttribution{
-			CheckpointNumber:  pa.CheckpointNumber,
-			UserLinesAdded:    pa.UserLinesAdded,
-			UserLinesRemoved:  pa.UserLinesRemoved,
-			AgentLinesAdded:   pa.AgentLinesAdded,
-			AgentLinesRemoved: pa.AgentLinesRemoved,
-			UserAddedPerFile:  pa.UserAddedPerFile,
-		})
-	}
-	// Convert PendingPromptAttribution
-	if state.PendingPromptAttribution != nil {
-		result.PendingPromptAttribution = &session.PromptAttribution{
-			CheckpointNumber:  state.PendingPromptAttribution.CheckpointNumber,
-			UserLinesAdded:    state.PendingPromptAttribution.UserLinesAdded,
-			UserLinesRemoved:  state.PendingPromptAttribution.UserLinesRemoved,
-			AgentLinesAdded:   state.PendingPromptAttribution.AgentLinesAdded,
-			AgentLinesRemoved: state.PendingPromptAttribution.AgentLinesRemoved,
-			UserAddedPerFile:  state.PendingPromptAttribution.UserAddedPerFile,
-		}
-	}
-	return result
-}
-
 // NewManualCommitStrategy creates a new manual-commit strategy instance.
 //
 
@@ -173,11 +77,11 @@ func (s *ManualCommitStrategy) Name() string {
 
 // Description returns the strategy description.
 func (s *ManualCommitStrategy) Description() string {
-	return "Manual commit checkpoints with session logs on entire/sessions"
+	return "Manual commit checkpoints with session logs on entire/checkpoints/v1"
 }
 
 // AllowsMainBranch returns true because manual-commit strategy only writes to shadow
-// branches (entire/<hash>) and entire/sessions, never modifying the working branch's
+// branches (entire/<hash>) and entire/checkpoints/v1, never modifying the working branch's
 // commit history.
 func (s *ManualCommitStrategy) AllowsMainBranch() bool {
 	return true
@@ -204,7 +108,7 @@ func (s *ManualCommitStrategy) EnsureSetup() error {
 		return err
 	}
 
-	// Ensure the entire/sessions orphan branch exists for permanent session storage
+	// Ensure the entire/checkpoints/v1 orphan branch exists for permanent session storage
 	repo, err := OpenRepository()
 	if err != nil {
 		return fmt.Errorf("failed to open git repository: %w", err)

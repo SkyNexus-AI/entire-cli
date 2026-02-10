@@ -115,7 +115,7 @@ func TestShadowStrategy_PreviewRewind(t *testing.T) {
 		BaseCommit:            initialCommit.String(),
 		StartedAt:             time.Now(),
 		UntrackedFilesAtStart: []string{"existing-untracked.txt"},
-		CheckpointCount:       1,
+		StepCount:             1,
 		WorktreePath:          dir,
 	}
 	if err := s.saveSessionState(state); err != nil {

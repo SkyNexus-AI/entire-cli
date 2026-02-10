@@ -26,7 +26,7 @@ func (s *ManualCommitStrategy) loadSessionState(sessionID string) (*SessionState
 	if err != nil {
 		return nil, fmt.Errorf("failed to load session state: %w", err)
 	}
-	return sessionStateToStrategy(state), nil
+	return state, nil
 }
 
 // saveSessionState saves session state using the StateStore.
@@ -35,7 +35,7 @@ func (s *ManualCommitStrategy) saveSessionState(state *SessionState) error {
 	if err != nil {
 		return err
 	}
-	if err := store.Save(context.Background(), sessionStateFromStrategy(state)); err != nil {
+	if err := store.Save(context.Background(), state); err != nil {
 		return fmt.Errorf("failed to save session state: %w", err)
 	}
 	return nil
@@ -77,26 +77,21 @@ func (s *ManualCommitStrategy) listAllSessionStates() ([]*SessionState, error) {
 
 	var states []*SessionState
 	for _, sessionState := range sessionStates {
-		state := sessionStateToStrategy(sessionState)
+		state := sessionState
 
-		// Skip and cleanup orphaned sessions whose shadow branch no longer exists
-		// Only cleanup if the session has created checkpoints (CheckpointCount > 0)
-		// AND has no LastCheckpointID (not recently condensed)
-		// Sessions with LastCheckpointID are valid - they were condensed and the shadow
-		// branch was intentionally deleted. Keep them for LastCheckpointID reuse.
+		// Skip and cleanup orphaned sessions whose shadow branch no longer exists.
+		// Keep active sessions (shadow branch may not be created yet) and sessions
+		// with LastCheckpointID (needed for checkpoint ID reuse on subsequent commits).
+		// Clean up everything else: stale pre-state-machine sessions (empty phase),
+		// IDLE/ENDED sessions that were never condensed, etc.
 		shadowBranch := getShadowBranchNameForCommit(state.BaseCommit, state.WorktreeID)
 		refName := plumbing.NewBranchReferenceName(shadowBranch)
 		if _, err := repo.Reference(refName, true); err != nil {
-			// Shadow branch doesn't exist
-			// Only cleanup if session has checkpoints AND no LastCheckpointID
-			// Sessions with LastCheckpointID should be kept for checkpoint reuse
-			if state.CheckpointCount > 0 && state.LastCheckpointID == "" {
-				// Clear the orphaned session state (best-effort, don't fail listing)
+			if !state.Phase.IsActive() && state.LastCheckpointID.IsEmpty() {
 				//nolint:errcheck,gosec // G104: Cleanup is best-effort, shouldn't fail the list operation
 				store.Clear(context.Background(), state.SessionID)
 				continue
 			}
-			// Keep sessions with LastCheckpointID or no checkpoints yet
 		}
 
 		states = append(states, state)
@@ -182,7 +177,7 @@ func (s *ManualCommitStrategy) CountOtherActiveSessionsWithCheckpoints(currentSe
 		// Sessions from different base commits are independent and shouldn't be counted
 		if state.SessionID != currentSessionID &&
 			state.WorktreePath == currentWorktree &&
-			state.CheckpointCount > 0 &&
+			state.StepCount > 0 &&
 			state.BaseCommit == currentHead {
 			count++
 		}
@@ -194,7 +189,8 @@ func (s *ManualCommitStrategy) CountOtherActiveSessionsWithCheckpoints(currentSe
 // A partial state may exist if the concurrent session warning was shown.
 // agentType is the human-readable name of the agent (e.g., "Claude Code").
 // transcriptPath is the path to the live transcript file (for mid-session commit detection).
-func (s *ManualCommitStrategy) initializeSession(repo *git.Repository, sessionID string, agentType agent.AgentType, transcriptPath string) (*SessionState, error) {
+// userPrompt is the user's prompt text (stored truncated as FirstPrompt for display).
+func (s *ManualCommitStrategy) initializeSession(repo *git.Repository, sessionID string, agentType agent.AgentType, transcriptPath string, userPrompt string) (*SessionState, error) {
 	head, err := repo.Head()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get HEAD: %w", err)
@@ -218,16 +214,21 @@ func (s *ManualCommitStrategy) initializeSession(repo *git.Repository, sessionID
 		untrackedFiles = nil
 	}
 
+	now := time.Now()
+	headHash := head.Hash().String()
 	state := &SessionState{
 		SessionID:             sessionID,
-		BaseCommit:            head.Hash().String(),
+		BaseCommit:            headHash,
+		AttributionBaseCommit: headHash,
 		WorktreePath:          worktreePath,
 		WorktreeID:            worktreeID,
-		StartedAt:             time.Now(),
-		CheckpointCount:       0,
+		StartedAt:             now,
+		LastInteractionTime:   &now,
+		StepCount:             0,
 		UntrackedFilesAtStart: untrackedFiles,
 		AgentType:             agentType,
 		TranscriptPath:        transcriptPath,
+		FirstPrompt:           truncatePromptForStorage(userPrompt),
 	}
 
 	if err := s.saveSessionState(state); err != nil {

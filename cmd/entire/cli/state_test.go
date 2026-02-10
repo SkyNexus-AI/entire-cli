@@ -110,6 +110,84 @@ func TestPreTaskState_CaptureLoadCleanup(t *testing.T) {
 	}
 }
 
+func TestPrePromptState_BackwardCompat_LastTranscriptLineCount(t *testing.T) {
+	// Verify that state files written by older CLI versions with "last_transcript_line_count"
+	// are correctly migrated to StepTranscriptStart on load.
+	tmpDir := t.TempDir()
+	t.Chdir(tmpDir)
+
+	// Initialize git repo
+	if err := os.MkdirAll(".git/objects", 0o755); err != nil {
+		t.Fatalf("Failed to create .git: %v", err)
+	}
+	if err := os.WriteFile(".git/HEAD", []byte("ref: refs/heads/main\n"), 0o644); err != nil {
+		t.Fatalf("Failed to create HEAD: %v", err)
+	}
+	paths.ClearRepoRootCache()
+	if err := os.MkdirAll(paths.EntireTmpDir, 0o755); err != nil {
+		t.Fatalf("Failed to create tmp dir: %v", err)
+	}
+
+	sessionID := "test-backward-compat"
+	stateFile := prePromptStateFile(sessionID)
+
+	// Write a state file using the OLD JSON tag (last_transcript_line_count)
+	oldFormatJSON := `{
+		"session_id": "test-backward-compat",
+		"timestamp": "2026-01-01T00:00:00Z",
+		"untracked_files": [],
+		"last_transcript_identifier": "user-5",
+		"last_transcript_line_count": 42
+	}`
+	if err := os.WriteFile(stateFile, []byte(oldFormatJSON), 0o644); err != nil {
+		t.Fatalf("Failed to write old-format state file: %v", err)
+	}
+
+	// Load should migrate the deprecated field
+	state, err := LoadPrePromptState(sessionID)
+	if err != nil {
+		t.Fatalf("LoadPrePromptState() error = %v", err)
+	}
+	if state == nil {
+		t.Fatal("LoadPrePromptState() returned nil")
+	}
+
+	if state.StepTranscriptStart != 42 {
+		t.Errorf("StepTranscriptStart = %d, want 42 (migrated from last_transcript_line_count)", state.StepTranscriptStart)
+	}
+	if state.LastTranscriptLineCount != 0 {
+		t.Errorf("LastTranscriptLineCount = %d, want 0 (should be cleared after migration)", state.LastTranscriptLineCount)
+	}
+	if state.LastTranscriptIdentifier != "user-5" {
+		t.Errorf("LastTranscriptIdentifier = %q, want %q", state.LastTranscriptIdentifier, "user-5")
+	}
+
+	// Also test: new format takes precedence over old
+	bothFieldsJSON := `{
+		"session_id": "test-backward-compat",
+		"timestamp": "2026-01-01T00:00:00Z",
+		"untracked_files": [],
+		"step_transcript_start": 100,
+		"last_transcript_line_count": 42
+	}`
+	if err := os.WriteFile(stateFile, []byte(bothFieldsJSON), 0o644); err != nil {
+		t.Fatalf("Failed to write both-fields state file: %v", err)
+	}
+
+	state, err = LoadPrePromptState(sessionID)
+	if err != nil {
+		t.Fatalf("LoadPrePromptState() error = %v", err)
+	}
+	if state.StepTranscriptStart != 100 {
+		t.Errorf("StepTranscriptStart = %d, want 100 (new field should take precedence)", state.StepTranscriptStart)
+	}
+
+	// Cleanup
+	if err := CleanupPrePromptState(sessionID); err != nil {
+		t.Errorf("CleanupPrePromptState() error = %v", err)
+	}
+}
+
 func TestComputeNewFilesFromTask(t *testing.T) {
 	preState := &PreTaskState{
 		ToolUseID:      "toolu_test",
@@ -332,8 +410,8 @@ func TestPrePromptState_WithTranscriptPosition(t *testing.T) {
 	if state.LastTranscriptIdentifier != expectedUUID {
 		t.Errorf("LastTranscriptIdentifier = %q, want %q", state.LastTranscriptIdentifier, expectedUUID)
 	}
-	if state.LastTranscriptLineCount != 3 {
-		t.Errorf("LastTranscriptLineCount = %d, want 3", state.LastTranscriptLineCount)
+	if state.StepTranscriptStart != 3 {
+		t.Errorf("StepTranscriptStart = %d, want 3", state.StepTranscriptStart)
 	}
 
 	// Cleanup
@@ -366,8 +444,8 @@ func TestPrePromptState_WithEmptyTranscriptPath(t *testing.T) {
 	if state.LastTranscriptIdentifier != "" {
 		t.Errorf("LastTranscriptIdentifier = %q, want empty", state.LastTranscriptIdentifier)
 	}
-	if state.LastTranscriptLineCount != 0 {
-		t.Errorf("LastTranscriptLineCount = %d, want 0", state.LastTranscriptLineCount)
+	if state.StepTranscriptStart != 0 {
+		t.Errorf("StepTranscriptStart = %d, want 0", state.StepTranscriptStart)
 	}
 
 	// Cleanup
@@ -400,8 +478,8 @@ func TestPrePromptState_WithSummaryOnlyTranscript(t *testing.T) {
 	}
 
 	// Line count should be 2, but UUID should be empty (summary rows don't have uuid)
-	if state.LastTranscriptLineCount != 2 {
-		t.Errorf("LastTranscriptLineCount = %d, want 2", state.LastTranscriptLineCount)
+	if state.StepTranscriptStart != 2 {
+		t.Errorf("StepTranscriptStart = %d, want 2", state.StepTranscriptStart)
 	}
 	if state.LastTranscriptIdentifier != "" {
 		t.Errorf("LastTranscriptIdentifier = %q, want empty (summary rows don't have uuid)", state.LastTranscriptIdentifier)

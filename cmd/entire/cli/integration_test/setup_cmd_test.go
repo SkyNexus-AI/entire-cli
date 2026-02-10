@@ -15,17 +15,17 @@ import (
 )
 
 // RunEnableWithAccessibleMode runs `entire enable` without --strategy flag in accessible mode.
-// It provides stdin input to answer the telemetry and shell completion prompts.
+// It provides stdin input to answer the telemetry prompt.
 func (env *TestEnv) RunEnableWithAccessibleMode() string {
 	env.T.Helper()
 
 	// Run CLI with ACCESSIBLE=1 for non-interactive prompts
-	// Provide "no" for telemetry and "no" for shell completion
+	// Provide "no" for telemetry
 	cmd := exec.Command(getTestBinary(), "enable")
 	cmd.Dir = env.RepoDir
 	cmd.Env = append(env.cliEnv(), "ACCESSIBLE=1")
-	// Provide input for prompts: "no" for telemetry, "no" for shell completion
-	cmd.Stdin = strings.NewReader("no\nno\n")
+	// Provide input for telemetry prompt
+	cmd.Stdin = strings.NewReader("no\n")
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -86,8 +86,8 @@ func TestEnableDisable(t *testing.T) {
 
 		// Re-enable (using --strategy flag for non-interactive mode)
 		stdout = env.RunCLI("enable", "--strategy", strategyName)
-		if !strings.Contains(stdout, "strategy enabled") {
-			t.Errorf("Expected enable output to contain 'strategy enabled', got: %s", stdout)
+		if !strings.Contains(stdout, "Ready.") {
+			t.Errorf("Expected enable output to contain 'Ready.', got: %s", stdout)
 		}
 
 		// Check status is now enabled
@@ -163,8 +163,8 @@ func TestEnableWhenDisabled(t *testing.T) {
 
 		// Enable command should work (using --strategy flag for non-interactive mode)
 		stdout := env.RunCLI("enable", "--strategy", strategyName)
-		if !strings.Contains(stdout, "strategy enabled") {
-			t.Errorf("Expected enable output to contain 'strategy enabled', got: %s", stdout)
+		if !strings.Contains(stdout, "Ready.") {
+			t.Errorf("Expected enable output to contain 'Ready.', got: %s", stdout)
 		}
 
 		// Verify it's now enabled
@@ -184,12 +184,12 @@ func TestEnableDefaultStrategy(t *testing.T) {
 
 	// Run entire enable without --strategy flag
 	// This tests that the default strategy is manual-commit
-	// We use stdin to answer the telemetry and shell completion prompts
+	// We use stdin to answer the telemetry prompt
 	stdout := env.RunEnableWithAccessibleMode()
 
-	// Verify output mentions manual-commit strategy
-	if !strings.Contains(stdout, "manual-commit") {
-		t.Errorf("Expected output to mention 'manual-commit' strategy, got: %s", stdout)
+	// Verify output shows "Ready." (simplified flow doesn't mention strategy)
+	if !strings.Contains(stdout, "Ready.") {
+		t.Errorf("Expected output to contain 'Ready.', got: %s", stdout)
 	}
 
 	// Verify settings file has manual-commit strategy

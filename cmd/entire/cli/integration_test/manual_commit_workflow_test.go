@@ -28,6 +28,7 @@ import (
 // 6. User commits again (second condensation)
 // 7. Verify final state
 func TestShadow_FullWorkflow(t *testing.T) {
+	t.Parallel()
 	env := NewTestEnv(t)
 	defer env.Cleanup()
 
@@ -243,9 +244,9 @@ func TestShadow_FullWorkflow(t *testing.T) {
 	checkpoint1ID = env.GetLatestCheckpointIDFromHistory()
 	t.Logf("Checkpoint 1 ID: %s", checkpoint1ID)
 
-	// Verify entire/sessions branch exists with checkpoint folder
+	// Verify entire/checkpoints/v1 branch exists with checkpoint folder
 	if !env.BranchExists(paths.MetadataBranchName) {
-		t.Error("entire/sessions branch should exist after condensation")
+		t.Error("entire/checkpoints/v1 branch should exist after condensation")
 	}
 
 	// Verify checkpoint folder contents (check via git show)
@@ -343,7 +344,7 @@ func TestShadow_FullWorkflow(t *testing.T) {
 		t.Error("Commits should NOT have Entire-Session trailer (clean history)")
 	}
 
-	// 2 checkpoint folders in entire/sessions (Already verified above)
+	// 2 checkpoint folders in entire/checkpoints/v1 (Already verified above)
 
 	// Verify all expected files exist in working directory
 	expectedFiles := []string{"README.md", "src/auth.go", "src/bcrypt.go", "src/session.go"}
@@ -367,6 +368,7 @@ func TestShadow_FullWorkflow(t *testing.T) {
 // TestShadow_SessionStateLocation verifies session state is stored in .git/
 // (not .entire/) so it's never accidentally committed.
 func TestShadow_SessionStateLocation(t *testing.T) {
+	t.Parallel()
 	env := NewTestEnv(t)
 	defer env.Cleanup()
 
@@ -403,6 +405,7 @@ func TestShadow_SessionStateLocation(t *testing.T) {
 // while another session has uncommitted checkpoints triggers a warning.
 // The first prompt is blocked with continue:false, subsequent prompts proceed.
 func TestShadow_MultipleConcurrentSessions(t *testing.T) {
+	t.Parallel()
 	env := NewTestEnv(t)
 	defer env.Cleanup()
 
@@ -479,6 +482,7 @@ func TestShadow_MultipleConcurrentSessions(t *testing.T) {
 // TestShadow_ShadowBranchMigrationOnPull verifies that when the base commit changes
 // (e.g., after stash → pull → apply), the shadow branch is moved to the new commit.
 func TestShadow_ShadowBranchMigrationOnPull(t *testing.T) {
+	t.Parallel()
 	env := NewTestEnv(t)
 	defer env.Cleanup()
 
@@ -555,8 +559,8 @@ func TestShadow_ShadowBranchMigrationOnPull(t *testing.T) {
 	if state.BaseCommit != newHead {
 		t.Errorf("Session base commit should be %s, got %s", newHead[:7], state.BaseCommit[:7])
 	}
-	if state.CheckpointCount != 2 {
-		t.Errorf("Expected 2 checkpoints after migration, got %d", state.CheckpointCount)
+	if state.StepCount != 2 {
+		t.Errorf("Expected 2 checkpoints after migration, got %d", state.StepCount)
 	}
 	// Verify agent_type is preserved across checkpoints and migration
 	expectedAgentType := agent.AgentTypeClaudeCode
@@ -570,6 +574,7 @@ func TestShadow_ShadowBranchMigrationOnPull(t *testing.T) {
 // TestShadow_ShadowBranchNaming verifies shadow branches follow the
 // entire/<base-sha[:7]> naming convention.
 func TestShadow_ShadowBranchNaming(t *testing.T) {
+	t.Parallel()
 	env := NewTestEnv(t)
 	defer env.Cleanup()
 
@@ -621,8 +626,9 @@ func TestShadow_ShadowBranchNaming(t *testing.T) {
 }
 
 // TestShadow_TranscriptCondensation verifies that session transcripts are
-// included in the entire/sessions branch during condensation.
+// included in the entire/checkpoints/v1 branch during condensation.
 func TestShadow_TranscriptCondensation(t *testing.T) {
+	t.Parallel()
 	env := NewTestEnv(t)
 	defer env.Cleanup()
 
@@ -658,13 +664,13 @@ func TestShadow_TranscriptCondensation(t *testing.T) {
 	// Commit with hooks (triggers condensation)
 	env.GitCommitWithShadowHooks("Add main.go", "main.go")
 
-	// Get checkpoint ID from entire/sessions branch (not from commit message)
+	// Get checkpoint ID from entire/checkpoints/v1 branch (not from commit message)
 	checkpointID := env.GetLatestCheckpointID()
 	t.Logf("Checkpoint ID: %s", checkpointID)
 
-	// Verify entire/sessions branch exists
+	// Verify entire/checkpoints/v1 branch exists
 	if !env.BranchExists(paths.MetadataBranchName) {
-		t.Fatal("entire/sessions branch should exist after condensation")
+		t.Fatal("entire/checkpoints/v1 branch should exist after condensation")
 	}
 
 	// Verify root metadata.json (CheckpointSummary) exists
@@ -729,6 +735,7 @@ func TestShadow_TranscriptCondensation(t *testing.T) {
 // - First commit: context.md includes prompts 1-2
 // - Second commit: context.md includes prompts 1-3 (full transcript preserved)
 func TestShadow_FullTranscriptContext(t *testing.T) {
+	t.Parallel()
 	env := NewTestEnv(t)
 	defer env.Cleanup()
 
@@ -906,6 +913,7 @@ func TestShadow_FullTranscriptContext(t *testing.T) {
 // 4. User commits
 // 5. Verify checkpoint only contains prompt 1 (NOT prompt 2)
 func TestShadow_RewindAndCondensation(t *testing.T) {
+	t.Parallel()
 	env := NewTestEnv(t)
 	defer env.Cleanup()
 
@@ -1048,6 +1056,7 @@ func TestShadow_RewindAndCondensation(t *testing.T) {
 // in the working directory (but weren't tracked in git) before the session started are
 // preserved when rewinding. This was a bug where such files were incorrectly deleted.
 func TestShadow_RewindPreservesUntrackedFilesFromSessionStart(t *testing.T) {
+	t.Parallel()
 	env := NewTestEnv(t)
 	defer env.Cleanup()
 
@@ -1177,6 +1186,7 @@ func TestShadow_RewindPreservesUntrackedFilesFromSessionStart(t *testing.T) {
 // 4. User enters new prompt, creates more files
 // 5. Second commit with Claude content gets a trailer
 func TestShadow_IntermediateCommitsWithoutPrompts(t *testing.T) {
+	t.Parallel()
 	env := NewTestEnv(t)
 	defer env.Cleanup()
 
@@ -1283,7 +1293,7 @@ func TestShadow_IntermediateCommitsWithoutPrompts(t *testing.T) {
 			checkpoint1ID, checkpoint3ID)
 	}
 
-	t.Log("Phase 5: Verify checkpoints exist in entire/sessions")
+	t.Log("Phase 5: Verify checkpoints exist in entire/checkpoints/v1")
 
 	for _, cpID := range []string{checkpoint1ID, checkpoint3ID} {
 		shardedPath := ShardedCheckpointPath(cpID)
@@ -1304,6 +1314,7 @@ func TestShadow_IntermediateCommitsWithoutPrompts(t *testing.T) {
 // 2. Continue session with prompt C, commit 2 (without intermediate prompt submit)
 // 3. Verify commit 2's checkpoint has full transcript (A, B, and C)
 func TestShadow_FullTranscriptCondensationWithIntermediateCommits(t *testing.T) {
+	t.Parallel()
 	env := NewTestEnv(t)
 	defer env.Cleanup()
 
@@ -1425,6 +1436,7 @@ func TestShadow_FullTranscriptCondensationWithIntermediateCommits(t *testing.T) 
 // present at session start are preserved during rewind, even when the shadow branch already
 // exists from a previous session.
 func TestShadow_RewindPreservesUntrackedFilesWithExistingShadowBranch(t *testing.T) {
+	t.Parallel()
 	env := NewTestEnv(t)
 	defer env.Cleanup()
 
@@ -1564,6 +1576,7 @@ func TestShadow_RewindPreservesUntrackedFilesWithExistingShadowBranch(t *testing
 // trailer during commit message editing causes condensation to be skipped.
 // This allows users to opt-out of linking a commit to their Claude session.
 func TestShadow_TrailerRemovalSkipsCondensation(t *testing.T) {
+	t.Parallel()
 	env := NewTestEnv(t)
 	defer env.Cleanup()
 
@@ -1609,18 +1622,18 @@ func TestShadow_TrailerRemovalSkipsCondensation(t *testing.T) {
 
 	// Verify commit does NOT have trailer
 	commitMsg := env.GetCommitMessage(commitHash)
-	if strings.Contains(commitMsg, "Entire-Checkpoint:") {
+	if _, found := trailers.ParseCheckpoint(commitMsg); found {
 		t.Errorf("Commit should NOT have Entire-Checkpoint trailer (it was removed), got:\n%s", commitMsg)
 	}
 	t.Logf("Commit message (trailer removed):\n%s", commitMsg)
 
 	t.Log("Phase 3: Verify no condensation happened")
 
-	// entire/sessions branch exists (created at setup), but should not have any checkpoint commits yet
+	// entire/checkpoints/v1 branch exists (created at setup), but should not have any checkpoint commits yet
 	// since the user removed the trailer
 	latestCheckpointID := env.TryGetLatestCheckpointID()
 	if latestCheckpointID == "" {
-		t.Log("✓ No checkpoint found on entire/sessions branch (no condensation)")
+		t.Log("✓ No checkpoint found on entire/checkpoints/v1 branch (no condensation)")
 	} else {
 		// If there is a checkpoint, this is unexpected for this test
 		t.Logf("Found checkpoint ID: %s (should be from previous activity, not this commit)", latestCheckpointID)
@@ -1656,15 +1669,15 @@ func TestShadow_TrailerRemovalSkipsCondensation(t *testing.T) {
 	checkpointID := env.GetCheckpointIDFromCommitMessage(commit2Hash)
 	t.Logf("Second commit: %s, checkpoint: %s", commit2Hash[:7], checkpointID)
 
-	// Verify second commit HAS trailer
+	// Verify second commit HAS trailer with valid format
 	commit2Msg := env.GetCommitMessage(commit2Hash)
-	if !strings.Contains(commit2Msg, "Entire-Checkpoint:") {
-		t.Errorf("Second commit should have Entire-Checkpoint trailer, got:\n%s", commit2Msg)
+	if _, found := trailers.ParseCheckpoint(commit2Msg); !found {
+		t.Errorf("Second commit should have valid Entire-Checkpoint trailer, got:\n%s", commit2Msg)
 	}
 
 	// Verify condensation happened for second commit
 	if !env.BranchExists(paths.MetadataBranchName) {
-		t.Fatal("entire/sessions branch should exist after second commit with trailer")
+		t.Fatal("entire/checkpoints/v1 branch should exist after second commit with trailer")
 	}
 
 	// Verify checkpoint exists
@@ -1679,9 +1692,10 @@ func TestShadow_TrailerRemovalSkipsCondensation(t *testing.T) {
 	t.Log("Trailer removal opt-out test completed successfully!")
 }
 
-// TestShadow_SessionsBranchCommitTrailers verifies that commits on the entire/sessions
+// TestShadow_SessionsBranchCommitTrailers verifies that commits on the entire/checkpoints/v1
 // branch contain the expected trailers: Entire-Session, Entire-Strategy, and Entire-Agent.
 func TestShadow_SessionsBranchCommitTrailers(t *testing.T) {
+	t.Parallel()
 	env := NewTestEnv(t)
 	defer env.Cleanup()
 
@@ -1710,9 +1724,9 @@ func TestShadow_SessionsBranchCommitTrailers(t *testing.T) {
 	// Commit to trigger condensation
 	env.GitCommitWithShadowHooks("Add main.go", "main.go")
 
-	// Get the commit message on entire/sessions branch
+	// Get the commit message on entire/checkpoints/v1 branch
 	sessionsCommitMsg := env.GetLatestCommitMessageOnBranch(paths.MetadataBranchName)
-	t.Logf("entire/sessions commit message:\n%s", sessionsCommitMsg)
+	t.Logf("entire/checkpoints/v1 commit message:\n%s", sessionsCommitMsg)
 
 	// Verify required trailers are present
 	requiredTrailers := map[string]string{
@@ -1723,7 +1737,7 @@ func TestShadow_SessionsBranchCommitTrailers(t *testing.T) {
 
 	for trailerKey, expectedValue := range requiredTrailers {
 		if !strings.Contains(sessionsCommitMsg, trailerKey+":") {
-			t.Errorf("entire/sessions commit should have %s trailer", trailerKey)
+			t.Errorf("entire/checkpoints/v1 commit should have %s trailer", trailerKey)
 			continue
 		}
 
@@ -1731,7 +1745,7 @@ func TestShadow_SessionsBranchCommitTrailers(t *testing.T) {
 		if expectedValue != "" {
 			expectedTrailer := trailerKey + ": " + expectedValue
 			if !strings.Contains(sessionsCommitMsg, expectedTrailer) {
-				t.Errorf("entire/sessions commit should have %q, got message:\n%s", expectedTrailer, sessionsCommitMsg)
+				t.Errorf("entire/checkpoints/v1 commit should have %q, got message:\n%s", expectedTrailer, sessionsCommitMsg)
 			} else {
 				t.Logf("✓ Found trailer: %s", expectedTrailer)
 			}

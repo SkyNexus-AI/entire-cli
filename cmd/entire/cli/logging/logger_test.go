@@ -21,6 +21,11 @@ const (
 	levelINFO     = "INFO"
 )
 
+// testLogFilePath returns the expected log file path for a test temp directory.
+func testLogFilePath(tmpDir string) string {
+	return filepath.Join(tmpDir, ".entire", "logs", "entire.log")
+}
+
 func TestParseLogLevel(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -81,9 +86,8 @@ func TestInit_CreatesLogFile(t *testing.T) {
 	}
 	defer Close()
 
-	logFile := filepath.Join(tmpDir, ".entire", "logs", testSessionID+".log")
-	if _, err := os.Stat(logFile); os.IsNotExist(err) {
-		t.Errorf("Init() did not create log file at %s", logFile)
+	if _, err := os.Stat(testLogFilePath(tmpDir)); os.IsNotExist(err) {
+		t.Errorf("Init() did not create log file at %s", testLogFilePath(tmpDir))
 	}
 }
 
@@ -106,8 +110,7 @@ func TestInit_WritesJSONLogs(t *testing.T) {
 	Close()
 
 	// Read log file
-	logFile := filepath.Join(tmpDir, ".entire", "logs", sessionID+".log")
-	content, err := os.ReadFile(logFile)
+	content, err := os.ReadFile(testLogFilePath(tmpDir))
 	if err != nil {
 		t.Fatalf("Failed to read log file: %v", err)
 	}
@@ -160,8 +163,7 @@ func TestInit_RespectsLogLevel(t *testing.T) {
 	Close()
 
 	// Read log file
-	logFile := filepath.Join(tmpDir, ".entire", "logs", sessionID+".log")
-	content, err := os.ReadFile(logFile)
+	content, err := os.ReadFile(testLogFilePath(tmpDir))
 	if err != nil {
 		t.Fatalf("Failed to read log file: %v", err)
 	}
@@ -228,17 +230,13 @@ func TestInit_FallsBackToStderrOnError(t *testing.T) {
 		t.Fatalf("Failed to create logs dir: %v", err)
 	}
 
-	// Create a file where we expect the log file to prevent directory creation
-	sessionID := "2025-01-15-fallback-test"
-	logFilePath := filepath.Join(logsDir, sessionID+".log")
-
 	// Create a directory with the same name as the log file to cause an error
-	if err := os.MkdirAll(logFilePath, 0o755); err != nil {
+	if err := os.MkdirAll(testLogFilePath(tmpDir), 0o755); err != nil {
 		t.Fatalf("Failed to create blocking dir: %v", err)
 	}
 
 	// Init should not return error, but fall back to stderr
-	err := Init(sessionID)
+	err := Init(testSessionID)
 	if err != nil {
 		t.Errorf("Init() should not error, but got: %v", err)
 	}
@@ -324,8 +322,7 @@ func TestLogging_IncludesContextValues(t *testing.T) {
 	Close()
 
 	// Read log file
-	logFile := filepath.Join(tmpDir, ".entire", "logs", sessionID+".log")
-	content, err := os.ReadFile(logFile)
+	content, err := os.ReadFile(testLogFilePath(tmpDir))
 	if err != nil {
 		t.Fatalf("Failed to read log file: %v", err)
 	}
@@ -374,8 +371,7 @@ func TestLogging_ParentSessionID(t *testing.T) {
 	Close()
 
 	// Read log file
-	logFile := filepath.Join(tmpDir, ".entire", "logs", sessionID+".log")
-	content, err := os.ReadFile(logFile)
+	content, err := os.ReadFile(testLogFilePath(tmpDir))
 	if err != nil {
 		t.Fatalf("Failed to read log file: %v", err)
 	}
@@ -420,8 +416,7 @@ func TestLogging_AdditionalAttrs(t *testing.T) {
 	Close()
 
 	// Read log file
-	logFile := filepath.Join(tmpDir, ".entire", "logs", sessionID+".log")
-	content, err := os.ReadFile(logFile)
+	content, err := os.ReadFile(testLogFilePath(tmpDir))
 	if err != nil {
 		t.Fatalf("Failed to read log file: %v", err)
 	}
@@ -473,8 +468,7 @@ func TestLogDuration(t *testing.T) {
 	Close()
 
 	// Read log file
-	logFile := filepath.Join(tmpDir, ".entire", "logs", sessionID+".log")
-	content, err := os.ReadFile(logFile)
+	content, err := os.ReadFile(testLogFilePath(tmpDir))
 	if err != nil {
 		t.Fatalf("Failed to read log file: %v", err)
 	}
@@ -548,7 +542,7 @@ func TestInit_RejectsInvalidSessionIDs(t *testing.T) {
 		sessionID string
 		wantErr   bool
 	}{
-		{"empty session ID", "", true},
+		{"empty session ID is allowed", "", false},
 		{"path traversal with slash", "../../../tmp/evil", true},
 		{"path traversal with backslash", "..\\..\\tmp\\evil", true},
 		{"contains forward slash", "2025-01-15/session", true},
@@ -562,7 +556,7 @@ func TestInit_RejectsInvalidSessionIDs(t *testing.T) {
 			// Reset logger state before each test
 			resetLogger()
 
-			// Only set up git repo for valid session IDs that we expect to succeed
+			// Set up git repo for cases that we expect to succeed
 			if !tt.wantErr {
 				tmpDir := t.TempDir()
 				t.Chdir(tmpDir)

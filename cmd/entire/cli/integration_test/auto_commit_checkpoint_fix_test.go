@@ -163,7 +163,7 @@ func TestDualStrategy_IncrementalPromptContent(t *testing.T) {
 	// Verify first checkpoint has prompt A (session files in numbered subdirectory)
 	prompt1Content, found := env.ReadFileFromBranch(paths.MetadataBranchName, SessionFilePath(checkpoint1ID, "prompt.txt"))
 	if !found {
-		t.Fatal("First checkpoint should have prompt.txt on entire/sessions branch")
+		t.Fatal("First checkpoint should have prompt.txt on entire/checkpoints/v1 branch")
 	}
 	t.Logf("First checkpoint prompt.txt:\n%s", prompt1Content)
 
@@ -211,7 +211,7 @@ func TestDualStrategy_IncrementalPromptContent(t *testing.T) {
 	// Session files are now in numbered subdirectory (e.g., 0/prompt.txt)
 	prompt2Content, found := env.ReadFileFromBranch(paths.MetadataBranchName, SessionFilePath(checkpoint2ID, "prompt.txt"))
 	if !found {
-		t.Fatal("Second checkpoint should have prompt.txt on entire/sessions branch")
+		t.Fatal("Second checkpoint should have prompt.txt on entire/checkpoints/v1 branch")
 	}
 	t.Logf("Second checkpoint prompt.txt:\n%s", prompt2Content)
 
@@ -229,7 +229,7 @@ func TestDualStrategy_IncrementalPromptContent(t *testing.T) {
 }
 
 // TestDualStrategy_SessionStateTracksTranscriptOffset verifies that session state
-// correctly tracks the transcript offset (CondensedTranscriptLines) across prompts.
+// correctly tracks the transcript offset (CheckpointTranscriptStart) across prompts.
 // Note: cannot use t.Parallel() because we need t.Chdir to load session state.
 func TestDualStrategy_SessionStateTracksTranscriptOffset(t *testing.T) {
 	env := NewFeatureBranchEnv(t, strategy.StrategyNameAutoCommit)
@@ -252,11 +252,11 @@ func TestDualStrategy_SessionStateTracksTranscriptOffset(t *testing.T) {
 	if state == nil {
 		t.Fatal("Session state should have been created by InitializeSession")
 	}
-	if state.CondensedTranscriptLines != 0 {
-		t.Errorf("Initial CondensedTranscriptLines should be 0, got %d", state.CondensedTranscriptLines)
+	if state.CheckpointTranscriptStart != 0 {
+		t.Errorf("Initial CheckpointTranscriptStart should be 0, got %d", state.CheckpointTranscriptStart)
 	}
-	if state.CheckpointCount != 0 {
-		t.Errorf("Initial CheckpointCount should be 0, got %d", state.CheckpointCount)
+	if state.StepCount != 0 {
+		t.Errorf("Initial StepCount should be 0, got %d", state.StepCount)
 	}
 
 	// Create file and transcript
@@ -265,7 +265,7 @@ func TestDualStrategy_SessionStateTracksTranscriptOffset(t *testing.T) {
 		{Path: "test.go", Content: "package test"},
 	})
 
-	// Simulate stop - this should update CondensedTranscriptLines
+	// Simulate stop - this should update CheckpointTranscriptStart
 	err = env.SimulateStop(session.ID, session.TranscriptPath)
 	if err != nil {
 		t.Fatalf("SimulateStop failed: %v", err)
@@ -276,11 +276,11 @@ func TestDualStrategy_SessionStateTracksTranscriptOffset(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadSessionState after stop failed: %v", err)
 	}
-	if state.CondensedTranscriptLines == 0 {
-		t.Error("CondensedTranscriptLines should have been updated after checkpoint")
+	if state.CheckpointTranscriptStart == 0 {
+		t.Error("CheckpointTranscriptStart should have been updated after checkpoint")
 	}
-	if state.CheckpointCount != 1 {
-		t.Errorf("CheckpointCount should be 1, got %d", state.CheckpointCount)
+	if state.StepCount != 1 {
+		t.Errorf("StepCount should be 1, got %d", state.StepCount)
 	}
 
 	// Second prompt - add more to transcript
@@ -311,10 +311,10 @@ func TestDualStrategy_SessionStateTracksTranscriptOffset(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadSessionState after second stop failed: %v", err)
 	}
-	if state.CheckpointCount != 2 {
-		t.Errorf("CheckpointCount should be 2, got %d", state.CheckpointCount)
+	if state.StepCount != 2 {
+		t.Errorf("StepCount should be 2, got %d", state.StepCount)
 	}
-	// CondensedTranscriptLines should be higher than after first stop
-	t.Logf("Final CondensedTranscriptLines: %d, CheckpointCount: %d",
-		state.CondensedTranscriptLines, state.CheckpointCount)
+	// CheckpointTranscriptStart should be higher than after first stop
+	t.Logf("Final CheckpointTranscriptStart: %d, StepCount: %d",
+		state.CheckpointTranscriptStart, state.StepCount)
 }

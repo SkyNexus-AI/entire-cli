@@ -264,8 +264,9 @@ func getHookType(hookName string) string {
 // It logs hook invocation at DEBUG level and completion with duration at INFO level.
 func newAgentHookVerbCmdWithLogging(agentName agent.AgentName, hookName string) *cobra.Command {
 	return &cobra.Command{
-		Use:   hookName,
-		Short: "Called on " + hookName,
+		Use:    hookName,
+		Hidden: true,
+		Short:  "Called on " + hookName,
 		RunE: func(_ *cobra.Command, _ []string) error {
 			// Skip silently if not in a git repository - hooks shouldn't prevent the agent from working
 			if _, err := paths.RepoRoot(); err != nil {
