@@ -835,9 +835,10 @@ func walkFirstParentCommits(repo *git.Repository, from plumbing.Hash, limit int,
 		if current.NumParents() == 0 {
 			return nil
 		}
+		parentHash := current.Hash
 		current, err = current.Parent(0)
 		if err != nil {
-			return fmt.Errorf("failed to load first parent of commit %s: %w", current.Hash, err)
+			return fmt.Errorf("failed to load first parent of commit %s: %w", parentHash, err)
 		}
 	}
 	return nil
