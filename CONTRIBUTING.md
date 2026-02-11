@@ -224,7 +224,7 @@ These are Go implementations that integrate Entire with different AI coding tool
 
 ### Prerequisites
 
-1. **Install and enable Entire** - Install the latest version of the Entire CLI (see [installation docs](https://docs.entire.io/cli/installation)), verify with `entire version`, then run `entire enable` in the repository
+1. **Install Entire** - Install the latest version of the Entire CLI (see [installation docs](https://docs.entire.io/cli/installation)), verify with `entire version`. Entire is already configured in the repository, so no need to run `entire enable`
 2. **Pass linting** - Run `mise run lint` (includes golangci-lint, gofmt, gomod, shellcheck)
 3. **Pass tests** - Run `mise run test` to verify your changes
 4. **Add tests** - Include tests for new Go code and functionality
