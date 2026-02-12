@@ -5,10 +5,10 @@ package integration
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/entireio/cli/cmd/entire/cli/sessionid"
+	"github.com/entireio/cli/cmd/entire/cli/strategy"
 )
 
 func TestHookRunner_SimulateUserPromptSubmit(t *testing.T) {
@@ -127,29 +127,6 @@ func TestSession_CreateTranscript(t *testing.T) {
 	})
 }
 
-// entireHookMarker is the marker used to identify Entire CLI hooks.
-// Must match the constant in strategy/hooks.go.
-const entireHookMarker = "Entire CLI hooks"
-
-// hookNames are the git hooks managed by Entire CLI.
-var hookNames = []string{"prepare-commit-msg", "commit-msg", "post-commit", "pre-push"}
-
-// hasEntireHooks checks if all Entire CLI hooks are installed in the given repo.
-func hasEntireHooks(repoDir string) bool {
-	hooksDir := filepath.Join(repoDir, ".git", "hooks")
-	for _, hook := range hookNames {
-		hookPath := filepath.Join(hooksDir, hook)
-		data, err := os.ReadFile(hookPath)
-		if err != nil {
-			return false
-		}
-		if !strings.Contains(string(data), entireHookMarker) {
-			return false
-		}
-	}
-	return true
-}
-
 // TestUserPromptSubmit_ReinstallsOverwrittenHooks verifies that EnsureSetup is called
 // during user-prompt-submit (start of turn) and reinstalls hooks that were overwritten
 // by third-party tools like lefthook. This ensures hooks are in place before any
@@ -158,6 +135,7 @@ func TestUserPromptSubmit_ReinstallsOverwrittenHooks(t *testing.T) {
 	t.Parallel()
 	RunForAllStrategiesWithRepoEnv(t, func(t *testing.T, env *TestEnv, strategyName string) {
 		hooksDir := filepath.Join(env.RepoDir, ".git", "hooks")
+		hookNames := strategy.ManagedGitHookNames()
 
 		// Step 1: First user-prompt-submit installs hooks via EnsureSetup
 		session := env.NewSession()
@@ -167,7 +145,7 @@ func TestUserPromptSubmit_ReinstallsOverwrittenHooks(t *testing.T) {
 		}
 
 		// Verify hooks are now installed
-		if !hasEntireHooks(env.RepoDir) {
+		if !strategy.IsGitHookInstalledInDir(env.RepoDir) {
 			t.Fatal("hooks should be installed after first SimulateUserPromptSubmit")
 		}
 
@@ -181,7 +159,7 @@ func TestUserPromptSubmit_ReinstallsOverwrittenHooks(t *testing.T) {
 		}
 
 		// Step 3: Verify hooks are no longer Entire hooks
-		if hasEntireHooks(env.RepoDir) {
+		if strategy.IsGitHookInstalledInDir(env.RepoDir) {
 			t.Fatal("hooks should NOT be detected as Entire hooks after overwrite")
 		}
 
@@ -192,7 +170,7 @@ func TestUserPromptSubmit_ReinstallsOverwrittenHooks(t *testing.T) {
 		}
 
 		// Step 5: Verify hooks are reinstalled
-		if !hasEntireHooks(env.RepoDir) {
+		if !strategy.IsGitHookInstalledInDir(env.RepoDir) {
 			t.Error("hooks should be reinstalled after second SimulateUserPromptSubmit")
 		}
 
@@ -212,6 +190,7 @@ func TestUserPromptSubmit_ReinstallsDeletedHooks(t *testing.T) {
 	t.Parallel()
 	RunForAllStrategiesWithRepoEnv(t, func(t *testing.T, env *TestEnv, strategyName string) {
 		hooksDir := filepath.Join(env.RepoDir, ".git", "hooks")
+		hookNames := strategy.ManagedGitHookNames()
 
 		// Step 1: First user-prompt-submit installs hooks via EnsureSetup
 		session := env.NewSession()
@@ -221,7 +200,7 @@ func TestUserPromptSubmit_ReinstallsDeletedHooks(t *testing.T) {
 		}
 
 		// Verify hooks are now installed
-		if !hasEntireHooks(env.RepoDir) {
+		if !strategy.IsGitHookInstalledInDir(env.RepoDir) {
 			t.Fatal("hooks should be installed after first SimulateUserPromptSubmit")
 		}
 
@@ -234,7 +213,7 @@ func TestUserPromptSubmit_ReinstallsDeletedHooks(t *testing.T) {
 		}
 
 		// Step 3: Verify hooks are gone
-		if hasEntireHooks(env.RepoDir) {
+		if strategy.IsGitHookInstalledInDir(env.RepoDir) {
 			t.Fatal("hooks should NOT be detected after deletion")
 		}
 
@@ -245,7 +224,7 @@ func TestUserPromptSubmit_ReinstallsDeletedHooks(t *testing.T) {
 		}
 
 		// Step 5: Verify hooks are reinstalled
-		if !hasEntireHooks(env.RepoDir) {
+		if !strategy.IsGitHookInstalledInDir(env.RepoDir) {
 			t.Error("hooks should be reinstalled after second SimulateUserPromptSubmit")
 		}
 	})
