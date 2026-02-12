@@ -338,7 +338,7 @@ func TestResume_MultipleSessionsOnBranch(t *testing.T) {
 
 	// The resume command shows the session from the last commit,
 	// which should be session2 (the most recent one)
-	if !strings.Contains(output, session2.ID) && !strings.Contains(output, session2.EntireID) {
+	if !strings.Contains(output, session2.ID) {
 		t.Logf("Note: Expected session2 ID in output, but this depends on checkpoint lookup")
 	}
 }
