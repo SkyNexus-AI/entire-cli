@@ -930,6 +930,13 @@ func (s *AutoCommitStrategy) InitializeSession(sessionID string, agentType agent
 		now := time.Now()
 		existing.LastInteractionTime = &now
 
+		// Generate a new TurnID for each turn (correlates carry-forward checkpoints)
+		turnID, err := id.Generate()
+		if err != nil {
+			return fmt.Errorf("failed to generate turn ID: %w", err)
+		}
+		existing.TurnID = turnID.String()
+
 		// Backfill FirstPrompt if empty (for sessions
 		// created before the first_prompt field was added, or resumed sessions)
 		if existing.FirstPrompt == "" && userPrompt != "" {
@@ -942,6 +949,12 @@ func (s *AutoCommitStrategy) InitializeSession(sessionID string, agentType agent
 		return nil
 	}
 
+	// Generate TurnID for the first turn
+	turnID, err := id.Generate()
+	if err != nil {
+		return fmt.Errorf("failed to generate turn ID: %w", err)
+	}
+
 	// Create new session state
 	now := time.Now()
 	state := &SessionState{
@@ -950,6 +963,7 @@ func (s *AutoCommitStrategy) InitializeSession(sessionID string, agentType agent
 		BaseCommit:          baseCommit,
 		StartedAt:           now,
 		LastInteractionTime: &now,
+		TurnID:              turnID.String(),
 		StepCount:           0,
 		// CheckpointTranscriptStart defaults to 0 (start from beginning of transcript)
 		FilesTouched:   []string{},

@@ -339,6 +339,7 @@ func (s *GitStore) writeSessionToSubdirectory(opts WriteCommittedOptions, sessio
 		CheckpointsCount:            opts.CheckpointsCount,
 		FilesTouched:                opts.FilesTouched,
 		Agent:                       opts.Agent,
+		TurnID:                      opts.TurnID,
 		IsTask:                      opts.IsTask,
 		ToolUseID:                   opts.ToolUseID,
 		TranscriptIdentifierAtStart: opts.TranscriptIdentifierAtStart,
@@ -1003,6 +1004,164 @@ func (s *GitStore) UpdateSummary(ctx context.Context, checkpointID id.Checkpoint
 	newRef := plumbing.NewHashReference(refName, newCommitHash)
 	if err := s.repo.Storer.SetReference(newRef); err != nil {
 		return fmt.Errorf("failed to set branch reference: %w", err)
+	}
+
+	return nil
+}
+
+// UpdateCommitted replaces the transcript, prompts, and context for an existing
+// committed checkpoint. Uses replace semantics: the full session transcript is
+// written, replacing whatever was stored at initial condensation time.
+//
+// This is called at stop time to finalize all checkpoints from the current turn
+// with the complete session transcript (from prompt to stop event).
+//
+// Returns ErrCheckpointNotFound if the checkpoint doesn't exist.
+func (s *GitStore) UpdateCommitted(ctx context.Context, opts UpdateCommittedOptions) error {
+	if opts.CheckpointID.IsEmpty() {
+		return errors.New("invalid update options: checkpoint ID is required")
+	}
+
+	// Ensure sessions branch exists
+	if err := s.ensureSessionsBranch(); err != nil {
+		return fmt.Errorf("failed to ensure sessions branch: %w", err)
+	}
+
+	// Get current branch tip and flatten tree
+	ref, entries, err := s.getSessionsBranchEntries()
+	if err != nil {
+		return err
+	}
+
+	// Read root CheckpointSummary to find the session slot
+	basePath := opts.CheckpointID.Path() + "/"
+	rootMetadataPath := basePath + paths.MetadataFileName
+	entry, exists := entries[rootMetadataPath]
+	if !exists {
+		return ErrCheckpointNotFound
+	}
+
+	checkpointSummary, err := s.readSummaryFromBlob(entry.Hash)
+	if err != nil {
+		return fmt.Errorf("failed to read checkpoint summary: %w", err)
+	}
+	if len(checkpointSummary.Sessions) == 0 {
+		return ErrCheckpointNotFound
+	}
+
+	// Find session index matching opts.SessionID
+	sessionIndex := -1
+	for i := range len(checkpointSummary.Sessions) {
+		metaPath := fmt.Sprintf("%s%d/%s", basePath, i, paths.MetadataFileName)
+		if metaEntry, metaExists := entries[metaPath]; metaExists {
+			meta, metaErr := s.readMetadataFromBlob(metaEntry.Hash)
+			if metaErr == nil && meta.SessionID == opts.SessionID {
+				sessionIndex = i
+				break
+			}
+		}
+	}
+	if sessionIndex == -1 {
+		// Fall back to latest session; log so mismatches are diagnosable.
+		sessionIndex = len(checkpointSummary.Sessions) - 1
+		logging.Debug(ctx, "UpdateCommitted: session ID not found, falling back to latest",
+			slog.String("session_id", opts.SessionID),
+			slog.String("checkpoint_id", string(opts.CheckpointID)),
+			slog.Int("fallback_index", sessionIndex),
+		)
+	}
+
+	sessionPath := fmt.Sprintf("%s%d/", basePath, sessionIndex)
+
+	// Replace transcript (full replace, not append)
+	if len(opts.Transcript) > 0 {
+		if err := s.replaceTranscript(opts.Transcript, sessionPath, entries); err != nil {
+			return fmt.Errorf("failed to replace transcript: %w", err)
+		}
+	}
+
+	// Replace prompts
+	if len(opts.Prompts) > 0 {
+		promptContent := strings.Join(opts.Prompts, "\n\n---\n\n")
+		blobHash, err := CreateBlobFromContent(s.repo, []byte(promptContent))
+		if err != nil {
+			return fmt.Errorf("failed to create prompt blob: %w", err)
+		}
+		entries[sessionPath+paths.PromptFileName] = object.TreeEntry{
+			Name: sessionPath + paths.PromptFileName,
+			Mode: filemode.Regular,
+			Hash: blobHash,
+		}
+	}
+
+	// Replace context
+	if len(opts.Context) > 0 {
+		contextBlob, err := CreateBlobFromContent(s.repo, opts.Context)
+		if err != nil {
+			return fmt.Errorf("failed to create context blob: %w", err)
+		}
+		entries[sessionPath+paths.ContextFileName] = object.TreeEntry{
+			Name: sessionPath + paths.ContextFileName,
+			Mode: filemode.Regular,
+			Hash: contextBlob,
+		}
+	}
+
+	// Build and commit
+	newTreeHash, err := BuildTreeFromEntries(s.repo, entries)
+	if err != nil {
+		return err
+	}
+
+	authorName, authorEmail := getGitAuthorFromRepo(s.repo)
+	commitMsg := fmt.Sprintf("Finalize transcript for checkpoint %s", opts.CheckpointID)
+	newCommitHash, err := s.createCommit(newTreeHash, ref.Hash(), commitMsg, authorName, authorEmail)
+	if err != nil {
+		return err
+	}
+
+	refName := plumbing.NewBranchReferenceName(paths.MetadataBranchName)
+	newRef := plumbing.NewHashReference(refName, newCommitHash)
+	if err := s.repo.Storer.SetReference(newRef); err != nil {
+		return fmt.Errorf("failed to set branch reference: %w", err)
+	}
+
+	return nil
+}
+
+// replaceTranscript writes the full transcript content, replacing any existing transcript.
+// Also removes any chunk files from a previous write and updates the content hash.
+func (s *GitStore) replaceTranscript(transcript []byte, sessionPath string, entries map[string]object.TreeEntry) error {
+	// Remove existing transcript files (base + any chunks)
+	transcriptBase := sessionPath + paths.TranscriptFileName
+	for key := range entries {
+		if key == transcriptBase || strings.HasPrefix(key, transcriptBase+".") {
+			delete(entries, key)
+		}
+	}
+
+	// Write new transcript blob
+	blobHash, err := CreateBlobFromContent(s.repo, transcript)
+	if err != nil {
+		return fmt.Errorf("failed to create transcript blob: %w", err)
+	}
+	entries[transcriptBase] = object.TreeEntry{
+		Name: transcriptBase,
+		Mode: filemode.Regular,
+		Hash: blobHash,
+	}
+
+	// Update content hash
+	contentHash := fmt.Sprintf("sha256:%x", sha256.Sum256(transcript))
+	hashBlob, err := CreateBlobFromContent(s.repo, []byte(contentHash))
+	if err != nil {
+		return fmt.Errorf("failed to create content hash blob: %w", err)
+	}
+	hashPath := sessionPath + paths.ContentHashFileName
+	entries[hashPath] = object.TreeEntry{
+		Name: hashPath,
+		Mode: filemode.Regular,
+		Hash: hashBlob,
 	}
 
 	return nil

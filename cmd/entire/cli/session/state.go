@@ -59,9 +59,16 @@ type State struct {
 	// Empty means idle (backward compat with pre-state-machine files).
 	Phase Phase `json:"phase,omitempty"`
 
-	// PendingCheckpointID is the checkpoint ID for the current commit cycle.
-	// Generated once when first needed, reused across all commits in the session.
-	PendingCheckpointID string `json:"pending_checkpoint_id,omitempty"`
+	// TurnID is a unique identifier for the current agent turn.
+	// Generated at turn start, shared across all checkpoints within the same turn.
+	// Used to correlate related checkpoints when a turn's work spans multiple commits.
+	TurnID string `json:"turn_id,omitempty"`
+
+	// TurnCheckpointIDs tracks all checkpoint IDs condensed during the current turn.
+	// Set in PostCommit when a checkpoint is condensed for an ACTIVE session.
+	// Consumed in HandleTurnEnd to finalize all checkpoints with the full transcript.
+	// Cleared in InitializeSession when a new prompt starts.
+	TurnCheckpointIDs []string `json:"turn_checkpoint_ids,omitempty"`
 
 	// LastInteractionTime is updated on every hook invocation.
 	// Used for stale session detection in "entire doctor".
