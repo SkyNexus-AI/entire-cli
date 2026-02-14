@@ -94,10 +94,14 @@ func filesOverlapWithContent(repo *git.Repository, shadowBranchName string, head
 
 	// Check each file in filesTouched
 	for _, filePath := range filesTouched {
-		// Get file from HEAD tree
+		// Get file from HEAD tree (the committed content)
 		headFile, err := headTree.File(filePath)
 		if err != nil {
-			// File not in HEAD commit - doesn't count as overlap
+			// File not in HEAD commit. This happens when:
+			// - The session created/modified the file but user deleted it before committing
+			// - The file was staged as a deletion (git rm)
+			// In both cases, the session's work on this file is not in the commit,
+			// so it doesn't contribute to overlap. Continue checking other files.
 			continue
 		}
 

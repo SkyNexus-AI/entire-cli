@@ -133,6 +133,13 @@ func TestShadow_DeferredTranscriptFinalization(t *testing.T) {
 
 	// Read the provisional transcript
 	transcriptPath := SessionFilePath(checkpointID, paths.TranscriptFileName)
+
+	// Verify the path structure matches expected sharded format: <id[:2]>/<id[2:]>/0/full.jsonl
+	expectedPrefix := checkpointID[:2] + "/" + checkpointID[2:] + "/0/"
+	if !strings.HasPrefix(transcriptPath, expectedPrefix) {
+		t.Errorf("Unexpected path structure: got %s, expected prefix %s", transcriptPath, expectedPrefix)
+	}
+
 	provisionalContent, found := env.ReadFileFromBranch(paths.MetadataBranchName, transcriptPath)
 	if !found {
 		t.Fatalf("Provisional transcript should exist at %s", transcriptPath)
@@ -455,8 +462,10 @@ func TestShadow_MultipleCommits_SameActiveTurn(t *testing.T) {
 			len(state.TurnCheckpointIDs), state.TurnCheckpointIDs)
 	}
 
-	// Add more work to transcript before stopping
-	sess.TranscriptBuilder.AddAssistantMessage("All files created successfully!")
+	// Add more work to transcript before stopping.
+	// Use a constant so the assertion below stays in sync with this message.
+	const finalMessage = "All files created successfully!"
+	sess.TranscriptBuilder.AddAssistantMessage(finalMessage)
 	if err := sess.TranscriptBuilder.WriteToFile(sess.TranscriptPath); err != nil {
 		t.Fatalf("Failed to write transcript: %v", err)
 	}
@@ -488,9 +497,9 @@ func TestShadow_MultipleCommits_SameActiveTurn(t *testing.T) {
 			t.Errorf("Checkpoint %d transcript should exist at %s", i, transcriptPath)
 			continue
 		}
-		// All transcripts should contain the final message
-		if !strings.Contains(content, "All files created successfully") {
-			t.Errorf("Checkpoint %d transcript should be finalized with final message", i)
+		// All transcripts should contain the final message (same constant used above)
+		if !strings.Contains(content, finalMessage) {
+			t.Errorf("Checkpoint %d transcript should be finalized with final message %q", i, finalMessage)
 		}
 	}
 
@@ -769,4 +778,86 @@ func TestShadow_RevertedFiles_ManualEditNoCheckpoint(t *testing.T) {
 	}
 
 	t.Log("RevertedFiles_ManualEditNoCheckpoint test completed successfully")
+}
+
+// TestShadow_ResetSession_ClearsTurnCheckpointIDs tests that resetting a session
+// properly clears TurnCheckpointIDs and doesn't leave orphaned checkpoints.
+//
+// Flow:
+// 1. Agent starts working (ACTIVE)
+// 2. User commits mid-turn → TurnCheckpointIDs populated
+// 3. User calls "entire reset --session <id> --force"
+// 4. Session state file should be deleted
+// 5. A new session can start cleanly without orphaned state
+func TestShadow_ResetSession_ClearsTurnCheckpointIDs(t *testing.T) {
+	t.Parallel()
+
+	env := NewFeatureBranchEnv(t, strategy.StrategyNameManualCommit)
+
+	sess := env.NewSession()
+
+	// Start session (ACTIVE)
+	if err := env.SimulateUserPromptSubmitWithTranscriptPath(sess.ID, sess.TranscriptPath); err != nil {
+		t.Fatalf("user-prompt-submit failed: %v", err)
+	}
+
+	// Create file and transcript
+	env.WriteFile("feature.go", "package main\n\nfunc Feature() {}\n")
+	sess.CreateTranscript("Create feature function", []FileChange{
+		{Path: "feature.go", Content: "package main\n\nfunc Feature() {}\n"},
+	})
+
+	// User commits while agent is still ACTIVE → TurnCheckpointIDs gets populated
+	env.GitCommitWithShadowHooks("Add feature", "feature.go")
+	commitHash := env.GetHeadHash()
+	checkpointID := env.GetCheckpointIDFromCommitMessage(commitHash)
+	if checkpointID == "" {
+		t.Fatal("Commit should have checkpoint trailer")
+	}
+
+	// Verify TurnCheckpointIDs is populated
+	state, err := env.GetSessionState(sess.ID)
+	if err != nil {
+		t.Fatalf("GetSessionState failed: %v", err)
+	}
+	if len(state.TurnCheckpointIDs) == 0 {
+		t.Error("TurnCheckpointIDs should be populated after mid-turn commit")
+	}
+	t.Logf("TurnCheckpointIDs before reset: %v", state.TurnCheckpointIDs)
+
+	// Reset the session using the CLI
+	output, resetErr := env.RunCLIWithError("reset", "--session", sess.ID, "--force")
+	t.Logf("Reset output: %s", output)
+	if resetErr != nil {
+		t.Fatalf("Reset failed: %v", resetErr)
+	}
+
+	// Verify session state is cleared (file deleted)
+	state, err = env.GetSessionState(sess.ID)
+	if err != nil {
+		t.Fatalf("GetSessionState after reset failed unexpectedly: %v", err)
+	}
+	if state != nil {
+		t.Errorf("Session state should be nil after reset, got: phase=%s, TurnCheckpointIDs=%v",
+			state.Phase, state.TurnCheckpointIDs)
+	}
+
+	// Verify a new session can start cleanly
+	newSess := env.NewSession()
+	if err := env.SimulateUserPromptSubmitWithTranscriptPath(newSess.ID, newSess.TranscriptPath); err != nil {
+		t.Fatalf("user-prompt-submit for new session failed: %v", err)
+	}
+
+	newState, err := env.GetSessionState(newSess.ID)
+	if err != nil {
+		t.Fatalf("GetSessionState for new session failed: %v", err)
+	}
+	if newState == nil {
+		t.Fatal("New session state should exist")
+	}
+	if len(newState.TurnCheckpointIDs) != 0 {
+		t.Errorf("New session should have empty TurnCheckpointIDs, got: %v", newState.TurnCheckpointIDs)
+	}
+
+	t.Log("ResetSession_ClearsTurnCheckpointIDs test completed successfully")
 }

@@ -62,14 +62,20 @@ type State struct {
 	Phase Phase `json:"phase,omitempty"`
 
 	// TurnID is a unique identifier for the current agent turn.
-	// Generated at turn start, shared across all checkpoints within the same turn.
-	// Used to correlate related checkpoints when a turn's work spans multiple commits.
+	// Lifecycle:
+	//   - Generated fresh in InitializeSession at each turn start
+	//   - Shared across all checkpoints within the same turn
+	//   - Used to correlate related checkpoints when a turn's work spans multiple commits
+	//   - Persists until the next InitializeSession call generates a new one
 	TurnID string `json:"turn_id,omitempty"`
 
 	// TurnCheckpointIDs tracks all checkpoint IDs condensed during the current turn.
-	// Set in PostCommit when a checkpoint is condensed for an ACTIVE session.
-	// Consumed in HandleTurnEnd to finalize all checkpoints with the full transcript.
-	// Cleared in InitializeSession when a new prompt starts.
+	// Lifecycle:
+	//   - Set in PostCommit when a checkpoint is condensed for an ACTIVE session
+	//   - Consumed in HandleTurnEnd to finalize all checkpoints with the full transcript
+	//   - Cleared in HandleTurnEnd after finalization completes
+	//   - Cleared in InitializeSession when a new prompt starts
+	//   - Cleared when session is reset (ResetSession deletes the state file entirely)
 	TurnCheckpointIDs []string `json:"turn_checkpoint_ids,omitempty"`
 
 	// LastInteractionTime is updated on every hook invocation.
@@ -161,8 +167,9 @@ type PromptAttribution struct {
 // NormalizeAfterLoad applies backward-compatible migrations to state loaded from disk.
 // Call this after deserializing a State from JSON.
 func (s *State) NormalizeAfterLoad() {
-	// Normalize legacy phase values. "active_committed" was removed in favor of
-	// the state machine handling commits during ACTIVE phase.
+	// Normalize legacy phase values. "active_committed" was removed with the
+	// 1:1 checkpoint model in favor of the state machine handling commits
+	// during ACTIVE phase with immediate condensation.
 	if s.Phase == "active_committed" {
 		logCtx := logging.WithComponent(context.Background(), "session")
 		logging.Info(logCtx, "migrating legacy active_committed phase to active",

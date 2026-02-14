@@ -25,7 +25,8 @@ var allPhases = []Phase{PhaseIdle, PhaseActive, PhaseEnded}
 func PhaseFromString(s string) Phase {
 	switch Phase(s) {
 	case PhaseActive, "active_committed":
-		// "active_committed" was removed but meant "agent active + commit happened".
+		// "active_committed" was removed with the 1:1 checkpoint model.
+		// It previously meant "agent active + commit happened during turn".
 		// Normalize to ACTIVE so HandleTurnEnd can finalize any pending checkpoints.
 		return PhaseActive
 	case PhaseIdle:
