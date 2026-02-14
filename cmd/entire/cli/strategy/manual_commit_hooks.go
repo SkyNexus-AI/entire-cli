@@ -525,9 +525,10 @@ func (h *postCommitActionHandler) HandleWarnStaleSession(_ *session.State) error
 	// Not produced by EventGitCommit; no-op for exhaustiveness.
 	return nil
 }
+
 // During rebase/cherry-pick/revert operations, phase transitions are skipped entirely.
 //
-//nolint:unparam,maintidx // error return required by interface but hooks must return nil; maintidx: complex but already well-structured
+//nolint:unparam // error return required by interface but hooks must return nil
 func (s *ManualCommitStrategy) PostCommit() error {
 	logCtx := logging.WithComponent(context.Background(), "checkpoint")
 
@@ -654,7 +655,9 @@ func (s *ManualCommitStrategy) PostCommit() error {
 			committedFileSet:       committedFileSet,
 			hasNew:                 hasNew,
 		}
-		TransitionAndLog(state, session.EventGitCommit, transitionCtx, handler)
+		if err := TransitionAndLog(state, session.EventGitCommit, transitionCtx, handler); err != nil {
+			fmt.Fprintf(os.Stderr, "[entire] Warning: post-commit action handler error: %v\n", err)
+		}
 
 		// Record checkpoint ID for ACTIVE sessions so HandleTurnEnd can finalize
 		// with full transcript. IDLE/ENDED sessions already have complete transcripts.
@@ -1280,8 +1283,10 @@ func (s *ManualCommitStrategy) InitializeSession(sessionID string, agentType age
 	}
 
 	if state != nil && state.BaseCommit != "" {
-		// Session is fully initialized — apply phase transition for TurnStart
-		TransitionAndLog(state, session.EventTurnStart, session.TransitionContext{}, session.NoOpActionHandler{})
+		// Session is fully initialized — apply phase transition for TurnStart.
+		if transErr := TransitionAndLog(state, session.EventTurnStart, session.TransitionContext{}, session.NoOpActionHandler{}); transErr != nil {
+			fmt.Fprintf(os.Stderr, "[entire] Warning: turn start transition failed: %v\n", transErr)
+		}
 
 		// Generate a new TurnID for each turn (correlates carry-forward checkpoints)
 		turnID, err := id.Generate()
@@ -1339,8 +1344,10 @@ func (s *ManualCommitStrategy) InitializeSession(sessionID string, agentType age
 		return fmt.Errorf("failed to initialize session: %w", err)
 	}
 
-	// Apply phase transition: new session starts as ACTIVE
-	TransitionAndLog(state, session.EventTurnStart, session.TransitionContext{}, session.NoOpActionHandler{})
+	// Apply phase transition: new session starts as ACTIVE.
+	if transErr := TransitionAndLog(state, session.EventTurnStart, session.TransitionContext{}, session.NoOpActionHandler{}); transErr != nil {
+		fmt.Fprintf(os.Stderr, "[entire] Warning: turn start transition failed: %v\n", transErr)
+	}
 
 	// Calculate attribution for pre-prompt edits
 	// This captures any user edits made before the first prompt
