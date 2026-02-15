@@ -1623,9 +1623,14 @@ func (s *ManualCommitStrategy) finalizeAllTurnCheckpoints(state *SessionState) i
 
 	fullTranscript, err := os.ReadFile(state.TranscriptPath)
 	if err != nil || len(fullTranscript) == 0 {
-		logging.Warn(logCtx, "finalize: failed to read transcript, skipping",
+		msg := "finalize: empty transcript, skipping"
+		if err != nil {
+			msg = "finalize: failed to read transcript, skipping"
+		}
+		logging.Warn(logCtx, msg,
 			slog.String("session_id", state.SessionID),
 			slog.String("transcript_path", state.TranscriptPath),
+			slog.Any("error", err),
 		)
 		state.TurnCheckpointIDs = nil
 		return 1 // Count as error - all checkpoints will be skipped
