@@ -2,6 +2,9 @@ name: E2E Tests
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
 
 # Concurrency: only one E2E job runs at a time
 # Cancel previous runs when new one starts
