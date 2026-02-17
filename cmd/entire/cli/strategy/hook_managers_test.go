@@ -2,14 +2,10 @@ package strategy
 
 import (
 	"bytes"
-	"context"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/entireio/cli/cmd/entire/cli/paths"
 )
 
 func TestDetectHookManagers_None(t *testing.T) {
@@ -380,12 +376,8 @@ func TestExtractCommandLine(t *testing.T) {
 }
 
 func TestCheckAndWarnHookManagers_NoManagers(t *testing.T) {
-	// Needs t.Chdir, cannot be parallel
-	tmpDir := t.TempDir()
-	t.Chdir(tmpDir)
-
-	// Init a git repo so paths.RepoRoot() works
-	initGitRepo(t, tmpDir)
+	// Needs t.Chdir (via initHooksTestRepo), cannot be parallel
+	initHooksTestRepo(t)
 
 	var buf bytes.Buffer
 	CheckAndWarnHookManagers(&buf)
@@ -396,11 +388,8 @@ func TestCheckAndWarnHookManagers_NoManagers(t *testing.T) {
 }
 
 func TestCheckAndWarnHookManagers_WithHusky(t *testing.T) {
-	// Needs t.Chdir, cannot be parallel
-	tmpDir := t.TempDir()
-	t.Chdir(tmpDir)
-
-	initGitRepo(t, tmpDir)
+	// Needs t.Chdir (via initHooksTestRepo), cannot be parallel
+	tmpDir, _ := initHooksTestRepo(t)
 
 	// Create .husky/_/ directory
 	if err := os.MkdirAll(filepath.Join(tmpDir, ".husky", "_"), 0o755); err != nil {
@@ -414,18 +403,4 @@ func TestCheckAndWarnHookManagers_WithHusky(t *testing.T) {
 	if !strings.Contains(output, "Warning: Husky detected") {
 		t.Errorf("expected warning output, got %q", output)
 	}
-}
-
-// initGitRepo initializes a git repo and clears the repo root cache.
-func initGitRepo(t *testing.T, dir string) {
-	t.Helper()
-
-	ctx := context.Background()
-	cmd := exec.CommandContext(ctx, "git", "init")
-	cmd.Dir = dir
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("failed to init git repo: %v", err)
-	}
-
-	paths.ClearRepoRootCache()
 }
