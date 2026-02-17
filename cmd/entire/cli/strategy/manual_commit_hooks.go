@@ -675,6 +675,7 @@ func (s *ManualCommitStrategy) PostCommit() error {
 		// partial changes, the file still has remaining agent changes to carry forward.
 		if handler.condensed {
 			remainingFiles := filesWithRemainingAgentChanges(repo, shadowBranchName, commit, filesTouchedBefore, committedFileSet)
+			state.FilesTouched = append([]string{}, remainingFiles...)
 			logging.Debug(logCtx, "post-commit: carry-forward decision (content-aware)",
 				slog.String("session_id", state.SessionID),
 				slog.Int("files_touched_before", len(filesTouchedBefore)),
@@ -1777,7 +1778,6 @@ func (s *ManualCommitStrategy) carryForwardToNewShadowBranch(
 	//   the full transcript, which could be large
 	// An alternative would be incremental checkpoints (only new content since last condensation),
 	// but this would complicate checkpoint retrieval and require careful tracking of dependencies.
-	state.FilesTouched = remainingFiles
 	state.StepCount = 1
 	state.CheckpointTranscriptStart = 0
 	state.LastCheckpointID = ""
