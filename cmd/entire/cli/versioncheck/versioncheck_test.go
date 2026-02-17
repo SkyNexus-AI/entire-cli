@@ -38,6 +38,13 @@ func TestIsOutdated(t *testing.T) {
 		// Pre-release versions (semver uses hyphen)
 		{"1.0.0-rc1", "1.0.0", true, "prerelease in current"},
 		{"1.0.0", "1.0.1-rc1", true, "prerelease in latest is still newer"},
+
+		// Git describe format (should strip suffix before comparing)
+		{"v0.4.4-76-g230b49bf-dirty", "v0.4.4", false, "git describe dirty build is not outdated"},
+		{"v0.4.4-76-g230b49bf", "v0.4.4", false, "git describe build is not outdated"},
+		{"v0.4.4-76-g230b49bf-dirty", "v0.4.5", true, "git describe build outdated by newer release"},
+		{"v0.4.4-1-gabcdef0", "v0.4.4", false, "git describe 1 commit ahead"},
+		{"v1.0.0-100-g1234567890ab-dirty", "v1.0.0", false, "git describe long hash dirty"},
 	}
 
 	for _, tt := range tests {
@@ -45,6 +52,33 @@ func TestIsOutdated(t *testing.T) {
 			got := isOutdated(tt.current, tt.latest)
 			if got != tt.want {
 				t.Errorf("isOutdated(%q, %q) = %v, want %v", tt.current, tt.latest, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestStripGitDescribeSuffix(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"v0.4.4-76-g230b49bf-dirty", "v0.4.4"},
+		{"v0.4.4-76-g230b49bf", "v0.4.4"},
+		{"v0.4.4-1-gabcdef0", "v0.4.4"},
+		{"v1.0.0-100-g1234567890ab-dirty", "v1.0.0"},
+		{"v0.4.4", "v0.4.4"},
+		{"1.0.0", "1.0.0"},
+		{"v1.0.0-rc1", "v1.0.0-rc1"},           // real prerelease, not git describe
+		{"v1.0.0-beta.1", "v1.0.0-beta.1"},     // real prerelease with dots
+		{"v1.0.0-dirty", "v1.0.0-dirty"},        // just dirty without commit info
+		{"v1.0.0-1-gXYZ", "v1.0.0-1-gXYZ"},     // non-hex hash, keep as-is
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got := stripGitDescribeSuffix(tt.input)
+			if got != tt.want {
+				t.Errorf("stripGitDescribeSuffix(%q) = %q, want %q", tt.input, got, tt.want)
 			}
 		})
 	}
