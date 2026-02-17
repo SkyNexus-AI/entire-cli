@@ -72,8 +72,8 @@ func hookManagerWarning(managers []hookManager, cmdPrefix string) string {
 			fmt.Fprintf(&b, "  To make Entire hooks permanent, add these lines to your %s hook files:\n", m.Name)
 			fmt.Fprintf(&b, "\n")
 
-			// Extract the hook directory prefix from the config path.
-			// e.g. ".husky/" → ".husky/"
+			// Use the config path as the hook directory prefix for hook files.
+			// For Husky, this is typically ".husky/" where hook scripts are stored.
 			hookDir := m.ConfigPath
 
 			for _, spec := range specs {
