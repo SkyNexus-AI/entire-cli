@@ -22,15 +22,10 @@ type hookManager struct {
 func detectHookManagers(repoRoot string) []hookManager {
 	var managers []hookManager
 
-	checks := []struct {
-		path            string
-		name            string
-		configPath      string
-		overwritesHooks bool
-	}{
-		{filepath.Join(repoRoot, ".husky", "_"), "Husky", ".husky/", true},
-		{filepath.Join(repoRoot, ".pre-commit-config.yaml"), "pre-commit", ".pre-commit-config.yaml", false},
-		{filepath.Join(repoRoot, ".overcommit.yml"), "Overcommit", ".overcommit.yml", false},
+	checks := []hookManager{
+		{"Husky", ".husky/", true},
+		{"pre-commit", ".pre-commit-config.yaml", false},
+		{"Overcommit", ".overcommit.yml", false},
 	}
 
 	// Lefthook supports {.,}lefthook{,-local}.{yml,yaml,json,toml}
@@ -38,28 +33,20 @@ func detectHookManagers(repoRoot string) []hookManager {
 		for _, variant := range []string{"", "-local"} {
 			for _, ext := range []string{"yml", "yaml", "json", "toml"} {
 				name := prefix + "lefthook" + variant + "." + ext
-				checks = append(checks, struct {
-					path            string
-					name            string
-					configPath      string
-					overwritesHooks bool
-				}{filepath.Join(repoRoot, name), "Lefthook", name, false})
+				checks = append(checks, hookManager{"Lefthook", name, false})
 			}
 		}
 	}
 
 	seen := make(map[string]bool)
 	for _, c := range checks {
-		if _, err := os.Stat(c.path); err == nil {
-			if seen[c.name] {
+		path := filepath.Join(repoRoot, c.ConfigPath)
+		if _, err := os.Stat(path); err == nil {
+			if seen[c.Name] {
 				continue // e.g., lefthook.yml and .lefthook.yml both present
 			}
-			seen[c.name] = true
-			managers = append(managers, hookManager{
-				Name:            c.name,
-				ConfigPath:      c.configPath,
-				OverwritesHooks: c.overwritesHooks,
-			})
+			seen[c.Name] = true
+			managers = append(managers, c)
 		}
 	}
 
