@@ -224,11 +224,6 @@ func parseGitHubRelease(body []byte) (string, error) {
 // isOutdated compares current and latest versions using semantic versioning.
 // Returns true if current < latest.
 func isOutdated(current, latest string) bool {
-	// Strip git describe suffix (e.g., "v0.4.4-76-g230b49bf-dirty" → "v0.4.4").
-	// git describe appends "-N-gHASH" (and optionally "-dirty") to the tag,
-	// which semver misinterprets as a prerelease (sorting before the release).
-	current = stripGitDescribeSuffix(current)
-
 	// Ensure versions have "v" prefix for semver package
 	if !strings.HasPrefix(current, "v") {
 		current = "v" + current
@@ -237,54 +232,14 @@ func isOutdated(current, latest string) bool {
 		latest = "v" + latest
 	}
 
+	// Skip notification for prerelease versions (development builds).
+	// We don't publish prerelease versions, so these are development builds and shouldn't trigger update notifications.
+	if semver.Prerelease(current) != "" {
+		return false
+	}
+
 	// semver.Compare returns -1 if current < latest
 	return semver.Compare(current, latest) < 0
-}
-
-// stripGitDescribeSuffix removes the git describe suffix from a version string.
-// "v0.4.4-76-g230b49bf-dirty" → "v0.4.4"
-// "v0.4.4-76-g230b49bf" → "v0.4.4"
-// "v0.4.4" → "v0.4.4" (no change)
-func stripGitDescribeSuffix(version string) string {
-	// git describe format: <tag>-<N>-g<hash>[-dirty]
-	// The "-g" prefix on the hash is the distinguishing marker.
-	// Look for "-<number>-g<hex>" pattern.
-	v := version
-	if strings.HasSuffix(v, "-dirty") {
-		v = strings.TrimSuffix(v, "-dirty")
-	}
-	// Find the last "-g<hex>" segment
-	lastG := strings.LastIndex(v, "-g")
-	if lastG < 0 {
-		return version
-	}
-	// Verify the part after "-g" is hex characters (git hash)
-	hash := v[lastG+2:]
-	if len(hash) == 0 {
-		return version
-	}
-	for _, c := range hash {
-		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
-			return version
-		}
-	}
-	// Now strip the "-<N>-g<hash>" part: find the dash before the commit count
-	prefix := v[:lastG]
-	lastDash := strings.LastIndex(prefix, "-")
-	if lastDash < 0 {
-		return version
-	}
-	// Verify the part between the dashes is a number (commit count)
-	count := prefix[lastDash+1:]
-	if len(count) == 0 {
-		return version
-	}
-	for _, c := range count {
-		if c < '0' || c > '9' {
-			return version
-		}
-	}
-	return prefix[:lastDash]
 }
 
 // updateCommand returns the appropriate update instruction based on how the binary was installed.
