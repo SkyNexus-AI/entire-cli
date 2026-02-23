@@ -117,7 +117,10 @@ func (s *AutoCommitStrategy) ValidateRepository() error {
 //   - "prompt" (default): ask user with option to enable auto
 //   - "false"/"off"/"no": never push
 func (s *AutoCommitStrategy) PrePush(remote string) error {
-	return pushSessionsBranchCommon(remote, paths.MetadataBranchName)
+	if err := pushSessionsBranchCommon(remote, paths.MetadataBranchName); err != nil {
+		return err
+	}
+	return PushTrailsBranch(remote)
 }
 
 func (s *AutoCommitStrategy) SaveStep(ctx StepContext) error {
@@ -157,6 +160,18 @@ func (s *AutoCommitStrategy) SaveStep(ctx StepContext) error {
 	_, err = s.commitMetadataToMetadataBranch(repo, ctx, cpID)
 	if err != nil {
 		return fmt.Errorf("failed to commit metadata to entire/checkpoints/v1 branch: %w", err)
+	}
+
+	// Link checkpoint to trail (best-effort)
+	appendCheckpointToTrail(repo, cpID, codeResult.CommitHash, nil)
+
+	// Generate trail title/description (best-effort, first condensation only)
+	branchName := GetCurrentBranchName(repo)
+	if branchName != "" && branchName != GetDefaultBranchName(repo) && ctx.TranscriptPath != "" {
+		if transcriptData, readErr := os.ReadFile(ctx.TranscriptPath); readErr == nil {
+			filesTouched := mergeFilesTouched(nil, ctx.ModifiedFiles, ctx.NewFiles, ctx.DeletedFiles)
+			generateTrailTitleFromTranscript(repo, branchName, transcriptData, filesTouched, ctx.AgentType)
+		}
 	}
 
 	// Log checkpoint creation

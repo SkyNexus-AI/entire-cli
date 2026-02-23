@@ -252,7 +252,9 @@ func (s *ManualCommitStrategy) CondenseSession(repo *git.Repository, checkpointI
 		SessionID:            state.SessionID,
 		CheckpointsCount:     state.StepCount,
 		FilesTouched:         sessionData.FilesTouched,
+		Prompts:              sessionData.Prompts,
 		TotalTranscriptLines: sessionData.FullTranscriptLines,
+		Transcript:           sessionData.Transcript,
 	}, nil
 }
 

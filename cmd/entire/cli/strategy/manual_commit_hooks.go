@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/entireio/cli/cmd/entire/cli/agent"
 	"github.com/entireio/cli/cmd/entire/cli/agent/claudecode"
@@ -18,7 +19,10 @@ import (
 	"github.com/entireio/cli/cmd/entire/cli/logging"
 	"github.com/entireio/cli/cmd/entire/cli/paths"
 	"github.com/entireio/cli/cmd/entire/cli/session"
+	"github.com/entireio/cli/cmd/entire/cli/settings"
 	"github.com/entireio/cli/cmd/entire/cli/stringutil"
+	"github.com/entireio/cli/cmd/entire/cli/summarize"
+	"github.com/entireio/cli/cmd/entire/cli/trail"
 	"github.com/entireio/cli/cmd/entire/cli/trailers"
 	"github.com/entireio/cli/redact"
 
@@ -817,6 +821,15 @@ func (s *ManualCommitStrategy) condenseAndUpdateState(
 			slog.String("error", err.Error()),
 		)
 		return false
+	}
+
+	// Link checkpoint to trail (best-effort)
+	appendCheckpointToTrail(repo, result.CheckpointID, head.Hash(), result.Prompts)
+
+	// Generate trail title/description from transcript (best-effort, first condensation only)
+	branchName := GetCurrentBranchName(repo)
+	if branchName != "" && branchName != GetDefaultBranchName(repo) && len(result.Transcript) > 0 {
+		generateTrailTitleFromTranscript(repo, branchName, result.Transcript, result.FilesTouched, state.AgentType)
 	}
 
 	// Track this shadow branch for cleanup
@@ -1906,4 +1919,86 @@ func (s *ManualCommitStrategy) carryForwardToNewShadowBranch(
 		slog.String("session_id", state.SessionID),
 		slog.Int("remaining_files", len(remainingFiles)),
 	)
+}
+
+// generateTrailTitleFromTranscript uses the agent's text generation capability
+// to generate a proper title and description for the trail. Best-effort: silently
+// returns on any error. Only generates once (skips if description already set).
+func generateTrailTitleFromTranscript(repo *git.Repository, branchName string, transcriptBytes []byte, filesTouched []string, agentType agent.AgentType) {
+	if !settings.IsSummarizeEnabled() {
+		return
+	}
+	store := trail.NewStore(repo)
+	existing, err := store.FindByBranch(branchName)
+	if err != nil || existing == nil {
+		return
+	}
+	// Only generate once: skip if description already set
+	if existing.Description != "" {
+		return
+	}
+
+	logCtx := logging.WithComponent(context.Background(), "trail-title")
+	result, err := summarize.GenerateTrailTitle(logCtx, transcriptBytes, filesTouched, agentType)
+	if err != nil {
+		logging.Debug(logCtx, "trail title generation skipped",
+			slog.String("error", err.Error()))
+		return
+	}
+
+	//nolint:errcheck,gosec // best-effort: trail title generation is non-critical
+	store.Update(existing.TrailID, func(m *trail.Metadata) {
+		if result.Title != "" {
+			m.Title = result.Title
+		}
+		if result.Description != "" {
+			m.Description = result.Description
+		}
+	})
+}
+
+// appendCheckpointToTrail links a checkpoint to the trail for the current branch.
+// Best-effort: silently returns on any error (trails are non-critical metadata).
+func appendCheckpointToTrail(repo *git.Repository, cpID id.CheckpointID, commitSHA plumbing.Hash, prompts []string) {
+	branchName := GetCurrentBranchName(repo)
+	if branchName == "" {
+		return
+	}
+	defaultBranch := GetDefaultBranchName(repo)
+	if branchName == defaultBranch {
+		return
+	}
+
+	store := trail.NewStore(repo)
+	existing, err := store.FindByBranch(branchName)
+	if err != nil || existing == nil {
+		return
+	}
+
+	var summary string
+	if len(prompts) > 0 {
+		summary = truncateForSummary(prompts[len(prompts)-1], 200)
+	}
+
+	//nolint:errcheck,gosec // best-effort: trail checkpoint linking is non-critical
+	store.AddCheckpoint(existing.TrailID, trail.CheckpointRef{
+		CheckpointID: cpID.String(),
+		CommitSHA:    commitSHA.String(),
+		CreatedAt:    time.Now().UTC(),
+		Summary:      summary,
+	})
+}
+
+// truncateForSummary truncates a string to maxLen, adding "..." if truncated.
+// Takes the first line only to keep summaries concise.
+func truncateForSummary(s string, maxLen int) string {
+	line, _, _ := strings.Cut(s, "\n")
+	line = strings.TrimSpace(line)
+	if len(line) <= maxLen {
+		return line
+	}
+	if maxLen <= 3 {
+		return line[:maxLen]
+	}
+	return line[:maxLen-3] + "..."
 }

@@ -9,5 +9,8 @@ import "github.com/entireio/cli/cmd/entire/cli/paths"
 //   - "prompt" (default): ask user with option to enable auto
 //   - "false"/"off"/"no": never push
 func (s *ManualCommitStrategy) PrePush(remote string) error {
-	return pushSessionsBranchCommon(remote, paths.MetadataBranchName)
+	if err := pushSessionsBranchCommon(remote, paths.MetadataBranchName); err != nil {
+		return err
+	}
+	return PushTrailsBranch(remote)
 }
