@@ -1,5 +1,11 @@
 {
   "strategy": "manual-commit",
   "enabled": true,
-  "local_dev": true
+  "local_dev": true,
+  "strategy_options": {
+    "wingman": {
+      "enabled": true
+    }
+  },
+  "telemetry": true
 }
