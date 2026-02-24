@@ -135,3 +135,7 @@ run = "E2E_AGENT=gemini go test -tags=e2e -count=1 -parallel 1 -timeout=30m -v .
 [tasks."test:e2e:opencode"]
 description = "Run E2E tests with OpenCode"
 run = "E2E_AGENT=opencode go test -tags=e2e -count=1 -timeout=30m -v ./cmd/entire/cli/e2e_test/..."
+
+[tasks."test:e2e:factoryai-droid"]
+description = "Run E2E tests with Factory AI Droid"
+run = "E2E_AGENT=factoryai-droid go test -tags=e2e -count=1 -timeout=30m -v ./cmd/entire/cli/e2e_test/..."

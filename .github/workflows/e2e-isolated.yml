@@ -8,7 +8,7 @@ on:
         required: true
         default: "gemini"
         type: choice
-        options: [claude, opencode, gemini]
+        options: [claude, opencode, gemini, factoryai-droid]
       test:
         description: "Test name filter (regex)"
         required: true

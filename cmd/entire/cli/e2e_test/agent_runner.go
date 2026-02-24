@@ -346,8 +346,10 @@ type FactoryAIDroidRunner struct {
 func NewFactoryAIDroidRunner(config AgentRunnerConfig) *FactoryAIDroidRunner {
 	model := config.Model
 	if model == "" {
-		model = os.Getenv("E2E_DROID_MODEL")
-		// No default model — use droid's built-in default if not specified
+		model = os.Getenv("E2E_CLAUDE_MODEL")
+		if model == "" {
+			model = "claude-haiku-4-5-20251001"
+		}
 	}
 
 	timeout := config.Timeout
@@ -373,15 +375,15 @@ func (r *FactoryAIDroidRunner) Name() string {
 	return AgentNameFactoryAIDroid
 }
 
-// IsAvailable checks if droid CLI is installed and FACTORY_API_KEY is set.
-// Droid uses API key authentication, not OAuth.
+// IsAvailable checks if droid CLI is installed and ANTHROPIC_API_KEY is set.
+// Droid uses BYOK (Bring Your Own Key) with Anthropic API for E2E tests.
 func (r *FactoryAIDroidRunner) IsAvailable() (bool, error) {
 	if _, err := exec.LookPath("droid"); err != nil {
 		return false, fmt.Errorf("droid CLI not found in PATH: %w", err)
 	}
 
-	if os.Getenv("FACTORY_API_KEY") == "" {
-		return false, fmt.Errorf("FACTORY_API_KEY environment variable not set")
+	if os.Getenv("ANTHROPIC_API_KEY") == "" {
+		return false, fmt.Errorf("ANTHROPIC_API_KEY environment variable not set")
 	}
 
 	return true, nil
@@ -402,6 +404,7 @@ func (r *FactoryAIDroidRunner) runPromptWithExec(ctx context.Context, workDir st
 		"--cwd", workDir,
 		"--auto", r.AutoLevel,
 		"-o", "text",
+		"--model", "E2E Claude Model",
 	}
 
 	// Droid uses its own permission system (.factory/settings.json), not --enabled-tools.

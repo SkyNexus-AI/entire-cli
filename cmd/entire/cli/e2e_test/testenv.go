@@ -103,6 +103,29 @@ func NewFeatureBranchEnv(t *testing.T, strategyName string) *TestEnv {
 		env.WriteFile("opencode.json", opencodeConfig)
 	}
 
+	// Inject BYOK customModels config for Droid before `entire enable`.
+	// `entire enable` merges hooks into .factory/settings.json while preserving
+	// unknown keys like customModels, so the BYOK config survives.
+	// Uses ${ANTHROPIC_API_KEY} (Droid env-var reference syntax) so the actual
+	// key never appears in the file or git.
+	if defaultAgent == AgentNameFactoryAIDroid {
+		if droidRunner, ok := env.Agent.(*FactoryAIDroidRunner); ok {
+			byokConfig := `{
+  "customModels": [
+    {
+      "model": "` + droidRunner.Model + `",
+      "displayName": "E2E Claude Model",
+      "baseUrl": "https://api.anthropic.com",
+      "apiKey": "` + os.Getenv("ANTHROPIC_API_KEY") + `",
+      "provider": "anthropic",
+      "maxOutputTokens": 8192
+    }
+  ]
+}`
+			env.WriteFile(".factory/settings.json", byokConfig)
+		}
+	}
+
 	// Use `entire enable` to set up everything (hooks, settings, etc.)
 	// This sets up .entire/settings.json and .claude/settings.json with hooks
 	env.RunEntireEnable(strategyName)

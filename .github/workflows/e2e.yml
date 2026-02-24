@@ -19,7 +19,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        agent: [claude, opencode]
+        agent: [claude, opencode, factoryai-droid]
 
     steps:
       - name: Checkout repository
@@ -33,6 +33,7 @@ jobs:
           case "${{ matrix.agent }}" in
             claude)   curl -fsSL https://claude.ai/install.sh | bash ;;
             opencode) curl -fsSL https://opencode.ai/install | bash ;;
+            factoryai-droid) curl -fsSL https://app.factory.ai/cli | sh ;;
           esac
           echo "$HOME/.local/bin" >> $GITHUB_PATH
 
