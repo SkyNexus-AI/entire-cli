@@ -375,15 +375,20 @@ func (r *FactoryAIDroidRunner) Name() string {
 	return AgentNameFactoryAIDroid
 }
 
-// IsAvailable checks if droid CLI is installed and ANTHROPIC_API_KEY is set.
-// Droid uses BYOK (Bring Your Own Key) with Anthropic API for E2E tests.
+// IsAvailable checks if droid CLI is installed and required API keys are set.
+// Droid requires FACTORY_API_KEY for platform authentication and
+// ANTHROPIC_API_KEY for BYOK (Bring Your Own Key) LLM calls in E2E tests.
 func (r *FactoryAIDroidRunner) IsAvailable() (bool, error) {
 	if _, err := exec.LookPath("droid"); err != nil {
 		return false, fmt.Errorf("droid CLI not found in PATH: %w", err)
 	}
 
+	if os.Getenv("FACTORY_API_KEY") == "" {
+		return false, fmt.Errorf("FACTORY_API_KEY environment variable not set (required for Droid platform auth)")
+	}
+
 	if os.Getenv("ANTHROPIC_API_KEY") == "" {
-		return false, fmt.Errorf("ANTHROPIC_API_KEY environment variable not set")
+		return false, fmt.Errorf("ANTHROPIC_API_KEY environment variable not set (required for BYOK LLM calls)")
 	}
 
 	return true, nil

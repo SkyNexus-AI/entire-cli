@@ -46,6 +46,7 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          FACTORY_API_KEY: ${{ secrets.FACTORY_API_KEY }}
           E2E_ARTIFACT_DIR: ${{ github.workspace }}/e2e-artifacts
         run: |
           mkdir -p "$E2E_ARTIFACT_DIR"

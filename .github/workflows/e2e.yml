@@ -40,5 +40,6 @@ jobs:
       - name: Run E2E Tests
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          FACTORY_API_KEY: ${{ secrets.FACTORY_API_KEY }}
         run: |
           mise run test:e2e:${{ matrix.agent }}
