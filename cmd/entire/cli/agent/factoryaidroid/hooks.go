@@ -48,10 +48,10 @@ var entireHookPrefixes = []string{
 func (f *FactoryAIDroidAgent) InstallHooks(localDev bool, force bool) (int, error) {
 	// Use repo root instead of CWD to find .factory directory
 	// This ensures hooks are installed correctly when run from a subdirectory
-	repoRoot, err := paths.RepoRoot()
+	repoRoot, err := paths.WorktreeRoot()
 	if err != nil {
 		// Fallback to CWD if not in a git repo (e.g., during tests)
-		repoRoot, err = os.Getwd() //nolint:forbidigo // Intentional fallback when RepoRoot() fails (tests run outside git repos)
+		repoRoot, err = os.Getwd() //nolint:forbidigo // Intentional fallback when WorktreeRoot() fails (tests run outside git repos)
 		if err != nil {
 			return 0, fmt.Errorf("failed to get current directory: %w", err)
 		}
@@ -263,7 +263,7 @@ func marshalHookType(rawHooks map[string]json.RawMessage, hookType string, match
 // UninstallHooks removes Entire hooks from Factory AI Droid settings.
 func (f *FactoryAIDroidAgent) UninstallHooks() error {
 	// Use repo root to find .factory directory when run from a subdirectory
-	repoRoot, err := paths.RepoRoot()
+	repoRoot, err := paths.WorktreeRoot()
 	if err != nil {
 		repoRoot = "." // Fallback to CWD if not in a git repo
 	}
@@ -385,7 +385,7 @@ func (f *FactoryAIDroidAgent) UninstallHooks() error {
 // AreHooksInstalled checks if Entire hooks are installed.
 func (f *FactoryAIDroidAgent) AreHooksInstalled() bool {
 	// Use repo root to find .factory directory when run from a subdirectory
-	repoRoot, err := paths.RepoRoot()
+	repoRoot, err := paths.WorktreeRoot()
 	if err != nil {
 		repoRoot = "." // Fallback to CWD if not in a git repo
 	}

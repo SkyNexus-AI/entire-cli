@@ -55,7 +55,7 @@ func (f *FactoryAIDroidAgent) ProtectedDirs() []string { return []string{".facto
 
 // DetectPresence checks if Factory AI Droid is configured in the repository.
 func (f *FactoryAIDroidAgent) DetectPresence() (bool, error) {
-	repoRoot, err := paths.RepoRoot()
+	repoRoot, err := paths.WorktreeRoot()
 	if err != nil {
 		repoRoot = "."
 	}
