@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -298,6 +299,7 @@ func TestRunSessionsFix_DeprecatedStrategyWarning(t *testing.T) {
 
 	var stdout bytes.Buffer
 	cmd := &cobra.Command{Use: "doctor"}
+	cmd.SetContext(context.Background())
 	cmd.SetOut(&stdout)
 
 	// runSessionsFix should show warning after "No stuck sessions found."

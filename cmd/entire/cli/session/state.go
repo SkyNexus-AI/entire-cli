@@ -171,12 +171,12 @@ type PromptAttribution struct {
 
 // NormalizeAfterLoad applies backward-compatible migrations to state loaded from disk.
 // Call this after deserializing a State from JSON.
-func (s *State) NormalizeAfterLoad() {
+func (s *State) NormalizeAfterLoad(ctx context.Context) {
 	// Normalize legacy phase values. "active_committed" was removed with the
 	// 1:1 checkpoint model in favor of the state machine handling commits
 	// during ACTIVE phase with immediate condensation.
 	if s.Phase == "active_committed" {
-		logCtx := logging.WithComponent(context.Background(), "session")
+		logCtx := logging.WithComponent(ctx, "session")
 		logging.Info(logCtx, "migrating legacy active_committed phase to active",
 			slog.String("session_id", s.SessionID),
 		)
@@ -232,8 +232,8 @@ type StateStore struct {
 
 // NewStateStore creates a new state store.
 // Uses the git common dir to store session state (shared across worktrees).
-func NewStateStore() (*StateStore, error) {
-	commonDir, err := getGitCommonDir()
+func NewStateStore(ctx context.Context) (*StateStore, error) {
+	commonDir, err := getGitCommonDir(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get git common dir: %w", err)
 	}
@@ -271,7 +271,7 @@ func (s *StateStore) Load(ctx context.Context, sessionID string) (*State, error)
 	if err := json.Unmarshal(data, &state); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal session state: %w", err)
 	}
-	state.NormalizeAfterLoad()
+	state.NormalizeAfterLoad(ctx)
 
 	if state.IsStale() {
 		logCtx := logging.WithComponent(ctx, "session")
@@ -404,7 +404,7 @@ func ClearGitCommonDirCache() {
 // In a regular checkout, this is .git/
 // In a worktree, this is the main repo's .git/ (not .git/worktrees/<name>/)
 // The result is cached per working directory.
-func getGitCommonDir() (string, error) {
+func getGitCommonDir(ctx context.Context) (string, error) {
 	cwd, err := os.Getwd() //nolint:forbidigo // used for cache key, not git-relative paths
 	if err != nil {
 		cwd = ""
@@ -420,7 +420,6 @@ func getGitCommonDir() (string, error) {
 	gitCommonDirMu.RUnlock()
 
 	// Cache miss — resolve via git subprocess
-	ctx := context.Background()
 	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--git-common-dir")
 	cmd.Dir = "."
 	output, err := cmd.Output()

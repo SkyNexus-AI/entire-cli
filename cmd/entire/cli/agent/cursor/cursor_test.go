@@ -2,6 +2,7 @@ package cursor
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -264,7 +265,7 @@ func TestWriteSession_Success(t *testing.T) {
 		NativeData: []byte(content),
 	}
 
-	if err := ag.WriteSession(session); err != nil {
+	if err := ag.WriteSession(context.Background(), session); err != nil {
 		t.Fatalf("WriteSession() error = %v", err)
 	}
 
@@ -297,7 +298,7 @@ func TestWriteSession_RoundTrip(t *testing.T) {
 	// Write to new path
 	newPath := filepath.Join(tmpDir, "roundtrip.jsonl")
 	session.SessionRef = newPath
-	if err := ag.WriteSession(session); err != nil {
+	if err := ag.WriteSession(context.Background(), session); err != nil {
 		t.Fatalf("WriteSession() error = %v", err)
 	}
 
@@ -318,7 +319,7 @@ func TestWriteSession_RoundTrip(t *testing.T) {
 func TestWriteSession_Nil(t *testing.T) {
 	t.Parallel()
 	ag := &CursorAgent{}
-	if err := ag.WriteSession(nil); err == nil {
+	if err := ag.WriteSession(context.Background(), nil); err == nil {
 		t.Error("WriteSession(nil) should error")
 	}
 }
@@ -331,7 +332,7 @@ func TestWriteSession_WrongAgent(t *testing.T) {
 		SessionRef: "/path/to/file",
 		NativeData: []byte("data"),
 	}
-	if err := ag.WriteSession(session); err == nil {
+	if err := ag.WriteSession(context.Background(), session); err == nil {
 		t.Error("WriteSession() should error for wrong agent")
 	}
 }
@@ -347,7 +348,7 @@ func TestWriteSession_EmptyAgentName(t *testing.T) {
 		SessionRef: transcriptPath,
 		NativeData: []byte("data"),
 	}
-	if err := ag.WriteSession(session); err != nil {
+	if err := ag.WriteSession(context.Background(), session); err != nil {
 		t.Errorf("WriteSession() with empty AgentName should succeed, got: %v", err)
 	}
 }
@@ -359,7 +360,7 @@ func TestWriteSession_NoSessionRef(t *testing.T) {
 		AgentName:  agent.AgentNameCursor,
 		NativeData: []byte("data"),
 	}
-	if err := ag.WriteSession(session); err == nil {
+	if err := ag.WriteSession(context.Background(), session); err == nil {
 		t.Error("WriteSession() should error when SessionRef is empty")
 	}
 }
@@ -371,7 +372,7 @@ func TestWriteSession_NoNativeData(t *testing.T) {
 		AgentName:  agent.AgentNameCursor,
 		SessionRef: "/path/to/file",
 	}
-	if err := ag.WriteSession(session); err == nil {
+	if err := ag.WriteSession(context.Background(), session); err == nil {
 		t.Error("WriteSession() should error when NativeData is empty")
 	}
 }
@@ -384,7 +385,7 @@ func TestChunkTranscript_SmallContent(t *testing.T) {
 
 	content := []byte(strings.Join(sampleTranscriptLines(), "\n"))
 
-	chunks, err := ag.ChunkTranscript(content, agent.MaxChunkSize)
+	chunks, err := ag.ChunkTranscript(context.Background(), content, agent.MaxChunkSize)
 	if err != nil {
 		t.Fatalf("ChunkTranscript() error = %v", err)
 	}
@@ -413,7 +414,7 @@ func TestChunkTranscript_ForcesMultipleChunks(t *testing.T) {
 
 	// Force chunking with a small max size
 	maxSize := 500
-	chunks, err := ag.ChunkTranscript(content, maxSize)
+	chunks, err := ag.ChunkTranscript(context.Background(), content, maxSize)
 	if err != nil {
 		t.Fatalf("ChunkTranscript() error = %v", err)
 	}
@@ -438,7 +439,7 @@ func TestChunkTranscript_RoundTrip(t *testing.T) {
 	original := []byte(strings.Join(lines, "\n"))
 
 	// Chunk with small max to force splits
-	chunks, err := ag.ChunkTranscript(original, 300)
+	chunks, err := ag.ChunkTranscript(context.Background(), original, 300)
 	if err != nil {
 		t.Fatalf("ChunkTranscript() error = %v", err)
 	}
@@ -460,7 +461,7 @@ func TestChunkTranscript_SingleChunkRoundTrip(t *testing.T) {
 
 	content := []byte(strings.Join(sampleTranscriptLines(), "\n"))
 
-	chunks, err := ag.ChunkTranscript(content, agent.MaxChunkSize)
+	chunks, err := ag.ChunkTranscript(context.Background(), content, agent.MaxChunkSize)
 	if err != nil {
 		t.Fatalf("ChunkTranscript() error = %v", err)
 	}
@@ -479,7 +480,7 @@ func TestChunkTranscript_EmptyContent(t *testing.T) {
 	t.Parallel()
 	ag := &CursorAgent{}
 
-	chunks, err := ag.ChunkTranscript([]byte{}, agent.MaxChunkSize)
+	chunks, err := ag.ChunkTranscript(context.Background(), []byte{}, agent.MaxChunkSize)
 	if err != nil {
 		t.Fatalf("ChunkTranscript() error = %v", err)
 	}
@@ -513,7 +514,7 @@ func TestChunkTranscript_PreservesLineOrder(t *testing.T) {
 	}
 	original := strings.Join(lines, "\n")
 
-	chunks, err := ag.ChunkTranscript([]byte(original), 400)
+	chunks, err := ag.ChunkTranscript(context.Background(), []byte(original), 400)
 	if err != nil {
 		t.Fatalf("ChunkTranscript() error = %v", err)
 	}
@@ -535,7 +536,7 @@ func TestDetectPresence_NoCursorDir(t *testing.T) {
 	t.Chdir(tmpDir)
 
 	ag := &CursorAgent{}
-	present, err := ag.DetectPresence()
+	present, err := ag.DetectPresence(context.Background())
 	if err != nil {
 		t.Fatalf("DetectPresence() error = %v", err)
 	}
@@ -557,7 +558,7 @@ func TestDetectPresence_WithCursorDir(t *testing.T) {
 	initGitRepo(t, tmpDir)
 
 	ag := &CursorAgent{}
-	present, err := ag.DetectPresence()
+	present, err := ag.DetectPresence(context.Background())
 	if err != nil {
 		t.Fatalf("DetectPresence() error = %v", err)
 	}

@@ -23,19 +23,19 @@ import (
 // Configuration (stored in .entire/settings.json under strategy_options.push_sessions):
 //   - false: disable automatic pushing
 //   - true or not set: push automatically (default)
-func pushSessionsBranchCommon(remote, branchName string) error {
+func pushSessionsBranchCommon(ctx context.Context, remote, branchName string) error {
 	// Check if pushing is disabled
-	if isPushSessionsDisabled() {
+	if isPushSessionsDisabled(ctx) {
 		return nil
 	}
 
-	return pushBranchIfNeeded(remote, branchName)
+	return pushBranchIfNeeded(ctx, remote, branchName)
 }
 
 // pushBranchIfNeeded pushes a branch to the remote if it has unpushed changes.
 // Does not check any settings — callers are responsible for gating.
-func pushBranchIfNeeded(remote, branchName string) error {
-	repo, err := OpenRepository()
+func pushBranchIfNeeded(ctx context.Context, remote, branchName string) error {
+	repo, err := OpenRepository(ctx)
 	if err != nil {
 		return nil //nolint:nilerr // Hook must be silent on failure
 	}
@@ -54,7 +54,7 @@ func pushBranchIfNeeded(remote, branchName string) error {
 		return nil
 	}
 
-	return doPushBranch(remote, branchName)
+	return doPushBranch(ctx, remote, branchName)
 }
 
 // hasUnpushedSessionsCommon checks if the local branch differs from the remote.
@@ -75,8 +75,8 @@ func hasUnpushedSessionsCommon(repo *git.Repository, remote string, localHash pl
 
 // isPushSessionsDisabled checks if push_sessions is disabled in settings.
 // Returns true if push_sessions is explicitly set to false.
-func isPushSessionsDisabled() bool {
-	s, err := settings.Load()
+func isPushSessionsDisabled(ctx context.Context) bool {
+	s, err := settings.Load(ctx)
 	if err != nil {
 		return false // Default: push is enabled
 	}
@@ -84,24 +84,24 @@ func isPushSessionsDisabled() bool {
 }
 
 // doPushBranch pushes the given branch to the remote with fetch+merge recovery.
-func doPushBranch(remote, branchName string) error {
+func doPushBranch(ctx context.Context, remote, branchName string) error {
 	fmt.Fprintf(os.Stderr, "[entire] Pushing %s to %s...\n", branchName, remote)
 
 	// Try pushing first
-	if err := tryPushSessionsCommon(remote, branchName); err == nil {
+	if err := tryPushSessionsCommon(ctx, remote, branchName); err == nil {
 		return nil
 	}
 
 	// Push failed - likely non-fast-forward. Try to fetch and merge.
 	fmt.Fprintf(os.Stderr, "[entire] Syncing %s with remote...\n", branchName)
 
-	if err := fetchAndMergeSessionsCommon(remote, branchName); err != nil {
+	if err := fetchAndMergeSessionsCommon(ctx, remote, branchName); err != nil {
 		fmt.Fprintf(os.Stderr, "[entire] Warning: couldn't sync %s: %v\n", branchName, err)
 		return nil // Don't fail the main push
 	}
 
 	// Try pushing again after merge
-	if err := tryPushSessionsCommon(remote, branchName); err != nil {
+	if err := tryPushSessionsCommon(ctx, remote, branchName); err != nil {
 		fmt.Fprintf(os.Stderr, "[entire] Warning: failed to push %s after sync: %v\n", branchName, err)
 	}
 
@@ -109,8 +109,8 @@ func doPushBranch(remote, branchName string) error {
 }
 
 // tryPushSessionsCommon attempts to push the sessions branch.
-func tryPushSessionsCommon(remote, branchName string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+func tryPushSessionsCommon(ctx context.Context, remote, branchName string) error {
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 
 	// Use --no-verify to prevent recursive hook calls
@@ -131,8 +131,8 @@ func tryPushSessionsCommon(remote, branchName string) error {
 
 // fetchAndMergeSessionsCommon fetches remote sessions and merges into local using go-git.
 // Since session logs are append-only (unique cond-* directories), we just combine trees.
-func fetchAndMergeSessionsCommon(remote, branchName string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+func fetchAndMergeSessionsCommon(ctx context.Context, remote, branchName string) error {
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 
 	// Use git CLI for fetch (go-git's fetch can be tricky with auth)
@@ -142,7 +142,7 @@ func fetchAndMergeSessionsCommon(remote, branchName string) error {
 		return fmt.Errorf("fetch failed: %s", output)
 	}
 
-	repo, err := OpenRepository()
+	repo, err := OpenRepository(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to open git repository: %w", err)
 	}
@@ -210,8 +210,8 @@ func fetchAndMergeSessionsCommon(remote, branchName string) error {
 
 // PushTrailsBranch pushes the entire/trails branch to the remote.
 // Trails are always pushed regardless of the push_sessions setting.
-func PushTrailsBranch(remote string) error {
-	return pushBranchIfNeeded(remote, paths.TrailsBranchName)
+func PushTrailsBranch(ctx context.Context, remote string) error {
+	return pushBranchIfNeeded(ctx, remote, paths.TrailsBranchName)
 }
 
 // createMergeCommitCommon creates a merge commit with multiple parents.

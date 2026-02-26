@@ -50,10 +50,10 @@ func (g *GeminiCLIAgent) Description() string {
 func (g *GeminiCLIAgent) IsPreview() bool { return true }
 
 // DetectPresence checks if Gemini CLI is configured in the repository.
-func (g *GeminiCLIAgent) DetectPresence() (bool, error) {
+func (g *GeminiCLIAgent) DetectPresence(ctx context.Context) (bool, error) {
 	// Get worktree root to check for .gemini directory
 	// This is needed because the CLI may be run from a subdirectory
-	repoRoot, err := paths.WorktreeRoot()
+	repoRoot, err := paths.WorktreeRoot(ctx)
 	if err != nil {
 		// Not in a git repo, fall back to CWD-relative check
 		repoRoot = "."
@@ -154,7 +154,7 @@ func (g *GeminiCLIAgent) ReadSession(input *agent.HookInput) (*agent.AgentSessio
 
 // WriteSession writes a session to Gemini's storage (JSON transcript file).
 // Uses the NativeData field which contains raw JSON bytes.
-func (g *GeminiCLIAgent) WriteSession(session *agent.AgentSession) error {
+func (g *GeminiCLIAgent) WriteSession(_ context.Context, session *agent.AgentSession) error {
 	if session == nil {
 		return errors.New("session is nil")
 	}
@@ -299,7 +299,7 @@ func (g *GeminiCLIAgent) ExtractModifiedFilesFromOffset(path string, startOffset
 // ChunkTranscript splits a Gemini JSON transcript by distributing messages across chunks.
 // Gemini uses JSON format with a {"messages": [...]} structure, so chunking splits
 // the messages array while preserving the JSON structure in each chunk.
-func (g *GeminiCLIAgent) ChunkTranscript(content []byte, maxSize int) ([][]byte, error) {
+func (g *GeminiCLIAgent) ChunkTranscript(ctx context.Context, content []byte, maxSize int) ([][]byte, error) {
 	var transcript GeminiTranscript
 	if err := json.Unmarshal(content, &transcript); err != nil {
 		// Fall back to JSONL chunking if not valid Gemini JSON
@@ -322,7 +322,7 @@ func (g *GeminiCLIAgent) ChunkTranscript(content []byte, maxSize int) ([][]byte,
 		// Marshal message to get its size
 		msgBytes, err := json.Marshal(msg)
 		if err != nil {
-			logging.Warn(context.Background(), "failed to marshal Gemini message during chunking",
+			logging.Warn(ctx, "failed to marshal Gemini message during chunking",
 				slog.Int("message_index", i),
 				slog.String("error", err.Error()),
 			)

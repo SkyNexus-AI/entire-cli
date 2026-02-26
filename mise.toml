@@ -1,8 +1,9 @@
 [tools]
 # Please also keep the version aligned in the go.mod file
-go = { version = '1.25.6', postinstall = "go install github.com/go-delve/delve/cmd/dlv@latest" }
-golangci-lint = '2.8.0'
+go = { version = '1.26.0', postinstall = "go install github.com/go-delve/delve/cmd/dlv@latest && go install gotest.tools/gotestsum@latest" }
+golangci-lint = '2.10.1'
 shellcheck = 'latest'
+tmux = 'latest'
 
 [tasks.fmt]
 description = "Run gofmt"
@@ -25,7 +26,7 @@ description = "Build the CLI"
 run = """
 VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "dev")
 COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
-go build -ldflags "-X github.com/entireio/cli/cmd/entire/cli/buildinfo.Version=${VERSION} -X github.com/entireio/cli/cmd/entire/cli/buildinfo.Commit=${COMMIT}" -o entire ./cmd/entire
+go build -ldflags "-X github.com/entireio/cli/cmd/entire/cli/versioninfo.Version=${VERSION} -X github.com/entireio/cli/cmd/entire/cli/versioninfo.Commit=${COMMIT}" -o entire ./cmd/entire
 """
 
 [tasks."build:all"]
@@ -120,18 +121,57 @@ fi
 '''
 
 [tasks."test:e2e"]
-description = "Run E2E tests with real agent calls (requires claude CLI)"
-# -count=1 disables test caching since E2E tests call real external agents
-run = "go test -tags=e2e -count=1 -timeout=30m -v ./cmd/entire/cli/e2e_test/..."
+description = "Run all E2E tests, optionally filtered: mise run test:e2e TestFoo"
+usage = 'arg "[filter]" help="Test name filter (regex)" default=""'
+quiet = true
+run = """
+E2E_ARTIFACT_DIR="$PWD/e2e/artifacts/$(date +%Y-%m-%dT%H-%M-%S)"
+export E2E_ARTIFACT_DIR
+mkdir -p "$E2E_ARTIFACT_DIR"
+echo "artifacts: $E2E_ARTIFACT_DIR"
+gotestsum --format dots --jsonfile "$E2E_ARTIFACT_DIR/test-events.json" -- -tags=e2e -count=1 -timeout=30m ${usage_filter:+-run "$usage_filter"} ./e2e/tests/... || rc=$?
+go run ./e2e/cmd/testreport -color -o "$E2E_ARTIFACT_DIR/report.txt" "$E2E_ARTIFACT_DIR/test-events.json"
+exit ${rc:-0}
+"""
 
 [tasks."test:e2e:claude"]
-description = "Run E2E tests with Claude Code (haiku model)"
-run = "E2E_AGENT=claude-code go test -tags=e2e -count=1 -timeout=30m -v ./cmd/entire/cli/e2e_test/..."
+description = "Run E2E tests with Claude Code, optionally filtered"
+usage = 'arg "[filter]" help="Test name filter (regex)" default=""'
+quiet = true
+run = """
+E2E_ARTIFACT_DIR="$PWD/e2e/artifacts/$(date +%Y-%m-%dT%H-%M-%S)"
+export E2E_ARTIFACT_DIR
+mkdir -p "$E2E_ARTIFACT_DIR"
+echo "artifacts: $E2E_ARTIFACT_DIR"
+E2E_AGENT=claude-code gotestsum --format dots --jsonfile "$E2E_ARTIFACT_DIR/test-events.json" -- -tags=e2e -count=1 -timeout=30m ${usage_filter:+-run "$usage_filter"} ./e2e/tests/... || rc=$?
+go run ./e2e/cmd/testreport -color -o "$E2E_ARTIFACT_DIR/report.txt" "$E2E_ARTIFACT_DIR/test-events.json"
+exit ${rc:-0}
+"""
 
 [tasks."test:e2e:gemini"]
 description = "Run E2E tests with Gemini CLI (sequential to avoid rate limits)"
-run = "E2E_AGENT=gemini go test -tags=e2e -count=1 -parallel 1 -timeout=30m -v ./cmd/entire/cli/e2e_test/..."
+usage = 'arg "[filter]" help="Test name filter (regex)" default=""'
+quiet = true
+run = """
+E2E_ARTIFACT_DIR="$PWD/e2e/artifacts/$(date +%Y-%m-%dT%H-%M-%S)"
+export E2E_ARTIFACT_DIR
+mkdir -p "$E2E_ARTIFACT_DIR"
+echo "artifacts: $E2E_ARTIFACT_DIR"
+E2E_AGENT=gemini-cli gotestsum --format dots --jsonfile "$E2E_ARTIFACT_DIR/test-events.json" -- -tags=e2e -count=1 -parallel 1 -timeout=30m ${usage_filter:+-run "$usage_filter"} ./e2e/tests/... || rc=$?
+go run ./e2e/cmd/testreport -color -o "$E2E_ARTIFACT_DIR/report.txt" "$E2E_ARTIFACT_DIR/test-events.json"
+exit ${rc:-0}
+"""
 
 [tasks."test:e2e:opencode"]
 description = "Run E2E tests with OpenCode"
-run = "E2E_AGENT=opencode go test -tags=e2e -count=1 -timeout=30m -v ./cmd/entire/cli/e2e_test/..."
+usage = 'arg "[filter]" help="Test name filter (regex)" default=""'
+quiet = true
+run = """
+E2E_ARTIFACT_DIR="$PWD/e2e/artifacts/$(date +%Y-%m-%dT%H-%M-%S)"
+export E2E_ARTIFACT_DIR
+mkdir -p "$E2E_ARTIFACT_DIR"
+echo "artifacts: $E2E_ARTIFACT_DIR"
+E2E_AGENT=opencode gotestsum --format dots --jsonfile "$E2E_ARTIFACT_DIR/test-events.json" -- -tags=e2e -count=1 -timeout=30m ${usage_filter:+-run "$usage_filter"} ./e2e/tests/... || rc=$?
+go run ./e2e/cmd/testreport -color -o "$E2E_ARTIFACT_DIR/report.txt" "$E2E_ARTIFACT_DIR/test-events.json"
+exit ${rc:-0}
+"""

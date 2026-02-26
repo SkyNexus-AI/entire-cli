@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"strings"
 	"testing"
 )
@@ -88,7 +89,7 @@ func TestDetect(t *testing.T) {
 			return &mockAgent{} // DetectPresence returns false
 		})
 
-		_, err := Detect()
+		_, err := Detect(context.Background())
 		if err == nil {
 			t.Error("expected error when no agent detected")
 		}
@@ -108,7 +109,7 @@ func TestDetect(t *testing.T) {
 			return &detectableAgent{}
 		})
 
-		agent, err := Detect()
+		agent, err := Detect(context.Background())
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -127,7 +128,7 @@ func (d *detectableAgent) Name() AgentName {
 	return AgentName("detectable")
 }
 
-func (d *detectableAgent) DetectPresence() (bool, error) {
+func (d *detectableAgent) DetectPresence(_ context.Context) (bool, error) {
 	return true, nil
 }
 

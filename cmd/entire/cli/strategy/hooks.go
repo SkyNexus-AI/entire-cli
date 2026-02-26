@@ -37,8 +37,8 @@ type hookSpec struct {
 // GetGitDir returns the actual git directory path by delegating to git itself.
 // This handles both regular repositories and worktrees, and inherits git's
 // security validation for gitdir references.
-func GetGitDir() (string, error) {
-	return getGitDirInPath(".")
+func GetGitDir(ctx context.Context) (string, error) {
+	return getGitDirInPath(ctx, ".")
 }
 
 // hooksDirCache caches the hooks directory to avoid repeated git subprocess spawns.
@@ -53,7 +53,7 @@ var (
 // This respects core.hooksPath and correctly resolves to the common hooks
 // directory when called from a linked worktree.
 // The result is cached per working directory.
-func GetHooksDir() (string, error) {
+func GetHooksDir(ctx context.Context) (string, error) {
 	cwd, err := os.Getwd() //nolint:forbidigo // cache key for hooks dir, same pattern as paths.WorktreeRoot()
 	if err != nil {
 		cwd = ""
@@ -67,7 +67,7 @@ func GetHooksDir() (string, error) {
 	}
 	hooksDirMu.RUnlock()
 
-	result, err := getHooksDirInPath(".")
+	result, err := getHooksDirInPath(ctx, ".")
 	if err != nil {
 		return "", err
 	}
@@ -91,8 +91,7 @@ func ClearHooksDirCache() {
 
 // getGitDirInPath returns the git directory for a repository at the given path.
 // It delegates to `git rev-parse --git-dir` to leverage git's own validation.
-func getGitDirInPath(dir string) (string, error) {
-	ctx := context.Background()
+func getGitDirInPath(ctx context.Context, dir string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--git-dir")
 	cmd.Dir = dir
 	output, err := cmd.Output()
@@ -115,8 +114,7 @@ func getGitDirInPath(dir string) (string, error) {
 // It delegates to `git rev-parse --git-path hooks` so Git resolves:
 // - linked-worktree common hooks directory
 // - core.hooksPath (relative or absolute)
-func getHooksDirInPath(dir string) (string, error) {
-	ctx := context.Background()
+func getHooksDirInPath(ctx context.Context, dir string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--git-path", "hooks")
 	cmd.Dir = dir
 	output, err := cmd.Output()
@@ -133,8 +131,8 @@ func getHooksDirInPath(dir string) (string, error) {
 }
 
 // IsGitHookInstalled checks if all generic Entire CLI hooks are installed.
-func IsGitHookInstalled() bool {
-	hooksDir, err := GetHooksDir()
+func IsGitHookInstalled(ctx context.Context) bool {
+	hooksDir, err := GetHooksDir(ctx)
 	if err != nil {
 		return false
 	}
@@ -143,8 +141,8 @@ func IsGitHookInstalled() bool {
 
 // IsGitHookInstalledInDir checks if all Entire CLI hooks are installed in the given repo directory.
 // This is useful for tests that need to check hooks without changing the working directory.
-func IsGitHookInstalledInDir(repoDir string) bool {
-	hooksDir, err := getHooksDirInPath(repoDir)
+func IsGitHookInstalledInDir(ctx context.Context, repoDir string) bool {
+	hooksDir, err := getHooksDirInPath(ctx, repoDir)
 	if err != nil {
 		return false
 	}
@@ -209,8 +207,8 @@ func buildHookSpecs(cmdPrefix string) []hookSpec {
 // If silent is true, no output is printed (except backup notifications, which always print).
 // localDev controls whether hooks use "go run" (true) or the "entire" binary (false).
 // Returns the number of hooks that were installed (0 if all already up to date).
-func InstallGitHook(silent bool, localDev bool) (int, error) {
-	hooksDir, err := GetHooksDir()
+func InstallGitHook(ctx context.Context, silent bool, localDev bool) (int, error) {
+	hooksDir, err := GetHooksDir(ctx)
 	if err != nil {
 		return 0, err
 	}
@@ -283,8 +281,8 @@ func writeHookFile(path, content string) (bool, error) {
 // RemoveGitHook removes all Entire CLI git hooks from the repository.
 // If a .pre-entire backup exists, it is restored.
 // Returns the number of hooks removed.
-func RemoveGitHook() (int, error) {
-	hooksDir, err := GetHooksDir()
+func RemoveGitHook(ctx context.Context) (int, error) {
+	hooksDir, err := GetHooksDir(ctx)
 	if err != nil {
 		return 0, err
 	}
@@ -350,8 +348,8 @@ func hookCmdPrefix(localDev bool) string {
 
 // isLocalDev reads the local_dev setting from .entire/settings.json
 // Works correctly from any subdirectory within the repository.
-func isLocalDev() bool {
-	s, err := settings.Load()
+func isLocalDev(ctx context.Context) bool {
+	s, err := settings.Load(ctx)
 	if err != nil {
 		return false
 	}

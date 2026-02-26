@@ -38,8 +38,8 @@ func (a *OpenCodeAgent) Description() string     { return "OpenCode - AI-powered
 func (a *OpenCodeAgent) IsPreview() bool         { return true }
 func (a *OpenCodeAgent) ProtectedDirs() []string { return []string{".opencode"} }
 
-func (a *OpenCodeAgent) DetectPresence() (bool, error) {
-	repoRoot, err := paths.WorktreeRoot()
+func (a *OpenCodeAgent) DetectPresence(ctx context.Context) (bool, error) {
+	repoRoot, err := paths.WorktreeRoot(ctx)
 	if err != nil {
 		repoRoot = "."
 	}
@@ -67,7 +67,7 @@ func (a *OpenCodeAgent) ReadTranscript(sessionRef string) ([]byte, error) {
 
 // ChunkTranscript splits an OpenCode export JSON transcript by distributing messages across chunks.
 // OpenCode uses JSON format with {"info": {...}, "messages": [...]} structure.
-func (a *OpenCodeAgent) ChunkTranscript(content []byte, maxSize int) ([][]byte, error) {
+func (a *OpenCodeAgent) ChunkTranscript(_ context.Context, content []byte, maxSize int) ([][]byte, error) {
 	var session ExportSession
 	if err := json.Unmarshal(content, &session); err != nil {
 		return nil, fmt.Errorf("failed to parse export session for chunking: %w", err)
@@ -211,7 +211,7 @@ func (a *OpenCodeAgent) ReadSession(input *agent.HookInput) (*agent.AgentSession
 	}, nil
 }
 
-func (a *OpenCodeAgent) WriteSession(session *agent.AgentSession) error {
+func (a *OpenCodeAgent) WriteSession(ctx context.Context, session *agent.AgentSession) error {
 	if session == nil {
 		return errors.New("nil session")
 	}
@@ -221,22 +221,22 @@ func (a *OpenCodeAgent) WriteSession(session *agent.AgentSession) error {
 
 	// Import the session into OpenCode's database.
 	// This enables `opencode -s <id>` for both resume and rewind.
-	return a.importSessionIntoOpenCode(session.SessionID, session.NativeData)
+	return a.importSessionIntoOpenCode(ctx, session.SessionID, session.NativeData)
 }
 
 // importSessionIntoOpenCode writes the export JSON to a temp file and runs
 // `opencode import` to restore the session into OpenCode's database.
 // For rewind (session already exists), the session is deleted first so the
 // reimport replaces it with the checkpoint-state messages.
-func (a *OpenCodeAgent) importSessionIntoOpenCode(sessionID string, exportData []byte) error {
+func (a *OpenCodeAgent) importSessionIntoOpenCode(ctx context.Context, sessionID string, exportData []byte) error {
 	// Delete existing session first so reimport replaces it cleanly.
 	// opencode import uses ON CONFLICT DO NOTHING, so existing messages
 	// would be skipped without this step (breaking rewind).
-	if err := runOpenCodeSessionDelete(sessionID); err != nil {
+	if err := runOpenCodeSessionDelete(ctx, sessionID); err != nil {
 		// Non-fatal: session might not exist yet (first session).
 		// Import will still work for new sessions; only rewind of existing sessions
 		// would have stale messages.
-		logging.Warn(context.Background(), "could not delete existing opencode session",
+		logging.Warn(ctx, "could not delete existing opencode session",
 			slog.String("session_id", sessionID),
 			slog.String("error", err.Error()),
 		)
@@ -257,7 +257,7 @@ func (a *OpenCodeAgent) importSessionIntoOpenCode(sessionID string, exportData [
 		return fmt.Errorf("failed to close temp file: %w", err)
 	}
 
-	return runOpenCodeImport(tmpFile.Name())
+	return runOpenCodeImport(ctx, tmpFile.Name())
 }
 
 func (a *OpenCodeAgent) FormatResumeCommand(sessionID string) string {

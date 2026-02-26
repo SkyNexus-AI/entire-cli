@@ -21,7 +21,7 @@ func TestState_NormalizeAfterLoad(t *testing.T) {
 		state := &State{
 			CondensedTranscriptLines: 150,
 		}
-		state.NormalizeAfterLoad()
+		state.NormalizeAfterLoad(context.Background())
 		assert.Equal(t, 150, state.CheckpointTranscriptStart)
 		assert.Equal(t, 0, state.CondensedTranscriptLines)
 		assert.Equal(t, 0, state.TranscriptLinesAtStart)
@@ -33,7 +33,7 @@ func TestState_NormalizeAfterLoad(t *testing.T) {
 			CheckpointTranscriptStart: 200,
 			CondensedTranscriptLines:  150, // old value should be cleared but not override new
 		}
-		state.NormalizeAfterLoad()
+		state.NormalizeAfterLoad(context.Background())
 		assert.Equal(t, 200, state.CheckpointTranscriptStart)
 		assert.Equal(t, 0, state.CondensedTranscriptLines)
 	})
@@ -41,7 +41,7 @@ func TestState_NormalizeAfterLoad(t *testing.T) {
 	t.Run("no_migration_when_all_zero", func(t *testing.T) {
 		t.Parallel()
 		state := &State{}
-		state.NormalizeAfterLoad()
+		state.NormalizeAfterLoad(context.Background())
 		assert.Equal(t, 0, state.CheckpointTranscriptStart)
 	})
 
@@ -50,7 +50,7 @@ func TestState_NormalizeAfterLoad(t *testing.T) {
 		state := &State{
 			TranscriptLinesAtStart: 42,
 		}
-		state.NormalizeAfterLoad()
+		state.NormalizeAfterLoad(context.Background())
 		assert.Equal(t, 42, state.CheckpointTranscriptStart)
 		assert.Equal(t, 0, state.TranscriptLinesAtStart)
 	})
@@ -61,7 +61,7 @@ func TestState_NormalizeAfterLoad(t *testing.T) {
 			CondensedTranscriptLines: 150,
 			TranscriptLinesAtStart:   42,
 		}
-		state.NormalizeAfterLoad()
+		state.NormalizeAfterLoad(context.Background())
 		assert.Equal(t, 150, state.CheckpointTranscriptStart)
 		assert.Equal(t, 0, state.CondensedTranscriptLines)
 		assert.Equal(t, 0, state.TranscriptLinesAtStart)
@@ -73,7 +73,7 @@ func TestState_NormalizeAfterLoad(t *testing.T) {
 			CheckpointTranscriptStart: 200,
 			TranscriptLinesAtStart:    42,
 		}
-		state.NormalizeAfterLoad()
+		state.NormalizeAfterLoad(context.Background())
 		assert.Equal(t, 200, state.CheckpointTranscriptStart)
 		assert.Equal(t, 0, state.TranscriptLinesAtStart)
 	})
@@ -114,7 +114,7 @@ func TestState_NormalizeAfterLoad_JSONRoundTrip(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			var state State
 			require.NoError(t, json.Unmarshal([]byte(tt.json), &state))
-			state.NormalizeAfterLoad()
+			state.NormalizeAfterLoad(context.Background())
 
 			assert.Equal(t, tt.wantCTS, state.CheckpointTranscriptStart)
 			assert.Equal(t, tt.wantStep, state.StepCount)
@@ -264,7 +264,7 @@ func initTestRepo(t *testing.T) string {
 func TestGetGitCommonDir_ReturnsValidPath(t *testing.T) {
 	dir := initTestRepo(t)
 
-	commonDir, err := getGitCommonDir()
+	commonDir, err := getGitCommonDir(context.Background())
 	require.NoError(t, err)
 
 	// getGitCommonDir returns a relative path from cwd; resolve it to absolute for comparison
@@ -282,11 +282,11 @@ func TestGetGitCommonDir_CachesResult(t *testing.T) {
 	initTestRepo(t)
 
 	// First call populates cache
-	first, err := getGitCommonDir()
+	first, err := getGitCommonDir(context.Background())
 	require.NoError(t, err)
 
 	// Second call should return the same result (from cache)
-	second, err := getGitCommonDir()
+	second, err := getGitCommonDir(context.Background())
 	require.NoError(t, err)
 
 	assert.Equal(t, first, second)
@@ -296,7 +296,7 @@ func TestGetGitCommonDir_ClearCache(t *testing.T) {
 	initTestRepo(t)
 
 	// Populate cache
-	_, err := getGitCommonDir()
+	_, err := getGitCommonDir(context.Background())
 	require.NoError(t, err)
 
 	// Verify cache is populated
@@ -333,7 +333,7 @@ func TestGetGitCommonDir_InvalidatesOnCwdChange(t *testing.T) {
 
 	// Populate cache from dir1
 	t.Chdir(dir1)
-	first, err := getGitCommonDir()
+	first, err := getGitCommonDir(context.Background())
 	require.NoError(t, err)
 	absFirst, err := filepath.Abs(first)
 	require.NoError(t, err)
@@ -341,7 +341,7 @@ func TestGetGitCommonDir_InvalidatesOnCwdChange(t *testing.T) {
 
 	// Change to dir2 — cache should miss and resolve to dir2's .git
 	t.Chdir(dir2)
-	second, err := getGitCommonDir()
+	second, err := getGitCommonDir(context.Background())
 	require.NoError(t, err)
 	absSecond, err := filepath.Abs(second)
 	require.NoError(t, err)
@@ -355,6 +355,6 @@ func TestGetGitCommonDir_ErrorOutsideRepo(t *testing.T) {
 	t.Chdir(dir)
 	ClearGitCommonDirCache()
 
-	_, err := getGitCommonDir()
+	_, err := getGitCommonDir(context.Background())
 	assert.Error(t, err)
 }

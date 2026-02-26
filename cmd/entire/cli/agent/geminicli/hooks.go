@@ -1,6 +1,7 @@
 package geminicli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -41,10 +42,10 @@ var entireHookPrefixes = []string{
 // InstallHooks installs Gemini CLI hooks in .gemini/settings.json.
 // If force is true, removes existing Entire hooks before installing.
 // Returns the number of hooks installed.
-func (g *GeminiCLIAgent) InstallHooks(localDev bool, force bool) (int, error) {
+func (g *GeminiCLIAgent) InstallHooks(ctx context.Context, localDev bool, force bool) (int, error) {
 	// Use repo root instead of CWD to find .gemini directory
 	// This ensures hooks are installed correctly when run from a subdirectory
-	repoRoot, err := paths.WorktreeRoot()
+	repoRoot, err := paths.WorktreeRoot(ctx)
 	if err != nil {
 		// Fallback to CWD if not in a git repo (e.g., during tests)
 		repoRoot, err = os.Getwd() //nolint:forbidigo // Intentional fallback when WorktreeRoot() fails (tests run outside git repos)
@@ -244,9 +245,9 @@ func marshalGeminiHookType(rawHooks map[string]json.RawMessage, hookType string,
 }
 
 // UninstallHooks removes Entire hooks from Gemini CLI settings.
-func (g *GeminiCLIAgent) UninstallHooks() error {
+func (g *GeminiCLIAgent) UninstallHooks(ctx context.Context) error {
 	// Use repo root to find .gemini directory when run from a subdirectory
-	repoRoot, err := paths.WorktreeRoot()
+	repoRoot, err := paths.WorktreeRoot(ctx)
 	if err != nil {
 		repoRoot = "." // Fallback to CWD if not in a git repo
 	}
@@ -338,9 +339,9 @@ func (g *GeminiCLIAgent) UninstallHooks() error {
 }
 
 // AreHooksInstalled checks if Entire hooks are installed.
-func (g *GeminiCLIAgent) AreHooksInstalled() bool {
+func (g *GeminiCLIAgent) AreHooksInstalled(ctx context.Context) bool {
 	// Use repo root to find .gemini directory when run from a subdirectory
-	repoRoot, err := paths.WorktreeRoot()
+	repoRoot, err := paths.WorktreeRoot(ctx)
 	if err != nil {
 		repoRoot = "." // Fallback to CWD if not in a git repo
 	}

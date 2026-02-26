@@ -1,0 +1,94 @@
+package agents
+
+import (
+	"context"
+	"time"
+)
+
+type Output struct {
+	Command  string
+	Stdout   string
+	Stderr   string
+	ExitCode int
+}
+
+type Option func(*runConfig)
+type runConfig struct {
+	Model          string
+	PermissionMode string
+}
+
+func WithModel(model string) Option {
+	return func(c *runConfig) { c.Model = model }
+}
+
+func WithPermissionMode(mode string) Option {
+	return func(c *runConfig) { c.PermissionMode = mode }
+}
+
+type Agent interface {
+	Name() string
+	// Binary returns the CLI binary name (e.g. "claude", "gemini").
+	Binary() string
+	EntireAgent() string
+	PromptPattern() string
+	// TimeoutMultiplier returns a factor applied to per-test timeouts.
+	// Slower agents (e.g. Gemini) return values > 1.
+	TimeoutMultiplier() float64
+	RunPrompt(ctx context.Context, dir string, prompt string, opts ...Option) (Output, error)
+	StartSession(ctx context.Context, dir string) (Session, error)
+	// Bootstrap performs one-time CI setup (auth config, warmup, etc.).
+	// Called before any tests run. Implementations should be idempotent.
+	Bootstrap() error
+	// IsTransientError returns true if the error from RunPrompt looks like
+	// a transient API failure (e.g. 500, rate limit, network error) that
+	// is worth retrying.
+	IsTransientError(out Output, err error) bool
+}
+
+type Session interface {
+	Send(input string) error
+	WaitFor(pattern string, timeout time.Duration) (string, error)
+	Capture() string
+	Close() error
+}
+
+var registry []Agent
+var gates = map[string]chan struct{}{}
+
+func Register(a Agent) {
+	registry = append(registry, a)
+}
+
+// RegisterGate sets a concurrency limit for an agent's tests.
+// Tests call AcquireSlot/ReleaseSlot to respect this limit.
+func RegisterGate(name string, max int) {
+	gates[name] = make(chan struct{}, max)
+}
+
+// AcquireSlot blocks until a test slot is available for the agent or the
+// context is cancelled. Returns a non-nil error if the context expires
+// before a slot opens.
+func AcquireSlot(ctx context.Context, a Agent) error {
+	g, ok := gates[a.Name()]
+	if !ok {
+		return nil
+	}
+	select {
+	case g <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// ReleaseSlot frees a test slot for the agent.
+func ReleaseSlot(a Agent) {
+	if g, ok := gates[a.Name()]; ok {
+		<-g
+	}
+}
+
+func All() []Agent {
+	return registry
+}

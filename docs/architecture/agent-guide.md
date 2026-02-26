@@ -368,7 +368,7 @@ var (
 
 ### Step 8: Implement Hook Installation (if `HookSupport`)
 
-If your agent uses a JSON config file for hooks (like Claude Code's `.claude/settings.json` or Gemini's `.gemini/settings.json`), implement `HookSupport`:
+If your agent uses a JSON config file for hooks (like Claude Code's `.claude/settings.json`, Gemini's `.gemini/settings.json`, or Cursor's `.cursor/hooks.json`), implement `HookSupport`:
 
 ```go
 func (a *YourAgent) InstallHooks(localDev bool, force bool) (int, error) {
@@ -421,15 +421,15 @@ Test `ParseHookEvent` for every hook name your agent supports. See [Testing Patt
 
 The framework dispatcher (`DispatchLifecycleEvent` in `lifecycle.go`) handles each event type as follows:
 
-| Event Type | Framework Actions | Claude Code Hook | Gemini CLI Hook |
-|------------|-------------------|------------------|-----------------|
-| `SessionStart` | Shows banner, checks concurrent sessions, fires state machine transition | `session-start` | `session-start` |
-| `TurnStart` | Captures pre-prompt state (git status, transcript position), ensures strategy setup, initializes session | `user-prompt-submit` | `before-agent` |
-| `TurnEnd` | Validates transcript, extracts metadata (prompts, summary, files), detects file changes via git status, saves step + checkpoint, transitions phase to IDLE | `stop` | `after-agent` |
-| `Compaction` | Fires compaction transition (stays ACTIVE), resets transcript offset | *(not used)* | `pre-compress` |
-| `SessionEnd` | Marks session as ENDED in state machine | `session-end` | `session-end` |
-| `SubagentStart` | Captures pre-task state (git status snapshot) | `pre-task` (PreToolUse[Task]) | *(not used)* |
-| `SubagentEnd` | Extracts subagent modified files, detects changes, saves task checkpoint | `post-task` (PostToolUse[Task]) | *(not used)* |
+| Event Type | Framework Actions | Claude Code Hook | Gemini CLI Hook | Cursor IDE Hook | OpenCode Hook |
+|------------|-------------------|------------------|-----------------|-----------------|---------------|
+| `SessionStart` | Shows banner, checks concurrent sessions, fires state machine transition | `session-start` | `session-start` | `session-start` | `session-start` |
+| `TurnStart` | Captures pre-prompt state (git status, transcript position), ensures strategy setup, initializes session | `user-prompt-submit` | `before-agent` | `before-submit-prompt` | `turn-start` |
+| `TurnEnd` | Validates transcript, extracts metadata (prompts, summary, files), detects file changes via git status, saves step + checkpoint, transitions phase to IDLE | `stop` | `after-agent` | `stop` | `turn-end` |
+| `Compaction` | Fires compaction transition (stays ACTIVE), resets transcript offset | *(not used)* | `pre-compress` | `pre-compact` | `compaction` |
+| `SessionEnd` | Marks session as ENDED in state machine | `session-end` | `session-end` | `session-end` | `session-end` |
+| `SubagentStart` | Captures pre-task state (git status snapshot) | `pre-task` (PreToolUse[Task]) | *(not used)* | `subagent-start` | *(not used)* |
+| `SubagentEnd` | Extracts subagent modified files, detects changes, saves task checkpoint | `post-task` (PostToolUse[Task]) | *(not used)* | `subagent-stop` | *(not used)* |
 
 ### Event Field Requirements
 
@@ -540,6 +540,21 @@ Single JSON object with a `messages` array:
 **Position:** Message count (`len(transcript.Messages)`).
 **Offset:** Start iterating messages at index N.
 
+### JSON Format (OpenCode pattern)
+
+Single JSON object with `info` and `messages` array. Messages contain `parts` (text, tool calls with state). Similar to Gemini's pattern but with a different schema:
+
+```json
+{"info": {"id": "...", "title": "..."}, "messages": [{"info": {"role": "user"}, "parts": [{"type": "text", "text": "..."}]}]}
+```
+
+Key difference: OpenCode stores transcripts in a database, not files. The transcript is fetched via `opencode export <sessionID>` at turn-end and cached to `.entire/tmp/<sessionID>.json`.
+
+**Chunking:** Parse JSON, distribute messages across chunks (each chunk is complete JSON with `info` + subset of `messages`).
+**Reassembly:** Merge message arrays from all chunks, preserve `info` from first chunk.
+**Position:** Message count (`len(session.Messages)`).
+**Offset:** Start iterating messages at index N.
+
 ### Using Chunking Helpers
 
 The `agent` package provides format-agnostic entry points:
@@ -564,7 +579,7 @@ agent.SortChunkFiles(files, "full.jsonl")  // sorted by chunk index
 
 ### JSON Config File Pattern
 
-Both Claude Code and Gemini CLI use a JSON settings file in their config directory. The installation pattern is:
+Claude Code, Gemini CLI, and Cursor use a JSON settings file in their config directory. The installation pattern is:
 
 1. **Read existing settings** as `map[string]json.RawMessage` to preserve unknown fields
 2. **Parse only the hook types you modify** into typed slices
@@ -604,6 +619,36 @@ Key principles:
 ```
 
 Note: Gemini CLI requires `hooksConfig.enabled: true` and each hook entry requires a `name` field.
+
+### Example: Cursor IDE Hook Config
+
+```json
+{
+  "version": 1,
+  "hooks": {
+    "sessionStart": [{"command": "entire hooks cursor session-start"}],
+    "beforeSubmitPrompt": [{"command": "entire hooks cursor before-submit-prompt"}],
+    "stop": [{"command": "entire hooks cursor stop"}],
+    "sessionEnd": [{"command": "entire hooks cursor session-end"}],
+    "preCompact": [{"command": "entire hooks cursor pre-compact"}],
+    "subagentStart": [{"command": "entire hooks cursor subagent-start"}],
+    "subagentStop": [{"command": "entire hooks cursor subagent-stop"}]
+  }
+}
+```
+
+Note: Cursor uses camelCase hook names in `.cursor/hooks.json` and provides a `conversation_id` field as the session identifier.
+
+### Plugin File Pattern (OpenCode)
+
+OpenCode uses a TypeScript plugin file (`.opencode/plugins/entire.ts`) instead of a JSON config. The plugin is auto-generated by `entire enable --agent opencode` and uses OpenCode's Bun-based plugin API.
+
+Key differences from JSON config agents:
+- Plugin file is written/removed entirely (not partial JSON edits)
+- Uses `Bun.spawnSync()` for hooks near process exit (`turn-end`, `session-end`)
+- Async `callHook()` for non-critical hooks (`session-start`, `turn-start`, `compaction`)
+- Calls `opencode export <sessionID>` on turn-end to fetch transcript (not file-based)
+- Idempotency via marker string check: `"Auto-generated by \`entire enable --agent opencode\`"`
 
 ## Testing Patterns
 
@@ -729,6 +774,12 @@ func TestInstallHooks_Idempotent(t *testing.T) {
 - Gemini CLI lifecycle tests: `cmd/entire/cli/agent/geminicli/lifecycle_test.go`
 - Gemini CLI hooks tests: `cmd/entire/cli/agent/geminicli/hooks_test.go`
 - Gemini CLI transcript tests: `cmd/entire/cli/agent/geminicli/transcript_test.go`
+- Cursor IDE lifecycle tests: `cmd/entire/cli/agent/cursor/lifecycle_test.go`
+- Cursor IDE hooks tests: `cmd/entire/cli/agent/cursor/hooks_test.go`
+- Cursor IDE session tests: `cmd/entire/cli/agent/cursor/cursor_test.go`
+- OpenCode lifecycle tests: `cmd/entire/cli/agent/opencode/lifecycle_test.go`
+- OpenCode hooks tests: `cmd/entire/cli/agent/opencode/hooks_test.go`
+- OpenCode transcript tests: `cmd/entire/cli/agent/opencode/transcript_test.go`
 
 ## Common Pitfalls
 
@@ -770,8 +821,8 @@ Use `//nolint:nilnil` to suppress the linter warning on intentional nil returns.
 
 ### Agent Name vs Agent Type
 
-- `AgentName` is the **registry key** used in code (`"claude-code"`, `"gemini"`). It appears in CLI commands: `entire hooks claude-code stop`.
-- `AgentType` is the **display name** stored in metadata and commit trailers (`"Claude Code"`, `"Gemini CLI"`). It's what users see.
+- `AgentName` is the **registry key** used in code (`"claude-code"`, `"gemini"`, `"cursor"`). It appears in CLI commands: `entire hooks cursor stop`.
+- `AgentType` is the **display name** stored in metadata and commit trailers (`"Claude Code"`, `"Gemini CLI"`, `"Cursor IDE"`). It's what users see.
 
 Register constants for both in `cmd/entire/cli/agent/registry.go` when adding a new agent.
 

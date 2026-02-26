@@ -5,6 +5,7 @@ package settings
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -54,13 +55,13 @@ type EntireSettings struct {
 // then applies any overrides from .entire/settings.local.json if it exists.
 // Returns default settings if neither file exists.
 // Works correctly from any subdirectory within the repository.
-func Load() (*EntireSettings, error) {
+func Load(ctx context.Context) (*EntireSettings, error) {
 	// Get absolute paths for settings files
-	settingsFileAbs, err := paths.AbsPath(EntireSettingsFile)
+	settingsFileAbs, err := paths.AbsPath(ctx, EntireSettingsFile)
 	if err != nil {
 		settingsFileAbs = EntireSettingsFile // Fallback to relative
 	}
-	localSettingsFileAbs, err := paths.AbsPath(EntireSettingsLocalFile)
+	localSettingsFileAbs, err := paths.AbsPath(ctx, EntireSettingsLocalFile)
 	if err != nil {
 		localSettingsFileAbs = EntireSettingsLocalFile // Fallback to relative
 	}
@@ -194,8 +195,8 @@ func mergeJSON(settings *EntireSettings, data []byte) error {
 // IsSetUp returns true if Entire has been set up in the current repository.
 // This checks if .entire/settings.json exists.
 // Use this to avoid creating files/directories in repos where Entire was never enabled.
-func IsSetUp() bool {
-	settingsFileAbs, err := paths.AbsPath(EntireSettingsFile)
+func IsSetUp(ctx context.Context) bool {
+	settingsFileAbs, err := paths.AbsPath(ctx, EntireSettingsFile)
 	if err != nil {
 		return false
 	}
@@ -206,11 +207,11 @@ func IsSetUp() bool {
 // IsSetUpAndEnabled returns true if Entire is both set up and enabled.
 // This checks if .entire/settings.json exists AND has enabled: true.
 // Use this for hooks that should be no-ops when Entire is not active.
-func IsSetUpAndEnabled() bool {
-	if !IsSetUp() {
+func IsSetUpAndEnabled(ctx context.Context) bool {
+	if !IsSetUp(ctx) {
 		return false
 	}
-	s, err := Load()
+	s, err := Load(ctx)
 	if err != nil {
 		return false
 	}
@@ -219,8 +220,8 @@ func IsSetUpAndEnabled() bool {
 
 // IsSummarizeEnabled checks if auto-summarize is enabled in settings.
 // Returns false by default if settings cannot be loaded or the key is missing.
-func IsSummarizeEnabled() bool {
-	settings, err := Load()
+func IsSummarizeEnabled(ctx context.Context) bool {
+	settings, err := Load(ctx)
 	if err != nil {
 		return false
 	}
@@ -261,10 +262,10 @@ func (s *EntireSettings) IsPushSessionsDisabled() bool {
 
 // FilesWithDeprecatedStrategy returns the relative paths of settings files
 // that still contain the deprecated "strategy" field.
-func FilesWithDeprecatedStrategy() []string {
+func FilesWithDeprecatedStrategy(ctx context.Context) []string {
 	var files []string
 	for _, rel := range []string{EntireSettingsFile, EntireSettingsLocalFile} {
-		abs, err := paths.AbsPath(rel)
+		abs, err := paths.AbsPath(ctx, rel)
 		if err != nil {
 			abs = rel // Fallback to relative
 		}
@@ -280,8 +281,8 @@ func FilesWithDeprecatedStrategy() []string {
 // WriteDeprecatedStrategyWarnings writes user-friendly deprecation warnings
 // for each settings file that still contains the "strategy" field.
 // Returns true if any warnings were written.
-func WriteDeprecatedStrategyWarnings(w io.Writer) bool {
-	files := FilesWithDeprecatedStrategy()
+func WriteDeprecatedStrategyWarnings(ctx context.Context, w io.Writer) bool {
+	files := FilesWithDeprecatedStrategy(ctx)
 	for _, f := range files {
 		fmt.Fprintf(w, "Note: \"%s\" in %s is no longer needed and can be removed. 'manual-commit' is now the only supported strategy.\n", "strategy", f)
 	}
@@ -289,19 +290,19 @@ func WriteDeprecatedStrategyWarnings(w io.Writer) bool {
 }
 
 // Save saves the settings to .entire/settings.json.
-func Save(settings *EntireSettings) error {
-	return saveToFile(settings, EntireSettingsFile)
+func Save(ctx context.Context, settings *EntireSettings) error {
+	return saveToFile(ctx, settings, EntireSettingsFile)
 }
 
 // SaveLocal saves the settings to .entire/settings.local.json.
-func SaveLocal(settings *EntireSettings) error {
-	return saveToFile(settings, EntireSettingsLocalFile)
+func SaveLocal(ctx context.Context, settings *EntireSettings) error {
+	return saveToFile(ctx, settings, EntireSettingsLocalFile)
 }
 
 // saveToFile saves settings to the specified file path.
-func saveToFile(settings *EntireSettings, filePath string) error {
+func saveToFile(ctx context.Context, settings *EntireSettings, filePath string) error {
 	// Get absolute path for the file
-	filePathAbs, err := paths.AbsPath(filePath)
+	filePathAbs, err := paths.AbsPath(ctx, filePath)
 	if err != nil {
 		filePathAbs = filePath // Fallback to relative
 	}

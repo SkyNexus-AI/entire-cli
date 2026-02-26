@@ -1,6 +1,7 @@
 package strategy
 
 import (
+	"context"
 	"fmt"
 	"os"
 
@@ -17,8 +18,8 @@ func isAccessibleMode() bool {
 
 // Reset deletes the shadow branch and session state for the current HEAD.
 // This allows starting fresh without existing checkpoints.
-func (s *ManualCommitStrategy) Reset() error {
-	repo, err := OpenRepository()
+func (s *ManualCommitStrategy) Reset(ctx context.Context) error {
+	repo, err := OpenRepository(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to open git repository: %w", err)
 	}
@@ -30,7 +31,7 @@ func (s *ManualCommitStrategy) Reset() error {
 	}
 
 	// Get current worktree ID for shadow branch naming
-	worktreePath, err := paths.WorktreeRoot()
+	worktreePath, err := paths.WorktreeRoot(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to get worktree path: %w", err)
 	}
@@ -48,7 +49,7 @@ func (s *ManualCommitStrategy) Reset() error {
 	hasShadowBranch := err == nil
 
 	// Find sessions for this commit
-	sessions, err := s.findSessionsForCommit(head.Hash().String())
+	sessions, err := s.findSessionsForCommit(ctx, head.Hash().String())
 	if err != nil {
 		sessions = nil // Ignore error, treat as no sessions
 	}
@@ -62,7 +63,7 @@ func (s *ManualCommitStrategy) Reset() error {
 	// Clear all sessions for this commit
 	clearedSessions := make([]string, 0)
 	for _, state := range sessions {
-		if err := s.clearSessionState(state.SessionID); err != nil {
+		if err := s.clearSessionState(ctx, state.SessionID); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: failed to clear session state for %s: %v\n", state.SessionID, err)
 		} else {
 			clearedSessions = append(clearedSessions, state.SessionID)
@@ -78,7 +79,7 @@ func (s *ManualCommitStrategy) Reset() error {
 
 	// Delete the shadow branch if it exists
 	if hasShadowBranch {
-		if err := DeleteBranchCLI(shadowBranchName); err != nil {
+		if err := DeleteBranchCLI(ctx, shadowBranchName); err != nil {
 			return fmt.Errorf("failed to delete shadow branch: %w", err)
 		}
 		fmt.Fprintf(os.Stderr, "Deleted shadow branch %s\n", shadowBranchName)
@@ -89,9 +90,9 @@ func (s *ManualCommitStrategy) Reset() error {
 
 // ResetSession clears a single session's state and removes the shadow branch
 // if no other sessions reference it. File changes remain in the working directory.
-func (s *ManualCommitStrategy) ResetSession(sessionID string) error {
+func (s *ManualCommitStrategy) ResetSession(ctx context.Context, sessionID string) error {
 	// Load the session state
-	state, err := s.loadSessionState(sessionID)
+	state, err := s.loadSessionState(ctx, sessionID)
 	if err != nil {
 		return fmt.Errorf("failed to load session state: %w", err)
 	}
@@ -100,7 +101,7 @@ func (s *ManualCommitStrategy) ResetSession(sessionID string) error {
 	}
 
 	// Clear the session state file
-	if err := s.clearSessionState(sessionID); err != nil {
+	if err := s.clearSessionState(ctx, sessionID); err != nil {
 		return fmt.Errorf("failed to clear session state: %w", err)
 	}
 	fmt.Fprintf(os.Stderr, "Cleared session state for %s\n", sessionID)
@@ -109,18 +110,18 @@ func (s *ManualCommitStrategy) ResetSession(sessionID string) error {
 	shadowBranchName := getShadowBranchNameForCommit(state.BaseCommit, state.WorktreeID)
 
 	// Open repository
-	repo, err := OpenRepository()
+	repo, err := OpenRepository(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to open repository: %w", err)
 	}
 
 	// Clean up shadow branch if no other sessions need it
-	if err := s.cleanupShadowBranchIfUnused(repo, shadowBranchName, sessionID); err != nil {
+	if err := s.cleanupShadowBranchIfUnused(ctx, repo, shadowBranchName, sessionID); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: failed to clean up shadow branch %s: %v\n", shadowBranchName, err)
 	} else {
 		// Check if it was actually deleted via git CLI (go-git's cache
 		// may be stale after CLI-based deletion with packed refs)
-		if err := branchExistsCLI(shadowBranchName); err != nil {
+		if err := branchExistsCLI(ctx, shadowBranchName); err != nil {
 			fmt.Fprintf(os.Stderr, "Deleted shadow branch %s\n", shadowBranchName)
 		}
 	}

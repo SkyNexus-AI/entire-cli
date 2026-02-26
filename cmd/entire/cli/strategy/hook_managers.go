@@ -1,6 +1,7 @@
 package strategy
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -112,8 +113,8 @@ func extractCommandLine(hookContent string) string {
 // CheckAndWarnHookManagers detects external hook managers and writes a warning
 // to w if any are found.
 // localDev controls whether the warning references "go run" or the "entire" binary.
-func CheckAndWarnHookManagers(w io.Writer, localDev bool) {
-	repoRoot, err := paths.WorktreeRoot()
+func CheckAndWarnHookManagers(ctx context.Context, w io.Writer, localDev bool) {
+	repoRoot, err := paths.WorktreeRoot(ctx)
 	if err != nil {
 		return
 	}

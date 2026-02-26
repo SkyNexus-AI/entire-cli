@@ -2,6 +2,7 @@ package cursor
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -15,7 +16,7 @@ func TestParseHookEvent_SessionStart(t *testing.T) {
 	ag := &CursorAgent{}
 	input := `{"conversation_id": "test-session-123", "transcript_path": "/tmp/transcript.jsonl"}`
 
-	event, err := ag.ParseHookEvent(HookNameSessionStart, strings.NewReader(input))
+	event, err := ag.ParseHookEvent(context.Background(), HookNameSessionStart, strings.NewReader(input))
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -43,7 +44,7 @@ func TestParseHookEvent_TurnStart(t *testing.T) {
 	ag := &CursorAgent{}
 	input := `{"conversation_id": "sess-456", "transcript_path": "/tmp/t.jsonl", "prompt": "Hello world"}`
 
-	event, err := ag.ParseHookEvent(HookNameBeforeSubmitPrompt, strings.NewReader(input))
+	event, err := ag.ParseHookEvent(context.Background(), HookNameBeforeSubmitPrompt, strings.NewReader(input))
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -68,7 +69,7 @@ func TestParseHookEvent_TurnEnd(t *testing.T) {
 	ag := &CursorAgent{}
 	input := `{"conversation_id": "sess-789", "transcript_path": "/tmp/stop.jsonl"}`
 
-	event, err := ag.ParseHookEvent(HookNameStop, strings.NewReader(input))
+	event, err := ag.ParseHookEvent(context.Background(), HookNameStop, strings.NewReader(input))
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -90,7 +91,7 @@ func TestParseHookEvent_SessionEnd(t *testing.T) {
 	ag := &CursorAgent{}
 	input := `{"conversation_id": "ending-session", "transcript_path": "/tmp/end.jsonl"}`
 
-	event, err := ag.ParseHookEvent(HookNameSessionEnd, strings.NewReader(input))
+	event, err := ag.ParseHookEvent(context.Background(), HookNameSessionEnd, strings.NewReader(input))
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -121,7 +122,7 @@ func TestParseHookEvent_SubagentStart(t *testing.T) {
 		t.Fatalf("failed to marshal test input: %v", marshalErr)
 	}
 
-	event, err := ag.ParseHookEvent(HookNameSubagentStart, strings.NewReader(string(inputBytes)))
+	event, err := ag.ParseHookEvent(context.Background(), HookNameSubagentStart, strings.NewReader(string(inputBytes)))
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -155,7 +156,7 @@ func TestParseHookEvent_SubagentEnd(t *testing.T) {
 		t.Fatalf("failed to marshal test input: %v", marshalErr)
 	}
 
-	event, err := ag.ParseHookEvent(HookNameSubagentStop, strings.NewReader(string(inputBytes)))
+	event, err := ag.ParseHookEvent(context.Background(), HookNameSubagentStop, strings.NewReader(string(inputBytes)))
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -177,7 +178,7 @@ func TestParseHookEvent_UnknownHook_ReturnsNil(t *testing.T) {
 	ag := &CursorAgent{}
 	input := `{"session_id": "unknown", "transcript_path": "/tmp/unknown.jsonl"}`
 
-	event, err := ag.ParseHookEvent("unknown-hook-name", strings.NewReader(input))
+	event, err := ag.ParseHookEvent(context.Background(), "unknown-hook-name", strings.NewReader(input))
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -192,7 +193,7 @@ func TestParseHookEvent_EmptyInput_ReturnsError(t *testing.T) {
 
 	ag := &CursorAgent{}
 
-	_, err := ag.ParseHookEvent(HookNameSessionStart, strings.NewReader(""))
+	_, err := ag.ParseHookEvent(context.Background(), HookNameSessionStart, strings.NewReader(""))
 
 	if err == nil {
 		t.Fatal("expected error for empty input, got nil")
@@ -211,7 +212,7 @@ func TestParseHookEvent_ConversationIDFallback(t *testing.T) {
 		t.Parallel()
 		input := `{"conversation_id": "bingo-id", "transcript_path": "/tmp/t.jsonl"}`
 
-		event, err := ag.ParseHookEvent(HookNameSessionStart, strings.NewReader(input))
+		event, err := ag.ParseHookEvent(context.Background(), HookNameSessionStart, strings.NewReader(input))
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -224,7 +225,7 @@ func TestParseHookEvent_ConversationIDFallback(t *testing.T) {
 		t.Parallel()
 		input := `{"conversation_id": "conv-123", "transcript_path": "/tmp/t.jsonl", "prompt": "hi"}`
 
-		event, err := ag.ParseHookEvent(HookNameBeforeSubmitPrompt, strings.NewReader(input))
+		event, err := ag.ParseHookEvent(context.Background(), HookNameBeforeSubmitPrompt, strings.NewReader(input))
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -237,7 +238,7 @@ func TestParseHookEvent_ConversationIDFallback(t *testing.T) {
 		t.Parallel()
 		input := `{"conversation_id": "conv-sub", "transcript_path": "/tmp/t.jsonl", "subagent_id": "s1", "task": "do something"}`
 
-		event, err := ag.ParseHookEvent(HookNameSubagentStart, strings.NewReader(input))
+		event, err := ag.ParseHookEvent(context.Background(), HookNameSubagentStart, strings.NewReader(input))
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -250,7 +251,7 @@ func TestParseHookEvent_ConversationIDFallback(t *testing.T) {
 		t.Parallel()
 		input := `{"conversation_id": "conv-end", "transcript_path": "/tmp/t.jsonl", "subagent_id": "s2", "task": "do something"}`
 
-		event, err := ag.ParseHookEvent(HookNameSubagentStop, strings.NewReader(input))
+		event, err := ag.ParseHookEvent(context.Background(), HookNameSubagentStop, strings.NewReader(input))
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -266,7 +267,7 @@ func TestParseHookEvent_MalformedJSON(t *testing.T) {
 	ag := &CursorAgent{}
 	input := `{"session_id": "test", "transcript_path": INVALID}`
 
-	_, err := ag.ParseHookEvent(HookNameSessionStart, strings.NewReader(input))
+	_, err := ag.ParseHookEvent(context.Background(), HookNameSessionStart, strings.NewReader(input))
 
 	if err == nil {
 		t.Fatal("expected error for malformed JSON, got nil")
@@ -322,7 +323,7 @@ func TestParseHookEvent_AllHookTypes(t *testing.T) {
 			t.Parallel()
 
 			ag := &CursorAgent{}
-			event, err := ag.ParseHookEvent(tc.hookName, strings.NewReader(tc.inputTemplate))
+			event, err := ag.ParseHookEvent(context.Background(), tc.hookName, strings.NewReader(tc.inputTemplate))
 
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)

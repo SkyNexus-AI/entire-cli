@@ -80,7 +80,7 @@ func TestNewAgentHookVerbCmd_LogsInvocation(t *testing.T) {
 	t.Setenv(logging.LogLevelEnvVar, "DEBUG")
 
 	// Initialize logging (normally done by PersistentPreRunE)
-	cleanup := initHookLogging()
+	cleanup := initHookLogging(context.Background())
 	defer cleanup()
 
 	// Create a transcript file for the hook input

@@ -1,6 +1,7 @@
 package opencode
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -25,8 +26,8 @@ const (
 )
 
 // getPluginPath returns the absolute path to the plugin file.
-func getPluginPath() (string, error) {
-	repoRoot, err := paths.WorktreeRoot()
+func getPluginPath(ctx context.Context) (string, error) {
+	repoRoot, err := paths.WorktreeRoot(ctx)
 	if err != nil {
 		// Fallback to CWD if not in a git repo (e.g., during tests)
 		//nolint:forbidigo // Intentional fallback when WorktreeRoot() fails (tests run outside git repos)
@@ -40,8 +41,8 @@ func getPluginPath() (string, error) {
 
 // InstallHooks writes the Entire plugin file to .opencode/plugins/entire.ts.
 // Returns 1 if the plugin was installed, 0 if already present (idempotent).
-func (a *OpenCodeAgent) InstallHooks(localDev bool, force bool) (int, error) {
-	pluginPath, err := getPluginPath()
+func (a *OpenCodeAgent) InstallHooks(ctx context.Context, localDev bool, force bool) (int, error) {
+	pluginPath, err := getPluginPath(ctx)
 	if err != nil {
 		return 0, err
 	}
@@ -84,8 +85,8 @@ func (a *OpenCodeAgent) InstallHooks(localDev bool, force bool) (int, error) {
 }
 
 // UninstallHooks removes the Entire plugin file.
-func (a *OpenCodeAgent) UninstallHooks() error {
-	pluginPath, err := getPluginPath()
+func (a *OpenCodeAgent) UninstallHooks(ctx context.Context) error {
+	pluginPath, err := getPluginPath(ctx)
 	if err != nil {
 		return err
 	}
@@ -98,8 +99,8 @@ func (a *OpenCodeAgent) UninstallHooks() error {
 }
 
 // AreHooksInstalled checks if the Entire plugin file exists and contains the marker.
-func (a *OpenCodeAgent) AreHooksInstalled() bool {
-	pluginPath, err := getPluginPath()
+func (a *OpenCodeAgent) AreHooksInstalled(ctx context.Context) bool {
+	pluginPath, err := getPluginPath(ctx)
 	if err != nil {
 		return false
 	}

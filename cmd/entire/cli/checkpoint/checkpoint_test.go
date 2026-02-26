@@ -14,10 +14,10 @@ import (
 	"time"
 
 	"github.com/entireio/cli/cmd/entire/cli/agent"
-	"github.com/entireio/cli/cmd/entire/cli/buildinfo"
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint/id"
 	"github.com/entireio/cli/cmd/entire/cli/paths"
 	"github.com/entireio/cli/cmd/entire/cli/trailers"
+	"github.com/entireio/cli/cmd/entire/cli/versioninfo"
 
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/config"
@@ -2857,7 +2857,7 @@ func TestCopyMetadataDir_RedactsSecrets(t *testing.T) {
 	}
 }
 
-// TestWriteCommitted_CLIVersionField verifies that buildinfo.Version is written
+// TestWriteCommitted_CLIVersionField verifies that versioninfo.Version is written
 // to both the root CheckpointSummary and session-level CommittedMetadata.
 func TestWriteCommitted_CLIVersionField(t *testing.T) {
 	t.Parallel()
@@ -2942,8 +2942,8 @@ func TestWriteCommitted_CLIVersionField(t *testing.T) {
 		t.Fatalf("failed to parse root metadata.json: %v", err)
 	}
 
-	if summary.CLIVersion != buildinfo.Version {
-		t.Errorf("CheckpointSummary.CLIVersion = %q, want %q", summary.CLIVersion, buildinfo.Version)
+	if summary.CLIVersion != versioninfo.Version {
+		t.Errorf("CheckpointSummary.CLIVersion = %q, want %q", summary.CLIVersion, versioninfo.Version)
 	}
 
 	// Verify session-level metadata.json (CommittedMetadata) has CLIVersion
@@ -2967,8 +2967,8 @@ func TestWriteCommitted_CLIVersionField(t *testing.T) {
 		t.Fatalf("failed to parse session metadata.json: %v", err)
 	}
 
-	if sessionMetadata.CLIVersion != buildinfo.Version {
-		t.Errorf("CommittedMetadata.CLIVersion = %q, want %q", sessionMetadata.CLIVersion, buildinfo.Version)
+	if sessionMetadata.CLIVersion != versioninfo.Version {
+		t.Errorf("CommittedMetadata.CLIVersion = %q, want %q", sessionMetadata.CLIVersion, versioninfo.Version)
 	}
 }
 

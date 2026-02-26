@@ -1,6 +1,7 @@
 package strategy
 
 import (
+	"context"
 	"fmt"
 	"os"
 
@@ -18,7 +19,7 @@ import (
 // Without this migration, checkpoints would be saved to an orphaned shadow branch.
 //
 // Returns true if migration occurred, false otherwise.
-func (s *ManualCommitStrategy) migrateShadowBranchIfNeeded(repo *git.Repository, state *SessionState) (bool, error) {
+func (s *ManualCommitStrategy) migrateShadowBranchIfNeeded(ctx context.Context, repo *git.Repository, state *SessionState) (bool, error) {
 	if state == nil || state.BaseCommit == "" {
 		return false, nil
 	}
@@ -64,7 +65,7 @@ func (s *ManualCommitStrategy) migrateShadowBranchIfNeeded(repo *git.Repository,
 	}
 
 	// Delete old reference via CLI (go-git v5's RemoveReference doesn't persist with packed refs/worktrees)
-	if err := DeleteBranchCLI(oldShadowBranch); err != nil {
+	if err := DeleteBranchCLI(ctx, oldShadowBranch); err != nil {
 		// Non-fatal: log but continue - the important thing is the new branch exists
 		fmt.Fprintf(os.Stderr, "Warning: failed to remove old shadow branch %s: %v\n", oldShadowBranch, err)
 	}
@@ -79,13 +80,13 @@ func (s *ManualCommitStrategy) migrateShadowBranchIfNeeded(repo *git.Repository,
 
 // migrateAndPersistIfNeeded checks for HEAD changes, migrates the shadow branch if needed,
 // and persists the updated session state. Used by SaveStep and SaveTaskStep.
-func (s *ManualCommitStrategy) migrateAndPersistIfNeeded(repo *git.Repository, state *SessionState) error {
-	migrated, err := s.migrateShadowBranchIfNeeded(repo, state)
+func (s *ManualCommitStrategy) migrateAndPersistIfNeeded(ctx context.Context, repo *git.Repository, state *SessionState) error {
+	migrated, err := s.migrateShadowBranchIfNeeded(ctx, repo, state)
 	if err != nil {
 		return fmt.Errorf("failed to check/migrate shadow branch: %w", err)
 	}
 	if migrated {
-		if err := s.saveSessionState(state); err != nil {
+		if err := s.saveSessionState(ctx, state); err != nil {
 			return fmt.Errorf("failed to save session state after migration: %w", err)
 		}
 	}

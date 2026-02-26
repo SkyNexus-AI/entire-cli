@@ -1,6 +1,7 @@
 package strategy
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -76,7 +77,7 @@ func TestShadowStrategy_PreviewRewind(t *testing.T) {
 		StepCount:             1,
 		WorktreePath:          dir,
 	}
-	if err := s.saveSessionState(state); err != nil {
+	if err := s.saveSessionState(context.Background(), state); err != nil {
 		t.Fatalf("failed to save session state: %v", err)
 	}
 
@@ -123,7 +124,7 @@ func TestShadowStrategy_PreviewRewind(t *testing.T) {
 	}
 
 	// Test PreviewRewind
-	preview, err := s.PreviewRewind(point)
+	preview, err := s.PreviewRewind(context.Background(), point)
 	if err != nil {
 		t.Fatalf("PreviewRewind() error = %v", err)
 	}
@@ -184,7 +185,7 @@ func TestShadowStrategy_PreviewRewind_LogsOnly(t *testing.T) {
 		Date:         time.Now(),
 	}
 
-	preview, err := s.PreviewRewind(point)
+	preview, err := s.PreviewRewind(context.Background(), point)
 	if err != nil {
 		t.Fatalf("PreviewRewind() error = %v", err)
 	}

@@ -40,7 +40,7 @@ func (c *ClaudeCodeAgent) HookNames() []string {
 
 // ParseHookEvent translates a Claude Code hook into a normalized lifecycle Event.
 // Returns nil if the hook has no lifecycle significance.
-func (c *ClaudeCodeAgent) ParseHookEvent(hookName string, stdin io.Reader) (*agent.Event, error) {
+func (c *ClaudeCodeAgent) ParseHookEvent(_ context.Context, hookName string, stdin io.Reader) (*agent.Event, error) {
 	switch hookName {
 	case HookNameSessionStart:
 		return c.parseSessionStart(stdin)
@@ -123,8 +123,8 @@ func (c *ClaudeCodeAgent) ExtractSummary(sessionRef string) (string, error) {
 
 // PrepareTranscript waits for Claude Code's async transcript flush to complete.
 // Claude writes a hook_progress sentinel entry after flushing all pending writes.
-func (c *ClaudeCodeAgent) PrepareTranscript(sessionRef string) error {
-	waitForTranscriptFlush(sessionRef, time.Now())
+func (c *ClaudeCodeAgent) PrepareTranscript(ctx context.Context, sessionRef string) error {
+	waitForTranscriptFlush(ctx, sessionRef, time.Now())
 	return nil
 }
 
@@ -234,7 +234,7 @@ const stopHookSentinel = "hooks claude-code stop"
 
 // waitForTranscriptFlush polls the transcript file for the stop hook sentinel.
 // Falls back silently after a timeout.
-func waitForTranscriptFlush(transcriptPath string, hookStartTime time.Time) {
+func waitForTranscriptFlush(ctx context.Context, transcriptPath string, hookStartTime time.Time) {
 	const (
 		maxWait      = 3 * time.Second
 		pollInterval = 50 * time.Millisecond
@@ -242,7 +242,7 @@ func waitForTranscriptFlush(transcriptPath string, hookStartTime time.Time) {
 		maxSkew      = 2 * time.Second
 	)
 
-	logCtx := logging.WithComponent(context.Background(), "agent.claudecode")
+	logCtx := logging.WithComponent(ctx, "agent.claudecode")
 	deadline := time.Now().Add(maxWait)
 	for time.Now().Before(deadline) {
 		if checkStopSentinel(transcriptPath, tailBytes, hookStartTime, maxSkew) {

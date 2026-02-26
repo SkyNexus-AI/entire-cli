@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -44,7 +45,7 @@ With --force, actually deletes the orphaned items.
 
 The entire/checkpoints/v1 branch itself is never deleted.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runClean(cmd.OutOrStdout(), forceFlag)
+			return runClean(cmd.Context(), cmd.OutOrStdout(), forceFlag)
 		},
 	}
 
@@ -53,34 +54,34 @@ The entire/checkpoints/v1 branch itself is never deleted.`,
 	return cmd
 }
 
-func runClean(w io.Writer, force bool) error {
+func runClean(ctx context.Context, w io.Writer, force bool) error {
 	// Initialize logging so structured logs go to .entire/logs/ instead of stderr.
 	// Error is non-fatal: if logging init fails, logs go to stderr (acceptable fallback).
 	logging.SetLogLevelGetter(GetLogLevel)
-	if err := logging.Init(""); err == nil {
+	if err := logging.Init(ctx, ""); err == nil {
 		defer logging.Close()
 	}
 
 	// List all cleanup items
-	items, err := strategy.ListAllCleanupItems()
+	items, err := strategy.ListAllCleanupItems(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to list orphaned items: %w", err)
 	}
 
 	// List temp files
-	tempFiles, err := listTempFiles()
+	tempFiles, err := listTempFiles(ctx)
 	if err != nil {
 		// Non-fatal: continue with other cleanup items
 		fmt.Fprintf(w, "Warning: failed to list temp files: %v\n", err)
 	}
 
-	return runCleanWithItems(w, force, items, tempFiles)
+	return runCleanWithItems(ctx, w, force, items, tempFiles)
 }
 
 // listTempFiles returns files in .entire/tmp/ that are safe to delete,
 // excluding files belonging to active sessions.
-func listTempFiles() ([]string, error) {
-	tmpDir, err := paths.AbsPath(paths.EntireTmpDir)
+func listTempFiles(ctx context.Context) ([]string, error) {
+	tmpDir, err := paths.AbsPath(ctx, paths.EntireTmpDir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get temp dir path: %w", err)
 	}
@@ -95,7 +96,7 @@ func listTempFiles() ([]string, error) {
 
 	// Build set of active session IDs to protect their temp files
 	activeSessionIDs := make(map[string]bool)
-	if states, listErr := strategy.ListSessionStates(); listErr == nil {
+	if states, listErr := strategy.ListSessionStates(ctx); listErr == nil {
 		for _, state := range states {
 			activeSessionIDs[state.SessionID] = true
 		}
@@ -125,8 +126,8 @@ type TempFileDeleteError struct {
 
 // deleteTempFiles removes all files in .entire/tmp/.
 // Returns successfully deleted files and any failures with their error reasons.
-func deleteTempFiles(files []string) (deleted []string, failed []TempFileDeleteError) {
-	tmpDir, err := paths.AbsPath(paths.EntireTmpDir)
+func deleteTempFiles(ctx context.Context, files []string) (deleted []string, failed []TempFileDeleteError) {
+	tmpDir, err := paths.AbsPath(ctx, paths.EntireTmpDir)
 	if err != nil {
 		// Can't get path - mark all as failed with the same error
 		for _, file := range files {
@@ -148,7 +149,7 @@ func deleteTempFiles(files []string) (deleted []string, failed []TempFileDeleteE
 
 // runCleanWithItems is the core logic for cleaning orphaned items.
 // Separated for testability.
-func runCleanWithItems(w io.Writer, force bool, items []strategy.CleanupItem, tempFiles []string) error {
+func runCleanWithItems(ctx context.Context, w io.Writer, force bool, items []strategy.CleanupItem, tempFiles []string) error {
 	// Handle no items case
 	if len(items) == 0 && len(tempFiles) == 0 {
 		fmt.Fprintln(w, "No orphaned items to clean up.")
@@ -210,13 +211,13 @@ func runCleanWithItems(w io.Writer, force bool, items []strategy.CleanupItem, te
 	}
 
 	// Force mode - delete items
-	result, err := strategy.DeleteAllCleanupItems(items)
+	result, err := strategy.DeleteAllCleanupItems(ctx, items)
 	if err != nil {
 		return fmt.Errorf("failed to delete orphaned items: %w", err)
 	}
 
 	// Delete temp files
-	deletedTempFiles, failedTempFiles := deleteTempFiles(tempFiles)
+	deletedTempFiles, failedTempFiles := deleteTempFiles(ctx, tempFiles)
 
 	// Report results
 	totalDeleted := len(result.ShadowBranches) + len(result.SessionStates) + len(result.Checkpoints) + len(deletedTempFiles)

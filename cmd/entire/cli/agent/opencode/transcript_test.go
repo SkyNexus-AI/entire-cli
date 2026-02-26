@@ -1,6 +1,7 @@
 package opencode
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -407,7 +408,7 @@ func TestChunkTranscript_SmallContent(t *testing.T) {
 	content := []byte(testExportJSON)
 
 	// maxSize larger than content — should return single chunk
-	chunks, err := ag.ChunkTranscript(content, len(content)+1000)
+	chunks, err := ag.ChunkTranscript(context.Background(), content, len(content)+1000)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -422,7 +423,7 @@ func TestChunkTranscript_SplitsLargeContent(t *testing.T) {
 	content := []byte(testExportJSON)
 
 	// Use a maxSize that forces splitting
-	chunks, err := ag.ChunkTranscript(content, 500)
+	chunks, err := ag.ChunkTranscript(context.Background(), content, 500)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -448,7 +449,7 @@ func TestChunkTranscript_RoundTrip(t *testing.T) {
 	content := []byte(testExportJSON)
 
 	// Split into chunks
-	chunks, err := ag.ChunkTranscript(content, 500)
+	chunks, err := ag.ChunkTranscript(context.Background(), content, 500)
 	if err != nil {
 		t.Fatalf("chunk error: %v", err)
 	}
@@ -489,7 +490,7 @@ func TestChunkTranscript_EmptyContent(t *testing.T) {
 		t.Fatalf("failed to marshal empty session: %v", err)
 	}
 
-	chunks, err := ag.ChunkTranscript(data, 100)
+	chunks, err := ag.ChunkTranscript(context.Background(), data, 100)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

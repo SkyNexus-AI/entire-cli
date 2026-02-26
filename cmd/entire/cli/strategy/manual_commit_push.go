@@ -1,6 +1,10 @@
 package strategy
 
-import "github.com/entireio/cli/cmd/entire/cli/paths"
+import (
+	"context"
+
+	"github.com/entireio/cli/cmd/entire/cli/paths"
+)
 
 // PrePush is called by the git pre-push hook before pushing to a remote.
 // It pushes the entire/checkpoints/v1 branch alongside the user's push.
@@ -8,9 +12,9 @@ import "github.com/entireio/cli/cmd/entire/cli/paths"
 //   - "auto": always push automatically
 //   - "prompt" (default): ask user with option to enable auto
 //   - "false"/"off"/"no": never push
-func (s *ManualCommitStrategy) PrePush(remote string) error {
-	if err := pushSessionsBranchCommon(remote, paths.MetadataBranchName); err != nil {
+func (s *ManualCommitStrategy) PrePush(ctx context.Context, remote string) error {
+	if err := pushSessionsBranchCommon(ctx, remote, paths.MetadataBranchName); err != nil {
 		return err
 	}
-	return PushTrailsBranch(remote)
+	return PushTrailsBranch(ctx, remote)
 }

@@ -28,7 +28,7 @@ import (
 
 // DispatchLifecycleEvent routes a normalized lifecycle event to the appropriate handler.
 // Returns nil if the event was handled successfully.
-func DispatchLifecycleEvent(ag agent.Agent, event *agent.Event) error {
+func DispatchLifecycleEvent(ctx context.Context, ag agent.Agent, event *agent.Event) error {
 	if ag == nil {
 		return errors.New("agent cannot be nil")
 	}
@@ -38,19 +38,19 @@ func DispatchLifecycleEvent(ag agent.Agent, event *agent.Event) error {
 
 	switch event.Type {
 	case agent.SessionStart:
-		return handleLifecycleSessionStart(ag, event)
+		return handleLifecycleSessionStart(ctx, ag, event)
 	case agent.TurnStart:
-		return handleLifecycleTurnStart(ag, event)
+		return handleLifecycleTurnStart(ctx, ag, event)
 	case agent.TurnEnd:
-		return handleLifecycleTurnEnd(ag, event)
+		return handleLifecycleTurnEnd(ctx, ag, event)
 	case agent.Compaction:
-		return handleLifecycleCompaction(ag, event)
+		return handleLifecycleCompaction(ctx, ag, event)
 	case agent.SessionEnd:
-		return handleLifecycleSessionEnd(ag, event)
+		return handleLifecycleSessionEnd(ctx, ag, event)
 	case agent.SubagentStart:
-		return handleLifecycleSubagentStart(ag, event)
+		return handleLifecycleSubagentStart(ctx, ag, event)
 	case agent.SubagentEnd:
-		return handleLifecycleSubagentEnd(ag, event)
+		return handleLifecycleSubagentEnd(ctx, ag, event)
 	default:
 		return fmt.Errorf("unknown lifecycle event type: %d", event.Type)
 	}
@@ -58,8 +58,8 @@ func DispatchLifecycleEvent(ag agent.Agent, event *agent.Event) error {
 
 // handleLifecycleSessionStart handles session start: shows banner, checks concurrent sessions,
 // fires state machine transition.
-func handleLifecycleSessionStart(ag agent.Agent, event *agent.Event) error {
-	logCtx := logging.WithAgent(logging.WithComponent(context.Background(), "lifecycle"), ag.Name())
+func handleLifecycleSessionStart(ctx context.Context, ag agent.Agent, event *agent.Event) error {
+	logCtx := logging.WithAgent(logging.WithComponent(ctx, "lifecycle"), ag.Name())
 	logging.Info(logCtx, "session-start",
 		slog.String("event", event.Type.String()),
 		slog.String("session_id", event.SessionID),
@@ -77,8 +77,8 @@ func handleLifecycleSessionStart(ag agent.Agent, event *agent.Event) error {
 	message := "\n\nPowered by Entire:\n  This conversation will be linked to your next commit."
 
 	// Check for concurrent sessions and append count if any
-	strat := GetStrategy()
-	if count, err := strat.CountOtherActiveSessionsWithCheckpoints(event.SessionID); err == nil && count > 0 {
+	strat := GetStrategy(ctx)
+	if count, err := strat.CountOtherActiveSessionsWithCheckpoints(ctx, event.SessionID); err == nil && count > 0 {
 		message += fmt.Sprintf("\n  %d other active conversation(s) in this workspace will also be included.\n  Use 'entire status' for more information.", count)
 	}
 
@@ -91,13 +91,13 @@ func handleLifecycleSessionStart(ag agent.Agent, event *agent.Event) error {
 	}
 
 	// Fire EventSessionStart for the current session (if state exists).
-	if state, loadErr := strategy.LoadSessionState(event.SessionID); loadErr != nil {
+	if state, loadErr := strategy.LoadSessionState(ctx, event.SessionID); loadErr != nil {
 		fmt.Fprintf(os.Stderr, "Warning: failed to load session state on start: %v\n", loadErr)
 	} else if state != nil {
-		if transErr := strategy.TransitionAndLog(state, session.EventSessionStart, session.TransitionContext{}, session.NoOpActionHandler{}); transErr != nil {
+		if transErr := strategy.TransitionAndLog(ctx, state, session.EventSessionStart, session.TransitionContext{}, session.NoOpActionHandler{}); transErr != nil {
 			fmt.Fprintf(os.Stderr, "Warning: session start transition failed: %v\n", transErr)
 		}
-		if saveErr := strategy.SaveSessionState(state); saveErr != nil {
+		if saveErr := strategy.SaveSessionState(ctx, state); saveErr != nil {
 			fmt.Fprintf(os.Stderr, "Warning: failed to update session state on start: %v\n", saveErr)
 		}
 	}
@@ -107,8 +107,8 @@ func handleLifecycleSessionStart(ag agent.Agent, event *agent.Event) error {
 
 // handleLifecycleTurnStart handles turn start: captures pre-prompt state,
 // ensures strategy setup, initializes session.
-func handleLifecycleTurnStart(ag agent.Agent, event *agent.Event) error {
-	logCtx := logging.WithAgent(logging.WithComponent(context.Background(), "lifecycle"), ag.Name())
+func handleLifecycleTurnStart(ctx context.Context, ag agent.Agent, event *agent.Event) error {
+	logCtx := logging.WithAgent(logging.WithComponent(ctx, "lifecycle"), ag.Name())
 	logging.Info(logCtx, "turn-start",
 		slog.String("event", event.Type.String()),
 		slog.String("session_id", event.SessionID),
@@ -124,17 +124,17 @@ func handleLifecycleTurnStart(ag agent.Agent, event *agent.Event) error {
 	}
 
 	// Capture pre-prompt state (including transcript position via TranscriptAnalyzer)
-	if err := CapturePrePromptState(ag, sessionID, event.SessionRef); err != nil {
+	if err := CapturePrePromptState(ctx, ag, sessionID, event.SessionRef); err != nil {
 		return err
 	}
 
 	// Ensure strategy setup and initialize session
-	if err := strategy.EnsureSetup(); err != nil {
+	if err := strategy.EnsureSetup(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: failed to ensure strategy setup: %v\n", err)
 	}
 
-	strat := GetStrategy()
-	if err := strat.InitializeSession(sessionID, ag.Type(), event.SessionRef, event.Prompt); err != nil {
+	strat := GetStrategy(ctx)
+	if err := strat.InitializeSession(ctx, sessionID, ag.Type(), event.SessionRef, event.Prompt); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: failed to initialize session state: %v\n", err)
 	}
 
@@ -148,8 +148,8 @@ func handleLifecycleTurnStart(ag agent.Agent, event *agent.Event) error {
 // detects file changes, saves step + checkpoint, transitions phase.
 //
 //nolint:maintidx // high complexity due to sequential orchestration of 8 steps (validation, extraction, file detection, filtering, token calc, step save, phase transition, cleanup) - splitting would obscure the flow
-func handleLifecycleTurnEnd(ag agent.Agent, event *agent.Event) error {
-	logCtx := logging.WithAgent(logging.WithComponent(context.Background(), "lifecycle"), ag.Name())
+func handleLifecycleTurnEnd(ctx context.Context, ag agent.Agent, event *agent.Event) error {
+	logCtx := logging.WithAgent(logging.WithComponent(ctx, "lifecycle"), ag.Name())
 	logging.Info(logCtx, "turn-end",
 		slog.String("event", event.Type.String()),
 		slog.String("session_id", event.SessionID),
@@ -170,14 +170,14 @@ func handleLifecycleTurnEnd(ag agent.Agent, event *agent.Event) error {
 	}
 
 	// Early check: bail out quickly if the repo has no commits yet.
-	if repo, err := strategy.OpenRepository(); err == nil && strategy.IsEmptyRepository(repo) {
+	if repo, err := strategy.OpenRepository(ctx); err == nil && strategy.IsEmptyRepository(repo) {
 		fmt.Fprintln(os.Stderr, "Entire: skipping checkpoint. Will activate after first commit.")
 		return NewSilentError(strategy.ErrEmptyRepository)
 	}
 
 	// Create session metadata directory
 	sessionDir := paths.SessionMetadataDirFromSessionID(sessionID)
-	sessionDirAbs, err := paths.AbsPath(sessionDir)
+	sessionDirAbs, err := paths.AbsPath(ctx, sessionDir)
 	if err != nil {
 		sessionDirAbs = sessionDir
 	}
@@ -187,7 +187,7 @@ func handleLifecycleTurnEnd(ag agent.Agent, event *agent.Event) error {
 
 	// If agent implements TranscriptPreparer, wait for transcript to be ready
 	if preparer, ok := ag.(agent.TranscriptPreparer); ok {
-		if err := preparer.PrepareTranscript(transcriptRef); err != nil {
+		if err := preparer.PrepareTranscript(ctx, transcriptRef); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: failed to prepare transcript: %v\n", err)
 		}
 	}
@@ -204,13 +204,13 @@ func handleLifecycleTurnEnd(ag agent.Agent, event *agent.Event) error {
 	fmt.Fprintf(os.Stderr, "Copied transcript to: %s\n", sessionDir+"/"+paths.TranscriptFileName)
 
 	// Load pre-prompt state (captured on TurnStart)
-	preState, err := LoadPrePromptState(sessionID)
+	preState, err := LoadPrePromptState(ctx, sessionID)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: failed to load pre-prompt state: %v\n", err)
 	}
 
 	// Determine transcript offset
-	transcriptOffset := resolveTranscriptOffset(preState, sessionID)
+	transcriptOffset := resolveTranscriptOffset(ctx, preState, sessionID)
 
 	// Extract metadata via agent interface (prompts, summary, modified files)
 	var allPrompts []string
@@ -277,7 +277,7 @@ func handleLifecycleTurnEnd(ag agent.Agent, event *agent.Event) error {
 	fmt.Fprintf(os.Stderr, "Using commit message: %s\n", commitMessage)
 
 	// Get worktree root for path normalization
-	repoRoot, err := paths.WorktreeRoot()
+	repoRoot, err := paths.WorktreeRoot(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to get worktree root: %w", err)
 	}
@@ -289,7 +289,7 @@ func handleLifecycleTurnEnd(ag agent.Agent, event *agent.Event) error {
 	}
 
 	// Detect file changes via git status
-	changes, err := DetectFileChanges(preUntrackedFiles)
+	changes, err := DetectFileChanges(ctx, preUntrackedFiles)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: failed to compute file changes: %v\n", err)
 	}
@@ -306,15 +306,15 @@ func handleLifecycleTurnEnd(ag agent.Agent, event *agent.Event) error {
 	// When an agent commits files mid-turn, those files are condensed by PostCommit
 	// and should not be re-added to FilesTouched by SaveStep. A file is "committed"
 	// if it exists in HEAD with the same content as the working tree.
-	relModifiedFiles = filterToUncommittedFiles(relModifiedFiles, repoRoot)
+	relModifiedFiles = filterToUncommittedFiles(ctx, relModifiedFiles, repoRoot)
 
 	// Check if there are any changes
 	totalChanges := len(relModifiedFiles) + len(relNewFiles) + len(relDeletedFiles)
 	if totalChanges == 0 {
 		fmt.Fprintf(os.Stderr, "No files were modified during this session\n")
 		fmt.Fprintf(os.Stderr, "Skipping commit\n")
-		transitionSessionTurnEnd(sessionID)
-		if cleanupErr := CleanupPrePromptState(sessionID); cleanupErr != nil {
+		transitionSessionTurnEnd(ctx, sessionID)
+		if cleanupErr := CleanupPrePromptState(ctx, sessionID); cleanupErr != nil {
 			fmt.Fprintf(os.Stderr, "Warning: failed to cleanup pre-prompt state: %v\n", cleanupErr)
 		}
 		return nil
@@ -331,13 +331,13 @@ func handleLifecycleTurnEnd(ag agent.Agent, event *agent.Event) error {
 	fmt.Fprintf(os.Stderr, "Created context file: %s\n", sessionDir+"/"+paths.ContextFileName)
 
 	// Get git author
-	author, err := GetGitAuthor()
+	author, err := GetGitAuthor(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to get git author: %w", err)
 	}
 
 	// Get strategy and agent type
-	strat := GetStrategy()
+	strat := GetStrategy(ctx)
 	agentType := ag.Type()
 
 	// Get transcript position/identifier from pre-prompt state
@@ -368,7 +368,7 @@ func handleLifecycleTurnEnd(ag agent.Agent, event *agent.Event) error {
 	}
 
 	// Build fully-populated step context and delegate to strategy
-	ctx := strategy.StepContext{
+	stepCtx := strategy.StepContext{
 		SessionID:                sessionID,
 		ModifiedFiles:            relModifiedFiles,
 		NewFiles:                 relNewFiles,
@@ -385,13 +385,13 @@ func handleLifecycleTurnEnd(ag agent.Agent, event *agent.Event) error {
 		TokenUsage:               tokenUsage,
 	}
 
-	if err := strat.SaveStep(ctx); err != nil {
+	if err := strat.SaveStep(ctx, stepCtx); err != nil {
 		return fmt.Errorf("failed to save step: %w", err)
 	}
 
 	// Transition session phase and cleanup
-	transitionSessionTurnEnd(sessionID)
-	if cleanupErr := CleanupPrePromptState(sessionID); cleanupErr != nil {
+	transitionSessionTurnEnd(ctx, sessionID)
+	if cleanupErr := CleanupPrePromptState(ctx, sessionID); cleanupErr != nil {
 		fmt.Fprintf(os.Stderr, "Warning: failed to cleanup pre-prompt state: %v\n", cleanupErr)
 	}
 
@@ -401,8 +401,8 @@ func handleLifecycleTurnEnd(ag agent.Agent, event *agent.Event) error {
 // handleLifecycleCompaction handles context compaction: saves current progress
 // but stays in ACTIVE phase (unlike TurnEnd which transitions to IDLE).
 // Also resets the transcript offset since the transcript may be truncated.
-func handleLifecycleCompaction(ag agent.Agent, event *agent.Event) error {
-	logCtx := logging.WithAgent(logging.WithComponent(context.Background(), "lifecycle"), ag.Name())
+func handleLifecycleCompaction(ctx context.Context, ag agent.Agent, event *agent.Event) error {
+	logCtx := logging.WithAgent(logging.WithComponent(ctx, "lifecycle"), ag.Name())
 	logging.Info(logCtx, "compaction",
 		slog.String("event", event.Type.String()),
 		slog.String("session_id", event.SessionID),
@@ -410,19 +410,19 @@ func handleLifecycleCompaction(ag agent.Agent, event *agent.Event) error {
 
 	// Fire EventCompaction to trigger ActionCondenseIfFilesTouched (stays in ACTIVE)
 	sessionID := event.SessionID
-	sessionState, loadErr := strategy.LoadSessionState(sessionID)
+	sessionState, loadErr := strategy.LoadSessionState(ctx, sessionID)
 	if loadErr != nil {
 		fmt.Fprintf(os.Stderr, "Warning: failed to load session state for compaction: %v\n", loadErr)
 	}
 	if sessionState != nil {
-		if transErr := strategy.TransitionAndLog(sessionState, session.EventCompaction, session.TransitionContext{}, session.NoOpActionHandler{}); transErr != nil {
+		if transErr := strategy.TransitionAndLog(ctx, sessionState, session.EventCompaction, session.TransitionContext{}, session.NoOpActionHandler{}); transErr != nil {
 			fmt.Fprintf(os.Stderr, "Warning: compaction transition failed: %v\n", transErr)
 		}
 
 		// Reset transcript offset since the transcript may be truncated/reorganized
 		sessionState.CheckpointTranscriptStart = 0
 
-		if saveErr := strategy.SaveSessionState(sessionState); saveErr != nil {
+		if saveErr := strategy.SaveSessionState(ctx, sessionState); saveErr != nil {
 			fmt.Fprintf(os.Stderr, "Warning: failed to save session state after compaction: %v\n", saveErr)
 		}
 	}
@@ -432,8 +432,8 @@ func handleLifecycleCompaction(ag agent.Agent, event *agent.Event) error {
 }
 
 // handleLifecycleSessionEnd handles session end: marks the session as ended.
-func handleLifecycleSessionEnd(ag agent.Agent, event *agent.Event) error {
-	logCtx := logging.WithAgent(logging.WithComponent(context.Background(), "lifecycle"), ag.Name())
+func handleLifecycleSessionEnd(ctx context.Context, ag agent.Agent, event *agent.Event) error {
+	logCtx := logging.WithAgent(logging.WithComponent(ctx, "lifecycle"), ag.Name())
 	logging.Info(logCtx, "session-end",
 		slog.String("event", event.Type.String()),
 		slog.String("session_id", event.SessionID),
@@ -448,15 +448,15 @@ func handleLifecycleSessionEnd(ag agent.Agent, event *agent.Event) error {
 	// the transcript to extract file changes. Cleanup is handled by
 	// `entire clean` or when the session state is fully removed.
 
-	if err := markSessionEnded(event.SessionID); err != nil {
+	if err := markSessionEnded(ctx, event.SessionID); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: failed to mark session ended: %v\n", err)
 	}
 	return nil
 }
 
 // handleLifecycleSubagentStart handles subagent start: captures pre-task state.
-func handleLifecycleSubagentStart(ag agent.Agent, event *agent.Event) error {
-	logCtx := logging.WithAgent(logging.WithComponent(context.Background(), "lifecycle"), ag.Name())
+func handleLifecycleSubagentStart(ctx context.Context, ag agent.Agent, event *agent.Event) error {
+	logCtx := logging.WithAgent(logging.WithComponent(ctx, "lifecycle"), ag.Name())
 	logging.Info(logCtx, "subagent-start",
 		slog.String("event", event.Type.String()),
 		slog.String("session_id", event.SessionID),
@@ -470,7 +470,7 @@ func handleLifecycleSubagentStart(ag agent.Agent, event *agent.Event) error {
 	fmt.Fprintf(os.Stderr, "  Transcript: %s\n", event.SessionRef)
 
 	// Capture pre-task state
-	if err := CapturePreTaskState(event.ToolUseID); err != nil {
+	if err := CapturePreTaskState(ctx, event.ToolUseID); err != nil {
 		return fmt.Errorf("failed to capture pre-task state: %w", err)
 	}
 
@@ -478,8 +478,8 @@ func handleLifecycleSubagentStart(ag agent.Agent, event *agent.Event) error {
 }
 
 // handleLifecycleSubagentEnd handles subagent end: detects changes, saves task checkpoint.
-func handleLifecycleSubagentEnd(ag agent.Agent, event *agent.Event) error {
-	logCtx := logging.WithAgent(logging.WithComponent(context.Background(), "lifecycle"), ag.Name())
+func handleLifecycleSubagentEnd(ctx context.Context, ag agent.Agent, event *agent.Event) error {
+	logCtx := logging.WithAgent(logging.WithComponent(ctx, "lifecycle"), ag.Name())
 	logging.Info(logCtx, "subagent-end",
 		slog.String("event", event.Type.String()),
 		slog.String("session_id", event.SessionID),
@@ -528,7 +528,7 @@ func handleLifecycleSubagentEnd(ag agent.Agent, event *agent.Event) error {
 	}
 
 	// Load pre-task state and detect file changes
-	preState, err := LoadPreTaskState(event.ToolUseID)
+	preState, err := LoadPreTaskState(ctx, event.ToolUseID)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: failed to load pre-task state: %v\n", err)
 	}
@@ -536,13 +536,13 @@ func handleLifecycleSubagentEnd(ag agent.Agent, event *agent.Event) error {
 	if preState != nil {
 		preUntrackedFiles = preState.PreUntrackedFiles()
 	}
-	changes, err := DetectFileChanges(preUntrackedFiles)
+	changes, err := DetectFileChanges(ctx, preUntrackedFiles)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: failed to compute file changes: %v\n", err)
 	}
 
 	// Get worktree root and normalize paths
-	repoRoot, err := paths.WorktreeRoot()
+	repoRoot, err := paths.WorktreeRoot(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to get worktree root: %w", err)
 	}
@@ -557,7 +557,7 @@ func handleLifecycleSubagentEnd(ag agent.Agent, event *agent.Event) error {
 	// If no changes, skip
 	if len(relModifiedFiles) == 0 && len(relNewFiles) == 0 && len(relDeletedFiles) == 0 {
 		fmt.Fprintf(os.Stderr, "[entire] No file changes detected, skipping task checkpoint\n")
-		_ = CleanupPreTaskState(event.ToolUseID) //nolint:errcheck // best-effort cleanup
+		_ = CleanupPreTaskState(ctx, event.ToolUseID) //nolint:errcheck // best-effort cleanup
 		return nil
 	}
 
@@ -570,16 +570,16 @@ func handleLifecycleSubagentEnd(ag agent.Agent, event *agent.Event) error {
 	}
 
 	// Get git author
-	author, err := GetGitAuthor()
+	author, err := GetGitAuthor(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to get git author: %w", err)
 	}
 
 	// Build task checkpoint context
-	strat := GetStrategy()
+	strat := GetStrategy(ctx)
 	agentType := ag.Type()
 
-	ctx := strategy.TaskStepContext{
+	taskStepCtx := strategy.TaskStepContext{
 		SessionID:              event.SessionID,
 		ToolUseID:              event.ToolUseID,
 		AgentID:                event.SubagentID,
@@ -596,11 +596,11 @@ func handleLifecycleSubagentEnd(ag agent.Agent, event *agent.Event) error {
 		AgentType:              agentType,
 	}
 
-	if err := strat.SaveTaskStep(ctx); err != nil {
+	if err := strat.SaveTaskStep(ctx, taskStepCtx); err != nil {
 		return fmt.Errorf("failed to save task step: %w", err)
 	}
 
-	_ = CleanupPreTaskState(event.ToolUseID) //nolint:errcheck // best-effort cleanup
+	_ = CleanupPreTaskState(ctx, event.ToolUseID) //nolint:errcheck // best-effort cleanup
 	return nil
 }
 
@@ -608,14 +608,14 @@ func handleLifecycleSubagentEnd(ag agent.Agent, event *agent.Event) error {
 
 // resolveTranscriptOffset determines the transcript offset to use for parsing.
 // Prefers pre-prompt state, falls back to session state.
-func resolveTranscriptOffset(preState *PrePromptState, sessionID string) int {
+func resolveTranscriptOffset(ctx context.Context, preState *PrePromptState, sessionID string) int {
 	if preState != nil && preState.TranscriptOffset > 0 {
 		fmt.Fprintf(os.Stderr, "Pre-prompt state found: parsing transcript from offset %d\n", preState.TranscriptOffset)
 		return preState.TranscriptOffset
 	}
 
 	// Fall back to session state
-	sessionState, loadErr := strategy.LoadSessionState(sessionID)
+	sessionState, loadErr := strategy.LoadSessionState(ctx, sessionID)
 	if loadErr != nil {
 		fmt.Fprintf(os.Stderr, "Warning: failed to load session state: %v\n", loadErr)
 		return 0
@@ -667,8 +667,8 @@ func parseTranscriptForCheckpointUUID(transcriptPath string) ([]transcriptLine, 
 }
 
 // transitionSessionTurnEnd transitions the session phase to IDLE and dispatches turn-end actions.
-func transitionSessionTurnEnd(sessionID string) {
-	turnState, loadErr := strategy.LoadSessionState(sessionID)
+func transitionSessionTurnEnd(ctx context.Context, sessionID string) {
+	turnState, loadErr := strategy.LoadSessionState(ctx, sessionID)
 	if loadErr != nil {
 		fmt.Fprintf(os.Stderr, "Warning: failed to load session state for turn end: %v\n", loadErr)
 		return
@@ -676,25 +676,25 @@ func transitionSessionTurnEnd(sessionID string) {
 	if turnState == nil {
 		return
 	}
-	if err := strategy.TransitionAndLog(turnState, session.EventTurnEnd, session.TransitionContext{}, session.NoOpActionHandler{}); err != nil {
+	if err := strategy.TransitionAndLog(ctx, turnState, session.EventTurnEnd, session.TransitionContext{}, session.NoOpActionHandler{}); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: turn-end transition failed: %v\n", err)
 	}
 
 	// Always dispatch to strategy for turn-end handling. The strategy reads
 	// work items from state (e.g. TurnCheckpointIDs), not the action list.
-	strat := GetStrategy()
-	if err := strat.HandleTurnEnd(turnState); err != nil {
+	strat := GetStrategy(ctx)
+	if err := strat.HandleTurnEnd(ctx, turnState); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: turn-end action dispatch failed: %v\n", err)
 	}
 
-	if updateErr := strategy.SaveSessionState(turnState); updateErr != nil {
+	if updateErr := strategy.SaveSessionState(ctx, turnState); updateErr != nil {
 		fmt.Fprintf(os.Stderr, "Warning: failed to update session phase on turn end: %v\n", updateErr)
 	}
 }
 
 // markSessionEnded transitions the session to ENDED phase via the state machine.
-func markSessionEnded(sessionID string) error {
-	state, err := strategy.LoadSessionState(sessionID)
+func markSessionEnded(ctx context.Context, sessionID string) error {
+	state, err := strategy.LoadSessionState(ctx, sessionID)
 	if err != nil {
 		return fmt.Errorf("failed to load session state: %w", err)
 	}
@@ -702,14 +702,14 @@ func markSessionEnded(sessionID string) error {
 		return nil // No state file, nothing to update
 	}
 
-	if transErr := strategy.TransitionAndLog(state, session.EventSessionStop, session.TransitionContext{}, session.NoOpActionHandler{}); transErr != nil {
+	if transErr := strategy.TransitionAndLog(ctx, state, session.EventSessionStop, session.TransitionContext{}, session.NoOpActionHandler{}); transErr != nil {
 		fmt.Fprintf(os.Stderr, "Warning: session stop transition failed: %v\n", transErr)
 	}
 
 	now := time.Now()
 	state.EndedAt = &now
 
-	if err := strategy.SaveSessionState(state); err != nil {
+	if err := strategy.SaveSessionState(ctx, state); err != nil {
 		return fmt.Errorf("failed to save session state: %w", err)
 	}
 	return nil
@@ -719,12 +719,12 @@ func markSessionEnded(sessionID string) error {
 // Non-blocking: logs errors but doesn't fail the session.
 // prompt is the user's prompt text, used for the trail title.
 func autoCreateTrailOnTurnStart(prompt string) {
-	isDefault, branchName, err := IsOnDefaultBranch()
+	isDefault, branchName, err := IsOnDefaultBranch(context.Background())
 	if err != nil || isDefault || branchName == "" {
 		return
 	}
 
-	repo, err := strategy.OpenRepository()
+	repo, err := strategy.OpenRepository(context.Background())
 	if err != nil {
 		return
 	}

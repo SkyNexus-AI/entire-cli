@@ -1,6 +1,7 @@
 package strategy
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -47,7 +48,7 @@ func TestSessionHasNewContentFromLiveTranscript_NormalizesAbsolutePaths(t *testi
 	// Get the resolved worktree path first — on macOS, t.TempDir() returns /var/...
 	// but git resolves symlinks to /private/var/... . Claude Code uses the resolved
 	// path in its transcript, so we must too.
-	worktreePath, err := paths.WorktreeRoot()
+	worktreePath, err := paths.WorktreeRoot(context.Background())
 	require.NoError(t, err)
 	worktreeID, err := paths.GetWorktreeID(worktreePath)
 	require.NoError(t, err)
@@ -80,11 +81,11 @@ func TestSessionHasNewContentFromLiveTranscript_NormalizesAbsolutePaths(t *testi
 		TranscriptPath:            transcriptPath,
 		CheckpointTranscriptStart: 0, // No prior condensation
 	}
-	require.NoError(t, s.saveSessionState(state))
+	require.NoError(t, s.saveSessionState(context.Background(), state))
 
 	// Call sessionHasNewContent — should fall through to live transcript check
 	// since there's no shadow branch
-	hasNew, err := s.sessionHasNewContent(repo, state)
+	hasNew, err := s.sessionHasNewContent(context.Background(), repo, state)
 	require.NoError(t, err)
 	assert.True(t, hasNew,
 		"sessionHasNewContent should return true when transcript has absolute paths "+
@@ -122,7 +123,7 @@ func TestSessionHasNewContentFromLiveTranscript_IncludesSubagentFiles(t *testing
 	// Get the resolved worktree path first — on macOS, t.TempDir() returns /var/...
 	// but git resolves symlinks to /private/var/... . Claude Code uses the resolved
 	// path in its transcript, so we must too.
-	worktreePath, err := paths.WorktreeRoot()
+	worktreePath, err := paths.WorktreeRoot(context.Background())
 	require.NoError(t, err)
 	worktreeID, err := paths.GetWorktreeID(worktreePath)
 	require.NoError(t, err)
@@ -170,11 +171,11 @@ func TestSessionHasNewContentFromLiveTranscript_IncludesSubagentFiles(t *testing
 		TranscriptPath:            transcriptPath,
 		CheckpointTranscriptStart: 0,
 	}
-	require.NoError(t, s.saveSessionState(state))
+	require.NoError(t, s.saveSessionState(context.Background(), state))
 
 	// Call sessionHasNewContent — should fall through to live transcript check
 	// since there's no shadow branch, and should detect subagent file modifications
-	hasNew, err := s.sessionHasNewContent(repo, state)
+	hasNew, err := s.sessionHasNewContent(context.Background(), repo, state)
 	require.NoError(t, err)
 	assert.True(t, hasNew,
 		"sessionHasNewContent should return true when subagent transcript "+
@@ -202,10 +203,10 @@ func TestPostCommit_NoTrailer_UpdatesBaseCommit(t *testing.T) {
 	setupSessionWithCheckpoint(t, s, repo, dir, sessionID)
 
 	// Set phase to ACTIVE
-	state, err := s.loadSessionState(sessionID)
+	state, err := s.loadSessionState(context.Background(), sessionID)
 	require.NoError(t, err)
 	state.Phase = session.PhaseActive
-	require.NoError(t, s.saveSessionState(state))
+	require.NoError(t, s.saveSessionState(context.Background(), state))
 
 	originalBaseCommit := state.BaseCommit
 
@@ -233,11 +234,11 @@ func TestPostCommit_NoTrailer_UpdatesBaseCommit(t *testing.T) {
 	require.NotEqual(t, originalBaseCommit, newHeadHash, "HEAD should have changed")
 
 	// Run PostCommit
-	err = s.PostCommit()
+	err = s.PostCommit(context.Background())
 	require.NoError(t, err)
 
 	// Verify BaseCommit was updated to new HEAD
-	state, err = s.loadSessionState(sessionID)
+	state, err = s.loadSessionState(context.Background(), sessionID)
 	require.NoError(t, err)
 	assert.Equal(t, newHeadHash, state.BaseCommit,
 		"BaseCommit should be updated to new HEAD even when commit has no trailer")

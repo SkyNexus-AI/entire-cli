@@ -47,12 +47,12 @@ branch, or lists all trails if no trail exists for the current branch.`,
 
 // runTrailShow shows the trail for the current branch, or falls through to list.
 func runTrailShow(w io.Writer) error {
-	branch, err := GetCurrentBranch()
+	branch, err := GetCurrentBranch(context.Background())
 	if err != nil {
 		return runTrailListAll(w, "", false)
 	}
 
-	repo, err := strategy.OpenRepository()
+	repo, err := strategy.OpenRepository(context.Background())
 	if err != nil {
 		return fmt.Errorf("failed to open repository: %w", err)
 	}
@@ -109,7 +109,7 @@ func runTrailListAll(w io.Writer, statusFilter string, jsonOutput bool) error {
 	// Fetch remote trails branch so we see trails from collaborators
 	fetchTrailsBranch()
 
-	repo, err := strategy.OpenRepository()
+	repo, err := strategy.OpenRepository(context.Background())
 	if err != nil {
 		return fmt.Errorf("failed to open repository: %w", err)
 	}
@@ -199,7 +199,7 @@ func newTrailCreateCmd() *cobra.Command {
 
 //nolint:cyclop // sequential steps for creating a trail — splitting would obscure the flow
 func runTrailCreate(w, errW io.Writer, title, body, base, branch, statusStr string, checkout bool) error {
-	repo, err := strategy.OpenRepository()
+	repo, err := strategy.OpenRepository(context.Background())
 	if err != nil {
 		return fmt.Errorf("failed to open repository: %w", err)
 	}
@@ -212,7 +212,7 @@ func runTrailCreate(w, errW io.Writer, title, body, base, branch, statusStr stri
 		}
 	}
 
-	_, currentBranch, _ := IsOnDefaultBranch() //nolint:errcheck // best-effort detection
+	_, currentBranch, _ := IsOnDefaultBranch(context.Background()) //nolint:errcheck // best-effort detection
 	interactive := !hasFlag("title") && !hasFlag("branch")
 
 	if interactive {
@@ -305,7 +305,7 @@ func runTrailCreate(w, errW io.Writer, title, body, base, branch, statusStr stri
 			fmt.Fprintf(w, "Pushed branch %s to origin\n", branch)
 		}
 	}
-	if err := strategy.PushTrailsBranch("origin"); err != nil {
+	if err := strategy.PushTrailsBranch(context.Background(), "origin"); err != nil {
 		fmt.Fprintf(errW, "Warning: failed to push trail data: %v\n", err)
 	}
 
@@ -326,7 +326,7 @@ func runTrailCreate(w, errW io.Writer, title, body, base, branch, statusStr stri
 			}
 		}
 		if checkout {
-			if err := CheckoutBranch(branch); err != nil {
+			if err := CheckoutBranch(context.Background(), branch); err != nil {
 				return fmt.Errorf("failed to checkout branch %q: %w", branch, err)
 			}
 			fmt.Fprintf(w, "Switched to branch %s\n", branch)
@@ -359,14 +359,14 @@ func newTrailUpdateCmd() *cobra.Command {
 }
 
 func runTrailUpdate(w io.Writer, statusStr, title, body, branch string, labelAdd, labelRemove []string) error {
-	repo, err := strategy.OpenRepository()
+	repo, err := strategy.OpenRepository(context.Background())
 	if err != nil {
 		return fmt.Errorf("failed to open repository: %w", err)
 	}
 
 	// Determine branch
 	if branch == "" {
-		branch, err = GetCurrentBranch()
+		branch, err = GetCurrentBranch(context.Background())
 		if err != nil {
 			return fmt.Errorf("failed to determine current branch: %w", err)
 		}
@@ -639,7 +639,7 @@ func fetchTrailsBranch() {
 	defer cancel()
 	branchName := paths.TrailsBranchName
 	refSpec := fmt.Sprintf("+refs/heads/%s:refs/remotes/origin/%s", branchName, branchName)
-	//nolint:gosec // G204: branchName is a constant from paths package
+
 	cmd := exec.CommandContext(ctx, "git", "fetch", "origin", refSpec)
 	// Ensure non-interactive fetch in hook/agent contexts
 	cmd.Stdin = nil

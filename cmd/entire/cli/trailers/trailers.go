@@ -203,9 +203,9 @@ func FormatShadowCommit(message, metadataDir, sessionID string) string {
 	var sb strings.Builder
 	sb.WriteString(message)
 	sb.WriteString("\n\n")
-	sb.WriteString(fmt.Sprintf("%s: %s\n", MetadataTrailerKey, metadataDir))
-	sb.WriteString(fmt.Sprintf("%s: %s\n", SessionTrailerKey, sessionID))
-	sb.WriteString(fmt.Sprintf("%s: %s\n", StrategyTrailerKey, "manual-commit"))
+	fmt.Fprintf(&sb, "%s: %s\n", MetadataTrailerKey, metadataDir)
+	fmt.Fprintf(&sb, "%s: %s\n", SessionTrailerKey, sessionID)
+	fmt.Fprintf(&sb, "%s: %s\n", StrategyTrailerKey, "manual-commit")
 	return sb.String()
 }
 
@@ -215,9 +215,9 @@ func FormatShadowTaskCommit(message, taskMetadataDir, sessionID string) string {
 	var sb strings.Builder
 	sb.WriteString(message)
 	sb.WriteString("\n\n")
-	sb.WriteString(fmt.Sprintf("%s: %s\n", MetadataTaskTrailerKey, taskMetadataDir))
-	sb.WriteString(fmt.Sprintf("%s: %s\n", SessionTrailerKey, sessionID))
-	sb.WriteString(fmt.Sprintf("%s: %s\n", StrategyTrailerKey, "manual-commit"))
+	fmt.Fprintf(&sb, "%s: %s\n", MetadataTaskTrailerKey, taskMetadataDir)
+	fmt.Fprintf(&sb, "%s: %s\n", SessionTrailerKey, sessionID)
+	fmt.Fprintf(&sb, "%s: %s\n", StrategyTrailerKey, "manual-commit")
 	return sb.String()
 }
 

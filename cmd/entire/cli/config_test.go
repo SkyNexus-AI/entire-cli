@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,9 +19,9 @@ func TestLoadEntireSettings_EnabledDefaultsToTrue(t *testing.T) {
 	t.Chdir(tmpDir)
 
 	// Test 1: No settings file exists - should default to enabled
-	settings, err := LoadEntireSettings()
+	settings, err := LoadEntireSettings(context.Background())
 	if err != nil {
-		t.Fatalf("LoadEntireSettings() error = %v", err)
+		t.Fatalf("LoadEntireSettings(context.Background()) error = %v", err)
 	}
 	if !settings.Enabled {
 		t.Error("Enabled should default to true when no settings file exists")
@@ -36,9 +37,9 @@ func TestLoadEntireSettings_EnabledDefaultsToTrue(t *testing.T) {
 		t.Fatalf("Failed to write settings file: %v", err)
 	}
 
-	settings, err = LoadEntireSettings()
+	settings, err = LoadEntireSettings(context.Background())
 	if err != nil {
-		t.Fatalf("LoadEntireSettings() error = %v", err)
+		t.Fatalf("LoadEntireSettings(context.Background()) error = %v", err)
 	}
 	if !settings.Enabled {
 		t.Error("Enabled should default to true when field is missing from JSON")
@@ -50,9 +51,9 @@ func TestLoadEntireSettings_EnabledDefaultsToTrue(t *testing.T) {
 		t.Fatalf("Failed to write settings file: %v", err)
 	}
 
-	settings, err = LoadEntireSettings()
+	settings, err = LoadEntireSettings(context.Background())
 	if err != nil {
-		t.Fatalf("LoadEntireSettings() error = %v", err)
+		t.Fatalf("LoadEntireSettings(context.Background()) error = %v", err)
 	}
 	if settings.Enabled {
 		t.Error("Enabled should be false when explicitly set to false")
@@ -64,9 +65,9 @@ func TestLoadEntireSettings_EnabledDefaultsToTrue(t *testing.T) {
 		t.Fatalf("Failed to write settings file: %v", err)
 	}
 
-	settings, err = LoadEntireSettings()
+	settings, err = LoadEntireSettings(context.Background())
 	if err != nil {
-		t.Fatalf("LoadEntireSettings() error = %v", err)
+		t.Fatalf("LoadEntireSettings(context.Background()) error = %v", err)
 	}
 	if !settings.Enabled {
 		t.Error("Enabled should be true when explicitly set to true")
@@ -81,14 +82,14 @@ func TestSaveEntireSettings_PreservesEnabled(t *testing.T) {
 	settings := &EntireSettings{
 		Enabled: false,
 	}
-	if err := SaveEntireSettings(settings); err != nil {
+	if err := SaveEntireSettings(context.Background(), settings); err != nil {
 		t.Fatalf("SaveEntireSettings() error = %v", err)
 	}
 
 	// Load and verify
-	loaded, err := LoadEntireSettings()
+	loaded, err := LoadEntireSettings(context.Background())
 	if err != nil {
-		t.Fatalf("LoadEntireSettings() error = %v", err)
+		t.Fatalf("LoadEntireSettings(context.Background()) error = %v", err)
 	}
 	if loaded.Enabled {
 		t.Error("Enabled should be false after saving as false")
@@ -100,12 +101,12 @@ func TestIsEnabled(t *testing.T) {
 	t.Chdir(tmpDir)
 
 	// Test 1: No settings file - should return true (default)
-	enabled, err := IsEnabled()
+	enabled, err := IsEnabled(context.Background())
 	if err != nil {
-		t.Fatalf("IsEnabled() error = %v", err)
+		t.Fatalf("IsEnabled(context.Background()) error = %v", err)
 	}
 	if !enabled {
-		t.Error("IsEnabled() should return true when no settings file exists")
+		t.Error("IsEnabled(context.Background()) should return true when no settings file exists")
 	}
 
 	// Test 2: Settings with enabled: false - should return false
@@ -118,12 +119,12 @@ func TestIsEnabled(t *testing.T) {
 		t.Fatalf("Failed to write settings file: %v", err)
 	}
 
-	enabled, err = IsEnabled()
+	enabled, err = IsEnabled(context.Background())
 	if err != nil {
-		t.Fatalf("IsEnabled() error = %v", err)
+		t.Fatalf("IsEnabled(context.Background()) error = %v", err)
 	}
 	if enabled {
-		t.Error("IsEnabled() should return false when disabled")
+		t.Error("IsEnabled(context.Background()) should return false when disabled")
 	}
 
 	// Test 3: Settings with enabled: true - should return true
@@ -132,12 +133,12 @@ func TestIsEnabled(t *testing.T) {
 		t.Fatalf("Failed to write settings file: %v", err)
 	}
 
-	enabled, err = IsEnabled()
+	enabled, err = IsEnabled(context.Background())
 	if err != nil {
-		t.Fatalf("IsEnabled() error = %v", err)
+		t.Fatalf("IsEnabled(context.Background()) error = %v", err)
 	}
 	if !enabled {
-		t.Error("IsEnabled() should return true when enabled")
+		t.Error("IsEnabled(context.Background()) should return true when enabled")
 	}
 }
 
@@ -166,9 +167,9 @@ func TestLoadEntireSettings_LocalOverridesStrategy(t *testing.T) {
 		t.Fatalf("Failed to write local settings file: %v", err)
 	}
 
-	settings, err := LoadEntireSettings()
+	settings, err := LoadEntireSettings(context.Background())
 	if err != nil {
-		t.Fatalf("LoadEntireSettings() error = %v", err)
+		t.Fatalf("LoadEntireSettings(context.Background()) error = %v", err)
 	}
 	if !settings.Enabled {
 		t.Error("Enabled should remain true from base settings")
@@ -188,9 +189,9 @@ func TestLoadEntireSettings_LocalOverridesEnabled(t *testing.T) {
 		t.Fatalf("Failed to write local settings file: %v", err)
 	}
 
-	settings, err := LoadEntireSettings()
+	settings, err := LoadEntireSettings(context.Background())
 	if err != nil {
-		t.Fatalf("LoadEntireSettings() error = %v", err)
+		t.Fatalf("LoadEntireSettings(context.Background()) error = %v", err)
 	}
 	if settings.Enabled {
 		t.Error("Enabled should be false from local override")
@@ -210,9 +211,9 @@ func TestLoadEntireSettings_LocalOverridesLocalDev(t *testing.T) {
 		t.Fatalf("Failed to write local settings file: %v", err)
 	}
 
-	settings, err := LoadEntireSettings()
+	settings, err := LoadEntireSettings(context.Background())
 	if err != nil {
-		t.Fatalf("LoadEntireSettings() error = %v", err)
+		t.Fatalf("LoadEntireSettings(context.Background()) error = %v", err)
 	}
 	if !settings.LocalDev {
 		t.Error("LocalDev should be true from local override")
@@ -232,9 +233,9 @@ func TestLoadEntireSettings_LocalMergesStrategyOptions(t *testing.T) {
 		t.Fatalf("Failed to write local settings file: %v", err)
 	}
 
-	settings, err := LoadEntireSettings()
+	settings, err := LoadEntireSettings(context.Background())
 	if err != nil {
-		t.Fatalf("LoadEntireSettings() error = %v", err)
+		t.Fatalf("LoadEntireSettings(context.Background()) error = %v", err)
 	}
 
 	if settings.StrategyOptions["key1"] != "value1" {
@@ -257,9 +258,9 @@ func TestLoadEntireSettings_OnlyLocalFileExists(t *testing.T) {
 		t.Fatalf("Failed to write local settings file: %v", err)
 	}
 
-	settings, err := LoadEntireSettings()
+	settings, err := LoadEntireSettings(context.Background())
 	if err != nil {
-		t.Fatalf("LoadEntireSettings() error = %v", err)
+		t.Fatalf("LoadEntireSettings(context.Background()) error = %v", err)
 	}
 	if !settings.Enabled {
 		t.Error("Enabled should default to true")
@@ -274,9 +275,9 @@ func TestLoadEntireSettings_RejectsUnknownKeysInBase(t *testing.T) {
 		t.Fatalf("Failed to write settings file: %v", err)
 	}
 
-	_, err := LoadEntireSettings()
+	_, err := LoadEntireSettings(context.Background())
 	if err == nil {
-		t.Fatal("LoadEntireSettings() should return error for unknown key")
+		t.Fatal("LoadEntireSettings(context.Background()) should return error for unknown key")
 	}
 	if !strings.Contains(err.Error(), "unknown field") {
 		t.Errorf("Error should mention 'unknown field', got: %v", err)
@@ -296,9 +297,9 @@ func TestLoadEntireSettings_RejectsUnknownKeysInLocal(t *testing.T) {
 		t.Fatalf("Failed to write local settings file: %v", err)
 	}
 
-	_, err := LoadEntireSettings()
+	_, err := LoadEntireSettings(context.Background())
 	if err == nil {
-		t.Fatal("LoadEntireSettings() should return error for unknown key in local settings")
+		t.Fatal("LoadEntireSettings(context.Background()) should return error for unknown key in local settings")
 	}
 	if !strings.Contains(err.Error(), "unknown field") {
 		t.Errorf("Error should mention 'unknown field', got: %v", err)

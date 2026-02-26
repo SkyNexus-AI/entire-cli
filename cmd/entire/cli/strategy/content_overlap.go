@@ -4,6 +4,8 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
 
 	"github.com/entireio/cli/cmd/entire/cli/logging"
 	"github.com/go-git/go-git/v5"
@@ -29,66 +31,76 @@ import (
 // - New files (don't exist in parent): Require content match against shadow branch.
 //   If content differs completely, the session's work was likely reverted & replaced.
 
+// overlapOpts provides pre-resolved git objects to avoid redundant reads.
+// When fields are non-nil, they are used directly instead of reading from the repo.
+type overlapOpts struct {
+	headTree      *object.Tree // HEAD commit tree
+	shadowTree    *object.Tree // Shadow branch tree
+	parentTree    *object.Tree // HEAD's first parent tree (nil = initial commit or not provided)
+	hasParentTree bool         // True if parentTree was explicitly resolved (distinguishes nil-not-resolved from nil-initial-commit)
+}
+
 // filesOverlapWithContent checks if any file in filesTouched overlaps with the committed
 // content, using content-aware comparison to detect the "reverted and replaced" scenario.
 //
 // This is used in PostCommit to determine if a session has work in the commit.
-func filesOverlapWithContent(repo *git.Repository, shadowBranchName string, headCommit *object.Commit, filesTouched []string) bool {
-	logCtx := logging.WithComponent(context.Background(), "checkpoint")
+func filesOverlapWithContent(ctx context.Context, repo *git.Repository, shadowBranchName string, headCommit *object.Commit, filesTouched []string, opts ...overlapOpts) bool {
+	logCtx := logging.WithComponent(ctx, "checkpoint")
 
-	// Build set of filesTouched for quick lookup
-	touchedSet := make(map[string]bool)
-	for _, f := range filesTouched {
-		touchedSet[f] = true
+	// Use pre-resolved trees if provided, otherwise resolve from repo.
+	var o overlapOpts
+	if len(opts) > 0 {
+		o = opts[0]
 	}
 
-	// Get HEAD commit tree (the committed content)
-	headTree, err := headCommit.Tree()
-	if err != nil {
-		logging.Debug(logCtx, "filesOverlapWithContent: failed to get HEAD tree, falling back to filename check",
-			slog.String("error", err.Error()),
-		)
-		return len(filesTouched) > 0 // Fall back: assume overlap if any files touched
+	headTree := o.headTree
+	if headTree == nil {
+		var err error
+		headTree, err = headCommit.Tree()
+		if err != nil {
+			logging.Debug(logCtx, "filesOverlapWithContent: failed to get HEAD tree, falling back to filename check",
+				slog.String("error", err.Error()),
+			)
+			return len(filesTouched) > 0
+		}
 	}
 
-	// Get shadow branch tree (the session's content)
-	refName := plumbing.NewBranchReferenceName(shadowBranchName)
-	shadowRef, err := repo.Reference(refName, true)
-	if err != nil {
-		logging.Debug(logCtx, "filesOverlapWithContent: shadow branch not found, falling back to filename check",
-			slog.String("branch", shadowBranchName),
-			slog.String("error", err.Error()),
-		)
-		return len(filesTouched) > 0 // Fall back: assume overlap if any files touched
+	shadowTree := o.shadowTree
+	if shadowTree == nil {
+		refName := plumbing.NewBranchReferenceName(shadowBranchName)
+		shadowRef, err := repo.Reference(refName, true)
+		if err != nil {
+			logging.Debug(logCtx, "filesOverlapWithContent: shadow branch not found, falling back to filename check",
+				slog.String("branch", shadowBranchName),
+				slog.String("error", err.Error()),
+			)
+			return len(filesTouched) > 0
+		}
+
+		shadowCommit, err := repo.CommitObject(shadowRef.Hash())
+		if err != nil {
+			logging.Debug(logCtx, "filesOverlapWithContent: failed to get shadow commit, falling back to filename check",
+				slog.String("error", err.Error()),
+			)
+			return len(filesTouched) > 0
+		}
+
+		shadowTree, err = shadowCommit.Tree()
+		if err != nil {
+			logging.Debug(logCtx, "filesOverlapWithContent: failed to get shadow tree, falling back to filename check",
+				slog.String("error", err.Error()),
+			)
+			return len(filesTouched) > 0
+		}
 	}
 
-	shadowCommit, err := repo.CommitObject(shadowRef.Hash())
-	if err != nil {
-		logging.Debug(logCtx, "filesOverlapWithContent: failed to get shadow commit, falling back to filename check",
-			slog.String("error", err.Error()),
-		)
-		return len(filesTouched) > 0
-	}
-
-	shadowTree, err := shadowCommit.Tree()
-	if err != nil {
-		logging.Debug(logCtx, "filesOverlapWithContent: failed to get shadow tree, falling back to filename check",
-			slog.String("error", err.Error()),
-		)
-		return len(filesTouched) > 0
-	}
-
-	// Get the parent commit tree to determine if files are modified vs newly created.
-	// For modified files (exist in parent), we count as overlap regardless of content
-	// because the user is editing the session's work.
-	// For newly created files (don't exist in parent), we check content to detect
-	// the "reverted and replaced" scenario where user deleted session's work and
-	// created something completely different.
-	var parentTree *object.Tree
-	if headCommit.NumParents() > 0 {
-		if parent, err := headCommit.Parent(0); err == nil {
-			if pTree, err := parent.Tree(); err == nil {
-				parentTree = pTree
+	parentTree := o.parentTree
+	if parentTree == nil && !o.hasParentTree {
+		if headCommit.NumParents() > 0 {
+			if parent, err := headCommit.Parent(0); err == nil {
+				if pTree, err := parent.Tree(); err == nil {
+					parentTree = pTree
+				}
 			}
 		}
 	}
@@ -170,8 +182,8 @@ func filesOverlapWithContent(repo *git.Repository, shadowBranchName string, head
 // content match to detect the "reverted and replaced" scenario.
 //
 // This is used in PrepareCommitMsg for carry-forward scenarios.
-func stagedFilesOverlapWithContent(repo *git.Repository, shadowTree *object.Tree, stagedFiles, filesTouched []string) bool {
-	logCtx := logging.WithComponent(context.Background(), "checkpoint")
+func stagedFilesOverlapWithContent(ctx context.Context, repo *git.Repository, shadowTree *object.Tree, stagedFiles, filesTouched []string) bool {
+	logCtx := logging.WithComponent(ctx, "checkpoint")
 
 	// Build set of filesTouched for quick lookup
 	touchedSet := make(map[string]bool)
@@ -347,52 +359,76 @@ func hasOverlappingFiles(stagedFiles, filesTouched []string) bool {
 // A file has remaining agent changes if:
 //   - It wasn't committed at all (not in committedFiles), OR
 //   - It was committed but the committed content doesn't match the shadow branch
-//     (user committed partial changes, e.g., via git add -p)
+//     AND the working tree still has changes (e.g., user did git add -p)
+//
+// When committed content differs from the shadow but the working tree is clean
+// (matches the commit), the user intentionally wrote different content — there
+// is nothing left to carry forward.
 //
 // Falls back to file-level subtraction if shadow branch is unavailable.
 func filesWithRemainingAgentChanges(
+	ctx context.Context,
 	repo *git.Repository,
 	shadowBranchName string,
 	headCommit *object.Commit,
 	filesTouched []string,
 	committedFiles map[string]struct{},
+	opts ...overlapOpts,
 ) []string {
-	logCtx := logging.WithComponent(context.Background(), "checkpoint")
+	logCtx := logging.WithComponent(ctx, "checkpoint")
 
-	// Get HEAD commit tree (the committed content)
-	commitTree, err := headCommit.Tree()
-	if err != nil {
-		logging.Debug(logCtx, "filesWithRemainingAgentChanges: failed to get commit tree, falling back to file subtraction",
-			slog.String("error", err.Error()),
-		)
-		return subtractFilesByName(filesTouched, committedFiles)
+	// Use pre-resolved trees if provided, otherwise resolve from repo.
+	var o overlapOpts
+	if len(opts) > 0 {
+		o = opts[0]
 	}
 
-	// Get shadow branch tree (the session's full content)
-	refName := plumbing.NewBranchReferenceName(shadowBranchName)
-	shadowRef, err := repo.Reference(refName, true)
-	if err != nil {
-		logging.Debug(logCtx, "filesWithRemainingAgentChanges: shadow branch not found, falling back to file subtraction",
-			slog.String("branch", shadowBranchName),
-			slog.String("error", err.Error()),
-		)
-		return subtractFilesByName(filesTouched, committedFiles)
+	commitTree := o.headTree
+	if commitTree == nil {
+		var err error
+		commitTree, err = headCommit.Tree()
+		if err != nil {
+			logging.Debug(logCtx, "filesWithRemainingAgentChanges: failed to get commit tree, falling back to file subtraction",
+				slog.String("error", err.Error()),
+			)
+			return subtractFilesByName(ctx, filesTouched, committedFiles)
+		}
 	}
 
-	shadowCommit, err := repo.CommitObject(shadowRef.Hash())
-	if err != nil {
-		logging.Debug(logCtx, "filesWithRemainingAgentChanges: failed to get shadow commit, falling back to file subtraction",
-			slog.String("error", err.Error()),
-		)
-		return subtractFilesByName(filesTouched, committedFiles)
+	shadowTree := o.shadowTree
+	if shadowTree == nil {
+		refName := plumbing.NewBranchReferenceName(shadowBranchName)
+		shadowRef, err := repo.Reference(refName, true)
+		if err != nil {
+			logging.Debug(logCtx, "filesWithRemainingAgentChanges: shadow branch not found, falling back to file subtraction",
+				slog.String("branch", shadowBranchName),
+				slog.String("error", err.Error()),
+			)
+			return subtractFilesByName(ctx, filesTouched, committedFiles)
+		}
+
+		shadowCommit, err := repo.CommitObject(shadowRef.Hash())
+		if err != nil {
+			logging.Debug(logCtx, "filesWithRemainingAgentChanges: failed to get shadow commit, falling back to file subtraction",
+				slog.String("error", err.Error()),
+			)
+			return subtractFilesByName(ctx, filesTouched, committedFiles)
+		}
+
+		shadowTree, err = shadowCommit.Tree()
+		if err != nil {
+			logging.Debug(logCtx, "filesWithRemainingAgentChanges: failed to get shadow tree, falling back to file subtraction",
+				slog.String("error", err.Error()),
+			)
+			return subtractFilesByName(ctx, filesTouched, committedFiles)
+		}
 	}
 
-	shadowTree, err := shadowCommit.Tree()
-	if err != nil {
-		logging.Debug(logCtx, "filesWithRemainingAgentChanges: failed to get shadow tree, falling back to file subtraction",
-			slog.String("error", err.Error()),
-		)
-		return subtractFilesByName(filesTouched, committedFiles)
+	// Get worktree root for working tree checks when committed content
+	// differs from shadow (distinguishes replacement from partial staging).
+	var worktreeRoot string
+	if wt, wtErr := repo.Worktree(); wtErr == nil {
+		worktreeRoot = wt.Filesystem.Root()
 	}
 
 	var remaining []string
@@ -427,19 +463,31 @@ func filesWithRemainingAgentChanges(
 			continue
 		}
 
-		// Compare hashes - if different, there are still uncommitted agent changes
-		if commitFile.Hash != shadowFile.Hash {
-			remaining = append(remaining, filePath)
-			logging.Debug(logCtx, "filesWithRemainingAgentChanges: content mismatch, keeping for carry-forward",
+		if commitFile.Hash == shadowFile.Hash {
+			logging.Debug(logCtx, "filesWithRemainingAgentChanges: content fully committed",
+				slog.String("file", filePath),
+			)
+			continue
+		}
+
+		// Committed content differs from shadow. Check whether the working tree
+		// still has changes — if clean, the user intentionally replaced the content
+		// and there's nothing left to carry forward.
+		if worktreeRoot != "" && workingTreeMatchesCommit(worktreeRoot, filePath, commitFile.Hash) {
+			logging.Debug(logCtx, "filesWithRemainingAgentChanges: content differs from shadow but working tree is clean, skipping",
 				slog.String("file", filePath),
 				slog.String("commit_hash", commitFile.Hash.String()[:7]),
 				slog.String("shadow_hash", shadowFile.Hash.String()[:7]),
 			)
-		} else {
-			logging.Debug(logCtx, "filesWithRemainingAgentChanges: content fully committed",
-				slog.String("file", filePath),
-			)
+			continue
 		}
+
+		remaining = append(remaining, filePath)
+		logging.Debug(logCtx, "filesWithRemainingAgentChanges: content mismatch with dirty working tree, keeping for carry-forward",
+			slog.String("file", filePath),
+			slog.String("commit_hash", commitFile.Hash.String()[:7]),
+			slog.String("shadow_hash", shadowFile.Hash.String()[:7]),
+		)
 	}
 
 	logging.Debug(logCtx, "filesWithRemainingAgentChanges: result",
@@ -451,10 +499,25 @@ func filesWithRemainingAgentChanges(
 	return remaining
 }
 
+// workingTreeMatchesCommit checks if the file on disk matches the committed blob hash.
+// Returns true if the working tree is clean for this file (no remaining changes).
+func workingTreeMatchesCommit(worktreeRoot, filePath string, commitHash plumbing.Hash) bool {
+	absPath := filepath.Join(worktreeRoot, filePath)
+	diskContent, err := os.ReadFile(absPath) //nolint:gosec // filePath is from git status, not user input
+	if err != nil {
+		return false
+	}
+	h := plumbing.NewHasher(plumbing.BlobObject, int64(len(diskContent)))
+	if _, err := h.Write(diskContent); err != nil {
+		return false
+	}
+	return h.Sum() == commitHash
+}
+
 // subtractFilesByName returns files from filesTouched that are NOT in committedFiles.
 // This is a fallback when content-aware comparison isn't possible.
-func subtractFilesByName(filesTouched []string, committedFiles map[string]struct{}) []string {
-	logCtx := logging.WithComponent(context.Background(), "checkpoint")
+func subtractFilesByName(ctx context.Context, filesTouched []string, committedFiles map[string]struct{}) []string {
+	logCtx := logging.WithComponent(ctx, "checkpoint")
 	logging.Debug(logCtx, "subtractFilesByName: ",
 		slog.Any("filesTouched", filesTouched),
 		slog.Any("committedFiles", committedFiles),

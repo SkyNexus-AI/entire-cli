@@ -1,13 +1,14 @@
 package strategy
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
-	"github.com/entireio/cli/cmd/entire/cli/buildinfo"
 	"github.com/entireio/cli/cmd/entire/cli/session"
+	"github.com/entireio/cli/cmd/entire/cli/versioninfo"
 
 	"github.com/go-git/go-git/v5"
 	"github.com/stretchr/testify/assert"
@@ -22,10 +23,10 @@ func TestInitializeSession_SetsPhaseActive(t *testing.T) {
 
 	s := &ManualCommitStrategy{}
 
-	err := s.InitializeSession("test-session-phase-1", "Claude Code", "", "")
+	err := s.InitializeSession(context.Background(), "test-session-phase-1", "Claude Code", "", "")
 	require.NoError(t, err)
 
-	state, err := s.loadSessionState("test-session-phase-1")
+	state, err := s.loadSessionState(context.Background(), "test-session-phase-1")
 	require.NoError(t, err)
 	require.NotNil(t, state)
 
@@ -46,22 +47,22 @@ func TestInitializeSession_IdleToActive(t *testing.T) {
 	s := &ManualCommitStrategy{}
 
 	// First call initializes
-	err := s.InitializeSession("test-session-idle", "Claude Code", "", "")
+	err := s.InitializeSession(context.Background(), "test-session-idle", "Claude Code", "", "")
 	require.NoError(t, err)
 
 	// Manually set to IDLE (simulating post-Stop state)
-	state, err := s.loadSessionState("test-session-idle")
+	state, err := s.loadSessionState(context.Background(), "test-session-idle")
 	require.NoError(t, err)
 	state.Phase = session.PhaseIdle
 	state.LastInteractionTime = nil
-	err = s.saveSessionState(state)
+	err = s.saveSessionState(context.Background(), state)
 	require.NoError(t, err)
 
 	// Second call should transition IDLE → ACTIVE
-	err = s.InitializeSession("test-session-idle", "Claude Code", "", "")
+	err = s.InitializeSession(context.Background(), "test-session-idle", "Claude Code", "", "")
 	require.NoError(t, err)
 
-	state, err = s.loadSessionState("test-session-idle")
+	state, err = s.loadSessionState(context.Background(), "test-session-idle")
 	require.NoError(t, err)
 	assert.Equal(t, session.PhaseActive, state.Phase)
 	require.NotNil(t, state.LastInteractionTime)
@@ -76,10 +77,10 @@ func TestInitializeSession_ActiveToActive_CtrlCRecovery(t *testing.T) {
 	s := &ManualCommitStrategy{}
 
 	// First call
-	err := s.InitializeSession("test-session-ctrlc", "Claude Code", "", "")
+	err := s.InitializeSession(context.Background(), "test-session-ctrlc", "Claude Code", "", "")
 	require.NoError(t, err)
 
-	state, err := s.loadSessionState("test-session-ctrlc")
+	state, err := s.loadSessionState(context.Background(), "test-session-ctrlc")
 	require.NoError(t, err)
 	assert.Equal(t, session.PhaseActive, state.Phase)
 
@@ -91,10 +92,10 @@ func TestInitializeSession_ActiveToActive_CtrlCRecovery(t *testing.T) {
 	time.Sleep(time.Millisecond)
 
 	// Second call (Ctrl-C recovery) - should stay ACTIVE with updated time
-	err = s.InitializeSession("test-session-ctrlc", "Claude Code", "", "")
+	err = s.InitializeSession(context.Background(), "test-session-ctrlc", "Claude Code", "", "")
 	require.NoError(t, err)
 
-	state, err = s.loadSessionState("test-session-ctrlc")
+	state, err = s.loadSessionState(context.Background(), "test-session-ctrlc")
 	require.NoError(t, err)
 	assert.Equal(t, session.PhaseActive, state.Phase,
 		"should stay ACTIVE on Ctrl-C recovery")
@@ -113,23 +114,23 @@ func TestInitializeSession_EndedToActive(t *testing.T) {
 	s := &ManualCommitStrategy{}
 
 	// First call initializes
-	err := s.InitializeSession("test-session-ended-reenter", "Claude Code", "", "")
+	err := s.InitializeSession(context.Background(), "test-session-ended-reenter", "Claude Code", "", "")
 	require.NoError(t, err)
 
 	// Manually set to ENDED
-	state, err := s.loadSessionState("test-session-ended-reenter")
+	state, err := s.loadSessionState(context.Background(), "test-session-ended-reenter")
 	require.NoError(t, err)
 	endedAt := time.Now().Add(-time.Hour)
 	state.Phase = session.PhaseEnded
 	state.EndedAt = &endedAt
-	err = s.saveSessionState(state)
+	err = s.saveSessionState(context.Background(), state)
 	require.NoError(t, err)
 
 	// Call InitializeSession again - should transition ENDED → ACTIVE
-	err = s.InitializeSession("test-session-ended-reenter", "Claude Code", "", "")
+	err = s.InitializeSession(context.Background(), "test-session-ended-reenter", "Claude Code", "", "")
 	require.NoError(t, err)
 
-	state, err = s.loadSessionState("test-session-ended-reenter")
+	state, err = s.loadSessionState(context.Background(), "test-session-ended-reenter")
 	require.NoError(t, err)
 	assert.Equal(t, session.PhaseActive, state.Phase,
 		"should transition from ENDED to ACTIVE")
@@ -147,21 +148,21 @@ func TestInitializeSession_EmptyPhaseBackwardCompat(t *testing.T) {
 	s := &ManualCommitStrategy{}
 
 	// First call initializes
-	err := s.InitializeSession("test-session-empty-phase", "Claude Code", "", "")
+	err := s.InitializeSession(context.Background(), "test-session-empty-phase", "Claude Code", "", "")
 	require.NoError(t, err)
 
 	// Manually clear the phase (simulating pre-state-machine file)
-	state, err := s.loadSessionState("test-session-empty-phase")
+	state, err := s.loadSessionState(context.Background(), "test-session-empty-phase")
 	require.NoError(t, err)
 	state.Phase = ""
-	err = s.saveSessionState(state)
+	err = s.saveSessionState(context.Background(), state)
 	require.NoError(t, err)
 
 	// Call again - empty phase treated as IDLE → should go to ACTIVE
-	err = s.InitializeSession("test-session-empty-phase", "Claude Code", "", "")
+	err = s.InitializeSession(context.Background(), "test-session-empty-phase", "Claude Code", "", "")
 	require.NoError(t, err)
 
-	state, err = s.loadSessionState("test-session-empty-phase")
+	state, err = s.loadSessionState(context.Background(), "test-session-empty-phase")
 	require.NoError(t, err)
 	assert.Equal(t, session.PhaseActive, state.Phase,
 		"empty phase should be treated as IDLE → ACTIVE")
@@ -203,22 +204,22 @@ func setupGitRepo(t *testing.T) string {
 }
 
 // TestInitializeSession_SetsCLIVersion verifies that InitializeSession
-// persists buildinfo.Version in the session state.
+// persists versioninfo.Version in the session state.
 func TestInitializeSession_SetsCLIVersion(t *testing.T) {
 	dir := setupGitRepo(t)
 	t.Chdir(dir)
 
 	s := &ManualCommitStrategy{}
 
-	err := s.InitializeSession("test-session-cli-version", "Claude Code", "", "")
+	err := s.InitializeSession(context.Background(), "test-session-cli-version", "Claude Code", "", "")
 	require.NoError(t, err)
 
-	state, err := s.loadSessionState("test-session-cli-version")
+	state, err := s.loadSessionState(context.Background(), "test-session-cli-version")
 	require.NoError(t, err)
 	require.NotNil(t, state)
 
-	assert.Equal(t, buildinfo.Version, state.CLIVersion,
-		"InitializeSession should set CLIVersion to buildinfo.Version")
+	assert.Equal(t, versioninfo.Version, state.CLIVersion,
+		"InitializeSession should set CLIVersion to versioninfo.Version")
 }
 
 // writeTestFile is a helper to create a test file with given content.

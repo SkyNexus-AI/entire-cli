@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -16,7 +17,7 @@ func TestPreTaskStateFile(t *testing.T) {
 	// preTaskStateFile returns an absolute path within the repo
 	// Verify it ends with the expected relative path suffix
 	expectedSuffix := filepath.Join(paths.EntireTmpDir, "pre-task-toolu_abc123.json")
-	got := preTaskStateFile(toolUseID)
+	got := preTaskStateFile(context.Background(), toolUseID)
 	if !filepath.IsAbs(got) {
 		// If we're not in a git repo, it falls back to relative paths
 		if got != expectedSuffix {
@@ -54,7 +55,7 @@ func TestPrePromptState_BackwardCompat_LastTranscriptLineCount(t *testing.T) {
 	}
 
 	sessionID := "test-backward-compat"
-	stateFile := prePromptStateFile(sessionID)
+	stateFile := prePromptStateFile(context.Background(), sessionID)
 
 	// Test 1: Oldest format (last_transcript_line_count) migrates to TranscriptOffset
 	oldFormatJSON := `{
@@ -68,7 +69,7 @@ func TestPrePromptState_BackwardCompat_LastTranscriptLineCount(t *testing.T) {
 		t.Fatalf("Failed to write old-format state file: %v", err)
 	}
 
-	state, err := LoadPrePromptState(sessionID)
+	state, err := LoadPrePromptState(context.Background(), sessionID)
 	if err != nil {
 		t.Fatalf("LoadPrePromptState() error = %v", err)
 	}
@@ -101,7 +102,7 @@ func TestPrePromptState_BackwardCompat_LastTranscriptLineCount(t *testing.T) {
 		t.Fatalf("Failed to write step-format state file: %v", err)
 	}
 
-	state, err = LoadPrePromptState(sessionID)
+	state, err = LoadPrePromptState(context.Background(), sessionID)
 	if err != nil {
 		t.Fatalf("LoadPrePromptState() error = %v", err)
 	}
@@ -121,7 +122,7 @@ func TestPrePromptState_BackwardCompat_LastTranscriptLineCount(t *testing.T) {
 		t.Fatalf("Failed to write gemini-format state file: %v", err)
 	}
 
-	state, err = LoadPrePromptState(sessionID)
+	state, err = LoadPrePromptState(context.Background(), sessionID)
 	if err != nil {
 		t.Fatalf("LoadPrePromptState() error = %v", err)
 	}
@@ -146,7 +147,7 @@ func TestPrePromptState_BackwardCompat_LastTranscriptLineCount(t *testing.T) {
 		t.Fatalf("Failed to write new-format state file: %v", err)
 	}
 
-	state, err = LoadPrePromptState(sessionID)
+	state, err = LoadPrePromptState(context.Background(), sessionID)
 	if err != nil {
 		t.Fatalf("LoadPrePromptState() error = %v", err)
 	}
@@ -155,7 +156,7 @@ func TestPrePromptState_BackwardCompat_LastTranscriptLineCount(t *testing.T) {
 	}
 
 	// Cleanup
-	if err := CleanupPrePromptState(sessionID); err != nil {
+	if err := CleanupPrePromptState(context.Background(), sessionID); err != nil {
 		t.Errorf("CleanupPrePromptState() error = %v", err)
 	}
 }
@@ -265,12 +266,12 @@ func TestFindActivePreTaskFile(t *testing.T) {
 	}
 
 	// Test with no pre-task files
-	taskID, found := FindActivePreTaskFile()
+	taskID, found := FindActivePreTaskFile(context.Background())
 	if found {
-		t.Error("FindActivePreTaskFile() should return false when no pre-task files exist")
+		t.Error("FindActivePreTaskFile(context.Background()) should return false when no pre-task files exist")
 	}
 	if taskID != "" {
-		t.Errorf("FindActivePreTaskFile() taskID = %v, want empty", taskID)
+		t.Errorf("FindActivePreTaskFile(context.Background()) taskID = %v, want empty", taskID)
 	}
 
 	// Create a pre-task file
@@ -280,12 +281,12 @@ func TestFindActivePreTaskFile(t *testing.T) {
 	}
 
 	// Test with one pre-task file
-	taskID, found = FindActivePreTaskFile()
+	taskID, found = FindActivePreTaskFile(context.Background())
 	if !found {
-		t.Error("FindActivePreTaskFile() should return true when pre-task file exists")
+		t.Error("FindActivePreTaskFile(context.Background()) should return true when pre-task file exists")
 	}
 	if taskID != "toolu_abc123" {
-		t.Errorf("FindActivePreTaskFile() taskID = %v, want toolu_abc123", taskID)
+		t.Errorf("FindActivePreTaskFile(context.Background()) taskID = %v, want toolu_abc123", taskID)
 	}
 }
 
@@ -335,12 +336,12 @@ func TestPrePromptState_WithTranscriptPosition(t *testing.T) {
 	ag := claudecode.NewClaudeCodeAgent()
 
 	// Capture state with transcript path using Claude agent (JSONL format)
-	if err := CapturePrePromptState(ag, sessionID, transcriptPath); err != nil {
-		t.Fatalf("CapturePrePromptState() error = %v", err)
+	if err := CapturePrePromptState(context.Background(), ag, sessionID, transcriptPath); err != nil {
+		t.Fatalf("CapturePrePromptState(context.Background(),) error = %v", err)
 	}
 
 	// Load and verify
-	state, err := LoadPrePromptState(sessionID)
+	state, err := LoadPrePromptState(context.Background(), sessionID)
 	if err != nil {
 		t.Fatalf("LoadPrePromptState() error = %v", err)
 	}
@@ -355,7 +356,7 @@ func TestPrePromptState_WithTranscriptPosition(t *testing.T) {
 	}
 
 	// Cleanup
-	if err := CleanupPrePromptState(sessionID); err != nil {
+	if err := CleanupPrePromptState(context.Background(), sessionID); err != nil {
 		t.Errorf("CleanupPrePromptState() error = %v", err)
 	}
 }
@@ -367,12 +368,12 @@ func TestPrePromptState_WithEmptyTranscriptPath(t *testing.T) {
 	ag := claudecode.NewClaudeCodeAgent()
 
 	// Capture state with empty transcript path
-	if err := CapturePrePromptState(ag, sessionID, ""); err != nil {
-		t.Fatalf("CapturePrePromptState() error = %v", err)
+	if err := CapturePrePromptState(context.Background(), ag, sessionID, ""); err != nil {
+		t.Fatalf("CapturePrePromptState(context.Background(),) error = %v", err)
 	}
 
 	// Load and verify
-	state, err := LoadPrePromptState(sessionID)
+	state, err := LoadPrePromptState(context.Background(), sessionID)
 	if err != nil {
 		t.Fatalf("LoadPrePromptState() error = %v", err)
 	}
@@ -387,7 +388,7 @@ func TestPrePromptState_WithEmptyTranscriptPath(t *testing.T) {
 	}
 
 	// Cleanup
-	if err := CleanupPrePromptState(sessionID); err != nil {
+	if err := CleanupPrePromptState(context.Background(), sessionID); err != nil {
 		t.Errorf("CleanupPrePromptState() error = %v", err)
 	}
 }
@@ -403,12 +404,12 @@ func TestPrePromptState_WithSummaryOnlyTranscript(t *testing.T) {
 	ag := claudecode.NewClaudeCodeAgent()
 
 	// Capture state
-	if err := CapturePrePromptState(ag, sessionID, transcriptPath); err != nil {
-		t.Fatalf("CapturePrePromptState() error = %v", err)
+	if err := CapturePrePromptState(context.Background(), ag, sessionID, transcriptPath); err != nil {
+		t.Fatalf("CapturePrePromptState(context.Background(),) error = %v", err)
 	}
 
 	// Load and verify
-	state, err := LoadPrePromptState(sessionID)
+	state, err := LoadPrePromptState(context.Background(), sessionID)
 	if err != nil {
 		t.Fatalf("LoadPrePromptState() error = %v", err)
 	}
@@ -422,7 +423,7 @@ func TestPrePromptState_WithSummaryOnlyTranscript(t *testing.T) {
 	}
 
 	// Cleanup
-	if err := CleanupPrePromptState(sessionID); err != nil {
+	if err := CleanupPrePromptState(context.Background(), sessionID); err != nil {
 		t.Errorf("CleanupPrePromptState() error = %v", err)
 	}
 }
@@ -471,21 +472,21 @@ func TestDetectFileChanges_DeletedFilesWithNilPreState(t *testing.T) {
 	}
 
 	// Call DetectFileChanges with nil previouslyUntracked
-	changes, err := DetectFileChanges(nil)
+	changes, err := DetectFileChanges(context.Background(), nil)
 	if err != nil {
-		t.Fatalf("DetectFileChanges(nil) error = %v", err)
+		t.Fatalf("DetectFileChanges(context.Background(),nil) error = %v", err)
 	}
 
 	// New should be nil when there are no untracked files
 	if len(changes.New) != 0 {
-		t.Errorf("DetectFileChanges(nil) New = %v, want empty", changes.New)
+		t.Errorf("DetectFileChanges(context.Background(),nil) New = %v, want empty", changes.New)
 	}
 
 	// Deleted should contain the deleted tracked file
 	if len(changes.Deleted) != 1 {
-		t.Errorf("DetectFileChanges(nil) Deleted = %v, want [tracked.txt]", changes.Deleted)
+		t.Errorf("DetectFileChanges(context.Background(),nil) Deleted = %v, want [tracked.txt]", changes.Deleted)
 	} else if changes.Deleted[0] != "tracked.txt" {
-		t.Errorf("DetectFileChanges(nil) Deleted[0] = %v, want tracked.txt", changes.Deleted[0])
+		t.Errorf("DetectFileChanges(context.Background(),nil) Deleted[0] = %v, want tracked.txt", changes.Deleted[0])
 	}
 }
 
@@ -551,23 +552,23 @@ func TestDetectFileChanges_NewAndDeletedFiles(t *testing.T) {
 	}
 
 	// Call DetectFileChanges with pre-existing untracked files
-	changes, err := DetectFileChanges([]string{"pre-existing-untracked.txt"})
+	changes, err := DetectFileChanges(context.Background(), []string{"pre-existing-untracked.txt"})
 	if err != nil {
-		t.Fatalf("DetectFileChanges() error = %v", err)
+		t.Fatalf("DetectFileChanges(context.Background(),) error = %v", err)
 	}
 
 	// New should contain only new-file.txt (not pre-existing-untracked.txt)
 	if len(changes.New) != 1 {
-		t.Errorf("DetectFileChanges() New = %v, want [new-file.txt]", changes.New)
+		t.Errorf("DetectFileChanges(context.Background(),) New = %v, want [new-file.txt]", changes.New)
 	} else if changes.New[0] != "new-file.txt" {
-		t.Errorf("DetectFileChanges() New[0] = %v, want new-file.txt", changes.New[0])
+		t.Errorf("DetectFileChanges(context.Background(),) New[0] = %v, want new-file.txt", changes.New[0])
 	}
 
 	// Deleted should contain tracked1.txt
 	if len(changes.Deleted) != 1 {
-		t.Errorf("DetectFileChanges() Deleted = %v, want [tracked1.txt]", changes.Deleted)
+		t.Errorf("DetectFileChanges(context.Background(),) Deleted = %v, want [tracked1.txt]", changes.Deleted)
 	} else if changes.Deleted[0] != "tracked1.txt" {
-		t.Errorf("DetectFileChanges() Deleted[0] = %v, want tracked1.txt", changes.Deleted[0])
+		t.Errorf("DetectFileChanges(context.Background(),) Deleted[0] = %v, want tracked1.txt", changes.Deleted[0])
 	}
 }
 
@@ -609,21 +610,21 @@ func TestDetectFileChanges_NoChanges(t *testing.T) {
 	}
 
 	// Call DetectFileChanges with empty previouslyUntracked - no changes should be detected
-	changes, err := DetectFileChanges([]string{})
+	changes, err := DetectFileChanges(context.Background(), []string{})
 	if err != nil {
-		t.Fatalf("DetectFileChanges() error = %v", err)
+		t.Fatalf("DetectFileChanges(context.Background(),) error = %v", err)
 	}
 
 	if len(changes.Modified) != 0 {
-		t.Errorf("DetectFileChanges() Modified = %v, want empty", changes.Modified)
+		t.Errorf("DetectFileChanges(context.Background(),) Modified = %v, want empty", changes.Modified)
 	}
 
 	if len(changes.New) != 0 {
-		t.Errorf("DetectFileChanges() New = %v, want empty", changes.New)
+		t.Errorf("DetectFileChanges(context.Background(),) New = %v, want empty", changes.New)
 	}
 
 	if len(changes.Deleted) != 0 {
-		t.Errorf("DetectFileChanges() Deleted = %v, want empty", changes.Deleted)
+		t.Errorf("DetectFileChanges(context.Background(),) Deleted = %v, want empty", changes.Deleted)
 	}
 }
 
@@ -674,27 +675,27 @@ func TestDetectFileChanges_NilPreviouslyUntracked_ReturnsModified(t *testing.T) 
 	}
 
 	// Call DetectFileChanges with nil (all untracked files should be returned)
-	changes, err := DetectFileChanges(nil)
+	changes, err := DetectFileChanges(context.Background(), nil)
 	if err != nil {
-		t.Fatalf("DetectFileChanges(nil) error = %v", err)
+		t.Fatalf("DetectFileChanges(context.Background(),nil) error = %v", err)
 	}
 
 	// Modified should contain tracked.txt
 	if len(changes.Modified) != 1 {
-		t.Errorf("DetectFileChanges(nil) Modified = %v, want [tracked.txt]", changes.Modified)
+		t.Errorf("DetectFileChanges(context.Background(),nil) Modified = %v, want [tracked.txt]", changes.Modified)
 	} else if changes.Modified[0] != "tracked.txt" {
-		t.Errorf("DetectFileChanges(nil) Modified[0] = %v, want tracked.txt", changes.Modified[0])
+		t.Errorf("DetectFileChanges(context.Background(),nil) Modified[0] = %v, want tracked.txt", changes.Modified[0])
 	}
 
 	// New should contain untracked.txt
 	if len(changes.New) != 1 {
-		t.Errorf("DetectFileChanges(nil) New = %v, want [untracked.txt]", changes.New)
+		t.Errorf("DetectFileChanges(context.Background(),nil) New = %v, want [untracked.txt]", changes.New)
 	} else if changes.New[0] != "untracked.txt" {
-		t.Errorf("DetectFileChanges(nil) New[0] = %v, want untracked.txt", changes.New[0])
+		t.Errorf("DetectFileChanges(context.Background(),nil) New[0] = %v, want untracked.txt", changes.New[0])
 	}
 
 	// Deleted should be empty
 	if len(changes.Deleted) != 0 {
-		t.Errorf("DetectFileChanges(nil) Deleted = %v, want empty", changes.Deleted)
+		t.Errorf("DetectFileChanges(context.Background(),nil) Deleted = %v, want empty", changes.Deleted)
 	}
 }

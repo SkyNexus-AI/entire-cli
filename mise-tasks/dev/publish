@@ -9,4 +9,4 @@ echo "NOTE: we're overriding \$GOBIN: $GOBIN" 1>&2
 VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "dev")
 COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 
-go install -ldflags "-X github.com/entireio/cli/cmd/entire/cli/buildinfo.Version=${VERSION} -X github.com/entireio/cli/cmd/entire/cli/buildinfo.Commit=${COMMIT}" ./cmd/entire
+go install -ldflags "-X github.com/entireio/cli/cmd/entire/cli/versioninfo.Version=${VERSION} -X github.com/entireio/cli/cmd/entire/cli/versioninfo.Commit=${COMMIT}" ./cmd/entire

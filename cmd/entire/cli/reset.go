@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 
@@ -37,22 +38,23 @@ Example: If HEAD is at commit abc1234567890, the command will:
 
 Without --force, prompts for confirmation before deleting.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			ctx := cmd.Context()
 			// Check if in git repository
-			if _, err := paths.WorktreeRoot(); err != nil {
+			if _, err := paths.WorktreeRoot(ctx); err != nil {
 				return errors.New("not a git repository")
 			}
 
 			// Get current strategy
-			strat := GetStrategy()
+			strat := GetStrategy(ctx)
 
 			// Handle --session flag: reset a single session
 			if sessionFlag != "" {
-				return runResetSession(cmd, strat, sessionFlag, forceFlag)
+				return runResetSession(ctx, cmd, strat, sessionFlag, forceFlag)
 			}
 
 			// Check for active sessions before bulk reset
 			if !forceFlag {
-				activeSessions, err := activeSessionsOnCurrentHead()
+				activeSessions, err := activeSessionsOnCurrentHead(ctx)
 				if err != nil {
 					fmt.Fprintf(cmd.ErrOrStderr(), "Warning: could not check for active sessions: %v\n", err)
 					fmt.Fprintln(cmd.ErrOrStderr(), "Use --force to override.")
@@ -92,7 +94,7 @@ Without --force, prompts for confirmation before deleting.`,
 			}
 
 			// Call strategy's Reset method
-			if err := strat.Reset(); err != nil {
+			if err := strat.Reset(ctx); err != nil {
 				return fmt.Errorf("reset failed: %w", err)
 			}
 
@@ -107,9 +109,9 @@ Without --force, prompts for confirmation before deleting.`,
 }
 
 // runResetSession handles the --session flag: reset a single session.
-func runResetSession(cmd *cobra.Command, strat strategy.Strategy, sessionID string, force bool) error {
+func runResetSession(ctx context.Context, cmd *cobra.Command, strat strategy.Strategy, sessionID string, force bool) error {
 	// Verify the session exists
-	state, err := strategy.LoadSessionState(sessionID)
+	state, err := strategy.LoadSessionState(ctx, sessionID)
 	if err != nil {
 		return fmt.Errorf("failed to load session: %w", err)
 	}
@@ -144,7 +146,7 @@ func runResetSession(cmd *cobra.Command, strat strategy.Strategy, sessionID stri
 		}
 	}
 
-	if err := strat.ResetSession(sessionID); err != nil {
+	if err := strat.ResetSession(ctx, sessionID); err != nil {
 		return fmt.Errorf("reset session failed: %w", err)
 	}
 
@@ -154,8 +156,8 @@ func runResetSession(cmd *cobra.Command, strat strategy.Strategy, sessionID stri
 
 // activeSessionsOnCurrentHead returns sessions on the current HEAD
 // that are in an active phase (ACTIVE).
-func activeSessionsOnCurrentHead() ([]*session.State, error) {
-	repo, err := openRepository()
+func activeSessionsOnCurrentHead(ctx context.Context) ([]*session.State, error) {
+	repo, err := openRepository(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -166,7 +168,7 @@ func activeSessionsOnCurrentHead() ([]*session.State, error) {
 	}
 	currentHead := head.Hash().String()
 
-	states, err := strategy.ListSessionStates()
+	states, err := strategy.ListSessionStates(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list session states: %w", err)
 	}

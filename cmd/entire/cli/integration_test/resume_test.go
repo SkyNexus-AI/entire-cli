@@ -1070,3 +1070,115 @@ func TestResume_LocalLogNoTimestamp(t *testing.T) {
 		t.Errorf("restored log should contain checkpoint transcript, got: %s", string(data))
 	}
 }
+
+// TestResume_RelocatedRepo tests that resume works when a repository is moved
+// to a different directory after checkpoint creation. This validates that resume
+// reads checkpoint data from the git metadata branch (which travels with the repo)
+// and writes transcripts to the current project dir, not any stored path from
+// checkpoint creation time.
+func TestResume_RelocatedRepo(t *testing.T) {
+	t.Parallel()
+	env := NewFeatureBranchEnv(t)
+
+	// Create a session on the feature branch
+	session := env.NewSession()
+	if err := env.SimulateUserPromptSubmit(session.ID); err != nil {
+		t.Fatalf("SimulateUserPromptSubmit failed: %v", err)
+	}
+
+	content := "puts 'Hello from session'"
+	env.WriteFile("hello.rb", content)
+
+	session.CreateTranscript(
+		"Create a hello script",
+		[]FileChange{{Path: "hello.rb", Content: content}},
+	)
+	if err := env.SimulateStop(session.ID, session.TranscriptPath); err != nil {
+		t.Fatalf("SimulateStop failed: %v", err)
+	}
+
+	// Commit the file (manual-commit requires user to commit with hooks)
+	env.GitCommitWithShadowHooks("Create a hello script", "hello.rb")
+
+	featureBranch := env.GetCurrentBranch()
+	originalClaudeProjectDir := env.ClaudeProjectDir
+
+	// Switch to master before moving the repo
+	env.GitCheckoutBranch(masterBranch)
+
+	// Move the repository to a completely different location
+	newBase := t.TempDir()
+	if resolved, err := filepath.EvalSymlinks(newBase); err == nil {
+		newBase = resolved
+	}
+	newRepoDir := filepath.Join(newBase, "relocated", "new-location", "test-repo")
+	if err := os.MkdirAll(filepath.Dir(newRepoDir), 0o755); err != nil {
+		t.Fatalf("failed to create parent dir: %v", err)
+	}
+	if err := os.Rename(env.RepoDir, newRepoDir); err != nil {
+		t.Fatalf("failed to move repo: %v", err)
+	}
+
+	// Verify original location no longer exists
+	if _, err := os.Stat(env.RepoDir); !os.IsNotExist(err) {
+		t.Fatalf("original repo dir should not exist after move")
+	}
+	t.Logf("Moved repo from %s to %s", env.RepoDir, newRepoDir)
+
+	// Create a fresh Claude project dir for the new location
+	newClaudeProjectDir := t.TempDir()
+	if resolved, err := filepath.EvalSymlinks(newClaudeProjectDir); err == nil {
+		newClaudeProjectDir = resolved
+	}
+
+	// Create a new TestEnv pointing at the relocated repo
+	newEnv := &TestEnv{
+		T:                t,
+		RepoDir:          newRepoDir,
+		ClaudeProjectDir: newClaudeProjectDir,
+	}
+
+	// Run resume in the relocated repo with --force to bypass any timestamp checks
+	output, err := newEnv.RunResumeForce(featureBranch)
+	if err != nil {
+		t.Fatalf("resume in relocated repo failed: %v\nOutput: %s", err, output)
+	}
+	t.Logf("Resume output:\n%s", output)
+
+	// Verify we switched to the feature branch
+	if branch := newEnv.GetCurrentBranch(); branch != featureBranch {
+		t.Errorf("expected to be on %s, got %s", featureBranch, branch)
+	}
+
+	// Verify transcript was restored to the NEW Claude project dir
+	transcriptFiles, err := filepath.Glob(filepath.Join(newClaudeProjectDir, "*.jsonl"))
+	if err != nil {
+		t.Fatalf("failed to glob transcript files: %v", err)
+	}
+	if len(transcriptFiles) == 0 {
+		t.Fatal("expected transcript file to be restored to new Claude project dir")
+	}
+
+	// Verify the transcript contains the original session content
+	data, err := os.ReadFile(transcriptFiles[0])
+	if err != nil {
+		t.Fatalf("failed to read restored transcript: %v", err)
+	}
+	if !strings.Contains(string(data), "Create a hello script") {
+		t.Errorf("restored transcript should contain session content, got: %s", string(data))
+	}
+
+	// Verify the OLD Claude project dir was NOT written to by resume
+	oldTranscriptFiles, err := filepath.Glob(filepath.Join(originalClaudeProjectDir, "*.jsonl"))
+	if err != nil {
+		t.Fatalf("failed to glob old transcript files: %v", err)
+	}
+	if len(oldTranscriptFiles) > 0 {
+		t.Errorf("old Claude project dir should not have transcript files after resume, but found %d", len(oldTranscriptFiles))
+	}
+
+	// Verify output contains session info
+	if !strings.Contains(output, "Session:") {
+		t.Errorf("output should contain 'Session:', got: %s", output)
+	}
+}

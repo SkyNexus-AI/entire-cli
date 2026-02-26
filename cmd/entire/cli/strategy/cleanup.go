@@ -75,8 +75,8 @@ func IsShadowBranch(branchName string) bool {
 // Shadow branches match the pattern "entire/<commit-hash>" (7+ hex chars).
 // The "entire/checkpoints/v1" branch is excluded as it stores permanent metadata.
 // Returns an empty slice (not nil) if no shadow branches exist.
-func ListShadowBranches() ([]string, error) {
-	repo, err := OpenRepository()
+func ListShadowBranches(ctx context.Context) ([]string, error) {
+	repo, err := OpenRepository(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open git repository: %w", err)
 	}
@@ -117,7 +117,7 @@ func ListShadowBranches() ([]string, error) {
 // DeleteShadowBranches deletes the specified branches from the repository.
 // Returns two slices: successfully deleted branches and branches that failed to delete.
 // Individual branch deletion failures do not stop the operation - all branches are attempted.
-func DeleteShadowBranches(branches []string) (deleted []string, failed []string, err error) { //nolint:unparam // already present in codebase
+func DeleteShadowBranches(ctx context.Context, branches []string) (deleted []string, failed []string, err error) { //nolint:unparam // already present in codebase
 	if len(branches) == 0 {
 		return []string{}, []string{}, nil
 	}
@@ -125,7 +125,7 @@ func DeleteShadowBranches(branches []string) (deleted []string, failed []string,
 	for _, branch := range branches {
 		// Use git CLI to delete branches because go-git v5's RemoveReference
 		// doesn't properly persist deletions with packed refs or worktrees
-		if err := DeleteBranchCLI(branch); err != nil {
+		if err := DeleteBranchCLI(ctx, branch); err != nil {
 			failed = append(failed, branch)
 			continue
 		}
@@ -142,19 +142,19 @@ func DeleteShadowBranches(branches []string) (deleted []string, failed []string,
 //   - No shadow branch exists for the session's base commit
 //
 // This is strategy-agnostic as session states are shared by all strategies.
-func ListOrphanedSessionStates() ([]CleanupItem, error) {
-	repo, err := OpenRepository()
+func ListOrphanedSessionStates(ctx context.Context) ([]CleanupItem, error) {
+	repo, err := OpenRepository(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open git repository: %w", err)
 	}
 
 	// Get all session states
-	store, err := session.NewStateStore()
+	store, err := session.NewStateStore(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create state store: %w", err)
 	}
 
-	states, err := store.List(context.Background())
+	states, err := store.List(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list session states: %w", err)
 	}
@@ -167,7 +167,7 @@ func ListOrphanedSessionStates() ([]CleanupItem, error) {
 	cpStore := checkpoint.NewGitStore(repo)
 
 	sessionsWithCheckpoints := make(map[string]bool)
-	checkpoints, listErr := cpStore.ListCommitted(context.Background())
+	checkpoints, listErr := cpStore.ListCommitted(ctx)
 	if listErr == nil {
 		for _, cp := range checkpoints {
 			sessionsWithCheckpoints[cp.SessionID] = true
@@ -175,7 +175,7 @@ func ListOrphanedSessionStates() ([]CleanupItem, error) {
 	}
 
 	// Get all shadow branches as a set for quick lookup
-	shadowBranches, _ := ListShadowBranches() //nolint:errcheck // Best effort
+	shadowBranches, _ := ListShadowBranches(ctx) //nolint:errcheck // Best effort
 	shadowBranchSet := make(map[string]bool)
 	for _, branch := range shadowBranches {
 		shadowBranchSet[branch] = true
@@ -214,18 +214,18 @@ func ListOrphanedSessionStates() ([]CleanupItem, error) {
 }
 
 // DeleteOrphanedSessionStates deletes the specified session state files.
-func DeleteOrphanedSessionStates(sessionIDs []string) (deleted []string, failed []string, err error) {
+func DeleteOrphanedSessionStates(ctx context.Context, sessionIDs []string) (deleted []string, failed []string, err error) {
 	if len(sessionIDs) == 0 {
 		return []string{}, []string{}, nil
 	}
 
-	store, err := session.NewStateStore()
+	store, err := session.NewStateStore(ctx)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create state store: %w", err)
 	}
 
 	for _, sessionID := range sessionIDs {
-		if err := store.Clear(context.Background(), sessionID); err != nil {
+		if err := store.Clear(ctx, sessionID); err != nil {
 			failed = append(failed, sessionID)
 		} else {
 			deleted = append(deleted, sessionID)
@@ -236,12 +236,12 @@ func DeleteOrphanedSessionStates(sessionIDs []string) (deleted []string, failed 
 }
 
 // DeleteOrphanedCheckpoints removes checkpoint directories from the entire/checkpoints/v1 branch.
-func DeleteOrphanedCheckpoints(checkpointIDs []string) (deleted []string, failed []string, err error) {
+func DeleteOrphanedCheckpoints(ctx context.Context, checkpointIDs []string) (deleted []string, failed []string, err error) {
 	if len(checkpointIDs) == 0 {
 		return []string{}, []string{}, nil
 	}
 
-	repo, err := OpenRepository()
+	repo, err := OpenRepository(ctx)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to open git repository: %w", err)
 	}
@@ -336,18 +336,18 @@ func DeleteOrphanedCheckpoints(checkpointIDs []string) (deleted []string, failed
 // It iterates over all registered strategies and calls ListOrphanedItems on those
 // that implement OrphanedItemsLister.
 // Returns an error if the repository cannot be opened.
-func ListAllCleanupItems() ([]CleanupItem, error) {
+func ListAllCleanupItems(ctx context.Context) ([]CleanupItem, error) {
 	var items []CleanupItem
 	var firstErr error
 
 	strat := NewManualCommitStrategy()
-	stratItems, err := strat.ListOrphanedItems()
+	stratItems, err := strat.ListOrphanedItems(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("listing orphaned items: %w", err)
 	}
 	items = append(items, stratItems...)
 	// Orphaned session states (strategy-agnostic)
-	states, err := ListOrphanedSessionStates()
+	states, err := ListOrphanedSessionStates(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -359,9 +359,9 @@ func ListAllCleanupItems() ([]CleanupItem, error) {
 
 // DeleteAllCleanupItems deletes all specified cleanup items.
 // Logs each deletion for audit purposes.
-func DeleteAllCleanupItems(items []CleanupItem) (*CleanupResult, error) {
+func DeleteAllCleanupItems(ctx context.Context, items []CleanupItem) (*CleanupResult, error) {
 	result := &CleanupResult{}
-	logCtx := logging.WithComponent(context.Background(), "cleanup")
+	logCtx := logging.WithComponent(ctx, "cleanup")
 
 	// Build ID-to-Reason map for logging after deletion
 	reasonMap := make(map[string]string)
@@ -384,7 +384,7 @@ func DeleteAllCleanupItems(items []CleanupItem) (*CleanupResult, error) {
 
 	// Delete shadow branches
 	if len(branches) > 0 {
-		deleted, failed, err := DeleteShadowBranches(branches)
+		deleted, failed, err := DeleteShadowBranches(ctx, branches)
 		if err != nil {
 			return result, err
 		}
@@ -411,7 +411,7 @@ func DeleteAllCleanupItems(items []CleanupItem) (*CleanupResult, error) {
 
 	// Delete session states
 	if len(states) > 0 {
-		deleted, failed, err := DeleteOrphanedSessionStates(states)
+		deleted, failed, err := DeleteOrphanedSessionStates(ctx, states)
 		if err != nil {
 			return result, err
 		}
@@ -438,7 +438,7 @@ func DeleteAllCleanupItems(items []CleanupItem) (*CleanupResult, error) {
 
 	// Delete checkpoints
 	if len(checkpoints) > 0 {
-		deleted, failed, err := DeleteOrphanedCheckpoints(checkpoints)
+		deleted, failed, err := DeleteOrphanedCheckpoints(ctx, checkpoints)
 		if err != nil {
 			return result, err
 		}

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"strings"
 	"testing"
 )
@@ -60,7 +61,7 @@ func TestChunkTranscript_SmallContent_NoAgent(t *testing.T) {
 	// Without a registered agent, ChunkTranscript falls back to JSONL
 	content := []byte(`{"type":"human","message":"hello"}`)
 
-	chunks, err := ChunkTranscript(content, "")
+	chunks, err := ChunkTranscript(context.Background(), content, "")
 	if err != nil {
 		t.Fatalf("ChunkTranscript error: %v", err)
 	}

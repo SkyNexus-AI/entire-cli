@@ -19,8 +19,8 @@ import (
 
 // getSessionStateDir returns the path to the session state directory.
 // This is stored in the git common dir so it's shared across all worktrees.
-func getSessionStateDir() (string, error) {
-	commonDir, err := GetGitCommonDir()
+func getSessionStateDir(ctx context.Context) (string, error) {
+	commonDir, err := GetGitCommonDir(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -28,8 +28,8 @@ func getSessionStateDir() (string, error) {
 }
 
 // sessionStateFile returns the path to a session state file.
-func sessionStateFile(sessionID string) (string, error) {
-	stateDir, err := getSessionStateDir()
+func sessionStateFile(ctx context.Context, sessionID string) (string, error) {
+	stateDir, err := getSessionStateDir(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -39,13 +39,13 @@ func sessionStateFile(sessionID string) (string, error) {
 // LoadSessionState loads the session state for the given session ID.
 // Returns (nil, nil) when session file doesn't exist or session is stale (not an error condition).
 // Stale sessions are automatically deleted by the underlying StateStore.
-func LoadSessionState(sessionID string) (*SessionState, error) {
-	store, err := session.NewStateStore()
+func LoadSessionState(ctx context.Context, sessionID string) (*SessionState, error) {
+	store, err := session.NewStateStore(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create state store: %w", err)
 	}
 
-	state, err := store.Load(context.Background(), sessionID)
+	state, err := store.Load(ctx, sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load session state: %w", err)
 	}
@@ -53,13 +53,13 @@ func LoadSessionState(sessionID string) (*SessionState, error) {
 }
 
 // SaveSessionState saves the session state atomically.
-func SaveSessionState(state *SessionState) error {
+func SaveSessionState(ctx context.Context, state *SessionState) error {
 	// Validate session ID to prevent path traversal
 	if err := validation.ValidateSessionID(state.SessionID); err != nil {
 		return fmt.Errorf("invalid session ID: %w", err)
 	}
 
-	stateDir, err := getSessionStateDir()
+	stateDir, err := getSessionStateDir(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to get session state directory: %w", err)
 	}
@@ -73,7 +73,7 @@ func SaveSessionState(state *SessionState) error {
 		return fmt.Errorf("failed to marshal session state: %w", err)
 	}
 
-	stateFile, err := sessionStateFile(state.SessionID)
+	stateFile, err := sessionStateFile(ctx, state.SessionID)
 	if err != nil {
 		return fmt.Errorf("failed to get session state file path: %w", err)
 	}
@@ -91,13 +91,13 @@ func SaveSessionState(state *SessionState) error {
 
 // ListSessionStates returns all session states from the state directory.
 // This is a package-level function that doesn't require a specific strategy instance.
-func ListSessionStates() ([]*SessionState, error) {
-	store, err := session.NewStateStore()
+func ListSessionStates(ctx context.Context) ([]*SessionState, error) {
+	store, err := session.NewStateStore(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create state store: %w", err)
 	}
 
-	states, err := store.List(context.Background())
+	states, err := store.List(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list session states: %w", err)
 	}
@@ -108,14 +108,14 @@ func ListSessionStates() ([]*SessionState, error) {
 // (by LastInteractionTime) in the current worktree. Returns empty string if no sessions exist.
 // Scoping to the current worktree prevents cross-worktree pollution in log routing.
 // Falls back to unfiltered search if the worktree path can't be determined.
-func FindMostRecentSession() string {
-	states, err := ListSessionStates()
+func FindMostRecentSession(ctx context.Context) string {
+	states, err := ListSessionStates(ctx)
 	if err != nil || len(states) == 0 {
 		return ""
 	}
 
 	// Scope to current worktree to prevent cross-worktree pollution.
-	worktreePath, wpErr := paths.WorktreeRoot()
+	worktreePath, wpErr := paths.WorktreeRoot(ctx)
 	if wpErr == nil && worktreePath != "" {
 		var filtered []*SessionState
 		for _, s := range states {
@@ -160,12 +160,12 @@ func FindMostRecentSession() string {
 // logged internally for diagnostics.
 // This is the single entry point for all state machine transitions to ensure
 // consistent logging of phase changes.
-func TransitionAndLog(state *SessionState, event session.Event, ctx session.TransitionContext, handler session.ActionHandler) error {
+func TransitionAndLog(goCtx context.Context, state *SessionState, event session.Event, ctx session.TransitionContext, handler session.ActionHandler) error {
 	oldPhase := state.Phase
 	result := session.Transition(oldPhase, event, ctx)
-	logCtx := logging.WithComponent(context.Background(), "session")
+	logCtx := logging.WithComponent(goCtx, "session")
 
-	handlerErr := session.ApplyTransition(state, result, handler)
+	handlerErr := session.ApplyTransition(goCtx, state, result, handler)
 	if handlerErr != nil {
 		logging.Error(logCtx, "action handler error during transition",
 			slog.String("session_id", state.SessionID),
@@ -197,13 +197,13 @@ func TransitionAndLog(state *SessionState, event session.Event, ctx session.Tran
 }
 
 // ClearSessionState removes the session state file for the given session ID.
-func ClearSessionState(sessionID string) error {
+func ClearSessionState(ctx context.Context, sessionID string) error {
 	// Validate session ID to prevent path traversal
 	if err := validation.ValidateSessionID(sessionID); err != nil {
 		return fmt.Errorf("invalid session ID: %w", err)
 	}
 
-	stateFile, err := sessionStateFile(sessionID)
+	stateFile, err := sessionStateFile(ctx, sessionID)
 	if err != nil {
 		return fmt.Errorf("failed to get session state file path: %w", err)
 	}
