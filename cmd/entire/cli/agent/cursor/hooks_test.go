@@ -1,6 +1,7 @@
 package cursor
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -12,7 +13,7 @@ func TestInstallHooks_FreshInstall(t *testing.T) {
 	t.Chdir(tempDir)
 
 	ag := &CursorAgent{}
-	count, err := ag.InstallHooks(false, false)
+	count, err := ag.InstallHooks(context.Background(), false, false)
 	if err != nil {
 		t.Fatalf("InstallHooks() error = %v", err)
 	}
@@ -67,7 +68,7 @@ func TestInstallHooks_Idempotent(t *testing.T) {
 	ag := &CursorAgent{}
 
 	// First install
-	count1, err := ag.InstallHooks(false, false)
+	count1, err := ag.InstallHooks(context.Background(), false, false)
 	if err != nil {
 		t.Fatalf("first InstallHooks() error = %v", err)
 	}
@@ -76,7 +77,7 @@ func TestInstallHooks_Idempotent(t *testing.T) {
 	}
 
 	// Second install
-	count2, err := ag.InstallHooks(false, false)
+	count2, err := ag.InstallHooks(context.Background(), false, false)
 	if err != nil {
 		t.Fatalf("second InstallHooks() error = %v", err)
 	}
@@ -96,7 +97,7 @@ func TestAreHooksInstalled_NotInstalled(t *testing.T) {
 	t.Chdir(tempDir)
 
 	ag := &CursorAgent{}
-	if ag.AreHooksInstalled() {
+	if ag.AreHooksInstalled(context.Background()) {
 		t.Error("AreHooksInstalled() = true, want false (no hooks.json)")
 	}
 }
@@ -107,12 +108,12 @@ func TestAreHooksInstalled_AfterInstall(t *testing.T) {
 
 	ag := &CursorAgent{}
 
-	_, err := ag.InstallHooks(false, false)
+	_, err := ag.InstallHooks(context.Background(), false, false)
 	if err != nil {
 		t.Fatalf("InstallHooks() error = %v", err)
 	}
 
-	if !ag.AreHooksInstalled() {
+	if !ag.AreHooksInstalled(context.Background()) {
 		t.Error("AreHooksInstalled() = false, want true")
 	}
 }
@@ -124,21 +125,21 @@ func TestUninstallHooks(t *testing.T) {
 	ag := &CursorAgent{}
 
 	// Install
-	_, err := ag.InstallHooks(false, false)
+	_, err := ag.InstallHooks(context.Background(), false, false)
 	if err != nil {
 		t.Fatalf("InstallHooks() error = %v", err)
 	}
-	if !ag.AreHooksInstalled() {
+	if !ag.AreHooksInstalled(context.Background()) {
 		t.Fatal("hooks should be installed before uninstall")
 	}
 
 	// Uninstall
-	err = ag.UninstallHooks()
+	err = ag.UninstallHooks(context.Background())
 	if err != nil {
 		t.Fatalf("UninstallHooks() error = %v", err)
 	}
 
-	if ag.AreHooksInstalled() {
+	if ag.AreHooksInstalled(context.Background()) {
 		t.Error("AreHooksInstalled() = true after uninstall, want false")
 	}
 }
@@ -150,7 +151,7 @@ func TestUninstallHooks_NoHooksFile(t *testing.T) {
 	ag := &CursorAgent{}
 
 	// Should not error when no hooks file exists
-	err := ag.UninstallHooks()
+	err := ag.UninstallHooks(context.Background())
 	if err != nil {
 		t.Fatalf("UninstallHooks() should not error when no hooks file: %v", err)
 	}
@@ -163,13 +164,13 @@ func TestInstallHooks_ForceReinstall(t *testing.T) {
 	ag := &CursorAgent{}
 
 	// Install normally
-	_, err := ag.InstallHooks(false, false)
+	_, err := ag.InstallHooks(context.Background(), false, false)
 	if err != nil {
 		t.Fatalf("first InstallHooks() error = %v", err)
 	}
 
 	// Force reinstall
-	count, err := ag.InstallHooks(false, true)
+	count, err := ag.InstallHooks(context.Background(), false, true)
 	if err != nil {
 		t.Fatalf("force InstallHooks() error = %v", err)
 	}
@@ -202,7 +203,7 @@ func TestInstallHooks_PreservesExistingHooks(t *testing.T) {
 	})
 
 	ag := &CursorAgent{}
-	_, err := ag.InstallHooks(false, false)
+	_, err := ag.InstallHooks(context.Background(), false, false)
 	if err != nil {
 		t.Fatalf("InstallHooks() error = %v", err)
 	}
@@ -229,7 +230,7 @@ func TestInstallHooks_LocalDev(t *testing.T) {
 	t.Chdir(tempDir)
 
 	ag := &CursorAgent{}
-	_, err := ag.InstallHooks(true, false)
+	_, err := ag.InstallHooks(context.Background(), true, false)
 	if err != nil {
 		t.Fatalf("InstallHooks(localDev=true) error = %v", err)
 	}
@@ -261,7 +262,7 @@ func TestInstallHooks_PreservesUnknownFields(t *testing.T) {
 	}
 
 	ag := &CursorAgent{}
-	count, err := ag.InstallHooks(false, false)
+	count, err := ag.InstallHooks(context.Background(), false, false)
 	if err != nil {
 		t.Fatalf("InstallHooks() error = %v", err)
 	}
@@ -316,7 +317,7 @@ func TestUninstallHooks_PreservesUnknownFields(t *testing.T) {
 
 	// Install hooks first
 	ag := &CursorAgent{}
-	_, err := ag.InstallHooks(false, false)
+	_, err := ag.InstallHooks(context.Background(), false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -354,7 +355,7 @@ func TestUninstallHooks_PreservesUnknownFields(t *testing.T) {
 	}
 
 	// Uninstall hooks
-	if err := ag.UninstallHooks(); err != nil {
+	if err := ag.UninstallHooks(context.Background()); err != nil {
 		t.Fatalf("UninstallHooks() error = %v", err)
 	}
 
@@ -381,7 +382,7 @@ func TestUninstallHooks_PreservesUnknownFields(t *testing.T) {
 	}
 
 	// Verify Entire hooks were actually removed
-	if ag.AreHooksInstalled() {
+	if ag.AreHooksInstalled(context.Background()) {
 		t.Error("Entire hooks should be removed after uninstall")
 	}
 }

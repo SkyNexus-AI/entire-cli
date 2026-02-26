@@ -1,6 +1,7 @@
 package settings
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -33,7 +34,7 @@ func TestLoad_RejectsUnknownKeys(t *testing.T) {
 	t.Chdir(tmpDir)
 
 	// Try to load settings - should fail due to unknown key
-	_, err := Load()
+	_, err := Load(context.Background())
 	if err == nil {
 		t.Error("expected error for unknown key, got nil")
 	} else if !containsUnknownField(err.Error()) {
@@ -73,7 +74,7 @@ func TestLoad_AcceptsValidKeys(t *testing.T) {
 	t.Chdir(tmpDir)
 
 	// Load settings - should succeed
-	settings, err := Load()
+	settings, err := Load(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -123,7 +124,7 @@ func TestLoad_LocalSettingsRejectsUnknownKeys(t *testing.T) {
 	t.Chdir(tmpDir)
 
 	// Try to load settings - should fail due to unknown key in local settings
-	_, err := Load()
+	_, err := Load(context.Background())
 	if err == nil {
 		t.Error("expected error for unknown key in local settings, got nil")
 	} else if !containsUnknownField(err.Error()) {
@@ -150,7 +151,7 @@ func TestLoad_AcceptsDeprecatedStrategyField(t *testing.T) {
 
 	t.Chdir(tmpDir)
 
-	s, err := Load()
+	s, err := Load(context.Background())
 	if err != nil {
 		t.Fatalf("expected no error for deprecated strategy field, got: %v", err)
 	}
@@ -177,7 +178,7 @@ func TestFilesWithDeprecatedStrategy(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(entireDir, "settings.json"), []byte(`{"enabled": true}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if files := FilesWithDeprecatedStrategy(); len(files) != 0 {
+	if files := FilesWithDeprecatedStrategy(context.Background()); len(files) != 0 {
 		t.Errorf("expected no deprecated files, got %v", files)
 	}
 
@@ -185,7 +186,7 @@ func TestFilesWithDeprecatedStrategy(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(entireDir, "settings.json"), []byte(`{"enabled": true, "strategy": "auto-commit"}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	files := FilesWithDeprecatedStrategy()
+	files := FilesWithDeprecatedStrategy(context.Background())
 	if len(files) != 1 || files[0] != EntireSettingsFile {
 		t.Errorf("expected [%s], got %v", EntireSettingsFile, files)
 	}
@@ -194,7 +195,7 @@ func TestFilesWithDeprecatedStrategy(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(entireDir, "settings.local.json"), []byte(`{"strategy": "manual-commit"}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	files = FilesWithDeprecatedStrategy()
+	files = FilesWithDeprecatedStrategy(context.Background())
 	if len(files) != 2 {
 		t.Errorf("expected 2 deprecated files, got %v", files)
 	}

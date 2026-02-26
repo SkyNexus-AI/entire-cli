@@ -1,6 +1,7 @@
 package opencode
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -34,7 +35,7 @@ func (a *OpenCodeAgent) HookNames() []string {
 }
 
 // ParseHookEvent translates OpenCode hook calls into normalized lifecycle events.
-func (a *OpenCodeAgent) ParseHookEvent(hookName string, stdin io.Reader) (*agent.Event, error) {
+func (a *OpenCodeAgent) ParseHookEvent(ctx context.Context, hookName string, stdin io.Reader) (*agent.Event, error) {
 	switch hookName {
 	case HookNameSessionStart:
 		raw, err := agent.ReadAndParseHookInput[sessionInfoRaw](stdin)
@@ -53,7 +54,7 @@ func (a *OpenCodeAgent) ParseHookEvent(hookName string, stdin io.Reader) (*agent
 			return nil, err
 		}
 		// Get the temp file path for this session (may not exist yet, but needed for pre-prompt state).
-		repoRoot, err := paths.WorktreeRoot()
+		repoRoot, err := paths.WorktreeRoot(ctx)
 		if err != nil {
 			repoRoot = "."
 		}
@@ -73,7 +74,7 @@ func (a *OpenCodeAgent) ParseHookEvent(hookName string, stdin io.Reader) (*agent
 			return nil, err
 		}
 		// Call `opencode export` to get the transcript and write to temp file
-		transcriptPath, exportErr := a.fetchAndCacheExport(raw.SessionID)
+		transcriptPath, exportErr := a.fetchAndCacheExport(ctx, raw.SessionID)
 		if exportErr != nil {
 			return nil, fmt.Errorf("failed to export session: %w", exportErr)
 		}
@@ -115,7 +116,7 @@ func (a *OpenCodeAgent) ParseHookEvent(hookName string, stdin io.Reader) (*agent
 // OpenCode's transcript is created/updated via `opencode export`, but condensation may need fresh
 // data mid-turn (e.g., during mid-turn commits or resumed sessions where the cached file is stale).
 // This method always refreshes the transcript to ensure the latest agent activity is captured.
-func (a *OpenCodeAgent) PrepareTranscript(sessionRef string) error {
+func (a *OpenCodeAgent) PrepareTranscript(ctx context.Context, sessionRef string) error {
 	// Validate the session ref path
 	if _, err := os.Stat(sessionRef); err != nil && !os.IsNotExist(err) {
 		// Permission denied, broken symlink, or other non-recoverable errors
@@ -136,7 +137,7 @@ func (a *OpenCodeAgent) PrepareTranscript(sessionRef string) error {
 	// This is critical for resumed sessions where the cached file may contain stale data
 	// from a previous turn. Unlike turn-end (which always runs export), mid-turn commits
 	// need to refresh the transcript to capture agent activity since the last export.
-	_, err := a.fetchAndCacheExport(sessionID)
+	_, err := a.fetchAndCacheExport(ctx, sessionID)
 	return err
 }
 
@@ -147,9 +148,9 @@ func (a *OpenCodeAgent) PrepareTranscript(sessionRef string) error {
 // `opencode export` call and use pre-written mock data instead. Tests must
 // pre-write the transcript file to .entire/tmp/<sessionID>.json before
 // triggering the hook. See integration_test/hooks.go:SimulateOpenCodeTurnEnd.
-func (a *OpenCodeAgent) fetchAndCacheExport(sessionID string) (string, error) {
+func (a *OpenCodeAgent) fetchAndCacheExport(ctx context.Context, sessionID string) (string, error) {
 	// Get worktree root for the temp directory
-	repoRoot, err := paths.WorktreeRoot()
+	repoRoot, err := paths.WorktreeRoot(ctx)
 	if err != nil {
 		repoRoot = "."
 	}
@@ -166,7 +167,7 @@ func (a *OpenCodeAgent) fetchAndCacheExport(sessionID string) (string, error) {
 	}
 
 	// Call opencode export to get the transcript (always refresh on each turn)
-	data, err := runOpenCodeExport(sessionID)
+	data, err := runOpenCodeExport(ctx, sessionID)
 	if err != nil {
 		return "", fmt.Errorf("opencode export failed: %w", err)
 	}

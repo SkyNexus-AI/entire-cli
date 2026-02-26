@@ -250,14 +250,11 @@ func TestParseFromFileAtLine_ValidMixedMessages(t *testing.T) {
 
 	tmpFile := createTempTranscript(t, content)
 
-	lines, totalLines, err := ParseFromFileAtLine(tmpFile, 0)
+	lines, err := ParseFromFileAtLine(tmpFile, 0)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if totalLines != 3 {
-		t.Errorf("totalLines = %d, want 3", totalLines)
-	}
 	if len(lines) != 3 {
 		t.Fatalf("expected 3 lines, got %d", len(lines))
 	}
@@ -284,7 +281,7 @@ this is not valid json
 
 	tmpFile := createTempTranscript(t, content)
 
-	lines, _, err := ParseFromFileAtLine(tmpFile, 0)
+	lines, err := ParseFromFileAtLine(tmpFile, 0)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -303,7 +300,7 @@ func TestParseFromFileAtLine_LargeLines(t *testing.T) {
 
 	tmpFile := createTempTranscript(t, content)
 
-	lines, _, err := ParseFromFileAtLine(tmpFile, 0)
+	lines, err := ParseFromFileAtLine(tmpFile, 0)
 	if err != nil {
 		t.Fatalf("unexpected error parsing large line: %v", err)
 	}
@@ -322,7 +319,7 @@ func TestParseFromFileAtLine_LineExceedsScannerBuffer(t *testing.T) {
 
 	tmpFile := createTempTranscript(t, content)
 
-	lines, _, err := ParseFromFileAtLine(tmpFile, 0)
+	lines, err := ParseFromFileAtLine(tmpFile, 0)
 	if err != nil {
 		t.Fatalf("unexpected error parsing line exceeding buffer: %v", err)
 	}
@@ -341,14 +338,11 @@ func TestParseFromFileAtLine_LineExceedsScannerBufferWithOffset(t *testing.T) {
 
 	tmpFile := createTempTranscript(t, content)
 
-	lines, totalLines, err := ParseFromFileAtLine(tmpFile, 0)
+	lines, err := ParseFromFileAtLine(tmpFile, 0)
 	if err != nil {
 		t.Fatalf("unexpected error parsing line exceeding buffer: %v", err)
 	}
 
-	if totalLines != 1 {
-		t.Errorf("expected totalLines=1, got %d", totalLines)
-	}
 	if len(lines) != 1 {
 		t.Fatalf("expected 1 parsed line, got %d", len(lines))
 	}
@@ -363,14 +357,11 @@ func TestParseFromFileAtLine_EntireFile(t *testing.T) {
 
 	tmpFile := createTempTranscript(t, content)
 
-	lines, totalLines, err := ParseFromFileAtLine(tmpFile, 0)
+	lines, err := ParseFromFileAtLine(tmpFile, 0)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if totalLines != 3 {
-		t.Errorf("totalLines = %d, want 3", totalLines)
-	}
 	if len(lines) != 3 {
 		t.Errorf("len(lines) = %d, want 3", len(lines))
 	}
@@ -387,14 +378,11 @@ func TestParseFromFileAtLine_Offset(t *testing.T) {
 	tmpFile := createTempTranscript(t, content)
 
 	// Parse from line 2 (0-indexed, so skip first 2 lines)
-	lines, totalLines, err := ParseFromFileAtLine(tmpFile, 2)
+	lines, err := ParseFromFileAtLine(tmpFile, 2)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if totalLines != 4 {
-		t.Errorf("totalLines = %d, want 4", totalLines)
-	}
 	if len(lines) != 2 {
 		t.Errorf("len(lines) = %d, want 2 (lines after offset)", len(lines))
 	}
@@ -417,14 +405,11 @@ func TestParseFromFileAtLine_OffsetBeyondEnd(t *testing.T) {
 	tmpFile := createTempTranscript(t, content)
 
 	// Parse from line 10 (beyond end of file)
-	lines, totalLines, err := ParseFromFileAtLine(tmpFile, 10)
+	lines, err := ParseFromFileAtLine(tmpFile, 10)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if totalLines != 2 {
-		t.Errorf("totalLines = %d, want 2", totalLines)
-	}
 	if len(lines) != 0 {
 		t.Errorf("len(lines) = %d, want 0 (no lines after offset)", len(lines))
 	}
@@ -441,16 +426,12 @@ invalid json line
 	tmpFile := createTempTranscript(t, content)
 
 	// Parse from line 1 (skip first valid line)
-	lines, totalLines, err := ParseFromFileAtLine(tmpFile, 1)
+	lines, err := ParseFromFileAtLine(tmpFile, 1)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Total lines counts ALL lines including malformed
-	if totalLines != 4 {
-		t.Errorf("totalLines = %d, want 4", totalLines)
-	}
-	// But parsed lines excludes malformed
+	// Parsed lines excludes malformed
 	if len(lines) != 2 {
 		t.Errorf("len(lines) = %d, want 2 (valid lines after offset)", len(lines))
 	}
@@ -521,14 +502,11 @@ func TestParseFromFileAtLine_NormalizesRoleToType(t *testing.T) {
 
 	tmpFile := createTempTranscript(t, content)
 
-	lines, totalLines, err := ParseFromFileAtLine(tmpFile, 0)
+	lines, err := ParseFromFileAtLine(tmpFile, 0)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if totalLines != 2 {
-		t.Errorf("totalLines = %d, want 2", totalLines)
-	}
 	if len(lines) != 2 {
 		t.Fatalf("expected 2 lines, got %d", len(lines))
 	}
@@ -551,7 +529,7 @@ func TestParseFromFileAtLine_NormalizesRoleWithOffset(t *testing.T) {
 	tmpFile := createTempTranscript(t, content)
 
 	// Skip first line
-	lines, _, err := ParseFromFileAtLine(tmpFile, 1)
+	lines, err := ParseFromFileAtLine(tmpFile, 1)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

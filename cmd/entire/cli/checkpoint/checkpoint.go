@@ -258,7 +258,7 @@ type WriteCommittedOptions struct {
 	// Commit message fields (used for task checkpoints)
 	CommitSubject string // Subject line for the metadata commit (overrides default)
 
-	// Agent identifies the agent that created this checkpoint (e.g., "Claude Code", "Cursor IDE")
+	// Agent identifies the agent that created this checkpoint (e.g., "Claude Code", "Cursor")
 	Agent agent.AgentType
 
 	// TurnID correlates checkpoints from the same agent turn.
@@ -370,7 +370,7 @@ type CommittedMetadata struct {
 	CheckpointsCount int             `json:"checkpoints_count"`
 	FilesTouched     []string        `json:"files_touched"`
 
-	// Agent identifies the agent that created this checkpoint (e.g., "Claude Code", "Cursor IDE")
+	// Agent identifies the agent that created this checkpoint (e.g., "Claude Code", "Cursor")
 	Agent agent.AgentType `json:"agent,omitempty"`
 
 	// TurnID correlates checkpoints from the same agent turn.

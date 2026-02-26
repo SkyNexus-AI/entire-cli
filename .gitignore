@@ -36,11 +36,15 @@ go.work.sum
 
 # Binary output (only in root)
 /entire
+/testreport
 
 # Build output directory
 /dist/
 completions
 
+
+# E2E test artifacts
+e2e/artifacts/
 
 # worktrees
 .worktrees/

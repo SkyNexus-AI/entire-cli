@@ -22,7 +22,7 @@ func (env *TestEnv) RunCommandInteractive(args []string, respond func(ptyFile *o
 
 	cmd := exec.Command(getTestBinary(), args...)
 	cmd.Dir = env.RepoDir
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(gitIsolatedEnv(),
 		"ENTIRE_TEST_CLAUDE_PROJECT_DIR="+env.ClaudeProjectDir,
 		"TERM=xterm",
 		"ACCESSIBLE=1", // Required: makes huh read from stdin instead of /dev/tty

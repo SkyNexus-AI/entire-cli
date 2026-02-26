@@ -3,6 +3,7 @@ package claudecode
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -50,10 +51,10 @@ func (c *ClaudeCodeAgent) Description() string {
 func (c *ClaudeCodeAgent) IsPreview() bool { return false }
 
 // DetectPresence checks if Claude Code is configured in the repository.
-func (c *ClaudeCodeAgent) DetectPresence() (bool, error) {
+func (c *ClaudeCodeAgent) DetectPresence(ctx context.Context) (bool, error) {
 	// Get worktree root to check for .claude directory
 	// This is needed because the CLI may be run from a subdirectory
-	repoRoot, err := paths.WorktreeRoot()
+	repoRoot, err := paths.WorktreeRoot(ctx)
 	if err != nil {
 		// Not in a git repo, fall back to CWD-relative check
 		repoRoot = "."
@@ -135,7 +136,7 @@ func (c *ClaudeCodeAgent) ReadSession(input *agent.HookInput) (*agent.AgentSessi
 // WriteSession writes a session to Claude's storage (JSONL transcript file).
 // Uses the NativeData field which contains raw JSONL bytes.
 // The session must have been created by Claude Code (AgentName check).
-func (c *ClaudeCodeAgent) WriteSession(session *agent.AgentSession) error {
+func (c *ClaudeCodeAgent) WriteSession(_ context.Context, session *agent.AgentSession) error {
 	if session == nil {
 		return errors.New("session is nil")
 	}
@@ -356,7 +357,7 @@ func (c *ClaudeCodeAgent) ExtractModifiedFilesFromOffset(path string, startOffse
 // ChunkTranscript splits a JSONL transcript at line boundaries.
 // Claude Code uses JSONL format (one JSON object per line), so chunking
 // is done at newline boundaries to preserve message integrity.
-func (c *ClaudeCodeAgent) ChunkTranscript(content []byte, maxSize int) ([][]byte, error) {
+func (c *ClaudeCodeAgent) ChunkTranscript(_ context.Context, content []byte, maxSize int) ([][]byte, error) {
 	chunks, err := agent.ChunkJSONL(content, maxSize)
 	if err != nil {
 		return nil, fmt.Errorf("failed to chunk JSONL transcript: %w", err)
@@ -369,19 +370,4 @@ func (c *ClaudeCodeAgent) ChunkTranscript(content []byte, maxSize int) ([][]byte
 
 func (c *ClaudeCodeAgent) ReassembleTranscript(chunks [][]byte) ([]byte, error) {
 	return agent.ReassembleJSONL(chunks), nil
-}
-
-// SubagentAwareExtractor interface implementation
-
-// ExtractAllModifiedFiles extracts files modified by both the main agent and any spawned subagents.
-// Claude Code spawns subagents via the Task tool; their transcripts are stored in subagentsDir.
-// Returns a deduplicated list of all modified file paths.
-func (c *ClaudeCodeAgent) ExtractAllModifiedFiles(sessionRef string, fromOffset int, subagentsDir string) ([]string, error) {
-	return ExtractAllModifiedFiles(sessionRef, fromOffset, subagentsDir)
-}
-
-// CalculateTotalTokenUsage computes token usage including all spawned subagents.
-// Claude Code spawns subagents via the Task tool; their transcripts are stored in subagentsDir.
-func (c *ClaudeCodeAgent) CalculateTotalTokenUsage(sessionRef string, fromOffset int, subagentsDir string) (*agent.TokenUsage, error) {
-	return CalculateTotalTokenUsage(sessionRef, fromOffset, subagentsDir)
 }

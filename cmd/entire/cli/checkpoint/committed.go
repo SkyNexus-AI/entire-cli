@@ -16,13 +16,13 @@ import (
 	"time"
 
 	"github.com/entireio/cli/cmd/entire/cli/agent"
-	"github.com/entireio/cli/cmd/entire/cli/buildinfo"
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint/id"
 	"github.com/entireio/cli/cmd/entire/cli/jsonutil"
 	"github.com/entireio/cli/cmd/entire/cli/logging"
 	"github.com/entireio/cli/cmd/entire/cli/paths"
 	"github.com/entireio/cli/cmd/entire/cli/trailers"
 	"github.com/entireio/cli/cmd/entire/cli/validation"
+	"github.com/entireio/cli/cmd/entire/cli/versioninfo"
 	"github.com/entireio/cli/redact"
 
 	"github.com/go-git/go-git/v5"
@@ -43,8 +43,6 @@ var errStopIteration = errors.New("stop iteration")
 //   - For incremental checkpoints: checkpoints/NNN-<tool-use-id>.json
 //   - For final checkpoints: checkpoint.json and agent-<agent-id>.jsonl
 func (s *GitStore) WriteCommitted(ctx context.Context, opts WriteCommittedOptions) error {
-	_ = ctx // Reserved for future use
-
 	// Validate identifiers to prevent path traversal and malformed data
 	if opts.CheckpointID.IsEmpty() {
 		return errors.New("invalid checkpoint options: checkpoint ID is required")
@@ -64,39 +62,46 @@ func (s *GitStore) WriteCommitted(ctx context.Context, opts WriteCommittedOption
 		return fmt.Errorf("failed to ensure sessions branch: %w", err)
 	}
 
-	// Get current branch tip and flatten tree
-	ref, entries, err := s.getSessionsBranchEntries()
+	// Get branch ref and root tree hash (O(1), no flatten)
+	parentHash, rootTreeHash, err := s.getSessionsBranchRef()
 	if err != nil {
 		return err
 	}
 
 	// Use sharded path: <id[:2]>/<id[2:]>/
 	basePath := opts.CheckpointID.Path() + "/"
+	checkpointPath := opts.CheckpointID.Path()
+
+	// Flatten only the checkpoint subtree (O(files in checkpoint))
+	entries, err := s.flattenCheckpointEntries(rootTreeHash, checkpointPath)
+	if err != nil {
+		return err
+	}
 
 	// Track task metadata path for commit trailer
 	var taskMetadataPath string
 
 	// Handle task checkpoints
 	if opts.IsTask && opts.ToolUseID != "" {
-		taskMetadataPath, err = s.writeTaskCheckpointEntries(opts, basePath, entries)
+		taskMetadataPath, err = s.writeTaskCheckpointEntries(ctx, opts, basePath, entries)
 		if err != nil {
 			return err
 		}
 	}
 
 	// Write standard checkpoint entries (transcript, prompts, context, metadata)
-	if err := s.writeStandardCheckpointEntries(opts, basePath, entries); err != nil {
+	if err := s.writeStandardCheckpointEntries(ctx, opts, basePath, entries); err != nil {
 		return err
 	}
 
-	// Build and commit
-	newTreeHash, err := BuildTreeFromEntries(s.repo, entries)
+	// Build checkpoint subtree and splice into root (O(depth) tree surgery)
+	newTreeHash, err := s.spliceCheckpointSubtree(rootTreeHash, opts.CheckpointID, basePath, entries)
 	if err != nil {
 		return err
 	}
 
 	commitMsg := s.buildCommitMessage(opts, taskMetadataPath)
-	newCommitHash, err := s.createCommit(newTreeHash, ref.Hash(), commitMsg, opts.AuthorName, opts.AuthorEmail)
+	newCommitHash, err := s.createCommit(newTreeHash, parentHash, commitMsg, opts.AuthorName, opts.AuthorEmail)
 	if err != nil {
 		return err
 	}
@@ -110,40 +115,73 @@ func (s *GitStore) WriteCommitted(ctx context.Context, opts WriteCommittedOption
 	return nil
 }
 
-// getSessionsBranchEntries returns the sessions branch reference and flattened tree entries.
-func (s *GitStore) getSessionsBranchEntries() (*plumbing.Reference, map[string]object.TreeEntry, error) {
-	refName := plumbing.NewBranchReferenceName(paths.MetadataBranchName)
-	ref, err := s.repo.Reference(refName, true)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to get sessions branch reference: %w", err)
-	}
-
-	parentCommit, err := s.repo.CommitObject(ref.Hash())
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to get commit object: %w", err)
-	}
-
-	baseTree, err := parentCommit.Tree()
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to get commit tree: %w", err)
-	}
-
+// flattenCheckpointEntries reads only the entries under a specific checkpoint path
+// from the sessions branch tree. This is O(files in checkpoint) instead of O(all checkpoints).
+// Returns an empty map if the checkpoint doesn't exist yet.
+func (s *GitStore) flattenCheckpointEntries(rootTreeHash plumbing.Hash, checkpointPath string) (map[string]object.TreeEntry, error) {
 	entries := make(map[string]object.TreeEntry)
-	if err := FlattenTree(s.repo, baseTree, "", entries); err != nil {
-		return nil, nil, err
+	if rootTreeHash == plumbing.ZeroHash {
+		return entries, nil
 	}
 
-	return ref, entries, nil
+	rootTree, err := s.repo.TreeObject(rootTreeHash)
+	if err != nil {
+		if errors.Is(err, plumbing.ErrObjectNotFound) {
+			return entries, nil // Tree doesn't exist yet
+		}
+		return nil, fmt.Errorf("failed to read root tree %s: %w", rootTreeHash, err)
+	}
+
+	subtree, err := rootTree.Tree(checkpointPath)
+	if err != nil {
+		return entries, nil //nolint:nilerr // Checkpoint doesn't exist yet
+	}
+
+	// Flatten just this subtree with the full path prefix
+	if err := FlattenTree(s.repo, subtree, checkpointPath, entries); err != nil {
+		return nil, err
+	}
+	return entries, nil
+}
+
+// spliceCheckpointSubtree builds a tree from checkpoint-local entries and installs it
+// at the correct shard location in the root tree using O(depth) tree surgery.
+// basePath is like "a3/b2c4d5e6f7/" (with trailing slash).
+// Returns the new root tree hash.
+func (s *GitStore) spliceCheckpointSubtree(rootTreeHash plumbing.Hash, checkpointID id.CheckpointID, basePath string, entries map[string]object.TreeEntry) (plumbing.Hash, error) {
+	// Convert entries to relative paths (strip basePath prefix)
+	relEntries := make(map[string]object.TreeEntry, len(entries))
+	for path, entry := range entries {
+		relPath := strings.TrimPrefix(path, basePath)
+		if relPath == path {
+			continue // Entry doesn't have the expected prefix
+		}
+		relEntries[relPath] = entry
+	}
+
+	// Build the checkpoint subtree from relative entries
+	checkpointTreeHash, err := BuildTreeFromEntries(s.repo, relEntries)
+	if err != nil {
+		return plumbing.ZeroHash, fmt.Errorf("failed to build checkpoint subtree: %w", err)
+	}
+
+	// Splice into root tree at the shard path using tree surgery
+	// Path: ["a3"] with entry "b2c4d5e6f7" pointing to the checkpoint tree
+	shardPrefix := string(checkpointID[:2])
+	shardSuffix := string(checkpointID[2:])
+	return UpdateSubtree(s.repo, rootTreeHash, []string{shardPrefix}, []object.TreeEntry{
+		{Name: shardSuffix, Mode: filemode.Dir, Hash: checkpointTreeHash},
+	}, UpdateSubtreeOptions{MergeMode: MergeKeepExisting})
 }
 
 // writeTaskCheckpointEntries writes task-specific checkpoint entries and returns the task metadata path.
-func (s *GitStore) writeTaskCheckpointEntries(opts WriteCommittedOptions, basePath string, entries map[string]object.TreeEntry) (string, error) {
+func (s *GitStore) writeTaskCheckpointEntries(ctx context.Context, opts WriteCommittedOptions, basePath string, entries map[string]object.TreeEntry) (string, error) {
 	taskPath := basePath + "tasks/" + opts.ToolUseID + "/"
 
 	if opts.IsIncremental {
 		return s.writeIncrementalTaskCheckpoint(opts, taskPath, entries)
 	}
-	return s.writeFinalTaskCheckpoint(opts, taskPath, entries)
+	return s.writeFinalTaskCheckpoint(ctx, opts, taskPath, entries)
 }
 
 // writeIncrementalTaskCheckpoint writes an incremental checkpoint file during task execution.
@@ -178,7 +216,7 @@ func (s *GitStore) writeIncrementalTaskCheckpoint(opts WriteCommittedOptions, ta
 }
 
 // writeFinalTaskCheckpoint writes the final checkpoint.json and subagent transcript.
-func (s *GitStore) writeFinalTaskCheckpoint(opts WriteCommittedOptions, taskPath string, entries map[string]object.TreeEntry) (string, error) {
+func (s *GitStore) writeFinalTaskCheckpoint(ctx context.Context, opts WriteCommittedOptions, taskPath string, entries map[string]object.TreeEntry) (string, error) {
 	checkpoint := taskCheckpointData{
 		SessionID:      opts.SessionID,
 		ToolUseID:      opts.ToolUseID,
@@ -209,7 +247,7 @@ func (s *GitStore) writeFinalTaskCheckpoint(opts WriteCommittedOptions, taskPath
 			// if the content is not valid JSONL (avoids silently dropping the transcript).
 			redacted, jsonlErr := redact.JSONLBytes(agentContent)
 			if jsonlErr != nil {
-				logging.Warn(context.Background(), "subagent transcript is not valid JSONL, falling back to plain redaction",
+				logging.Warn(ctx, "subagent transcript is not valid JSONL, falling back to plain redaction",
 					slog.String("path", opts.SubagentTranscriptPath),
 					slog.String("error", jsonlErr.Error()),
 				)
@@ -248,7 +286,7 @@ func (s *GitStore) writeFinalTaskCheckpoint(opts WriteCommittedOptions, taskPath
 //	│   └── content_hash.txt
 //	├── 2/                    # Second session
 //	└── ...
-func (s *GitStore) writeStandardCheckpointEntries(opts WriteCommittedOptions, basePath string, entries map[string]object.TreeEntry) error {
+func (s *GitStore) writeStandardCheckpointEntries(ctx context.Context, opts WriteCommittedOptions, basePath string, entries map[string]object.TreeEntry) error {
 	// Read existing summary to get current session count
 	var existingSummary *CheckpointSummary
 	metadataPath := basePath + paths.MetadataFileName
@@ -260,11 +298,11 @@ func (s *GitStore) writeStandardCheckpointEntries(opts WriteCommittedOptions, ba
 	}
 
 	// Determine session index: reuse existing slot if session ID matches, otherwise append
-	sessionIndex := s.findSessionIndex(basePath, existingSummary, entries, opts.SessionID)
+	sessionIndex := s.findSessionIndex(ctx, basePath, existingSummary, entries, opts.SessionID)
 
 	// Write session files to numbered subdirectory
 	sessionPath := fmt.Sprintf("%s%d/", basePath, sessionIndex)
-	sessionFilePaths, err := s.writeSessionToSubdirectory(opts, sessionPath, entries)
+	sessionFilePaths, err := s.writeSessionToSubdirectory(ctx, opts, sessionPath, entries)
 	if err != nil {
 		return err
 	}
@@ -292,7 +330,7 @@ func (s *GitStore) writeStandardCheckpointEntries(opts WriteCommittedOptions, ba
 
 // writeSessionToSubdirectory writes a single session's files to a numbered subdirectory.
 // Returns the absolute file paths from the git tree root for the sessions map.
-func (s *GitStore) writeSessionToSubdirectory(opts WriteCommittedOptions, sessionPath string, entries map[string]object.TreeEntry) (SessionFilePaths, error) {
+func (s *GitStore) writeSessionToSubdirectory(ctx context.Context, opts WriteCommittedOptions, sessionPath string, entries map[string]object.TreeEntry) (SessionFilePaths, error) {
 	filePaths := SessionFilePaths{}
 
 	// Clear any existing entries at this path so stale files from a previous
@@ -304,7 +342,7 @@ func (s *GitStore) writeSessionToSubdirectory(opts WriteCommittedOptions, sessio
 	}
 
 	// Write transcript
-	if err := s.writeTranscript(opts, sessionPath, entries); err != nil {
+	if err := s.writeTranscript(ctx, opts, sessionPath, entries); err != nil {
 		return filePaths, err
 	}
 	filePaths.Transcript = "/" + sessionPath + paths.TranscriptFileName
@@ -358,7 +396,7 @@ func (s *GitStore) writeSessionToSubdirectory(opts WriteCommittedOptions, sessio
 		TokenUsage:                  opts.TokenUsage,
 		InitialAttribution:          opts.InitialAttribution,
 		Summary:                     redactSummary(opts.Summary),
-		CLIVersion:                  buildinfo.Version,
+		CLIVersion:                  versioninfo.Version,
 	}
 
 	metadataJSON, err := jsonutil.MarshalIndentWithNewline(sessionMetadata, "", "  ")
@@ -390,7 +428,7 @@ func (s *GitStore) writeCheckpointSummary(opts WriteCommittedOptions, basePath s
 
 	summary := CheckpointSummary{
 		CheckpointID:     opts.CheckpointID,
-		CLIVersion:       buildinfo.Version,
+		CLIVersion:       versioninfo.Version,
 		Strategy:         opts.Strategy,
 		Branch:           opts.Branch,
 		CheckpointsCount: checkpointsCount,
@@ -417,7 +455,7 @@ func (s *GitStore) writeCheckpointSummary(opts WriteCommittedOptions, basePath s
 
 // findSessionIndex returns the index of an existing session with the given ID,
 // or the next available index if not found. This prevents duplicate session entries.
-func (s *GitStore) findSessionIndex(basePath string, existingSummary *CheckpointSummary, entries map[string]object.TreeEntry, sessionID string) int {
+func (s *GitStore) findSessionIndex(ctx context.Context, basePath string, existingSummary *CheckpointSummary, entries map[string]object.TreeEntry, sessionID string) int {
 	if existingSummary == nil {
 		return 0
 	}
@@ -426,7 +464,7 @@ func (s *GitStore) findSessionIndex(basePath string, existingSummary *Checkpoint
 		if entry, exists := entries[path]; exists {
 			meta, err := s.readMetadataFromBlob(entry.Hash)
 			if err != nil {
-				logging.Warn(context.Background(), "failed to read session metadata during dedup check",
+				logging.Warn(ctx, "failed to read session metadata during dedup check",
 					slog.Int("session_index", i),
 					slog.String("session_id", sessionID),
 					slog.String("error", err.Error()),
@@ -518,7 +556,7 @@ func aggregateTokenUsage(a, b *agent.TokenUsage) *agent.TokenUsage {
 
 // writeTranscript writes the transcript file from in-memory content or file path.
 // If the transcript exceeds MaxChunkSize, it's split into multiple chunk files.
-func (s *GitStore) writeTranscript(opts WriteCommittedOptions, basePath string, entries map[string]object.TreeEntry) error {
+func (s *GitStore) writeTranscript(ctx context.Context, opts WriteCommittedOptions, basePath string, entries map[string]object.TreeEntry) error {
 	transcript := opts.Transcript
 	if len(transcript) == 0 && opts.TranscriptPath != "" {
 		var readErr error
@@ -539,7 +577,7 @@ func (s *GitStore) writeTranscript(opts WriteCommittedOptions, basePath string, 
 	}
 
 	// Chunk the transcript if it's too large
-	chunks, err := agent.ChunkTranscript(transcript, opts.Agent)
+	chunks, err := agent.ChunkTranscript(ctx, transcript, opts.Agent)
 	if err != nil {
 		return fmt.Errorf("failed to chunk transcript: %w", err)
 	}
@@ -656,22 +694,22 @@ func (s *GitStore) buildCommitMessage(opts WriteCommittedOptions, taskMetadataPa
 	var commitMsg strings.Builder
 
 	// Subject line is always the checkpoint ID for consistent formatting
-	commitMsg.WriteString(fmt.Sprintf("Checkpoint: %s\n\n", opts.CheckpointID))
+	fmt.Fprintf(&commitMsg, "Checkpoint: %s\n\n", opts.CheckpointID)
 
 	// Include custom description in body if provided (e.g., task checkpoint details)
 	if opts.CommitSubject != "" {
 		commitMsg.WriteString(opts.CommitSubject + "\n\n")
 	}
-	commitMsg.WriteString(fmt.Sprintf("%s: %s\n", trailers.SessionTrailerKey, opts.SessionID))
-	commitMsg.WriteString(fmt.Sprintf("%s: %s\n", trailers.StrategyTrailerKey, opts.Strategy))
+	fmt.Fprintf(&commitMsg, "%s: %s\n", trailers.SessionTrailerKey, opts.SessionID)
+	fmt.Fprintf(&commitMsg, "%s: %s\n", trailers.StrategyTrailerKey, opts.Strategy)
 	if opts.Agent != "" {
-		commitMsg.WriteString(fmt.Sprintf("%s: %s\n", trailers.AgentTrailerKey, opts.Agent))
+		fmt.Fprintf(&commitMsg, "%s: %s\n", trailers.AgentTrailerKey, opts.Agent)
 	}
 	if opts.EphemeralBranch != "" {
-		commitMsg.WriteString(fmt.Sprintf("%s: %s\n", trailers.EphemeralBranchTrailerKey, opts.EphemeralBranch))
+		fmt.Fprintf(&commitMsg, "%s: %s\n", trailers.EphemeralBranchTrailerKey, opts.EphemeralBranch)
 	}
 	if taskMetadataPath != "" {
-		commitMsg.WriteString(fmt.Sprintf("%s: %s\n", trailers.MetadataTaskTrailerKey, taskMetadataPath))
+		fmt.Fprintf(&commitMsg, "%s: %s\n", trailers.MetadataTaskTrailerKey, taskMetadataPath)
 	}
 
 	return commitMsg.String()
@@ -710,7 +748,9 @@ type taskCheckpointData struct {
 //	├── 1/                 # Second session
 //	└── ...
 func (s *GitStore) ReadCommitted(ctx context.Context, checkpointID id.CheckpointID) (*CheckpointSummary, error) {
-	_ = ctx // Reserved for future use
+	if err := ctx.Err(); err != nil {
+		return nil, err //nolint:wrapcheck // Propagating context cancellation
+	}
 
 	tree, err := s.getSessionsBranchTree()
 	if err != nil {
@@ -747,7 +787,9 @@ func (s *GitStore) ReadCommitted(ctx context.Context, checkpointID id.Checkpoint
 // Returns the session's metadata, transcript, prompts, and context.
 // Returns an error if the checkpoint or session doesn't exist.
 func (s *GitStore) ReadSessionContent(ctx context.Context, checkpointID id.CheckpointID, sessionIndex int) (*SessionContent, error) {
-	_ = ctx // Reserved for future use
+	if err := ctx.Err(); err != nil {
+		return nil, err //nolint:wrapcheck // Propagating context cancellation
+	}
 
 	tree, err := s.getSessionsBranchTree()
 	if err != nil {
@@ -780,7 +822,7 @@ func (s *GitStore) ReadSessionContent(ctx context.Context, checkpointID id.Check
 	}
 
 	// Read transcript
-	if transcript, transcriptErr := readTranscriptFromTree(sessionTree, agentType); transcriptErr == nil && transcript != nil {
+	if transcript, transcriptErr := readTranscriptFromTree(ctx, sessionTree, agentType); transcriptErr == nil && transcript != nil {
 		result.Transcript = transcript
 	}
 
@@ -851,7 +893,9 @@ func (s *GitStore) ReadSessionContentByID(ctx context.Context, checkpointID id.C
 //
 
 func (s *GitStore) ListCommitted(ctx context.Context) ([]CommittedInfo, error) {
-	_ = ctx // Reserved for future use
+	if err := ctx.Err(); err != nil {
+		return nil, err //nolint:wrapcheck // Propagating context cancellation
+	}
 
 	tree, err := s.getSessionsBranchTree()
 	if err != nil {
@@ -957,8 +1001,8 @@ func (s *GitStore) GetTranscript(ctx context.Context, checkpointID id.Checkpoint
 // This is the primary method for looking up session logs by checkpoint ID.
 // Returns ErrCheckpointNotFound if the checkpoint doesn't exist.
 // Returns ErrNoTranscript if the checkpoint exists but has no transcript.
-func (s *GitStore) GetSessionLog(cpID id.CheckpointID) ([]byte, string, error) {
-	content, err := s.ReadLatestSessionContent(context.Background(), cpID)
+func (s *GitStore) GetSessionLog(ctx context.Context, cpID id.CheckpointID) ([]byte, string, error) {
+	content, err := s.ReadLatestSessionContent(ctx, cpID)
 	if err != nil {
 		if errors.Is(err, ErrCheckpointNotFound) {
 			return nil, "", ErrCheckpointNotFound
@@ -976,33 +1020,42 @@ func (s *GitStore) GetSessionLog(cpID id.CheckpointID) ([]byte, string, error) {
 // don't already have a GitStore instance.
 // Returns ErrCheckpointNotFound if the checkpoint doesn't exist.
 // Returns ErrNoTranscript if the checkpoint exists but has no transcript.
-func LookupSessionLog(cpID id.CheckpointID) ([]byte, string, error) {
+func LookupSessionLog(ctx context.Context, cpID id.CheckpointID) ([]byte, string, error) {
 	repo, err := git.PlainOpenWithOptions(".", &git.PlainOpenOptions{DetectDotGit: true})
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to open git repository: %w", err)
 	}
 	store := NewGitStore(repo)
-	return store.GetSessionLog(cpID)
+	return store.GetSessionLog(ctx, cpID)
 }
 
 // UpdateSummary updates the summary field in the latest session's metadata.
 // Returns ErrCheckpointNotFound if the checkpoint doesn't exist.
 func (s *GitStore) UpdateSummary(ctx context.Context, checkpointID id.CheckpointID, summary *Summary) error {
-	_ = ctx // Reserved for future use
+	if err := ctx.Err(); err != nil {
+		return err //nolint:wrapcheck // Propagating context cancellation
+	}
 
 	// Ensure sessions branch exists
 	if err := s.ensureSessionsBranch(); err != nil {
 		return fmt.Errorf("failed to ensure sessions branch: %w", err)
 	}
 
-	// Get current branch tip and flatten tree
-	ref, entries, err := s.getSessionsBranchEntries()
+	// Get branch ref and root tree hash (O(1), no flatten)
+	parentHash, rootTreeHash, err := s.getSessionsBranchRef()
+	if err != nil {
+		return err
+	}
+
+	// Flatten only the checkpoint subtree
+	basePath := checkpointID.Path() + "/"
+	checkpointPath := checkpointID.Path()
+	entries, err := s.flattenCheckpointEntries(rootTreeHash, checkpointPath)
 	if err != nil {
 		return err
 	}
 
 	// Read root CheckpointSummary to find the latest session
-	basePath := checkpointID.Path() + "/"
 	rootMetadataPath := basePath + paths.MetadataFileName
 	entry, exists := entries[rootMetadataPath]
 	if !exists {
@@ -1046,15 +1099,15 @@ func (s *GitStore) UpdateSummary(ctx context.Context, checkpointID id.Checkpoint
 		Hash: metadataHash,
 	}
 
-	// Build and commit
-	newTreeHash, err := BuildTreeFromEntries(s.repo, entries)
+	// Build checkpoint subtree and splice into root (O(depth) tree surgery)
+	newTreeHash, err := s.spliceCheckpointSubtree(rootTreeHash, checkpointID, basePath, entries)
 	if err != nil {
 		return err
 	}
 
 	authorName, authorEmail := GetGitAuthorFromRepo(s.repo)
 	commitMsg := fmt.Sprintf("Update summary for checkpoint %s (session: %s)", checkpointID, existingMetadata.SessionID)
-	newCommitHash, err := s.createCommit(newTreeHash, ref.Hash(), commitMsg, authorName, authorEmail)
+	newCommitHash, err := s.createCommit(newTreeHash, parentHash, commitMsg, authorName, authorEmail)
 	if err != nil {
 		return err
 	}
@@ -1086,14 +1139,21 @@ func (s *GitStore) UpdateCommitted(ctx context.Context, opts UpdateCommittedOpti
 		return fmt.Errorf("failed to ensure sessions branch: %w", err)
 	}
 
-	// Get current branch tip and flatten tree
-	ref, entries, err := s.getSessionsBranchEntries()
+	// Get branch ref and root tree hash (O(1), no flatten)
+	parentHash, rootTreeHash, err := s.getSessionsBranchRef()
+	if err != nil {
+		return err
+	}
+
+	// Flatten only the checkpoint subtree
+	basePath := opts.CheckpointID.Path() + "/"
+	checkpointPath := opts.CheckpointID.Path()
+	entries, err := s.flattenCheckpointEntries(rootTreeHash, checkpointPath)
 	if err != nil {
 		return err
 	}
 
 	// Read root CheckpointSummary to find the session slot
-	basePath := opts.CheckpointID.Path() + "/"
 	rootMetadataPath := basePath + paths.MetadataFileName
 	entry, exists := entries[rootMetadataPath]
 	if !exists {
@@ -1139,7 +1199,7 @@ func (s *GitStore) UpdateCommitted(ctx context.Context, opts UpdateCommittedOpti
 		if err != nil {
 			return fmt.Errorf("failed to redact transcript secrets: %w", err)
 		}
-		if err := s.replaceTranscript(transcript, opts.Agent, sessionPath, entries); err != nil {
+		if err := s.replaceTranscript(ctx, transcript, opts.Agent, sessionPath, entries); err != nil {
 			return fmt.Errorf("failed to replace transcript: %w", err)
 		}
 	}
@@ -1171,15 +1231,15 @@ func (s *GitStore) UpdateCommitted(ctx context.Context, opts UpdateCommittedOpti
 		}
 	}
 
-	// Build and commit
-	newTreeHash, err := BuildTreeFromEntries(s.repo, entries)
+	// Build checkpoint subtree and splice into root (O(depth) tree surgery)
+	newTreeHash, err := s.spliceCheckpointSubtree(rootTreeHash, opts.CheckpointID, basePath, entries)
 	if err != nil {
 		return err
 	}
 
 	authorName, authorEmail := GetGitAuthorFromRepo(s.repo)
 	commitMsg := fmt.Sprintf("Finalize transcript for Checkpoint: %s", opts.CheckpointID)
-	newCommitHash, err := s.createCommit(newTreeHash, ref.Hash(), commitMsg, authorName, authorEmail)
+	newCommitHash, err := s.createCommit(newTreeHash, parentHash, commitMsg, authorName, authorEmail)
 	if err != nil {
 		return err
 	}
@@ -1195,7 +1255,7 @@ func (s *GitStore) UpdateCommitted(ctx context.Context, opts UpdateCommittedOpti
 
 // replaceTranscript writes the full transcript content, replacing any existing transcript.
 // Also removes any chunk files from a previous write and updates the content hash.
-func (s *GitStore) replaceTranscript(transcript []byte, agentType agent.AgentType, sessionPath string, entries map[string]object.TreeEntry) error {
+func (s *GitStore) replaceTranscript(ctx context.Context, transcript []byte, agentType agent.AgentType, sessionPath string, entries map[string]object.TreeEntry) error {
 	// Remove existing transcript files (base + any chunks)
 	transcriptBase := sessionPath + paths.TranscriptFileName
 	for key := range entries {
@@ -1205,7 +1265,7 @@ func (s *GitStore) replaceTranscript(transcript []byte, agentType agent.AgentTyp
 	}
 
 	// Chunk the transcript (matches writeTranscript behavior)
-	chunks, err := agent.ChunkTranscript(transcript, agentType)
+	chunks, err := agent.ChunkTranscript(ctx, transcript, agentType)
 	if err != nil {
 		return fmt.Errorf("failed to chunk transcript: %w", err)
 	}
@@ -1468,7 +1528,7 @@ func GetGitAuthorFromRepo(repo *git.Repository) (name, email string) {
 // readTranscriptFromTree reads a transcript from a git tree, handling both chunked and non-chunked formats.
 // It checks for chunk files first (.001, .002, etc.), then falls back to the base file.
 // The agentType is used for reassembling chunks in the correct format.
-func readTranscriptFromTree(tree *object.Tree, agentType agent.AgentType) ([]byte, error) {
+func readTranscriptFromTree(ctx context.Context, tree *object.Tree, agentType agent.AgentType) ([]byte, error) {
 	// Collect all transcript-related files
 	var chunkFiles []string
 	var hasBaseFile bool
@@ -1502,7 +1562,7 @@ func readTranscriptFromTree(tree *object.Tree, agentType agent.AgentType) ([]byt
 		for _, chunkFile := range chunkFiles {
 			file, err := tree.File(chunkFile)
 			if err != nil {
-				logging.Warn(context.Background(), "failed to read transcript chunk file from tree",
+				logging.Warn(ctx, "failed to read transcript chunk file from tree",
 					slog.String("chunk_file", chunkFile),
 					slog.String("error", err.Error()),
 				)
@@ -1510,7 +1570,7 @@ func readTranscriptFromTree(tree *object.Tree, agentType agent.AgentType) ([]byt
 			}
 			content, err := file.Contents()
 			if err != nil {
-				logging.Warn(context.Background(), "failed to read transcript chunk contents",
+				logging.Warn(ctx, "failed to read transcript chunk contents",
 					slog.String("chunk_file", chunkFile),
 					slog.String("error", err.Error()),
 				)
@@ -1555,7 +1615,9 @@ type Author struct {
 // Returns the author of the commit that introduced this checkpoint's metadata.json file.
 // Returns empty Author if the checkpoint is not found or the sessions branch doesn't exist.
 func (s *GitStore) GetCheckpointAuthor(ctx context.Context, checkpointID id.CheckpointID) (Author, error) {
-	_ = ctx // Reserved for future use
+	if err := ctx.Err(); err != nil {
+		return Author{}, err //nolint:wrapcheck // Propagating context cancellation
+	}
 
 	refName := plumbing.NewBranchReferenceName(paths.MetadataBranchName)
 	ref, err := s.repo.Reference(refName, true)
@@ -1580,6 +1642,9 @@ func (s *GitStore) GetCheckpointAuthor(ctx context.Context, checkpointID id.Chec
 	var foundCommit *object.Commit
 
 	err = iter.ForEach(func(c *object.Commit) error {
+		if err := ctx.Err(); err != nil {
+			return err //nolint:wrapcheck // Propagating context cancellation
+		}
 		tree, treeErr := c.Tree()
 		if treeErr != nil {
 			return nil //nolint:nilerr // Skip commits we can't read, continue searching

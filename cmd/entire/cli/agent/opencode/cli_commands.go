@@ -14,8 +14,8 @@ const openCodeCommandTimeout = 30 * time.Second
 
 // runOpenCodeExport runs `opencode export <sessionID>` to export a session
 // from OpenCode's database. Returns the JSON export data as bytes.
-func runOpenCodeExport(sessionID string) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), openCodeCommandTimeout)
+func runOpenCodeExport(ctx context.Context, sessionID string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, openCodeCommandTimeout)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "opencode", "export", sessionID)
@@ -38,8 +38,8 @@ func runOpenCodeExport(sessionID string) ([]byte, error) {
 // runOpenCodeSessionDelete runs `opencode session delete <sessionID>` to remove
 // a session from OpenCode's database. Returns nil on success or if the session
 // doesn't exist (nothing to delete).
-func runOpenCodeSessionDelete(sessionID string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), openCodeCommandTimeout)
+func runOpenCodeSessionDelete(ctx context.Context, sessionID string) error {
+	ctx, cancel := context.WithTimeout(ctx, openCodeCommandTimeout)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "opencode", "session", "delete", sessionID)
@@ -60,8 +60,8 @@ func runOpenCodeSessionDelete(sessionID string) error {
 // runOpenCodeImport runs `opencode import <file>` to import a session into
 // OpenCode's database. The import preserves the original session ID
 // from the export file.
-func runOpenCodeImport(exportFilePath string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), openCodeCommandTimeout)
+func runOpenCodeImport(ctx context.Context, exportFilePath string) error {
+	ctx, cancel := context.WithTimeout(ctx, openCodeCommandTimeout)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "opencode", "import", exportFilePath)

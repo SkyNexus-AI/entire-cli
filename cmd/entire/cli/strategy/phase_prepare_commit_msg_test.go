@@ -1,6 +1,7 @@
 package strategy
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -23,7 +24,7 @@ func TestPrepareCommitMsg_AmendPreservesExistingTrailer(t *testing.T) {
 	s := &ManualCommitStrategy{}
 
 	sessionID := "test-session-amend-preserve"
-	err := s.InitializeSession(sessionID, agent.AgentTypeClaudeCode, "", "")
+	err := s.InitializeSession(context.Background(), sessionID, agent.AgentTypeClaudeCode, "", "")
 	require.NoError(t, err)
 
 	// Write a commit message file that already has the trailer
@@ -32,7 +33,7 @@ func TestPrepareCommitMsg_AmendPreservesExistingTrailer(t *testing.T) {
 	require.NoError(t, os.WriteFile(commitMsgFile, []byte(existingMsg), 0o644))
 
 	// Call PrepareCommitMsg with source="commit" (amend)
-	err = s.PrepareCommitMsg(commitMsgFile, "commit")
+	err = s.PrepareCommitMsg(context.Background(), commitMsgFile, "commit")
 	require.NoError(t, err)
 
 	// Read the file back and verify the trailer is still present
@@ -56,15 +57,15 @@ func TestPrepareCommitMsg_AmendRestoresTrailerFromLastCheckpointID(t *testing.T)
 	s := &ManualCommitStrategy{}
 
 	sessionID := "test-session-amend-restore"
-	err := s.InitializeSession(sessionID, agent.AgentTypeClaudeCode, "", "")
+	err := s.InitializeSession(context.Background(), sessionID, agent.AgentTypeClaudeCode, "", "")
 	require.NoError(t, err)
 
 	// Simulate state after condensation: LastCheckpointID is set
-	state, err := s.loadSessionState(sessionID)
+	state, err := s.loadSessionState(context.Background(), sessionID)
 	require.NoError(t, err)
 	require.NotNil(t, state)
 	state.LastCheckpointID = id.CheckpointID("abc123def456")
-	err = s.saveSessionState(state)
+	err = s.saveSessionState(context.Background(), state)
 	require.NoError(t, err)
 
 	// Write a commit message file with NO trailer (user did --amend -m "new message")
@@ -73,7 +74,7 @@ func TestPrepareCommitMsg_AmendRestoresTrailerFromLastCheckpointID(t *testing.T)
 	require.NoError(t, os.WriteFile(commitMsgFile, []byte(newMsg), 0o644))
 
 	// Call PrepareCommitMsg with source="commit" (amend)
-	err = s.PrepareCommitMsg(commitMsgFile, "commit")
+	err = s.PrepareCommitMsg(context.Background(), commitMsgFile, "commit")
 	require.NoError(t, err)
 
 	// Read the file back - trailer should be restored from LastCheckpointID
@@ -97,11 +98,11 @@ func TestPrepareCommitMsg_AmendNoTrailerNoLastCheckpointID(t *testing.T) {
 	s := &ManualCommitStrategy{}
 
 	sessionID := "test-session-amend-no-id"
-	err := s.InitializeSession(sessionID, agent.AgentTypeClaudeCode, "", "")
+	err := s.InitializeSession(context.Background(), sessionID, agent.AgentTypeClaudeCode, "", "")
 	require.NoError(t, err)
 
 	// Verify LastCheckpointID is empty (default)
-	state, err := s.loadSessionState(sessionID)
+	state, err := s.loadSessionState(context.Background(), sessionID)
 	require.NoError(t, err)
 	require.NotNil(t, state)
 	assert.Empty(t, state.LastCheckpointID, "LastCheckpointID should be empty by default")
@@ -112,7 +113,7 @@ func TestPrepareCommitMsg_AmendNoTrailerNoLastCheckpointID(t *testing.T) {
 	require.NoError(t, os.WriteFile(commitMsgFile, []byte(newMsg), 0o644))
 
 	// Call PrepareCommitMsg with source="commit" (amend)
-	err = s.PrepareCommitMsg(commitMsgFile, "commit")
+	err = s.PrepareCommitMsg(context.Background(), commitMsgFile, "commit")
 	require.NoError(t, err)
 
 	// Read the file back - no trailer should be added

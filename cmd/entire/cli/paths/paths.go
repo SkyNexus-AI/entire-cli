@@ -58,7 +58,7 @@ var (
 // In a worktree this is the worktree root, not the main repository root.
 // The result is cached per working directory.
 // Returns an error if not inside a git repository.
-func WorktreeRoot() (string, error) {
+func WorktreeRoot(ctx context.Context) (string, error) {
 	// Get current working directory to check cache validity
 	cwd, err := os.Getwd() //nolint:forbidigo // already present in codebase
 	if err != nil {
@@ -75,7 +75,6 @@ func WorktreeRoot() (string, error) {
 	worktreeRootMu.RUnlock()
 
 	// Cache miss - get worktree root and update cache with write lock
-	ctx := context.Background()
 	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--show-toplevel")
 	output, err := cmd.Output()
 	if err != nil {
@@ -104,12 +103,12 @@ func ClearWorktreeRootCache() {
 // AbsPath returns the absolute path for a relative path within the repository.
 // If the path is already absolute, it is returned as-is.
 // Uses WorktreeRoot() to resolve paths relative to the worktree root.
-func AbsPath(relPath string) (string, error) {
+func AbsPath(ctx context.Context, relPath string) (string, error) {
 	if filepath.IsAbs(relPath) {
 		return relPath, nil
 	}
 
-	root, err := WorktreeRoot()
+	root, err := WorktreeRoot(ctx)
 	if err != nil {
 		return "", err
 	}

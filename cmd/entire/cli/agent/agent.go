@@ -4,11 +4,12 @@
 package agent
 
 import (
+	"context"
 	"io"
 )
 
 // Agent defines the interface for interacting with a coding agent.
-// Each agent implementation (Claude Code, Cursor IDE, Aider, etc.) converts its
+// Each agent implementation (Claude Code, Cursor, Aider, etc.) converts its
 // native format to the normalized types defined in this package.
 //
 // The interface is organized into three groups:
@@ -32,7 +33,7 @@ type Agent interface {
 	IsPreview() bool
 
 	// DetectPresence checks if this agent is configured in the repository
-	DetectPresence() (bool, error)
+	DetectPresence(ctx context.Context) (bool, error)
 
 	// ProtectedDirs returns repo-root-relative directories that should never be
 	// modified or deleted during rewind or other destructive operations.
@@ -47,7 +48,7 @@ type Agent interface {
 	// ChunkTranscript splits a transcript into chunks if it exceeds maxSize.
 	// Returns a slice of chunks. If the transcript fits in one chunk, returns single-element slice.
 	// The chunking is format-aware: JSONL splits at line boundaries, JSON splits message arrays.
-	ChunkTranscript(content []byte, maxSize int) ([][]byte, error)
+	ChunkTranscript(ctx context.Context, content []byte, maxSize int) ([][]byte, error)
 
 	// ReassembleTranscript combines chunks back into a single transcript.
 	// Handles format-specific reassembly (JSONL concatenation, JSON message merging).
@@ -68,14 +69,14 @@ type Agent interface {
 	ReadSession(input *HookInput) (*AgentSession, error)
 
 	// WriteSession writes session data for resumption.
-	WriteSession(session *AgentSession) error
+	WriteSession(ctx context.Context, session *AgentSession) error
 
 	// FormatResumeCommand returns command to resume a session.
 	FormatResumeCommand(sessionID string) string
 }
 
 // HookSupport is implemented by agents with lifecycle hooks.
-// This optional interface allows agents like Claude Code and Cursor IDE to
+// This optional interface allows agents like Claude Code and Cursor to
 // install and manage hooks that notify Entire of agent events.
 //
 // The interface is organized into two groups:
@@ -92,19 +93,19 @@ type HookSupport interface {
 	// ParseHookEvent translates an agent-native hook into a normalized lifecycle Event.
 	// Returns nil if the hook has no lifecycle significance (e.g., pass-through hooks).
 	// This is the core contribution surface for new agent implementations.
-	ParseHookEvent(hookName string, stdin io.Reader) (*Event, error)
+	ParseHookEvent(ctx context.Context, hookName string, stdin io.Reader) (*Event, error)
 
 	// InstallHooks installs agent-specific hooks.
 	// If localDev is true, hooks point to local development build.
 	// If force is true, removes existing Entire hooks before installing.
 	// Returns the number of hooks installed.
-	InstallHooks(localDev bool, force bool) (int, error)
+	InstallHooks(ctx context.Context, localDev bool, force bool) (int, error)
 
 	// UninstallHooks removes installed hooks
-	UninstallHooks() error
+	UninstallHooks(ctx context.Context) error
 
 	// AreHooksInstalled checks if hooks are currently installed
-	AreHooksInstalled() bool
+	AreHooksInstalled(ctx context.Context) bool
 }
 
 // FileWatcher is implemented by agents that use file-based detection.
@@ -157,7 +158,7 @@ type TranscriptPreparer interface {
 
 	// PrepareTranscript ensures the transcript is ready to read.
 	// For Claude Code, this waits for the async transcript flush to complete.
-	PrepareTranscript(sessionRef string) error
+	PrepareTranscript(ctx context.Context, sessionRef string) error
 }
 
 // TokenCalculator provides token usage calculation for a session.
@@ -166,7 +167,7 @@ type TokenCalculator interface {
 	Agent
 
 	// CalculateTokenUsage computes token usage from the transcript starting at the given offset.
-	CalculateTokenUsage(sessionRef string, fromOffset int) (*TokenUsage, error)
+	CalculateTokenUsage(transcriptData []byte, fromOffset int) (*TokenUsage, error)
 }
 
 // SubagentAwareExtractor provides methods for extracting files and tokens including subagents.
@@ -178,9 +179,9 @@ type SubagentAwareExtractor interface {
 	// ExtractAllModifiedFiles extracts files modified by both the main agent and any spawned subagents.
 	// The subagentsDir parameter specifies where subagent transcripts are stored.
 	// Returns a deduplicated list of all modified file paths.
-	ExtractAllModifiedFiles(sessionRef string, fromOffset int, subagentsDir string) ([]string, error)
+	ExtractAllModifiedFiles(transcriptData []byte, fromOffset int, subagentsDir string) ([]string, error)
 
 	// CalculateTotalTokenUsage computes token usage including all spawned subagents.
 	// The subagentsDir parameter specifies where subagent transcripts are stored.
-	CalculateTotalTokenUsage(sessionRef string, fromOffset int, subagentsDir string) (*TokenUsage, error)
+	CalculateTotalTokenUsage(transcriptData []byte, fromOffset int, subagentsDir string) (*TokenUsage, error)
 }

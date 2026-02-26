@@ -19,7 +19,6 @@ func spawnDetachedAnalytics(payloadJSON string) {
 		return
 	}
 
-	//nolint:gosec // G204: payloadJSON is controlled internally, not user input
 	cmd := exec.CommandContext(context.Background(), executable, "__send_analytics", payloadJSON)
 
 	// Detach from parent process group so subprocess survives parent exit

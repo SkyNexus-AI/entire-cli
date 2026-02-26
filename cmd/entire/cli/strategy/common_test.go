@@ -53,13 +53,13 @@ func TestOpenRepository(t *testing.T) {
 	t.Chdir(tmpDir)
 
 	// Test OpenRepository
-	openedRepo, err := OpenRepository()
+	openedRepo, err := OpenRepository(context.Background())
 	if err != nil {
-		t.Fatalf("OpenRepository() failed: %v", err)
+		t.Fatalf("OpenRepository(context.Background()) failed: %v", err)
 	}
 
 	if openedRepo == nil {
-		t.Fatal("OpenRepository() returned nil repository")
+		t.Fatal("OpenRepository(context.Background()) returned nil repository")
 	}
 
 	// Verify we can perform basic operations
@@ -91,9 +91,9 @@ func TestOpenRepositoryError(t *testing.T) {
 	t.Chdir(tmpDir)
 
 	// Test OpenRepository should fail
-	_, err := OpenRepository()
+	_, err := OpenRepository(context.Background())
 	if err == nil {
-		t.Fatal("OpenRepository() should have failed in non-repository directory")
+		t.Fatal("OpenRepository(context.Background()) should have failed in non-repository directory")
 	}
 }
 
@@ -105,9 +105,9 @@ func TestWorktreeRoot_Cache(t *testing.T) {
 	paths.ClearWorktreeRootCache()
 
 	// First call populates the cache via git.
-	got, err := paths.WorktreeRoot()
+	got, err := paths.WorktreeRoot(context.Background())
 	if err != nil {
-		t.Fatalf("paths.WorktreeRoot() first call error: %v", err)
+		t.Fatalf("paths.WorktreeRoot(context.Background()) first call error: %v", err)
 	}
 
 	// Resolve symlinks for comparison (macOS /var -> /private/var).
@@ -116,7 +116,7 @@ func TestWorktreeRoot_Cache(t *testing.T) {
 		t.Fatalf("EvalSymlinks error: %v", err)
 	}
 	if got != want {
-		t.Fatalf("paths.WorktreeRoot() = %q, want %q", got, want)
+		t.Fatalf("paths.WorktreeRoot(context.Background()) = %q, want %q", got, want)
 	}
 
 	// Break git by pointing PATH at an empty directory.
@@ -124,19 +124,19 @@ func TestWorktreeRoot_Cache(t *testing.T) {
 	emptyDir := t.TempDir()
 	t.Setenv("PATH", emptyDir)
 
-	got2, err := paths.WorktreeRoot()
+	got2, err := paths.WorktreeRoot(context.Background())
 	if err != nil {
-		t.Fatalf("paths.WorktreeRoot() cached call should succeed, got error: %v", err)
+		t.Fatalf("paths.WorktreeRoot(context.Background()) cached call should succeed, got error: %v", err)
 	}
 	if got2 != want {
-		t.Fatalf("paths.WorktreeRoot() cached = %q, want %q", got2, want)
+		t.Fatalf("paths.WorktreeRoot(context.Background()) cached = %q, want %q", got2, want)
 	}
 
 	// After clearing the cache the broken PATH should cause a failure.
 	paths.ClearWorktreeRootCache()
-	_, err = paths.WorktreeRoot()
+	_, err = paths.WorktreeRoot(context.Background())
 	if err == nil {
-		t.Fatal("paths.WorktreeRoot() should fail after cache clear with broken PATH")
+		t.Fatal("paths.WorktreeRoot(context.Background()) should fail after cache clear with broken PATH")
 	}
 }
 
@@ -154,12 +154,12 @@ func TestWorktreeRoot_MainRepo(t *testing.T) {
 	t.Chdir(tmpDir)
 	paths.ClearWorktreeRootCache()
 
-	got, err := paths.WorktreeRoot()
+	got, err := paths.WorktreeRoot(context.Background())
 	if err != nil {
-		t.Fatalf("paths.WorktreeRoot() error: %v", err)
+		t.Fatalf("paths.WorktreeRoot(context.Background()) error: %v", err)
 	}
 	if got != tmpDir {
-		t.Errorf("paths.WorktreeRoot() = %q, want repo root %q", got, tmpDir)
+		t.Errorf("paths.WorktreeRoot(context.Background()) = %q, want repo root %q", got, tmpDir)
 	}
 
 	// Also works from a subdirectory.
@@ -170,12 +170,12 @@ func TestWorktreeRoot_MainRepo(t *testing.T) {
 	t.Chdir(subDir)
 	paths.ClearWorktreeRootCache()
 
-	got, err = paths.WorktreeRoot()
+	got, err = paths.WorktreeRoot(context.Background())
 	if err != nil {
-		t.Fatalf("paths.WorktreeRoot() from subdir error: %v", err)
+		t.Fatalf("paths.WorktreeRoot(context.Background()) from subdir error: %v", err)
 	}
 	if got != tmpDir {
-		t.Errorf("paths.WorktreeRoot() from subdir = %q, want repo root %q", got, tmpDir)
+		t.Errorf("paths.WorktreeRoot(context.Background()) from subdir = %q, want repo root %q", got, tmpDir)
 	}
 }
 
@@ -212,15 +212,15 @@ func TestWorktreeRoot_Worktree(t *testing.T) {
 	t.Chdir(worktreeDir)
 	paths.ClearWorktreeRootCache()
 
-	got, err := paths.WorktreeRoot()
+	got, err := paths.WorktreeRoot(context.Background())
 	if err != nil {
-		t.Fatalf("paths.WorktreeRoot() error: %v", err)
+		t.Fatalf("paths.WorktreeRoot(context.Background()) error: %v", err)
 	}
 	if got != worktreeDir {
-		t.Errorf("paths.WorktreeRoot() = %q, want worktree root %q", got, worktreeDir)
+		t.Errorf("paths.WorktreeRoot(context.Background()) = %q, want worktree root %q", got, worktreeDir)
 	}
 	if got == mainDir {
-		t.Errorf("paths.WorktreeRoot() returned main repo root %q, must return worktree root", mainDir)
+		t.Errorf("paths.WorktreeRoot(context.Background()) returned main repo root %q, must return worktree root", mainDir)
 	}
 
 	// Also works from a subdirectory within the worktree.
@@ -231,15 +231,15 @@ func TestWorktreeRoot_Worktree(t *testing.T) {
 	t.Chdir(subDir)
 	paths.ClearWorktreeRootCache()
 
-	got, err = paths.WorktreeRoot()
+	got, err = paths.WorktreeRoot(context.Background())
 	if err != nil {
-		t.Fatalf("paths.WorktreeRoot() from worktree subdir error: %v", err)
+		t.Fatalf("paths.WorktreeRoot(context.Background()) from worktree subdir error: %v", err)
 	}
 	if got != worktreeDir {
-		t.Errorf("paths.WorktreeRoot() from worktree subdir = %q, want %q", got, worktreeDir)
+		t.Errorf("paths.WorktreeRoot(context.Background()) from worktree subdir = %q, want %q", got, worktreeDir)
 	}
 	if got == mainDir {
-		t.Errorf("paths.WorktreeRoot() from worktree subdir returned main repo root %q", mainDir)
+		t.Errorf("paths.WorktreeRoot(context.Background()) from worktree subdir returned main repo root %q", mainDir)
 	}
 }
 
@@ -249,8 +249,8 @@ func TestIsInsideWorktree(t *testing.T) {
 		initTestRepo(t, tmpDir)
 		t.Chdir(tmpDir)
 
-		if IsInsideWorktree() {
-			t.Error("IsInsideWorktree() should return false in main repo")
+		if IsInsideWorktree(context.Background()) {
+			t.Error("IsInsideWorktree(context.Background()) should return false in main repo")
 		}
 	})
 
@@ -269,8 +269,8 @@ func TestIsInsideWorktree(t *testing.T) {
 
 		t.Chdir(worktreeDir)
 
-		if !IsInsideWorktree() {
-			t.Error("IsInsideWorktree() should return true in worktree")
+		if !IsInsideWorktree(context.Background()) {
+			t.Error("IsInsideWorktree(context.Background()) should return true in worktree")
 		}
 	})
 
@@ -278,8 +278,8 @@ func TestIsInsideWorktree(t *testing.T) {
 		tmpDir := t.TempDir()
 		t.Chdir(tmpDir)
 
-		if IsInsideWorktree() {
-			t.Error("IsInsideWorktree() should return false in non-repo")
+		if IsInsideWorktree(context.Background()) {
+			t.Error("IsInsideWorktree(context.Background()) should return false in non-repo")
 		}
 	})
 }
@@ -298,13 +298,13 @@ func TestGetMainRepoRoot(t *testing.T) {
 		initTestRepo(t, tmpDir)
 		t.Chdir(tmpDir)
 
-		root, err := GetMainRepoRoot()
+		root, err := GetMainRepoRoot(context.Background())
 		if err != nil {
-			t.Fatalf("GetMainRepoRoot() failed: %v", err)
+			t.Fatalf("GetMainRepoRoot(context.Background()) failed: %v", err)
 		}
 
 		if root != tmpDir {
-			t.Errorf("GetMainRepoRoot() = %q, want %q", root, tmpDir)
+			t.Errorf("GetMainRepoRoot(context.Background()) = %q, want %q", root, tmpDir)
 		}
 	})
 
@@ -329,13 +329,13 @@ func TestGetMainRepoRoot(t *testing.T) {
 
 		t.Chdir(worktreeDir)
 
-		root, err := GetMainRepoRoot()
+		root, err := GetMainRepoRoot(context.Background())
 		if err != nil {
-			t.Fatalf("GetMainRepoRoot() failed: %v", err)
+			t.Fatalf("GetMainRepoRoot(context.Background()) failed: %v", err)
 		}
 
 		if root != tmpDir {
-			t.Errorf("GetMainRepoRoot() = %q, want %q", root, tmpDir)
+			t.Errorf("GetMainRepoRoot(context.Background()) = %q, want %q", root, tmpDir)
 		}
 	})
 }
@@ -990,6 +990,114 @@ func TestIsProtectedPath(t *testing.T) {
 			}
 		})
 	}
+}
+
+// initBareWithMetadataBranch creates a bare repo with a main branch and an
+// entire/checkpoints/v1 branch containing checkpoint data via git CLI.
+func initBareWithMetadataBranch(t *testing.T) string {
+	t.Helper()
+	bareDir := t.TempDir()
+
+	// Init bare, create main branch with a commit
+	workDir := t.TempDir()
+	run := func(dir string, args ...string) {
+		cmd := exec.CommandContext(context.Background(), "git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v failed: %v\n%s", args, err, out)
+		}
+	}
+	run(bareDir, "init", "--bare", "-b", "main")
+	run(workDir, "clone", bareDir, ".")
+	run(workDir, "config", "user.email", "test@test.com")
+	run(workDir, "config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(workDir, "README.md"), []byte("# Test"), 0o644); err != nil {
+		t.Fatalf("failed to write file: %v", err)
+	}
+	run(workDir, "add", ".")
+	run(workDir, "commit", "-m", "init")
+	run(workDir, "push", "origin", "main")
+
+	// Create orphan entire/checkpoints/v1 with data
+	run(workDir, "checkout", "--orphan", paths.MetadataBranchName)
+	run(workDir, "rm", "-rf", ".")
+	if err := os.WriteFile(filepath.Join(workDir, "metadata.json"), []byte(`{"checkpoint_id":"test123"}`), 0o644); err != nil {
+		t.Fatalf("failed to write file: %v", err)
+	}
+	run(workDir, "add", ".")
+	run(workDir, "commit", "-m", "Checkpoint: test123")
+	run(workDir, "push", "origin", paths.MetadataBranchName)
+
+	return bareDir
+}
+
+func TestEnsureMetadataBranch(t *testing.T) {
+	t.Parallel()
+
+	t.Run("creates from remote on fresh clone", func(t *testing.T) {
+		bareDir := initBareWithMetadataBranch(t)
+		cloneDir := filepath.Join(t.TempDir(), "clone")
+		cmd := exec.CommandContext(context.Background(), "git", "clone", bareDir, cloneDir)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("clone failed: %v\n%s", err, out)
+		}
+
+		repo, err := git.PlainOpenWithOptions(cloneDir, &git.PlainOpenOptions{EnableDotGitCommonDir: true})
+		if err != nil {
+			t.Fatalf("failed to open repo: %v", err)
+		}
+
+		if err := EnsureMetadataBranch(repo); err != nil {
+			t.Fatalf("EnsureMetadataBranch() failed: %v", err)
+		}
+
+		// Local branch should exist with data (not empty)
+		ref, err := repo.Reference(plumbing.NewBranchReferenceName(paths.MetadataBranchName), true)
+		if err != nil {
+			t.Fatalf("local branch not found: %v", err)
+		}
+		commit, err := repo.CommitObject(ref.Hash())
+		if err != nil {
+			t.Fatalf("failed to get commit: %v", err)
+		}
+		tree, err := commit.Tree()
+		if err != nil {
+			t.Fatalf("failed to get tree: %v", err)
+		}
+		if len(tree.Entries) == 0 {
+			t.Error("local branch has empty tree — remote data was not preserved")
+		}
+	})
+
+	t.Run("creates empty orphan when no remote", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		initTestRepo(t, dir)
+		repo, err := git.PlainOpen(dir)
+		if err != nil {
+			t.Fatalf("failed to open repo: %v", err)
+		}
+
+		if err := EnsureMetadataBranch(repo); err != nil {
+			t.Fatalf("EnsureMetadataBranch() failed: %v", err)
+		}
+
+		ref, err := repo.Reference(plumbing.NewBranchReferenceName(paths.MetadataBranchName), true)
+		if err != nil {
+			t.Fatalf("branch not found: %v", err)
+		}
+		commit, err := repo.CommitObject(ref.Hash())
+		if err != nil {
+			t.Fatalf("failed to get commit: %v", err)
+		}
+		tree, err := commit.Tree()
+		if err != nil {
+			t.Fatalf("failed to get tree: %v", err)
+		}
+		if len(tree.Entries) != 0 {
+			t.Errorf("expected empty tree, got %d entries", len(tree.Entries))
+		}
+	})
 }
 
 func TestIsEmptyRepository(t *testing.T) {

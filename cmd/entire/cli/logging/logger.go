@@ -77,7 +77,7 @@ func SetLogLevelGetter(getter func() string) {
 // If sessionID is non-empty, it is stored as an slog attribute on every log line for filtering.
 // If the log file cannot be created, falls back to stderr.
 // Log level is controlled by ENTIRE_LOG_LEVEL environment variable.
-func Init(sessionID string) error {
+func Init(ctx context.Context, sessionID string) error {
 	// Validate session ID if provided (used only for the slog attribute, not the filename)
 	if sessionID != "" {
 		if err := validation.ValidateSessionID(sessionID); err != nil {
@@ -111,7 +111,7 @@ func Init(sessionID string) error {
 	}
 
 	// Determine log file path
-	repoRoot, err := paths.WorktreeRoot()
+	repoRoot, err := paths.WorktreeRoot(ctx)
 	if err != nil {
 		// Fall back to current directory
 		repoRoot = "."

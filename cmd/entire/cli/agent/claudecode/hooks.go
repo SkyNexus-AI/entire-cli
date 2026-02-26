@@ -1,6 +1,7 @@
 package claudecode
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -43,10 +44,10 @@ var entireHookPrefixes = []string{
 // InstallHooks installs Claude Code hooks in .claude/settings.json.
 // If force is true, removes existing Entire hooks before installing.
 // Returns the number of hooks installed.
-func (c *ClaudeCodeAgent) InstallHooks(localDev bool, force bool) (int, error) {
+func (c *ClaudeCodeAgent) InstallHooks(ctx context.Context, localDev bool, force bool) (int, error) {
 	// Use repo root instead of CWD to find .claude directory
 	// This ensures hooks are installed correctly when run from a subdirectory
-	repoRoot, err := paths.WorktreeRoot()
+	repoRoot, err := paths.WorktreeRoot(ctx)
 	if err != nil {
 		// Fallback to CWD if not in a git repo (e.g., during tests)
 		repoRoot, err = os.Getwd() //nolint:forbidigo // Intentional fallback when WorktreeRoot() fails (tests run outside git repos)
@@ -248,9 +249,9 @@ func marshalHookType(rawHooks map[string]json.RawMessage, hookType string, match
 }
 
 // UninstallHooks removes Entire hooks from Claude Code settings.
-func (c *ClaudeCodeAgent) UninstallHooks() error {
+func (c *ClaudeCodeAgent) UninstallHooks(ctx context.Context) error {
 	// Use repo root to find .claude directory when run from a subdirectory
-	repoRoot, err := paths.WorktreeRoot()
+	repoRoot, err := paths.WorktreeRoot(ctx)
 	if err != nil {
 		repoRoot = "." // Fallback to CWD if not in a git repo
 	}
@@ -367,9 +368,9 @@ func (c *ClaudeCodeAgent) UninstallHooks() error {
 }
 
 // AreHooksInstalled checks if Entire hooks are installed.
-func (c *ClaudeCodeAgent) AreHooksInstalled() bool {
+func (c *ClaudeCodeAgent) AreHooksInstalled(ctx context.Context) bool {
 	// Use repo root to find .claude directory when run from a subdirectory
-	repoRoot, err := paths.WorktreeRoot()
+	repoRoot, err := paths.WorktreeRoot(ctx)
 	if err != nil {
 		repoRoot = "." // Fallback to CWD if not in a git repo
 	}

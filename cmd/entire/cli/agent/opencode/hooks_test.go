@@ -1,6 +1,7 @@
 package opencode
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,7 +20,7 @@ func TestInstallHooks_FreshInstall(t *testing.T) {
 	t.Chdir(dir)
 	ag := &OpenCodeAgent{}
 
-	count, err := ag.InstallHooks(false, false)
+	count, err := ag.InstallHooks(context.Background(), false, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -57,7 +58,7 @@ func TestInstallHooks_Idempotent(t *testing.T) {
 	ag := &OpenCodeAgent{}
 
 	// First install
-	count1, err := ag.InstallHooks(false, false)
+	count1, err := ag.InstallHooks(context.Background(), false, false)
 	if err != nil {
 		t.Fatalf("first install failed: %v", err)
 	}
@@ -66,7 +67,7 @@ func TestInstallHooks_Idempotent(t *testing.T) {
 	}
 
 	// Second install — should be idempotent
-	count2, err := ag.InstallHooks(false, false)
+	count2, err := ag.InstallHooks(context.Background(), false, false)
 	if err != nil {
 		t.Fatalf("second install failed: %v", err)
 	}
@@ -80,7 +81,7 @@ func TestInstallHooks_LocalDev(t *testing.T) {
 	t.Chdir(dir)
 	ag := &OpenCodeAgent{}
 
-	count, err := ag.InstallHooks(true, false)
+	count, err := ag.InstallHooks(context.Background(), true, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -106,12 +107,12 @@ func TestInstallHooks_ForceReinstall(t *testing.T) {
 	ag := &OpenCodeAgent{}
 
 	// First install
-	if _, err := ag.InstallHooks(false, false); err != nil {
+	if _, err := ag.InstallHooks(context.Background(), false, false); err != nil {
 		t.Fatalf("first install failed: %v", err)
 	}
 
 	// Force reinstall
-	count, err := ag.InstallHooks(false, true)
+	count, err := ag.InstallHooks(context.Background(), false, true)
 	if err != nil {
 		t.Fatalf("force install failed: %v", err)
 	}
@@ -125,11 +126,11 @@ func TestUninstallHooks(t *testing.T) {
 	t.Chdir(dir)
 	ag := &OpenCodeAgent{}
 
-	if _, err := ag.InstallHooks(false, false); err != nil {
+	if _, err := ag.InstallHooks(context.Background(), false, false); err != nil {
 		t.Fatalf("install failed: %v", err)
 	}
 
-	if err := ag.UninstallHooks(); err != nil {
+	if err := ag.UninstallHooks(context.Background()); err != nil {
 		t.Fatalf("uninstall failed: %v", err)
 	}
 
@@ -145,7 +146,7 @@ func TestUninstallHooks_NoFile(t *testing.T) {
 	ag := &OpenCodeAgent{}
 
 	// Should not error when no plugin file exists
-	if err := ag.UninstallHooks(); err != nil {
+	if err := ag.UninstallHooks(context.Background()); err != nil {
 		t.Fatalf("uninstall with no file should not error: %v", err)
 	}
 }
@@ -155,23 +156,23 @@ func TestAreHooksInstalled(t *testing.T) {
 	t.Chdir(dir)
 	ag := &OpenCodeAgent{}
 
-	if ag.AreHooksInstalled() {
+	if ag.AreHooksInstalled(context.Background()) {
 		t.Error("hooks should not be installed initially")
 	}
 
-	if _, err := ag.InstallHooks(false, false); err != nil {
+	if _, err := ag.InstallHooks(context.Background(), false, false); err != nil {
 		t.Fatalf("install failed: %v", err)
 	}
 
-	if !ag.AreHooksInstalled() {
+	if !ag.AreHooksInstalled(context.Background()) {
 		t.Error("hooks should be installed after InstallHooks")
 	}
 
-	if err := ag.UninstallHooks(); err != nil {
+	if err := ag.UninstallHooks(context.Background()); err != nil {
 		t.Fatalf("uninstall failed: %v", err)
 	}
 
-	if ag.AreHooksInstalled() {
+	if ag.AreHooksInstalled(context.Background()) {
 		t.Error("hooks should not be installed after UninstallHooks")
 	}
 }

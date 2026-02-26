@@ -1,6 +1,7 @@
 package strategy
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -113,8 +114,8 @@ func extractCommandLine(hookContent string) string {
 // to w if any are found.
 // localDev controls whether the warning references "go run" or the "entire" binary.
 // absolutePath embeds the full binary path for GUI git clients.
-func CheckAndWarnHookManagers(w io.Writer, localDev, absolutePath bool) {
-	repoRoot, err := paths.WorktreeRoot()
+func CheckAndWarnHookManagers(ctx context.Context, w io.Writer, localDev, absolutePath bool) {
+	repoRoot, err := paths.WorktreeRoot(ctx)
 	if err != nil {
 		return
 	}

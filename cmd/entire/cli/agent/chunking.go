@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -18,7 +19,7 @@ const (
 
 // ChunkTranscript splits a transcript into chunks using the appropriate agent.
 // If agentType is empty or the agent is not found, falls back to JSONL (line-based) chunking.
-func ChunkTranscript(content []byte, agentType AgentType) ([][]byte, error) {
+func ChunkTranscript(ctx context.Context, content []byte, agentType AgentType) ([][]byte, error) {
 	if len(content) <= MaxChunkSize {
 		return [][]byte{content}, nil
 	}
@@ -27,7 +28,7 @@ func ChunkTranscript(content []byte, agentType AgentType) ([][]byte, error) {
 	if agentType != "" {
 		ag, err := GetByAgentType(agentType)
 		if err == nil {
-			chunks, chunkErr := ag.ChunkTranscript(content, MaxChunkSize)
+			chunks, chunkErr := ag.ChunkTranscript(ctx, content, MaxChunkSize)
 			if chunkErr != nil {
 				return nil, fmt.Errorf("agent chunking failed: %w", chunkErr)
 			}

@@ -41,7 +41,7 @@ func TestSubdirectory_EntireDirCreatedAtRepoRoot(t *testing.T) {
 	cmd := exec.Command(getTestBinary(), "hooks", "claude-code", "user-prompt-submit")
 	cmd.Dir = subdirPath // Run from subdirectory!
 	cmd.Stdin = bytes.NewReader(inputJSON)
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(gitIsolatedEnv(),
 		"ENTIRE_TEST_CLAUDE_PROJECT_DIR="+env.ClaudeProjectDir,
 	)
 
@@ -108,7 +108,7 @@ func TestSubdirectory_SaveStepFromSubdir(t *testing.T) {
 	cmd := exec.Command(getTestBinary(), "hooks", "claude-code", "user-prompt-submit")
 	cmd.Dir = subdirPath // Run from subdirectory
 	cmd.Stdin = bytes.NewReader(inputJSON)
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(gitIsolatedEnv(),
 		"ENTIRE_TEST_CLAUDE_PROJECT_DIR="+env.ClaudeProjectDir,
 	)
 	if output, err := cmd.CombinedOutput(); err != nil {
@@ -125,7 +125,7 @@ func TestSubdirectory_SaveStepFromSubdir(t *testing.T) {
 	stopCmd := exec.Command(getTestBinary(), "hooks", "claude-code", "stop")
 	stopCmd.Dir = subdirPath // Run from subdirectory
 	stopCmd.Stdin = bytes.NewReader(stopInputJSON)
-	stopCmd.Env = append(os.Environ(),
+	stopCmd.Env = append(gitIsolatedEnv(),
 		"ENTIRE_TEST_CLAUDE_PROJECT_DIR="+env.ClaudeProjectDir,
 	)
 	if output, err := stopCmd.CombinedOutput(); err != nil {

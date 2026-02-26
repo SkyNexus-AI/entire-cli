@@ -1,6 +1,7 @@
 package geminicli
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -13,7 +14,7 @@ func TestParseHookEvent_SessionStart(t *testing.T) {
 	ag := &GeminiCLIAgent{}
 	input := `{"session_id": "gemini-session-123", "transcript_path": "/tmp/gemini.json"}`
 
-	event, err := ag.ParseHookEvent(HookNameSessionStart, strings.NewReader(input))
+	event, err := ag.ParseHookEvent(context.Background(), HookNameSessionStart, strings.NewReader(input))
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -48,7 +49,7 @@ func TestParseHookEvent_TurnStart(t *testing.T) {
 		"prompt": "Hello Gemini"
 	}`
 
-	event, err := ag.ParseHookEvent(HookNameBeforeAgent, strings.NewReader(input))
+	event, err := ag.ParseHookEvent(context.Background(), HookNameBeforeAgent, strings.NewReader(input))
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -79,7 +80,7 @@ func TestParseHookEvent_TurnEnd(t *testing.T) {
 		"timestamp": "2024-01-15T10:05:00Z"
 	}`
 
-	event, err := ag.ParseHookEvent(HookNameAfterAgent, strings.NewReader(input))
+	event, err := ag.ParseHookEvent(context.Background(), HookNameAfterAgent, strings.NewReader(input))
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -105,7 +106,7 @@ func TestParseHookEvent_SessionEnd(t *testing.T) {
 		"reason": "exit"
 	}`
 
-	event, err := ag.ParseHookEvent(HookNameSessionEnd, strings.NewReader(input))
+	event, err := ag.ParseHookEvent(context.Background(), HookNameSessionEnd, strings.NewReader(input))
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -131,7 +132,7 @@ func TestParseHookEvent_Compaction(t *testing.T) {
 		"hook_event_name": "pre-compress"
 	}`
 
-	event, err := ag.ParseHookEvent(HookNamePreCompress, strings.NewReader(input))
+	event, err := ag.ParseHookEvent(context.Background(), HookNamePreCompress, strings.NewReader(input))
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -166,7 +167,7 @@ func TestParseHookEvent_PassThroughHooks_ReturnNil(t *testing.T) {
 		t.Run(hookName, func(t *testing.T) {
 			t.Parallel()
 
-			event, err := ag.ParseHookEvent(hookName, strings.NewReader(input))
+			event, err := ag.ParseHookEvent(context.Background(), hookName, strings.NewReader(input))
 
 			if err != nil {
 				t.Fatalf("unexpected error for %s: %v", hookName, err)
@@ -184,7 +185,7 @@ func TestParseHookEvent_UnknownHook_ReturnsNil(t *testing.T) {
 	ag := &GeminiCLIAgent{}
 	input := `{"session_id": "unknown", "transcript_path": "/tmp/unknown.json"}`
 
-	event, err := ag.ParseHookEvent("unknown-hook-name", strings.NewReader(input))
+	event, err := ag.ParseHookEvent(context.Background(), "unknown-hook-name", strings.NewReader(input))
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -199,7 +200,7 @@ func TestParseHookEvent_EmptyInput(t *testing.T) {
 
 	ag := &GeminiCLIAgent{}
 
-	_, err := ag.ParseHookEvent(HookNameSessionStart, strings.NewReader(""))
+	_, err := ag.ParseHookEvent(context.Background(), HookNameSessionStart, strings.NewReader(""))
 
 	if err == nil {
 		t.Fatal("expected error for empty input, got nil")
@@ -215,7 +216,7 @@ func TestParseHookEvent_MalformedJSON(t *testing.T) {
 	ag := &GeminiCLIAgent{}
 	input := `{"session_id": "test", "transcript_path": INVALID}`
 
-	_, err := ag.ParseHookEvent(HookNameSessionStart, strings.NewReader(input))
+	_, err := ag.ParseHookEvent(context.Background(), HookNameSessionStart, strings.NewReader(input))
 
 	if err == nil {
 		t.Fatal("expected error for malformed JSON, got nil")
@@ -296,7 +297,7 @@ func TestParseHookEvent_AllLifecycleHooks(t *testing.T) {
 			t.Parallel()
 
 			ag := &GeminiCLIAgent{}
-			event, err := ag.ParseHookEvent(tc.hookName, strings.NewReader(tc.inputTemplate))
+			event, err := ag.ParseHookEvent(context.Background(), tc.hookName, strings.NewReader(tc.inputTemplate))
 
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)

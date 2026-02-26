@@ -2,6 +2,7 @@
 package cursor
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -18,7 +19,7 @@ func init() {
 	agent.Register(agent.AgentNameCursor, NewCursorAgent)
 }
 
-// CursorAgent implements the Agent interface for Cursor IDE.
+// CursorAgent implements the Agent interface for Cursor.
 //
 //nolint:revive // CursorAgent is clearer than Agent in this context
 type CursorAgent struct{}
@@ -46,8 +47,8 @@ func (c *CursorAgent) Description() string {
 func (c *CursorAgent) IsPreview() bool { return true }
 
 // DetectPresence checks if Cursor is configured in the repository.
-func (c *CursorAgent) DetectPresence() (bool, error) {
-	worktreeRoot, err := paths.WorktreeRoot()
+func (c *CursorAgent) DetectPresence(ctx context.Context) (bool, error) {
+	worktreeRoot, err := paths.WorktreeRoot(ctx)
 	if err != nil {
 		worktreeRoot = "."
 	}
@@ -111,7 +112,7 @@ func (c *CursorAgent) ReadSession(input *agent.HookInput) (*agent.AgentSession, 
 }
 
 // WriteSession writes a session to Cursor's storage (JSONL transcript file).
-func (c *CursorAgent) WriteSession(session *agent.AgentSession) error {
+func (c *CursorAgent) WriteSession(_ context.Context, session *agent.AgentSession) error {
 	if session == nil {
 		return errors.New("session is nil")
 	}
@@ -138,7 +139,7 @@ func (c *CursorAgent) WriteSession(session *agent.AgentSession) error {
 // FormatResumeCommand returns an instruction to resume a Cursor session.
 // Cursor is a GUI IDE, so there's no CLI command to resume a session directly.
 func (c *CursorAgent) FormatResumeCommand(_ string) string {
-	return "Open this project in Cursor IDE to continue the session."
+	return "Open this project in Cursor to continue the session."
 }
 
 // sanitizePathForCursor converts a path to Cursor's project directory format.
@@ -149,7 +150,7 @@ func sanitizePathForCursor(path string) string {
 }
 
 // ChunkTranscript splits a JSONL transcript at line boundaries.
-func (c *CursorAgent) ChunkTranscript(content []byte, maxSize int) ([][]byte, error) {
+func (c *CursorAgent) ChunkTranscript(_ context.Context, content []byte, maxSize int) ([][]byte, error) {
 	chunks, err := agent.ChunkJSONL(content, maxSize)
 	if err != nil {
 		return nil, fmt.Errorf("failed to chunk JSONL transcript: %w", err)

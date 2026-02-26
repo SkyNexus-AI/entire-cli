@@ -1,6 +1,7 @@
 package opencode
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,7 +17,7 @@ func TestParseHookEvent_SessionStart(t *testing.T) {
 	// Plugin now only sends session_id, not transcript_path
 	input := `{"session_id": "sess-abc123"}`
 
-	event, err := ag.ParseHookEvent(HookNameSessionStart, strings.NewReader(input))
+	event, err := ag.ParseHookEvent(context.Background(), HookNameSessionStart, strings.NewReader(input))
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -43,7 +44,7 @@ func TestParseHookEvent_TurnStart(t *testing.T) {
 	// Plugin now only sends session_id and prompt, not transcript_path
 	input := `{"session_id": "sess-1", "prompt": "Fix the bug in login.ts"}`
 
-	event, err := ag.ParseHookEvent(HookNameTurnStart, strings.NewReader(input))
+	event, err := ag.ParseHookEvent(context.Background(), HookNameTurnStart, strings.NewReader(input))
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -79,7 +80,7 @@ func TestParseHookEvent_Compaction(t *testing.T) {
 	ag := &OpenCodeAgent{}
 	input := `{"session_id": "sess-3"}`
 
-	event, err := ag.ParseHookEvent(HookNameCompaction, strings.NewReader(input))
+	event, err := ag.ParseHookEvent(context.Background(), HookNameCompaction, strings.NewReader(input))
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -102,7 +103,7 @@ func TestParseHookEvent_SessionEnd(t *testing.T) {
 	// Plugin now only sends session_id
 	input := `{"session_id": "sess-4"}`
 
-	event, err := ag.ParseHookEvent(HookNameSessionEnd, strings.NewReader(input))
+	event, err := ag.ParseHookEvent(context.Background(), HookNameSessionEnd, strings.NewReader(input))
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -119,7 +120,7 @@ func TestParseHookEvent_UnknownHook(t *testing.T) {
 	t.Parallel()
 
 	ag := &OpenCodeAgent{}
-	event, err := ag.ParseHookEvent("unknown-hook", strings.NewReader(`{}`))
+	event, err := ag.ParseHookEvent(context.Background(), "unknown-hook", strings.NewReader(`{}`))
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -133,7 +134,7 @@ func TestParseHookEvent_EmptyInput(t *testing.T) {
 	t.Parallel()
 
 	ag := &OpenCodeAgent{}
-	_, err := ag.ParseHookEvent(HookNameSessionStart, strings.NewReader(""))
+	_, err := ag.ParseHookEvent(context.Background(), HookNameSessionStart, strings.NewReader(""))
 
 	if err == nil {
 		t.Fatal("expected error for empty input")
@@ -147,7 +148,7 @@ func TestParseHookEvent_MalformedJSON(t *testing.T) {
 	t.Parallel()
 
 	ag := &OpenCodeAgent{}
-	_, err := ag.ParseHookEvent(HookNameSessionStart, strings.NewReader("not json"))
+	_, err := ag.ParseHookEvent(context.Background(), HookNameSessionStart, strings.NewReader("not json"))
 
 	if err == nil {
 		t.Fatal("expected error for malformed JSON")
@@ -224,7 +225,7 @@ func TestPrepareTranscript_AlwaysRefreshesTranscript(t *testing.T) {
 	}
 
 	ag := &OpenCodeAgent{}
-	err := ag.PrepareTranscript(transcriptPath)
+	err := ag.PrepareTranscript(context.Background(), transcriptPath)
 
 	// Without ENTIRE_TEST_OPENCODE_MOCK_EXPORT and without opencode CLI installed,
 	// PrepareTranscript will fail because fetchAndCacheExport can't run `opencode export`.
@@ -244,7 +245,7 @@ func TestPrepareTranscript_ErrorOnInvalidPath(t *testing.T) {
 	ag := &OpenCodeAgent{}
 
 	// Path without .json extension
-	err := ag.PrepareTranscript("/tmp/not-a-json-file")
+	err := ag.PrepareTranscript(context.Background(), "/tmp/not-a-json-file")
 	if err == nil {
 		t.Fatal("expected error for path without .json extension")
 	}
@@ -266,7 +267,7 @@ func TestPrepareTranscript_ErrorOnBrokenSymlink(t *testing.T) {
 	}
 
 	ag := &OpenCodeAgent{}
-	err := ag.PrepareTranscript(transcriptPath)
+	err := ag.PrepareTranscript(context.Background(), transcriptPath)
 
 	// Broken symlinks cause os.Stat to return a specific error (not IsNotExist).
 	// The function should return a wrapped error explaining the issue.
@@ -291,7 +292,7 @@ func TestPrepareTranscript_ErrorOnEmptySessionID(t *testing.T) {
 	ag := &OpenCodeAgent{}
 
 	// Path with empty session ID (.json with no basename)
-	err := ag.PrepareTranscript("/tmp/.json")
+	err := ag.PrepareTranscript(context.Background(), "/tmp/.json")
 	if err == nil {
 		t.Fatal("expected error for empty session ID")
 	}

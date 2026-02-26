@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -89,13 +90,13 @@ func (s *PrePromptState) normalizePrePromptState() {
 // The sessionRef parameter is optional — if empty, transcript position won't be captured.
 //
 // Works correctly from any subdirectory within the repository.
-func CapturePrePromptState(ag agent.Agent, sessionID, sessionRef string) error {
+func CapturePrePromptState(ctx context.Context, ag agent.Agent, sessionID, sessionRef string) error {
 	if sessionID == "" {
 		sessionID = unknownSessionID
 	}
 
 	// Get absolute path for tmp directory
-	tmpDirAbs, err := paths.AbsPath(paths.EntireTmpDir)
+	tmpDirAbs, err := paths.AbsPath(ctx, paths.EntireTmpDir)
 	if err != nil {
 		tmpDirAbs = paths.EntireTmpDir // Fallback to relative
 	}
@@ -106,7 +107,7 @@ func CapturePrePromptState(ag agent.Agent, sessionID, sessionRef string) error {
 	}
 
 	// Get list of untracked files (excluding .entire directory itself)
-	untrackedFiles, err := getUntrackedFilesForState()
+	untrackedFiles, err := getUntrackedFilesForState(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to get untracked files: %w", err)
 	}
@@ -123,7 +124,7 @@ func CapturePrePromptState(ag agent.Agent, sessionID, sessionRef string) error {
 	}
 
 	// Create state file
-	stateFile := prePromptStateFile(sessionID)
+	stateFile := prePromptStateFile(ctx, sessionID)
 	state := PrePromptState{
 		SessionID:        sessionID,
 		Timestamp:        time.Now().UTC().Format(time.RFC3339),
@@ -147,8 +148,8 @@ func CapturePrePromptState(ag agent.Agent, sessionID, sessionRef string) error {
 
 // LoadPrePromptState loads previously captured state.
 // Returns nil if no state file exists.
-func LoadPrePromptState(sessionID string) (*PrePromptState, error) {
-	stateFile := prePromptStateFile(sessionID)
+func LoadPrePromptState(ctx context.Context, sessionID string) (*PrePromptState, error) {
+	stateFile := prePromptStateFile(ctx, sessionID)
 
 	if !fileExists(stateFile) {
 		return nil, nil //nolint:nilnil // already present in codebase
@@ -170,8 +171,8 @@ func LoadPrePromptState(sessionID string) (*PrePromptState, error) {
 }
 
 // CleanupPrePromptState removes the state file after use
-func CleanupPrePromptState(sessionID string) error {
-	stateFile := prePromptStateFile(sessionID)
+func CleanupPrePromptState(ctx context.Context, sessionID string) error {
+	stateFile := prePromptStateFile(ctx, sessionID)
 	if fileExists(stateFile) {
 		return os.Remove(stateFile) //nolint:wrapcheck // already present in codebase
 	}
@@ -194,8 +195,8 @@ type FileChanges struct {
 // Modified includes both worktree and staging modified/added files.
 // Deleted includes both staged and unstaged deletions.
 // All results exclude .entire/ directory.
-func DetectFileChanges(previouslyUntracked []string) (*FileChanges, error) {
-	repo, err := openRepository()
+func DetectFileChanges(ctx context.Context, previouslyUntracked []string) (*FileChanges, error) {
+	repo, err := openRepository(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open repository: %w", err)
 	}
@@ -250,12 +251,12 @@ func DetectFileChanges(previouslyUntracked []string) (*FileChanges, error) {
 // (already condensed by PostCommit) back to FilesTouched via SaveStep. Files not in
 // HEAD or with different content in the working tree are kept. Fails open: if any git
 // operation errors, returns the original list unchanged.
-func filterToUncommittedFiles(files []string, repoRoot string) []string {
+func filterToUncommittedFiles(ctx context.Context, files []string, repoRoot string) []string {
 	if len(files) == 0 {
 		return files
 	}
 
-	repo, err := openRepository()
+	repo, err := openRepository(ctx)
 	if err != nil {
 		return files // fail open
 	}
@@ -326,10 +327,28 @@ func FilterAndNormalizePaths(files []string, cwd string) []string {
 	return result
 }
 
+// mergeUnique appends elements from extra into base, skipping duplicates already in base.
+func mergeUnique(base, extra []string) []string {
+	if len(extra) == 0 {
+		return base
+	}
+	seen := make(map[string]bool, len(base))
+	for _, s := range base {
+		seen[s] = true
+	}
+	for _, s := range extra {
+		if !seen[s] {
+			seen[s] = true
+			base = append(base, s)
+		}
+	}
+	return base
+}
+
 // prePromptStateFile returns the absolute path to the pre-prompt state file for a session.
 // Works correctly from any subdirectory within the repository.
-func prePromptStateFile(sessionID string) string {
-	tmpDirAbs, err := paths.AbsPath(paths.EntireTmpDir)
+func prePromptStateFile(ctx context.Context, sessionID string) string {
+	tmpDirAbs, err := paths.AbsPath(ctx, paths.EntireTmpDir)
 	if err != nil {
 		tmpDirAbs = paths.EntireTmpDir // Fallback to relative
 	}
@@ -338,8 +357,8 @@ func prePromptStateFile(sessionID string) string {
 
 // getUntrackedFilesForState returns a list of untracked files using go-git
 // Excludes .entire directory
-func getUntrackedFilesForState() ([]string, error) {
-	repo, err := openRepository()
+func getUntrackedFilesForState(ctx context.Context) ([]string, error) {
+	repo, err := openRepository(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -389,13 +408,13 @@ func (s *PreTaskState) PreUntrackedFiles() []string {
 // CapturePreTaskState captures current untracked files before a Task execution
 // and saves them to a state file.
 // Works correctly from any subdirectory within the repository.
-func CapturePreTaskState(toolUseID string) error {
+func CapturePreTaskState(ctx context.Context, toolUseID string) error {
 	if toolUseID == "" {
 		return errors.New("tool_use_id is required")
 	}
 
 	// Get absolute path for tmp directory
-	tmpDirAbs, err := paths.AbsPath(paths.EntireTmpDir)
+	tmpDirAbs, err := paths.AbsPath(ctx, paths.EntireTmpDir)
 	if err != nil {
 		tmpDirAbs = paths.EntireTmpDir // Fallback to relative
 	}
@@ -406,13 +425,13 @@ func CapturePreTaskState(toolUseID string) error {
 	}
 
 	// Get list of untracked files (excluding .entire directory itself)
-	untrackedFiles, err := getUntrackedFilesForState()
+	untrackedFiles, err := getUntrackedFilesForState(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to get untracked files: %w", err)
 	}
 
 	// Create state file
-	stateFile := preTaskStateFile(toolUseID)
+	stateFile := preTaskStateFile(ctx, toolUseID)
 	state := PreTaskState{
 		ToolUseID:      toolUseID,
 		Timestamp:      time.Now().UTC().Format(time.RFC3339),
@@ -434,8 +453,8 @@ func CapturePreTaskState(toolUseID string) error {
 
 // LoadPreTaskState loads previously captured task state.
 // Returns nil if no state file exists.
-func LoadPreTaskState(toolUseID string) (*PreTaskState, error) {
-	stateFile := preTaskStateFile(toolUseID)
+func LoadPreTaskState(ctx context.Context, toolUseID string) (*PreTaskState, error) {
+	stateFile := preTaskStateFile(ctx, toolUseID)
 
 	if !fileExists(stateFile) {
 		return nil, nil //nolint:nilnil // already present in codebase
@@ -455,8 +474,8 @@ func LoadPreTaskState(toolUseID string) (*PreTaskState, error) {
 }
 
 // CleanupPreTaskState removes the task state file after use
-func CleanupPreTaskState(toolUseID string) error {
-	stateFile := preTaskStateFile(toolUseID)
+func CleanupPreTaskState(ctx context.Context, toolUseID string) error {
+	stateFile := preTaskStateFile(ctx, toolUseID)
 	if fileExists(stateFile) {
 		return os.Remove(stateFile) //nolint:wrapcheck // already present in codebase
 	}
@@ -465,8 +484,8 @@ func CleanupPreTaskState(toolUseID string) error {
 
 // preTaskStateFile returns the absolute path to the pre-task state file for a tool use.
 // Works correctly from any subdirectory within the repository.
-func preTaskStateFile(toolUseID string) string {
-	tmpDirAbs, err := paths.AbsPath(paths.EntireTmpDir)
+func preTaskStateFile(ctx context.Context, toolUseID string) string {
+	tmpDirAbs, err := paths.AbsPath(ctx, paths.EntireTmpDir)
 	if err != nil {
 		tmpDirAbs = paths.EntireTmpDir // Fallback to relative
 	}
@@ -481,8 +500,8 @@ const preTaskFilePrefix = "pre-task-"
 // When multiple pre-task files exist (nested subagents), returns the most recently
 // modified one.
 // Works correctly from any subdirectory within the repository.
-func FindActivePreTaskFile() (taskToolUseID string, found bool) {
-	tmpDirAbs, err := paths.AbsPath(paths.EntireTmpDir)
+func FindActivePreTaskFile(ctx context.Context) (taskToolUseID string, found bool) {
+	tmpDirAbs, err := paths.AbsPath(ctx, paths.EntireTmpDir)
 	if err != nil {
 		tmpDirAbs = paths.EntireTmpDir // Fallback to relative
 	}

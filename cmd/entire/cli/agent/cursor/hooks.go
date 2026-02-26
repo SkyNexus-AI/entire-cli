@@ -1,6 +1,7 @@
 package cursor
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -55,8 +56,8 @@ func (c *CursorAgent) HookNames() []string {
 // If force is true, removes existing Entire hooks before installing.
 // Returns the number of hooks installed.
 // Unknown top-level fields and hook types are preserved on round-trip.
-func (c *CursorAgent) InstallHooks(localDev bool, force bool) (int, error) {
-	worktreeRoot, err := paths.WorktreeRoot()
+func (c *CursorAgent) InstallHooks(ctx context.Context, localDev bool, force bool) (int, error) {
+	worktreeRoot, err := paths.WorktreeRoot(ctx)
 	if err != nil {
 		worktreeRoot = "."
 	}
@@ -198,8 +199,8 @@ func (c *CursorAgent) InstallHooks(localDev bool, force bool) (int, error) {
 
 // UninstallHooks removes Entire hooks from Cursor HooksFileName.
 // Unknown top-level fields and hook types are preserved on round-trip.
-func (c *CursorAgent) UninstallHooks() error {
-	worktreeRoot, err := paths.WorktreeRoot()
+func (c *CursorAgent) UninstallHooks(ctx context.Context) error {
+	worktreeRoot, err := paths.WorktreeRoot(ctx)
 	if err != nil {
 		worktreeRoot = "."
 	}
@@ -276,8 +277,8 @@ func (c *CursorAgent) UninstallHooks() error {
 }
 
 // AreHooksInstalled checks if Entire hooks are installed.
-func (c *CursorAgent) AreHooksInstalled() bool {
-	worktreeRoot, err := paths.WorktreeRoot()
+func (c *CursorAgent) AreHooksInstalled(ctx context.Context) bool {
+	worktreeRoot, err := paths.WorktreeRoot(ctx)
 	if err != nil {
 		worktreeRoot = "."
 	}

@@ -4,7 +4,6 @@
 package cli
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -51,8 +50,8 @@ func newAgentHooksCmd(agentName agent.AgentName, handler agent.HookSupport) *cob
 		Use:    string(agentName),
 		Short:  handler.Description() + " hook handlers",
 		Hidden: true,
-		PersistentPreRunE: func(_ *cobra.Command, _ []string) error {
-			agentHookLogCleanup = initHookLogging()
+		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
+			agentHookLogCleanup = initHookLogging(cmd.Context())
 			return nil
 		},
 		PersistentPostRunE: func(_ *cobra.Command, _ []string) error {
@@ -95,12 +94,12 @@ func newAgentHookVerbCmdWithLogging(agentName agent.AgentName, hookName string) 
 		Short:  "Called on " + hookName,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			// Skip silently if not in a git repository - hooks shouldn't prevent the agent from working
-			if _, err := paths.WorktreeRoot(); err != nil {
+			if _, err := paths.WorktreeRoot(cmd.Context()); err != nil {
 				return nil
 			}
 
 			// Skip if Entire is not enabled
-			enabled, err := IsEnabled()
+			enabled, err := IsEnabled(cmd.Context())
 			if err == nil && !enabled {
 				return nil
 			}
@@ -108,10 +107,10 @@ func newAgentHookVerbCmdWithLogging(agentName agent.AgentName, hookName string) 
 			start := time.Now()
 
 			// Initialize logging context with agent name
-			ctx := logging.WithAgent(logging.WithComponent(context.Background(), "hooks"), agentName)
+			ctx := logging.WithAgent(logging.WithComponent(cmd.Context(), "hooks"), agentName)
 
 			// Get strategy name for logging
-			strategyName := GetStrategy().Name()
+			strategyName := GetStrategy(ctx).Name()
 
 			hookType := getHookType(hookName)
 
@@ -138,17 +137,17 @@ func newAgentHookVerbCmdWithLogging(agentName agent.AgentName, hookName string) 
 			}
 
 			// Use cmd.InOrStdin() to support testing with cmd.SetIn()
-			event, parseErr := handler.ParseHookEvent(hookName, cmd.InOrStdin())
+			event, parseErr := handler.ParseHookEvent(ctx, hookName, cmd.InOrStdin())
 			if parseErr != nil {
 				return fmt.Errorf("failed to parse hook event: %w", parseErr)
 			}
 
 			if event != nil {
 				// Lifecycle event — use the generic dispatcher
-				hookErr = DispatchLifecycleEvent(ag, event)
+				hookErr = DispatchLifecycleEvent(ctx, ag, event)
 			} else if agentName == agent.AgentNameClaudeCode && hookName == claudecode.HookNamePostTodo {
 				// PostTodo is Claude-specific: creates incremental checkpoints during subagent execution
-				hookErr = handleClaudeCodePostTodo()
+				hookErr = handleClaudeCodePostTodo(ctx)
 			}
 			// Other pass-through hooks (nil event, no special handling) are no-ops
 

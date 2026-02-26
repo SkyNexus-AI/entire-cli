@@ -83,18 +83,35 @@ type Part struct {
 
 // ToolState represents tool execution state.
 type ToolState struct {
-	Status string         `json:"status"` // "pending", "running", "completed", "error"
-	Input  map[string]any `json:"input,omitempty"`
-	Output string         `json:"output,omitempty"`
+	Status   string             `json:"status"` // "pending", "running", "completed", "error"
+	Input    map[string]any     `json:"input,omitempty"`
+	Output   string             `json:"output,omitempty"`
+	Metadata *ToolStateMetadata `json:"metadata,omitempty"`
+}
+
+// ToolStateMetadata holds metadata from tool execution results.
+type ToolStateMetadata struct {
+	Files []ToolFileInfo `json:"files,omitempty"`
+}
+
+// ToolFileInfo represents a file affected by a tool operation.
+type ToolFileInfo struct {
+	FilePath     string `json:"filePath"`
+	RelativePath string `json:"relativePath,omitempty"`
 }
 
 // FileModificationTools are tools in OpenCode that modify files on disk.
-// These match the actual tool names from OpenCode's source:
-//   - edit:  internal/llm/tools/edit.go  (EditToolName)
-//   - write: internal/llm/tools/write.go (WriteToolName)
-//   - patch: internal/llm/tools/patch.go (PatchToolName)
+// These match the actual tool names from OpenCode's source (packages/opencode/src/tool/):
+//   - edit:        edit.ts  — exact string replacement in existing files
+//   - write:       write.ts — create or overwrite files
+//   - apply_patch: apply_patch.ts — unified diff patches (used by gpt-* models except gpt-4)
+//
+// Tool selection is mutually exclusive: apply_patch is enabled for gpt-* (non-gpt-4, non-oss)
+// models; edit+write are enabled for all other models (Claude, Gemini, gpt-4, etc.).
+// The batch tool (experimental) creates separate transcript parts per sub-call,
+// so its children are already captured by this list.
 var FileModificationTools = []string{
 	"edit",
 	"write",
-	"patch",
+	"apply_patch",
 }

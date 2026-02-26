@@ -36,7 +36,7 @@ func TestHookLogging_WritesToSessionLogFile(t *testing.T) {
 	// Use post-commit since it takes no arguments
 	cmd := exec.Command(getTestBinary(), "hooks", "git", "post-commit")
 	cmd.Dir = env.RepoDir
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(gitIsolatedEnv(),
 		"ENTIRE_TEST_CLAUDE_PROJECT_DIR="+env.ClaudeProjectDir,
 		"ENTIRE_LOG_LEVEL=debug",
 	)
@@ -93,7 +93,7 @@ func TestHookLogging_WritesWithoutSession(t *testing.T) {
 	// Run a hook with ENTIRE_LOG_LEVEL=debug
 	cmd := exec.Command(getTestBinary(), "hooks", "git", "post-commit")
 	cmd.Dir = env.RepoDir
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(gitIsolatedEnv(),
 		"ENTIRE_TEST_CLAUDE_PROJECT_DIR="+env.ClaudeProjectDir,
 		"ENTIRE_LOG_LEVEL=debug",
 	)

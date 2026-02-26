@@ -1,6 +1,7 @@
 package session
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -425,7 +426,7 @@ func TestApplyTransition_SetsPhaseAndHandlesCommonActions(t *testing.T) {
 		Actions:  []Action{ActionUpdateLastInteraction},
 	}
 
-	err := ApplyTransition(state, result, handler)
+	err := ApplyTransition(context.Background(), state, result, handler)
 
 	require.NoError(t, err)
 	assert.Equal(t, PhaseActive, state.Phase)
@@ -443,7 +444,7 @@ func TestApplyTransition_CallsHandlerForCondense(t *testing.T) {
 		Actions:  []Action{ActionCondense, ActionUpdateLastInteraction},
 	}
 
-	err := ApplyTransition(state, result, handler)
+	err := ApplyTransition(context.Background(), state, result, handler)
 
 	require.NoError(t, err)
 	assert.True(t, handler.condenseCalled)
@@ -461,7 +462,7 @@ func TestApplyTransition_CallsHandlerForCondenseIfFilesTouched(t *testing.T) {
 		Actions:  []Action{ActionCondenseIfFilesTouched, ActionUpdateLastInteraction},
 	}
 
-	err := ApplyTransition(state, result, handler)
+	err := ApplyTransition(context.Background(), state, result, handler)
 
 	require.NoError(t, err)
 	assert.True(t, handler.condenseIfFilesTouchedCalled)
@@ -477,7 +478,7 @@ func TestApplyTransition_CallsHandlerForDiscardIfNoFiles(t *testing.T) {
 		Actions:  []Action{ActionDiscardIfNoFiles, ActionUpdateLastInteraction},
 	}
 
-	err := ApplyTransition(state, result, handler)
+	err := ApplyTransition(context.Background(), state, result, handler)
 
 	require.NoError(t, err)
 	assert.True(t, handler.discardIfNoFilesCalled)
@@ -493,7 +494,7 @@ func TestApplyTransition_CallsHandlerForWarnStaleSession(t *testing.T) {
 		Actions:  []Action{ActionWarnStaleSession},
 	}
 
-	err := ApplyTransition(state, result, handler)
+	err := ApplyTransition(context.Background(), state, result, handler)
 
 	require.NoError(t, err)
 	assert.True(t, handler.warnStaleSessionCalled)
@@ -510,7 +511,7 @@ func TestApplyTransition_ClearsEndedAt(t *testing.T) {
 		Actions:  []Action{ActionClearEndedAt},
 	}
 
-	err := ApplyTransition(state, result, handler)
+	err := ApplyTransition(context.Background(), state, result, handler)
 
 	require.NoError(t, err)
 	assert.Nil(t, state.EndedAt)
@@ -527,7 +528,7 @@ func TestApplyTransition_ReturnsHandlerError_ButRunsCommonActions(t *testing.T) 
 		Actions:  []Action{ActionCondense, ActionUpdateLastInteraction},
 	}
 
-	err := ApplyTransition(state, result, handler)
+	err := ApplyTransition(context.Background(), state, result, handler)
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "condense failed")
@@ -547,7 +548,7 @@ func TestApplyTransition_StopsOnFirstHandlerError(t *testing.T) {
 		Actions:  []Action{ActionCondense, ActionWarnStaleSession},
 	}
 
-	err := ApplyTransition(state, result, handler)
+	err := ApplyTransition(context.Background(), state, result, handler)
 
 	require.Error(t, err)
 	assert.True(t, handler.condenseCalled)
@@ -568,7 +569,7 @@ func TestApplyTransition_ClearEndedAtRunsDespiteHandlerError(t *testing.T) {
 		Actions:  []Action{ActionCondenseIfFilesTouched, ActionClearEndedAt},
 	}
 
-	err := ApplyTransition(state, result, handler)
+	err := ApplyTransition(context.Background(), state, result, handler)
 
 	require.Error(t, err)
 	assert.Nil(t, state.EndedAt, "ClearEndedAt must run despite earlier handler error")

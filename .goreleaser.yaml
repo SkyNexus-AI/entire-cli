@@ -18,8 +18,8 @@ builds:
       - arm64
     ldflags:
       - -s -w
-      - -X github.com/entireio/cli/cmd/entire/cli/buildinfo.Version={{.Version}}
-      - -X github.com/entireio/cli/cmd/entire/cli/buildinfo.Commit={{.ShortCommit}}
+      - -X github.com/entireio/cli/cmd/entire/cli/versioninfo.Version={{.Version}}
+      - -X github.com/entireio/cli/cmd/entire/cli/versioninfo.Commit={{.ShortCommit}}
       - -X github.com/entireio/cli/cmd/entire/cli/telemetry.PostHogAPIKey={{.Env.POSTHOG_API_KEY}}
       - -X github.com/entireio/cli/cmd/entire/cli/telemetry.PostHogEndpoint={{.Env.POSTHOG_ENDPOINT}}
 

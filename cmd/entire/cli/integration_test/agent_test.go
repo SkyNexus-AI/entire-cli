@@ -3,6 +3,7 @@
 package integration
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -61,7 +62,7 @@ func TestAgentDetection(t *testing.T) {
 			t.Fatalf("Get(claude-code) error = %v", err)
 		}
 
-		present, err := ag.DetectPresence()
+		present, err := ag.DetectPresence(context.Background())
 		if err != nil {
 			t.Fatalf("DetectPresence() error = %v", err)
 		}
@@ -114,7 +115,7 @@ func TestAgentHookInstallation(t *testing.T) {
 			t.Fatal("claude-code agent does not implement HookSupport")
 		}
 
-		count, err := hookAgent.InstallHooks(false, false)
+		count, err := hookAgent.InstallHooks(context.Background(), false, false)
 		if err != nil {
 			t.Fatalf("InstallHooks() error = %v", err)
 		}
@@ -125,7 +126,7 @@ func TestAgentHookInstallation(t *testing.T) {
 		}
 
 		// Verify hooks are installed
-		if !hookAgent.AreHooksInstalled() {
+		if !hookAgent.AreHooksInstalled(context.Background()) {
 			t.Error("AreHooksInstalled() = false after InstallHooks()")
 		}
 
@@ -161,13 +162,13 @@ func TestAgentHookInstallation(t *testing.T) {
 		hookAgent := ag.(agent.HookSupport)
 
 		// First install
-		_, err := hookAgent.InstallHooks(false, false)
+		_, err := hookAgent.InstallHooks(context.Background(), false, false)
 		if err != nil {
 			t.Fatalf("first InstallHooks() error = %v", err)
 		}
 
 		// Second install should be idempotent
-		count, err := hookAgent.InstallHooks(false, false)
+		count, err := hookAgent.InstallHooks(context.Background(), false, false)
 		if err != nil {
 			t.Fatalf("second InstallHooks() error = %v", err)
 		}
@@ -190,7 +191,7 @@ func TestAgentHookInstallation(t *testing.T) {
 		ag, _ := agent.Get("claude-code")
 		hookAgent := ag.(agent.HookSupport)
 
-		_, err := hookAgent.InstallHooks(true, false) // localDev = true
+		_, err := hookAgent.InstallHooks(context.Background(), true, false) // localDev = true
 		if err != nil {
 			t.Fatalf("InstallHooks(localDev=true) error = %v", err)
 		}
@@ -281,7 +282,7 @@ func TestAgentSessionOperations(t *testing.T) {
 		dstPath := filepath.Join(env.RepoDir, "dst.jsonl")
 		session.SessionRef = dstPath
 
-		if err := ag.WriteSession(session); err != nil {
+		if err := ag.WriteSession(context.Background(), session); err != nil {
 			t.Fatalf("WriteSession() error = %v", err)
 		}
 
@@ -307,7 +308,7 @@ func TestAgentSessionOperations(t *testing.T) {
 			NativeData: []byte("data"),
 		}
 
-		err := ag.WriteSession(session)
+		err := ag.WriteSession(context.Background(), session)
 		if err == nil {
 			t.Error("WriteSession() should reject session from different agent")
 		}
@@ -461,7 +462,7 @@ func TestGeminiCLIAgentDetection(t *testing.T) {
 			t.Fatalf("Get(gemini) error = %v", err)
 		}
 
-		present, err := ag.DetectPresence()
+		present, err := ag.DetectPresence(context.Background())
 		if err != nil {
 			t.Fatalf("DetectPresence() error = %v", err)
 		}
@@ -498,7 +499,7 @@ func TestGeminiCLIHookInstallation(t *testing.T) {
 			t.Fatal("gemini agent does not implement HookSupport")
 		}
 
-		count, err := hookAgent.InstallHooks(false, false)
+		count, err := hookAgent.InstallHooks(context.Background(), false, false)
 		if err != nil {
 			t.Fatalf("InstallHooks() error = %v", err)
 		}
@@ -510,7 +511,7 @@ func TestGeminiCLIHookInstallation(t *testing.T) {
 		}
 
 		// Verify hooks are installed
-		if !hookAgent.AreHooksInstalled() {
+		if !hookAgent.AreHooksInstalled(context.Background()) {
 			t.Error("AreHooksInstalled() = false after InstallHooks()")
 		}
 
@@ -583,13 +584,13 @@ func TestGeminiCLIHookInstallation(t *testing.T) {
 		hookAgent := ag.(agent.HookSupport)
 
 		// First install
-		_, err := hookAgent.InstallHooks(false, false)
+		_, err := hookAgent.InstallHooks(context.Background(), false, false)
 		if err != nil {
 			t.Fatalf("first InstallHooks() error = %v", err)
 		}
 
 		// Second install should be idempotent
-		count, err := hookAgent.InstallHooks(false, false)
+		count, err := hookAgent.InstallHooks(context.Background(), false, false)
 		if err != nil {
 			t.Fatalf("second InstallHooks() error = %v", err)
 		}
@@ -612,7 +613,7 @@ func TestGeminiCLIHookInstallation(t *testing.T) {
 		ag, _ := agent.Get("gemini")
 		hookAgent := ag.(agent.HookSupport)
 
-		_, err := hookAgent.InstallHooks(true, false) // localDev = true
+		_, err := hookAgent.InstallHooks(context.Background(), true, false) // localDev = true
 		if err != nil {
 			t.Fatalf("InstallHooks(localDev=true) error = %v", err)
 		}
@@ -647,7 +648,7 @@ func TestGeminiCLIHookInstallation(t *testing.T) {
 		ag, _ := agent.Get("gemini")
 		hookAgent := ag.(agent.HookSupport)
 
-		_, err := hookAgent.InstallHooks(false, false) // localDev = false
+		_, err := hookAgent.InstallHooks(context.Background(), false, false) // localDev = false
 		if err != nil {
 			t.Fatalf("InstallHooks(localDev=false) error = %v", err)
 		}
@@ -680,13 +681,13 @@ func TestGeminiCLIHookInstallation(t *testing.T) {
 		hookAgent := ag.(agent.HookSupport)
 
 		// First install
-		_, err := hookAgent.InstallHooks(false, false)
+		_, err := hookAgent.InstallHooks(context.Background(), false, false)
 		if err != nil {
 			t.Fatalf("first InstallHooks() error = %v", err)
 		}
 
 		// Force reinstall should return count > 0
-		count, err := hookAgent.InstallHooks(false, true) // force = true
+		count, err := hookAgent.InstallHooks(context.Background(), false, true) // force = true
 		if err != nil {
 			t.Fatalf("force InstallHooks() error = %v", err)
 		}
@@ -770,7 +771,7 @@ func TestGeminiCLISessionOperations(t *testing.T) {
 		dstPath := filepath.Join(env.RepoDir, "dst.json")
 		session.SessionRef = dstPath
 
-		if err := ag.WriteSession(session); err != nil {
+		if err := ag.WriteSession(context.Background(), session); err != nil {
 			t.Fatalf("WriteSession() error = %v", err)
 		}
 
@@ -796,7 +797,7 @@ func TestGeminiCLISessionOperations(t *testing.T) {
 			NativeData: []byte("data"),
 		}
 
-		err := ag.WriteSession(session)
+		err := ag.WriteSession(context.Background(), session)
 		if err == nil {
 			t.Error("WriteSession() should reject session from different agent")
 		}
@@ -864,7 +865,7 @@ func TestOpenCodeAgentDetection(t *testing.T) {
 			t.Fatalf("Get(opencode) error = %v", err)
 		}
 
-		present, err := ag.DetectPresence()
+		present, err := ag.DetectPresence(context.Background())
 		if err != nil {
 			t.Fatalf("DetectPresence() error = %v", err)
 		}
@@ -896,7 +897,7 @@ func TestOpenCodeAgentDetection(t *testing.T) {
 			t.Fatalf("Get(opencode) error = %v", err)
 		}
 
-		present, err := ag.DetectPresence()
+		present, err := ag.DetectPresence(context.Background())
 		if err != nil {
 			t.Fatalf("DetectPresence() error = %v", err)
 		}
@@ -931,7 +932,7 @@ func TestOpenCodeHookInstallation(t *testing.T) {
 			t.Fatal("opencode agent does not implement HookSupport")
 		}
 
-		count, err := hookAgent.InstallHooks(false, false)
+		count, err := hookAgent.InstallHooks(context.Background(), false, false)
 		if err != nil {
 			t.Fatalf("InstallHooks() error = %v", err)
 		}
@@ -942,7 +943,7 @@ func TestOpenCodeHookInstallation(t *testing.T) {
 		}
 
 		// Verify hooks are installed
-		if !hookAgent.AreHooksInstalled() {
+		if !hookAgent.AreHooksInstalled(context.Background()) {
 			t.Error("AreHooksInstalled() = false after InstallHooks()")
 		}
 
@@ -968,13 +969,13 @@ func TestOpenCodeHookInstallation(t *testing.T) {
 		hookAgent := ag.(agent.HookSupport)
 
 		// First install
-		_, err := hookAgent.InstallHooks(false, false)
+		_, err := hookAgent.InstallHooks(context.Background(), false, false)
 		if err != nil {
 			t.Fatalf("first InstallHooks() error = %v", err)
 		}
 
 		// Second install should be idempotent
-		count, err := hookAgent.InstallHooks(false, false)
+		count, err := hookAgent.InstallHooks(context.Background(), false, false)
 		if err != nil {
 			t.Fatalf("second InstallHooks() error = %v", err)
 		}
@@ -1041,10 +1042,10 @@ func TestOpenCodeSessionOperations(t *testing.T) {
 
 		ag, _ := agent.Get("opencode")
 
-		if err := ag.WriteSession(nil); err == nil {
+		if err := ag.WriteSession(context.Background(), nil); err == nil {
 			t.Error("WriteSession(nil) should error")
 		}
-		if err := ag.WriteSession(&agent.AgentSession{}); err == nil {
+		if err := ag.WriteSession(context.Background(), &agent.AgentSession{}); err == nil {
 			t.Error("WriteSession with empty NativeData should error")
 		}
 	})

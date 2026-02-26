@@ -209,7 +209,7 @@ func (r *HookRunner) runHookInRepoDir(hookName string, inputJSON []byte) error {
 	cmd := exec.Command(getTestBinary(), "hooks", "claude-code", hookName)
 	cmd.Dir = r.RepoDir
 	cmd.Stdin = bytes.NewReader(inputJSON)
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(gitIsolatedEnv(),
 		"ENTIRE_TEST_CLAUDE_PROJECT_DIR="+r.ClaudeProjectDir,
 	)
 
@@ -390,7 +390,7 @@ func (r *HookRunner) runHookWithOutput(hookName string, inputJSON []byte) HookOu
 	cmd := exec.Command(getTestBinary(), "hooks", "claude-code", hookName)
 	cmd.Dir = r.RepoDir
 	cmd.Stdin = bytes.NewReader(inputJSON)
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(gitIsolatedEnv(),
 		"ENTIRE_TEST_CLAUDE_PROJECT_DIR="+r.ClaudeProjectDir,
 	)
 
@@ -540,7 +540,7 @@ func (r *GeminiHookRunner) runGeminiHookInRepoDir(hookName string, inputJSON []b
 	cmd := exec.Command(getTestBinary(), "hooks", "gemini", hookName)
 	cmd.Dir = r.RepoDir
 	cmd.Stdin = bytes.NewReader(inputJSON)
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(gitIsolatedEnv(),
 		"ENTIRE_TEST_GEMINI_PROJECT_DIR="+r.GeminiProjectDir,
 	)
 
@@ -559,7 +559,7 @@ func (r *GeminiHookRunner) runGeminiHookWithOutput(hookName string, inputJSON []
 	cmd := exec.Command(getTestBinary(), "hooks", "gemini", hookName)
 	cmd.Dir = r.RepoDir
 	cmd.Stdin = bytes.NewReader(inputJSON)
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(gitIsolatedEnv(),
 		"ENTIRE_TEST_GEMINI_PROJECT_DIR="+r.GeminiProjectDir,
 	)
 
@@ -794,7 +794,7 @@ func (r *OpenCodeHookRunner) runOpenCodeHookInRepoDir(hookName string, inputJSON
 	cmd := exec.Command(getTestBinary(), "hooks", "opencode", hookName)
 	cmd.Dir = r.RepoDir
 	cmd.Stdin = bytes.NewReader(inputJSON)
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(gitIsolatedEnv(),
 		"ENTIRE_TEST_OPENCODE_PROJECT_DIR="+r.OpenCodeProjectDir,
 		"ENTIRE_TEST_OPENCODE_MOCK_EXPORT=1", // Use pre-written mock transcript instead of calling opencode export
 	)

@@ -5,7 +5,6 @@ package integration
 import (
 	"bytes"
 	"encoding/json"
-	"os"
 	"os/exec"
 	"testing"
 
@@ -39,7 +38,7 @@ func TestShadowStrategy_MidSessionCommit_FromTranscript(t *testing.T) {
 	cmd := exec.Command(getTestBinary(), "hooks", "claude-code", "user-prompt-submit")
 	cmd.Dir = env.RepoDir
 	cmd.Stdin = bytes.NewReader(inputJSON)
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(gitIsolatedEnv(),
 		"ENTIRE_TEST_CLAUDE_PROJECT_DIR="+env.ClaudeProjectDir,
 	)
 	if output, err := cmd.CombinedOutput(); err != nil {
@@ -152,7 +151,7 @@ func TestShadowStrategy_MidSessionCommit_NoTrailerForUnrelatedFile(t *testing.T)
 	cmd := exec.Command(getTestBinary(), "hooks", "claude-code", "user-prompt-submit")
 	cmd.Dir = env.RepoDir
 	cmd.Stdin = bytes.NewReader(inputJSON)
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(gitIsolatedEnv(),
 		"ENTIRE_TEST_CLAUDE_PROJECT_DIR="+env.ClaudeProjectDir,
 	)
 	if output, err := cmd.CombinedOutput(); err != nil {
@@ -234,7 +233,7 @@ func TestShadowStrategy_MidSessionCommit_FilesTouchedFallback(t *testing.T) {
 	cmd := exec.Command(getTestBinary(), "hooks", "claude-code", "user-prompt-submit")
 	cmd.Dir = env.RepoDir
 	cmd.Stdin = bytes.NewReader(inputJSON)
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(gitIsolatedEnv(),
 		"ENTIRE_TEST_CLAUDE_PROJECT_DIR="+env.ClaudeProjectDir,
 	)
 	if output, err := cmd.CombinedOutput(); err != nil {

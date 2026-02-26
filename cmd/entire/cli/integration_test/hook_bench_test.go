@@ -6,7 +6,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"os"
 	"os/exec"
 	"testing"
 	"time"
@@ -163,6 +162,7 @@ func benchSubprocessOverhead(b *testing.B) {
 			start := time.Now()
 			cmd := exec.Command("git", "rev-parse", "--show-toplevel")
 			cmd.Dir = repo.Dir
+			cmd.Env = gitIsolatedEnv()
 			if output, err := cmd.CombinedOutput(); err != nil {
 				b.Fatalf("git rev-parse failed: %v\n%s", err, output)
 			}
@@ -178,6 +178,7 @@ func benchSubprocessOverhead(b *testing.B) {
 			for range 7 {
 				cmd := exec.Command("git", "rev-parse", "--show-toplevel")
 				cmd.Dir = repo.Dir
+				cmd.Env = gitIsolatedEnv()
 				if output, err := cmd.CombinedOutput(); err != nil {
 					b.Fatalf("git rev-parse failed: %v\n%s", err, output)
 				}
@@ -236,7 +237,7 @@ func runSessionStartHook(b *testing.B, repo *benchutil.BenchRepo) {
 		cmd := exec.Command(binary, "hooks", "claude-code", "session-start")
 		cmd.Dir = repo.Dir
 		cmd.Stdin = bytes.NewReader(stdinPayload)
-		cmd.Env = append(os.Environ(),
+		cmd.Env = append(gitIsolatedEnv(),
 			"ENTIRE_TEST_CLAUDE_PROJECT_DIR="+claudeProjectDir,
 		)
 

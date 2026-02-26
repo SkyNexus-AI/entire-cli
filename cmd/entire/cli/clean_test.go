@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -69,7 +70,7 @@ func TestRunClean_NoOrphanedItems(t *testing.T) {
 	setupCleanTestRepo(t)
 
 	var stdout bytes.Buffer
-	err := runClean(&stdout, false)
+	err := runClean(context.Background(), &stdout, false)
 	if err != nil {
 		t.Fatalf("runClean() error = %v", err)
 	}
@@ -99,7 +100,7 @@ func TestRunClean_PreviewMode(t *testing.T) {
 	}
 
 	var stdout bytes.Buffer
-	err := runClean(&stdout, false) // force=false
+	err := runClean(context.Background(), &stdout, false) // force=false
 	if err != nil {
 		t.Fatalf("runClean() error = %v", err)
 	}
@@ -151,7 +152,7 @@ func TestRunClean_ForceMode(t *testing.T) {
 	}
 
 	var stdout bytes.Buffer
-	err := runClean(&stdout, true) // force=true
+	err := runClean(context.Background(), &stdout, true) // force=true
 	if err != nil {
 		t.Fatalf("runClean() error = %v", err)
 	}
@@ -187,7 +188,7 @@ func TestRunClean_SessionsBranchPreserved(t *testing.T) {
 	}
 
 	var stdout bytes.Buffer
-	err := runClean(&stdout, true) // force=true
+	err := runClean(context.Background(), &stdout, true) // force=true
 	if err != nil {
 		t.Fatalf("runClean() error = %v", err)
 	}
@@ -211,7 +212,7 @@ func TestRunClean_NotGitRepository(t *testing.T) {
 	paths.ClearWorktreeRootCache()
 
 	var stdout bytes.Buffer
-	err := runClean(&stdout, false)
+	err := runClean(context.Background(), &stdout, false)
 
 	// Should return error for non-git directory
 	if err == nil {
@@ -243,7 +244,7 @@ func TestRunClean_Subdirectory(t *testing.T) {
 	paths.ClearWorktreeRootCache()
 
 	var stdout bytes.Buffer
-	err = runClean(&stdout, false)
+	err = runClean(context.Background(), &stdout, false)
 	if err != nil {
 		t.Fatalf("runClean() from subdirectory error = %v", err)
 	}
@@ -274,7 +275,7 @@ func TestRunCleanWithItems_PartialFailure(t *testing.T) {
 	}
 
 	var stdout bytes.Buffer
-	err := runCleanWithItems(&stdout, true, items, nil) // force=true
+	err := runCleanWithItems(context.Background(), &stdout, true, items, nil) // force=true
 
 	// Should return an error because one branch failed to delete
 	if err == nil {
@@ -310,7 +311,7 @@ func TestRunCleanWithItems_AllFailures(t *testing.T) {
 	}
 
 	var stdout bytes.Buffer
-	err := runCleanWithItems(&stdout, true, items, nil) // force=true
+	err := runCleanWithItems(context.Background(), &stdout, true, items, nil) // force=true
 
 	// Should return an error because all items failed to delete
 	if err == nil {
@@ -338,7 +339,7 @@ func TestRunCleanWithItems_NoItems(t *testing.T) {
 	setupCleanTestRepo(t)
 
 	var stdout bytes.Buffer
-	err := runCleanWithItems(&stdout, false, []strategy.CleanupItem{}, nil)
+	err := runCleanWithItems(context.Background(), &stdout, false, []strategy.CleanupItem{}, nil)
 	if err != nil {
 		t.Fatalf("runCleanWithItems() error = %v", err)
 	}
@@ -360,7 +361,7 @@ func TestRunCleanWithItems_MixedTypes_Preview(t *testing.T) {
 	}
 
 	var stdout bytes.Buffer
-	err := runCleanWithItems(&stdout, false, items, nil) // preview mode
+	err := runCleanWithItems(context.Background(), &stdout, false, items, nil) // preview mode
 	if err != nil {
 		t.Fatalf("runCleanWithItems() error = %v", err)
 	}

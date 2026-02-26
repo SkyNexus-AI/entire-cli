@@ -6,27 +6,39 @@ import (
 	"unicode/utf8"
 
 	"github.com/entireio/cli/cmd/entire/cli/agent"
+
+	// Register agents so GetByAgentType works in tests.
+	_ "github.com/entireio/cli/cmd/entire/cli/agent/claudecode"
+	_ "github.com/entireio/cli/cmd/entire/cli/agent/cursor"
 )
 
 func TestCalculateTokenUsage_CursorReturnsNil(t *testing.T) {
 	t.Parallel()
 
-	// Cursor transcripts don't contain token usage data, so calculateTokenUsage
+	// Cursor transcripts don't contain token usage data, so CalculateTokenUsage
 	// should return nil (not an empty struct) to signal "no data available".
 	transcript := []byte(`{"role":"user","message":{"content":[{"type":"text","text":"hello"}]}}`)
 
-	result := calculateTokenUsage(agent.AgentTypeCursor, transcript, 0)
+	ag, err := agent.GetByAgentType(agent.AgentTypeCursor)
+	if err != nil {
+		t.Fatalf("GetByAgentType(Cursor) error: %v", err)
+	}
+	result := agent.CalculateTokenUsage(ag, transcript, 0, "")
 	if result != nil {
-		t.Errorf("calculateTokenUsage(Cursor) = %+v, want nil", result)
+		t.Errorf("CalculateTokenUsage(Cursor) = %+v, want nil", result)
 	}
 }
 
 func TestCalculateTokenUsage_EmptyData(t *testing.T) {
 	t.Parallel()
 
-	result := calculateTokenUsage(agent.AgentTypeClaudeCode, nil, 0)
+	ag, err := agent.GetByAgentType(agent.AgentTypeClaudeCode)
+	if err != nil {
+		t.Fatalf("GetByAgentType(ClaudeCode) error: %v", err)
+	}
+	result := agent.CalculateTokenUsage(ag, nil, 0, "")
 	if result == nil {
-		t.Fatal("calculateTokenUsage(empty) = nil, want non-nil empty struct")
+		t.Fatal("CalculateTokenUsage(empty) = nil, want non-nil empty struct")
 	}
 	if result.InputTokens != 0 || result.OutputTokens != 0 {
 		t.Errorf("expected zero tokens for empty data, got %+v", result)
@@ -43,9 +55,13 @@ func TestCalculateTokenUsage_ClaudeCodeBasic(t *testing.T) {
 	}
 	data := []byte(strings.Join(lines, "\n") + "\n")
 
-	result := calculateTokenUsage(agent.AgentTypeClaudeCode, data, 0)
+	ag, err := agent.GetByAgentType(agent.AgentTypeClaudeCode)
+	if err != nil {
+		t.Fatalf("GetByAgentType(ClaudeCode) error: %v", err)
+	}
+	result := agent.CalculateTokenUsage(ag, data, 0, "")
 	if result == nil {
-		t.Fatal("calculateTokenUsage(ClaudeCode) = nil, want non-nil")
+		t.Fatal("CalculateTokenUsage(ClaudeCode) = nil, want non-nil")
 	}
 	if result.OutputTokens != 5 {
 		t.Errorf("OutputTokens = %d, want 5", result.OutputTokens)
@@ -67,8 +83,12 @@ func TestCalculateTokenUsage_ClaudeCodeWithOffset(t *testing.T) {
 	}
 	data := []byte(strings.Join(lines, "\n") + "\n")
 
-	full := calculateTokenUsage(agent.AgentTypeClaudeCode, data, 0)
-	sliced := calculateTokenUsage(agent.AgentTypeClaudeCode, data, 2)
+	ag, err := agent.GetByAgentType(agent.AgentTypeClaudeCode)
+	if err != nil {
+		t.Fatalf("GetByAgentType(ClaudeCode) error: %v", err)
+	}
+	full := agent.CalculateTokenUsage(ag, data, 0, "")
+	sliced := agent.CalculateTokenUsage(ag, data, 2, "")
 
 	if full == nil || sliced == nil {
 		t.Fatal("expected non-nil results")
@@ -149,9 +169,13 @@ func TestCalculateTokenUsage_CursorRealTranscript(t *testing.T) {
 	t.Parallel()
 
 	// Even with a multi-line real transcript, Cursor should return nil
-	result := calculateTokenUsage(agent.AgentTypeCursor, []byte(cursorSampleTranscript), 0)
+	ag, err := agent.GetByAgentType(agent.AgentTypeCursor)
+	if err != nil {
+		t.Fatalf("GetByAgentType(Cursor) error: %v", err)
+	}
+	result := agent.CalculateTokenUsage(ag, []byte(cursorSampleTranscript), 0, "")
 	if result != nil {
-		t.Errorf("calculateTokenUsage(Cursor, real transcript) = %+v, want nil", result)
+		t.Errorf("CalculateTokenUsage(Cursor, real transcript) = %+v, want nil", result)
 	}
 }
 
@@ -159,9 +183,13 @@ func TestCalculateTokenUsage_CursorWithOffset(t *testing.T) {
 	t.Parallel()
 
 	// Offset should not matter — Cursor always returns nil
-	result := calculateTokenUsage(agent.AgentTypeCursor, []byte(cursorSampleTranscript), 3)
+	ag, err := agent.GetByAgentType(agent.AgentTypeCursor)
+	if err != nil {
+		t.Fatalf("GetByAgentType(Cursor) error: %v", err)
+	}
+	result := agent.CalculateTokenUsage(ag, []byte(cursorSampleTranscript), 3, "")
 	if result != nil {
-		t.Errorf("calculateTokenUsage(Cursor, offset=3) = %+v, want nil", result)
+		t.Errorf("CalculateTokenUsage(Cursor, offset=3) = %+v, want nil", result)
 	}
 }
 

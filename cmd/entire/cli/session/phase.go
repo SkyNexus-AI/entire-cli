@@ -297,8 +297,8 @@ func (NoOpActionHandler) HandleWarnStaleSession(_ *State) error       { return n
 // Strategy-specific handler actions stop on the first error; subsequent
 // handler actions are skipped but common actions continue. Returns the
 // first handler error, or nil.
-func ApplyTransition(state *State, result TransitionResult, handler ActionHandler) error {
-	logCtx := logging.WithComponent(context.Background(), "session")
+func ApplyTransition(ctx context.Context, state *State, result TransitionResult, handler ActionHandler) error {
+	logCtx := logging.WithComponent(ctx, "session")
 
 	actionStrs := make([]string, len(result.Actions))
 	for i, a := range result.Actions {

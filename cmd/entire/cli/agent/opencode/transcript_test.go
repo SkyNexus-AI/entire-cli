@@ -1,6 +1,7 @@
 package opencode
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -179,31 +180,216 @@ func TestExtractModifiedFilesFromOffset(t *testing.T) {
 	}
 }
 
-func TestExtractFilePathFromInput(t *testing.T) {
+func TestExtractFilePaths(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name  string
-		input map[string]any
-		want  string
+		state *ToolState
+		want  []string
 	}{
-		{name: "camelCase filePath (OpenCode native format)", input: map[string]any{"filePath": "/repo/main.go"}, want: "/repo/main.go"},
-		{name: "path key", input: map[string]any{"path": "/repo/main.go"}, want: "/repo/main.go"},
-		{name: "filePath takes priority over path", input: map[string]any{"filePath": "/a.go", "path": "/b.go"}, want: "/a.go"},
-		{name: "empty input", input: map[string]any{}, want: ""},
-		{name: "non-string value", input: map[string]any{"filePath": 42}, want: ""},
-		{name: "empty string value", input: map[string]any{"filePath": ""}, want: ""},
-		{name: "unrecognized keys ignored", input: map[string]any{"file_path": "/repo/main.go", "file": "/repo/main.go"}, want: ""},
+		{
+			name:  "camelCase filePath from input",
+			state: &ToolState{Input: map[string]any{"filePath": "/repo/main.go"}},
+			want:  []string{"/repo/main.go"},
+		},
+		{
+			name:  "path key from input",
+			state: &ToolState{Input: map[string]any{"path": "/repo/main.go"}},
+			want:  []string{"/repo/main.go"},
+		},
+		{
+			name:  "filePath takes priority over path in input",
+			state: &ToolState{Input: map[string]any{"filePath": "/a.go", "path": "/b.go"}},
+			want:  []string{"/a.go"},
+		},
+		{
+			name:  "empty input",
+			state: &ToolState{Input: map[string]any{}},
+			want:  nil,
+		},
+		{
+			name:  "nil state",
+			state: nil,
+			want:  nil,
+		},
+		{
+			name: "metadata files (apply_patch / codex)",
+			state: &ToolState{
+				Input: map[string]any{"patchText": "*** Begin Patch\n***"},
+				Metadata: &ToolStateMetadata{
+					Files: []ToolFileInfo{
+						{FilePath: "/repo/main.go", RelativePath: "main.go"},
+					},
+				},
+			},
+			want: []string{"/repo/main.go"},
+		},
+		{
+			name: "metadata files with multiple files",
+			state: &ToolState{
+				Input: map[string]any{"patchText": "..."},
+				Metadata: &ToolStateMetadata{
+					Files: []ToolFileInfo{
+						{FilePath: "/repo/a.go"},
+						{FilePath: "/repo/b.go"},
+					},
+				},
+			},
+			want: []string{"/repo/a.go", "/repo/b.go"},
+		},
+		{
+			name: "metadata takes priority over input",
+			state: &ToolState{
+				Input: map[string]any{"filePath": "/input/file.go"},
+				Metadata: &ToolStateMetadata{
+					Files: []ToolFileInfo{
+						{FilePath: "/meta/file.go"},
+					},
+				},
+			},
+			want: []string{"/meta/file.go"},
+		},
+		{
+			name: "empty metadata falls back to input",
+			state: &ToolState{
+				Input:    map[string]any{"filePath": "/repo/main.go"},
+				Metadata: &ToolStateMetadata{},
+			},
+			want: []string{"/repo/main.go"},
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got := extractFilePathFromInput(tt.input)
-			if got != tt.want {
-				t.Errorf("extractFilePathFromInput(%v) = %q, want %q", tt.input, got, tt.want)
+			got := extractFilePaths(tt.state)
+			if len(got) != len(tt.want) {
+				t.Fatalf("extractFilePaths() = %v, want %v", got, tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Errorf("extractFilePaths()[%d] = %q, want %q", i, got[i], tt.want[i])
+				}
 			}
 		})
+	}
+}
+
+// testApplyPatchExportJSON simulates OpenCode with codex models that use apply_patch tool.
+var testApplyPatchExportJSON = func() string {
+	session := ExportSession{
+		Info: SessionInfo{ID: "test-apply-patch"},
+		Messages: []ExportMessage{
+			{
+				Info: MessageInfo{ID: "msg-1", Role: "user", Time: Time{Created: 1708300000}},
+				Parts: []Part{
+					{Type: "text", Text: "Fix the table layout"},
+				},
+			},
+			{
+				Info: MessageInfo{
+					ID: "msg-2", Role: "assistant",
+					Time:   Time{Created: 1708300001, Completed: 1708300005},
+					Tokens: &Tokens{Input: 200, Output: 100, Cache: Cache{}},
+				},
+				Parts: []Part{
+					{Type: "text", Text: "I'll fix the layout."},
+					{
+						Type: "tool", Tool: "apply_patch", CallID: "call-1",
+						State: &ToolState{
+							Status: "completed",
+							Input:  map[string]any{"patchText": "*** Begin Patch\n*** Update File: /repo/layout.py\n@@\n-old\n+new\n*** End Patch"},
+							Output: "Success. Updated the following files:\nM layout.py",
+							Metadata: &ToolStateMetadata{
+								Files: []ToolFileInfo{
+									{FilePath: "/repo/layout.py", RelativePath: "layout.py"},
+								},
+							},
+						},
+					},
+				},
+			},
+			{
+				Info: MessageInfo{ID: "msg-3", Role: "user", Time: Time{Created: 1708300010}},
+				Parts: []Part{
+					{Type: "text", Text: "Also fix the resize handler"},
+				},
+			},
+			{
+				Info: MessageInfo{
+					ID: "msg-4", Role: "assistant",
+					Time:   Time{Created: 1708300011, Completed: 1708300015},
+					Tokens: &Tokens{Input: 250, Output: 120, Cache: Cache{}},
+				},
+				Parts: []Part{
+					{
+						Type: "tool", Tool: "apply_patch", CallID: "call-2",
+						State: &ToolState{
+							Status: "completed",
+							Input:  map[string]any{"patchText": "*** Begin Patch\n*** Update File: /repo/layout.py\n*** Update File: /repo/resize.py\n*** End Patch"},
+							Output: "Success.",
+							Metadata: &ToolStateMetadata{
+								Files: []ToolFileInfo{
+									{FilePath: "/repo/layout.py", RelativePath: "layout.py"},
+									{FilePath: "/repo/resize.py", RelativePath: "resize.py"},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	data, err := json.Marshal(session)
+	if err != nil {
+		panic(err)
+	}
+	return string(data)
+}()
+
+func TestExtractModifiedFilesFromOffset_ApplyPatch(t *testing.T) {
+	t.Parallel()
+	ag := &OpenCodeAgent{}
+	path := writeTestTranscript(t, testApplyPatchExportJSON)
+
+	// From offset 0 — should find layout.py and resize.py (deduplicated)
+	files, pos, err := ag.ExtractModifiedFilesFromOffset(path, 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if pos != 4 {
+		t.Errorf("expected position 4, got %d", pos)
+	}
+	if len(files) != 2 {
+		t.Fatalf("expected 2 files (deduplicated), got %d: %v", len(files), files)
+	}
+
+	// From offset 2 — should find layout.py and resize.py from msg-4
+	files, _, err = ag.ExtractModifiedFilesFromOffset(path, 2)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(files) != 2 {
+		t.Fatalf("expected 2 files from offset 2, got %d: %v", len(files), files)
+	}
+}
+
+func TestExtractModifiedFiles_ApplyPatch(t *testing.T) {
+	t.Parallel()
+
+	files, err := ExtractModifiedFiles([]byte(testApplyPatchExportJSON))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(files) != 2 {
+		t.Fatalf("expected 2 files, got %d: %v", len(files), files)
+	}
+	if files[0] != "/repo/layout.py" {
+		t.Errorf("expected first file '/repo/layout.py', got %q", files[0])
+	}
+	if files[1] != "/repo/resize.py" {
+		t.Errorf("expected second file '/repo/resize.py', got %q", files[1])
 	}
 }
 
@@ -341,10 +527,9 @@ func TestExtractSummary_EmptyTranscript(t *testing.T) {
 func TestCalculateTokenUsage(t *testing.T) {
 	t.Parallel()
 	ag := &OpenCodeAgent{}
-	path := writeTestTranscript(t, testExportJSON)
 
 	// From offset 0 — both assistant messages
-	usage, err := ag.CalculateTokenUsage(path, 0)
+	usage, err := ag.CalculateTokenUsage([]byte(testExportJSON), 0)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -371,9 +556,8 @@ func TestCalculateTokenUsage(t *testing.T) {
 func TestCalculateTokenUsage_FromOffset(t *testing.T) {
 	t.Parallel()
 	ag := &OpenCodeAgent{}
-	path := writeTestTranscript(t, testExportJSON)
 
-	usage, err := ag.CalculateTokenUsage(path, 2)
+	usage, err := ag.CalculateTokenUsage([]byte(testExportJSON), 2)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -388,16 +572,16 @@ func TestCalculateTokenUsage_FromOffset(t *testing.T) {
 	}
 }
 
-func TestCalculateTokenUsage_NonexistentFile(t *testing.T) {
+func TestCalculateTokenUsage_EmptyData(t *testing.T) {
 	t.Parallel()
 	ag := &OpenCodeAgent{}
 
-	usage, err := ag.CalculateTokenUsage("/nonexistent/path.json", 0)
+	usage, err := ag.CalculateTokenUsage(nil, 0)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if usage != nil {
-		t.Errorf("expected nil usage for nonexistent file, got %+v", usage)
+		t.Errorf("expected nil usage for empty data, got %+v", usage)
 	}
 }
 
@@ -407,7 +591,7 @@ func TestChunkTranscript_SmallContent(t *testing.T) {
 	content := []byte(testExportJSON)
 
 	// maxSize larger than content — should return single chunk
-	chunks, err := ag.ChunkTranscript(content, len(content)+1000)
+	chunks, err := ag.ChunkTranscript(context.Background(), content, len(content)+1000)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -422,7 +606,7 @@ func TestChunkTranscript_SplitsLargeContent(t *testing.T) {
 	content := []byte(testExportJSON)
 
 	// Use a maxSize that forces splitting
-	chunks, err := ag.ChunkTranscript(content, 500)
+	chunks, err := ag.ChunkTranscript(context.Background(), content, 500)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -448,7 +632,7 @@ func TestChunkTranscript_RoundTrip(t *testing.T) {
 	content := []byte(testExportJSON)
 
 	// Split into chunks
-	chunks, err := ag.ChunkTranscript(content, 500)
+	chunks, err := ag.ChunkTranscript(context.Background(), content, 500)
 	if err != nil {
 		t.Fatalf("chunk error: %v", err)
 	}
@@ -489,7 +673,7 @@ func TestChunkTranscript_EmptyContent(t *testing.T) {
 		t.Fatalf("failed to marshal empty session: %v", err)
 	}
 
-	chunks, err := ag.ChunkTranscript(data, 100)
+	chunks, err := ag.ChunkTranscript(context.Background(), data, 100)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

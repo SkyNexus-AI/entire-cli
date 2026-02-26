@@ -62,7 +62,7 @@ func TestInit_CreatesLogDirectory(t *testing.T) {
 	// Initialize git repo so WorktreeRoot works
 	initGitRepo(t, tmpDir)
 
-	err := Init(testSessionID)
+	err := Init(context.Background(), testSessionID)
 	if err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -80,7 +80,7 @@ func TestInit_CreatesLogFile(t *testing.T) {
 
 	initGitRepo(t, tmpDir)
 
-	err := Init(testSessionID)
+	err := Init(context.Background(), testSessionID)
 	if err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -98,7 +98,7 @@ func TestInit_WritesJSONLogs(t *testing.T) {
 	initGitRepo(t, tmpDir)
 
 	sessionID := "2025-01-15-json-test"
-	err := Init(sessionID)
+	err := Init(context.Background(), sessionID)
 	if err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -146,7 +146,7 @@ func TestInit_RespectsLogLevel(t *testing.T) {
 	t.Setenv(LogLevelEnvVar, "WARN")
 
 	sessionID := "2025-01-15-level-test"
-	err := Init(sessionID)
+	err := Init(context.Background(), sessionID)
 	if err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -198,7 +198,7 @@ func TestInit_InvalidLogLevelWarns(t *testing.T) {
 	t.Setenv(LogLevelEnvVar, "INVALID_LEVEL")
 
 	sessionID := "2025-01-15-invalid-level"
-	err = Init(sessionID)
+	err = Init(context.Background(), sessionID)
 	if err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -236,7 +236,7 @@ func TestInit_FallsBackToStderrOnError(t *testing.T) {
 	}
 
 	// Init should not return error, but fall back to stderr
-	err := Init(testSessionID)
+	err := Init(context.Background(), testSessionID)
 	if err != nil {
 		t.Errorf("Init() should not error, but got: %v", err)
 	}
@@ -254,7 +254,7 @@ func TestClose_SafeToCallMultipleTimes(t *testing.T) {
 	initGitRepo(t, tmpDir)
 
 	sessionID := "2025-01-15-close-test"
-	err := Init(sessionID)
+	err := Init(context.Background(), sessionID)
 	if err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -303,7 +303,7 @@ func TestLogging_IncludesContextValues(t *testing.T) {
 	initGitRepo(t, tmpDir)
 
 	sessionID := "2025-01-15-context-test"
-	err := Init(sessionID)
+	err := Init(context.Background(), sessionID)
 	if err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -355,7 +355,7 @@ func TestLogging_ParentSessionID(t *testing.T) {
 	initGitRepo(t, tmpDir)
 
 	sessionID := "2025-01-15-parent-test"
-	err := Init(sessionID)
+	err := Init(context.Background(), sessionID)
 	if err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -399,7 +399,7 @@ func TestLogging_AdditionalAttrs(t *testing.T) {
 	initGitRepo(t, tmpDir)
 
 	sessionID := "2025-01-15-attrs-test"
-	err := Init(sessionID)
+	err := Init(context.Background(), sessionID)
 	if err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -449,7 +449,7 @@ func TestLogDuration(t *testing.T) {
 	initGitRepo(t, tmpDir)
 
 	sessionID := "2025-01-15-duration-test"
-	err := Init(sessionID)
+	err := Init(context.Background(), sessionID)
 	if err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -563,7 +563,7 @@ func TestInit_RejectsInvalidSessionIDs(t *testing.T) {
 				initGitRepo(t, tmpDir)
 			}
 
-			err := Init(tt.sessionID)
+			err := Init(context.Background(), tt.sessionID)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("Init(%q) error = %v, wantErr %v", tt.sessionID, err, tt.wantErr)
 			}

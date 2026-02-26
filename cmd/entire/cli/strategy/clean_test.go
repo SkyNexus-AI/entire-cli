@@ -108,14 +108,14 @@ func TestListShadowBranches(t *testing.T) {
 	}
 
 	// Test ListShadowBranches
-	shadowBranches, err := ListShadowBranches()
+	shadowBranches, err := ListShadowBranches(context.Background())
 	if err != nil {
-		t.Fatalf("ListShadowBranches() error = %v", err)
+		t.Fatalf("ListShadowBranches(context.Background()) error = %v", err)
 	}
 
 	// Should have exactly 2 shadow branches
 	if len(shadowBranches) != 2 {
-		t.Errorf("ListShadowBranches() returned %d branches, want 2: %v", len(shadowBranches), shadowBranches)
+		t.Errorf("ListShadowBranches(context.Background()) returned %d branches, want 2: %v", len(shadowBranches), shadowBranches)
 	}
 
 	// Check that the expected branches are present
@@ -125,13 +125,13 @@ func TestListShadowBranches(t *testing.T) {
 	}
 
 	if !shadowSet["entire/abc1234"] {
-		t.Error("ListShadowBranches() missing 'entire/abc1234'")
+		t.Error("ListShadowBranches(context.Background()) missing 'entire/abc1234'")
 	}
 	if !shadowSet["entire/def5678"] {
-		t.Error("ListShadowBranches() missing 'entire/def5678'")
+		t.Error("ListShadowBranches(context.Background()) missing 'entire/def5678'")
 	}
 	if shadowSet[paths.MetadataBranchName] {
-		t.Errorf("ListShadowBranches() should not include '%s'", paths.MetadataBranchName)
+		t.Errorf("ListShadowBranches(context.Background()) should not include '%s'", paths.MetadataBranchName)
 	}
 }
 
@@ -163,17 +163,17 @@ func TestListShadowBranches_Empty(t *testing.T) {
 	}
 
 	// Test ListShadowBranches returns empty slice (not nil)
-	shadowBranches, err := ListShadowBranches()
+	shadowBranches, err := ListShadowBranches(context.Background())
 	if err != nil {
-		t.Fatalf("ListShadowBranches() error = %v", err)
+		t.Fatalf("ListShadowBranches(context.Background()) error = %v", err)
 	}
 
 	if shadowBranches == nil {
-		t.Error("ListShadowBranches() returned nil, want empty slice")
+		t.Error("ListShadowBranches(context.Background()) returned nil, want empty slice")
 	}
 
 	if len(shadowBranches) != 0 {
-		t.Errorf("ListShadowBranches() returned %d branches, want 0", len(shadowBranches))
+		t.Errorf("ListShadowBranches(context.Background()) returned %d branches, want 0", len(shadowBranches))
 	}
 }
 
@@ -214,7 +214,7 @@ func TestDeleteShadowBranches(t *testing.T) {
 	}
 
 	// Delete shadow branches
-	deleted, failed, err := DeleteShadowBranches(shadowBranches)
+	deleted, failed, err := DeleteShadowBranches(context.Background(), shadowBranches)
 	if err != nil {
 		t.Fatalf("DeleteShadowBranches() error = %v", err)
 	}
@@ -270,7 +270,7 @@ func TestDeleteShadowBranches_NonExistent(t *testing.T) {
 
 	// Try to delete non-existent branches
 	nonExistent := []string{"entire/doesnotexist"}
-	deleted, failed, err := DeleteShadowBranches(nonExistent)
+	deleted, failed, err := DeleteShadowBranches(context.Background(), nonExistent)
 	if err != nil {
 		t.Fatalf("DeleteShadowBranches() error = %v", err)
 	}
@@ -295,7 +295,7 @@ func TestDeleteShadowBranches_Empty(t *testing.T) {
 	t.Chdir(dir)
 
 	// Delete empty list should return empty results
-	deleted, failed, err := DeleteShadowBranches([]string{})
+	deleted, failed, err := DeleteShadowBranches(context.Background(), []string{})
 	if err != nil {
 		t.Fatalf("DeleteShadowBranches() error = %v", err)
 	}
@@ -350,12 +350,12 @@ func TestListOrphanedSessionStates_RecentSessionNotOrphaned(t *testing.T) {
 		StartedAt:  time.Now(),          // Just started!
 		StepCount:  0,                   // No checkpoints yet
 	}
-	if err := SaveSessionState(state); err != nil {
+	if err := SaveSessionState(context.Background(), state); err != nil {
 		t.Fatalf("SaveSessionState() error = %v", err)
 	}
 
 	// List orphaned session states
-	orphaned, err := ListOrphanedSessionStates()
+	orphaned, err := ListOrphanedSessionStates(context.Background())
 	if err != nil {
 		t.Fatalf("ListOrphanedSessionStates() error = %v", err)
 	}
@@ -425,14 +425,14 @@ func TestListOrphanedSessionStates_ShadowBranchMatching(t *testing.T) {
 		StartedAt:  time.Now().Add(-1 * time.Hour),
 		StepCount:  1,
 	}
-	if err := SaveSessionState(state); err != nil {
+	if err := SaveSessionState(context.Background(), state); err != nil {
 		t.Fatalf("SaveSessionState() error = %v", err)
 	}
 
 	// Verify the shadow branch exists with worktree-specific name
-	shadowBranches, err := ListShadowBranches()
+	shadowBranches, err := ListShadowBranches(context.Background())
 	if err != nil {
-		t.Fatalf("ListShadowBranches() error = %v", err)
+		t.Fatalf("ListShadowBranches(context.Background()) error = %v", err)
 	}
 	if len(shadowBranches) != 1 || shadowBranches[0] != shadowBranchName {
 		t.Fatalf("Expected shadow branch %q, got %v", shadowBranchName, shadowBranches)
@@ -444,7 +444,7 @@ func TestListOrphanedSessionStates_ShadowBranchMatching(t *testing.T) {
 	t.Logf("Session WorktreeID: %q", worktreeID)
 
 	// List orphaned session states
-	orphaned, err := ListOrphanedSessionStates()
+	orphaned, err := ListOrphanedSessionStates(context.Background())
 	if err != nil {
 		t.Fatalf("ListOrphanedSessionStates() error = %v", err)
 	}

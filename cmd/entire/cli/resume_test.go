@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -116,7 +117,7 @@ func TestBranchExistsLocally(t *testing.T) {
 	setupResumeTestRepo(t, tmpDir, true)
 
 	t.Run("returns true for existing branch", func(t *testing.T) {
-		exists, err := BranchExistsLocally("feature")
+		exists, err := BranchExistsLocally(context.Background(), "feature")
 		if err != nil {
 			t.Fatalf("BranchExistsLocally() error = %v", err)
 		}
@@ -126,7 +127,7 @@ func TestBranchExistsLocally(t *testing.T) {
 	})
 
 	t.Run("returns false for nonexistent branch", func(t *testing.T) {
-		exists, err := BranchExistsLocally("nonexistent")
+		exists, err := BranchExistsLocally(context.Background(), "nonexistent")
 		if err != nil {
 			t.Fatalf("BranchExistsLocally() error = %v", err)
 		}
@@ -143,13 +144,13 @@ func TestCheckoutBranch(t *testing.T) {
 	setupResumeTestRepo(t, tmpDir, true)
 
 	t.Run("successfully checks out existing branch", func(t *testing.T) {
-		err := CheckoutBranch("feature")
+		err := CheckoutBranch(context.Background(), "feature")
 		if err != nil {
 			t.Fatalf("CheckoutBranch() error = %v", err)
 		}
 
 		// Verify we're on the feature branch
-		branch, err := GetCurrentBranch()
+		branch, err := GetCurrentBranch(context.Background())
 		if err != nil {
 			t.Fatalf("GetCurrentBranch() error = %v", err)
 		}
@@ -159,7 +160,7 @@ func TestCheckoutBranch(t *testing.T) {
 	})
 
 	t.Run("returns error for nonexistent branch", func(t *testing.T) {
-		err := CheckoutBranch("nonexistent")
+		err := CheckoutBranch(context.Background(), "nonexistent")
 		if err == nil {
 			t.Error("CheckoutBranch() expected error for nonexistent branch, got nil")
 		}
@@ -168,7 +169,7 @@ func TestCheckoutBranch(t *testing.T) {
 	t.Run("rejects ref starting with dash to prevent argument injection", func(t *testing.T) {
 		// "git checkout -b evil" would create a new branch named "evil" instead
 		// of failing, because git interprets "-b" as a flag.
-		err := CheckoutBranch("-b evil")
+		err := CheckoutBranch(context.Background(), "-b evil")
 		if err == nil {
 			t.Fatal("CheckoutBranch() should reject refs starting with '-', got nil")
 		}
@@ -186,7 +187,7 @@ func TestPerformGitResetHard_RejectsArgumentInjection(t *testing.T) {
 
 	// "git reset --hard -q" would silently reset to HEAD in quiet mode instead
 	// of failing, because git interprets "-q" as the --quiet flag.
-	err := performGitResetHard("-q")
+	err := performGitResetHard(context.Background(), "-q")
 	if err == nil {
 		t.Fatal("performGitResetHard() should reject hashes starting with '-', got nil")
 	}
@@ -203,7 +204,7 @@ func TestResumeFromCurrentBranch_NoCheckpoint(t *testing.T) {
 	setupResumeTestRepo(t, tmpDir, false)
 
 	// Run resumeFromCurrentBranch - should not error, just report no checkpoint found
-	err := resumeFromCurrentBranch("master", false)
+	err := resumeFromCurrentBranch(context.Background(), "master", false)
 	if err != nil {
 		t.Errorf("resumeFromCurrentBranch() returned error for commit without checkpoint: %v", err)
 	}
@@ -227,7 +228,7 @@ func TestRunResume_AlreadyOnBranch(t *testing.T) {
 	}
 
 	// Run resume on the branch we're already on - should skip checkout
-	err := runResume("feature", false)
+	err := runResume(context.Background(), "feature", false)
 	// Should not error (no session, but shouldn't error)
 	if err != nil {
 		t.Errorf("runResume() returned error when already on branch: %v", err)
@@ -241,7 +242,7 @@ func TestRunResume_BranchDoesNotExist(t *testing.T) {
 	setupResumeTestRepo(t, tmpDir, false)
 
 	// Run resume on a branch that doesn't exist
-	err := runResume("nonexistent", false)
+	err := runResume(context.Background(), "nonexistent", false)
 	if err == nil {
 		t.Error("runResume() expected error for nonexistent branch, got nil")
 	}
@@ -260,7 +261,7 @@ func TestRunResume_UncommittedChanges(t *testing.T) {
 	}
 
 	// Run resume - should fail due to uncommitted changes
-	err := runResume("feature", false)
+	err := runResume(context.Background(), "feature", false)
 	if err == nil {
 		t.Error("runResume() expected error for uncommitted changes, got nil")
 	}
@@ -462,7 +463,7 @@ func TestCheckRemoteMetadata_MetadataExistsOnRemote(t *testing.T) {
 	// Call checkRemoteMetadata - should find it on remote and attempt to fetch
 	// In this test environment without a real origin remote, the fetch will fail
 	// but it should return a SilentError (user-friendly error message already printed)
-	err = checkRemoteMetadata(repo, checkpointID)
+	err = checkRemoteMetadata(context.Background(), repo, checkpointID)
 	if err == nil {
 		t.Error("checkRemoteMetadata() should return SilentError when fetch fails")
 	} else {
@@ -487,7 +488,7 @@ func TestCheckRemoteMetadata_NoRemoteMetadataBranch(t *testing.T) {
 	// Don't create any remote ref - simulating no remote entire/checkpoints/v1
 
 	// Call checkRemoteMetadata - should handle gracefully (no remote branch)
-	err := checkRemoteMetadata(repo, "nonexistent123")
+	err := checkRemoteMetadata(context.Background(), repo, "nonexistent123")
 	if err != nil {
 		t.Errorf("checkRemoteMetadata() returned error when no remote branch: %v", err)
 	}
@@ -522,7 +523,7 @@ func TestCheckRemoteMetadata_CheckpointNotOnRemote(t *testing.T) {
 	}
 
 	// Call checkRemoteMetadata with a DIFFERENT checkpoint ID (not on remote)
-	err = checkRemoteMetadata(repo, "abcd12345678")
+	err = checkRemoteMetadata(context.Background(), repo, "abcd12345678")
 	if err != nil {
 		t.Errorf("checkRemoteMetadata() returned error for missing checkpoint: %v", err)
 	}
@@ -583,7 +584,7 @@ func TestResumeFromCurrentBranch_FallsBackToRemote(t *testing.T) {
 	// Run resumeFromCurrentBranch - should fall back to remote and attempt fetch
 	// In this test environment without a real origin remote, the fetch will fail
 	// but it should return a SilentError (user-friendly error message already printed)
-	err = resumeFromCurrentBranch("master", false)
+	err = resumeFromCurrentBranch(context.Background(), "master", false)
 	if err == nil {
 		t.Error("resumeFromCurrentBranch() should return SilentError when fetch fails")
 	} else {

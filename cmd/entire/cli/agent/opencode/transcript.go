@@ -31,11 +31,11 @@ func ParseExportSession(data []byte) (*ExportSession, error) {
 	return &session, nil
 }
 
-// parseExportSessionFromFile reads and parses an export JSON transcript file.
+// parseExportSessionFromFile reads a file and parses its contents as an ExportSession.
 func parseExportSessionFromFile(path string) (*ExportSession, error) {
-	data, err := os.ReadFile(path) //nolint:gosec // Path from agent hook
+	data, err := os.ReadFile(path) //nolint:gosec // path from agent hook/session state
 	if err != nil {
-		return nil, err //nolint:wrapcheck // Callers check os.IsNotExist on this error
+		return nil, err //nolint:wrapcheck // caller adds context or checks os.IsNotExist
 	}
 	return ParseExportSession(data)
 }
@@ -117,10 +117,11 @@ func (a *OpenCodeAgent) ExtractModifiedFilesFromOffset(path string, startOffset 
 			if !slices.Contains(FileModificationTools, part.Tool) {
 				continue
 			}
-			filePath := extractFilePathFromInput(part.State.Input)
-			if filePath != "" && !seen[filePath] {
-				seen[filePath] = true
-				files = append(files, filePath)
+			for _, filePath := range extractFilePaths(part.State) {
+				if !seen[filePath] {
+					seen[filePath] = true
+					files = append(files, filePath)
+				}
 			}
 		}
 	}
@@ -153,10 +154,11 @@ func ExtractModifiedFiles(data []byte) ([]string, error) {
 			if !slices.Contains(FileModificationTools, part.Tool) {
 				continue
 			}
-			filePath := extractFilePathFromInput(part.State.Input)
-			if filePath != "" && !seen[filePath] {
-				seen[filePath] = true
-				files = append(files, filePath)
+			for _, filePath := range extractFilePaths(part.State) {
+				if !seen[filePath] {
+					seen[filePath] = true
+					files = append(files, filePath)
+				}
 			}
 		}
 	}
@@ -164,17 +166,36 @@ func ExtractModifiedFiles(data []byte) ([]string, error) {
 	return files, nil
 }
 
-// extractFilePathFromInput extracts the file path from an OpenCode tool's input map.
-// OpenCode uses camelCase keys (e.g., "filePath"), with "path" as a fallback.
-func extractFilePathFromInput(input map[string]any) string {
+// extractFilePaths extracts file paths from an OpenCode tool's state.
+// For standard tools (edit, write), the path is in input.filePath or input.path.
+// For apply_patch (codex models), the paths are in state.metadata.files[].filePath.
+func extractFilePaths(state *ToolState) []string {
+	if state == nil {
+		return nil
+	}
+
+	// Check metadata.files first (used by apply_patch / codex models).
+	if state.Metadata != nil {
+		var paths []string
+		for _, f := range state.Metadata.Files {
+			if f.FilePath != "" {
+				paths = append(paths, f.FilePath)
+			}
+		}
+		if len(paths) > 0 {
+			return paths
+		}
+	}
+
+	// Fall back to input keys (used by edit, write).
 	for _, key := range []string{"filePath", "path"} {
-		if v, ok := input[key]; ok {
+		if v, ok := state.Input[key]; ok {
 			if s, ok := v.(string); ok && s != "" {
-				return s
+				return []string{s}
 			}
 		}
 	}
-	return ""
+	return nil
 }
 
 // ExtractPrompts extracts user prompt strings from the transcript starting at the given offset.
@@ -267,42 +288,14 @@ func ExtractAllUserPrompts(data []byte) ([]string, error) {
 	return prompts, nil
 }
 
-// CalculateTokenUsageFromBytes computes token usage from raw export JSON transcript bytes
-// starting at the given message offset.
-// This is a package-level function used by the condensation path (which has bytes, not a file path).
-func CalculateTokenUsageFromBytes(data []byte, startMessageIndex int) *agent.TokenUsage {
-	session, err := ParseExportSession(data)
-	if err != nil || session == nil {
-		return &agent.TokenUsage{}
-	}
-
-	usage := &agent.TokenUsage{}
-	for i := startMessageIndex; i < len(session.Messages); i++ {
-		msg := session.Messages[i]
-		if msg.Info.Role != roleAssistant || msg.Info.Tokens == nil {
-			continue
-		}
-		usage.InputTokens += msg.Info.Tokens.Input
-		usage.OutputTokens += msg.Info.Tokens.Output
-		usage.CacheReadTokens += msg.Info.Tokens.Cache.Read
-		usage.CacheCreationTokens += msg.Info.Tokens.Cache.Write
-		usage.APICallCount++
-	}
-
-	return usage
-}
-
 // CalculateTokenUsage computes token usage from assistant messages starting at the given offset.
-func (a *OpenCodeAgent) CalculateTokenUsage(sessionRef string, fromOffset int) (*agent.TokenUsage, error) {
-	session, err := parseExportSessionFromFile(sessionRef)
+func (a *OpenCodeAgent) CalculateTokenUsage(transcriptData []byte, fromOffset int) (*agent.TokenUsage, error) {
+	session, err := ParseExportSession(transcriptData)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil //nolint:nilnil // nil usage for nonexistent file is expected
-		}
 		return nil, fmt.Errorf("failed to parse transcript for token usage: %w", err)
 	}
 	if session == nil {
-		return nil, nil //nolint:nilnil // nil usage for empty file is expected
+		return nil, nil //nolint:nilnil // nil usage for empty data is expected
 	}
 
 	usage := &agent.TokenUsage{}

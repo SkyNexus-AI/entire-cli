@@ -1,6 +1,7 @@
 package strategy
 
 import (
+	"context"
 	"fmt"
 	"sync"
 
@@ -29,9 +30,9 @@ type ManualCommitStrategy struct {
 
 // getStateStore returns the session state store, initializing it lazily if needed.
 // Thread-safe via sync.Once.
-func (s *ManualCommitStrategy) getStateStore() (*session.StateStore, error) {
+func (s *ManualCommitStrategy) getStateStore(_ context.Context) (*session.StateStore, error) {
 	s.stateStoreOnce.Do(func() {
-		store, err := session.NewStateStore()
+		store, err := session.NewStateStore(context.Background()) //nolint:contextcheck // sync.Once must use background context to avoid caching errors from a cancelled caller context
 		if err != nil {
 			s.stateStoreErr = fmt.Errorf("failed to create state store: %w", err)
 			return
@@ -45,7 +46,7 @@ func (s *ManualCommitStrategy) getStateStore() (*session.StateStore, error) {
 // Thread-safe via sync.Once.
 func (s *ManualCommitStrategy) getCheckpointStore() (*checkpoint.GitStore, error) {
 	s.checkpointStoreOnce.Do(func() {
-		repo, err := OpenRepository()
+		repo, err := OpenRepository(context.Background())
 		if err != nil {
 			s.checkpointStoreErr = fmt.Errorf("failed to open repository: %w", err)
 			return
@@ -74,7 +75,7 @@ func (s *ManualCommitStrategy) Description() string {
 
 // ValidateRepository validates that the repository is suitable for this strategy.
 func (s *ManualCommitStrategy) ValidateRepository() error {
-	repo, err := OpenRepository()
+	repo, err := OpenRepository(context.Background())
 	if err != nil {
 		return fmt.Errorf("not a git repository: %w", err)
 	}
@@ -91,11 +92,11 @@ func (s *ManualCommitStrategy) ValidateRepository() error {
 // This includes:
 //   - Shadow branches that weren't auto-cleaned during commit condensation
 //   - Session state files with no corresponding checkpoints or shadow branches
-func (s *ManualCommitStrategy) ListOrphanedItems() ([]CleanupItem, error) {
+func (s *ManualCommitStrategy) ListOrphanedItems(ctx context.Context) ([]CleanupItem, error) {
 	var items []CleanupItem
 
 	// Shadow branches (should have been auto-cleaned after condensation)
-	branches, err := ListShadowBranches()
+	branches, err := ListShadowBranches(ctx)
 	if err != nil {
 		return nil, err
 	}

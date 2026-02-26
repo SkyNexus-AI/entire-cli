@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"os"
 	"strings"
-
-	"github.com/entireio/cli/cmd/entire/cli/agent"
 )
 
 // Transcript parsing types - Gemini CLI uses JSON format for session storage
@@ -290,61 +288,4 @@ func SliceFromMessage(data []byte, startMessageIndex int) ([]byte, error) {
 		return nil, fmt.Errorf("failed to marshal scoped transcript: %w", err)
 	}
 	return out, nil
-}
-
-// CalculateTokenUsage calculates token usage from a Gemini transcript.
-// This is specific to Gemini's API format where each message may have a tokens object
-// with input, output, cached, thoughts, tool, and total counts.
-// Only processes messages from startMessageIndex onwards (0-indexed).
-func CalculateTokenUsage(data []byte, startMessageIndex int) *agent.TokenUsage {
-	var transcript struct {
-		Messages []geminiMessageWithTokens `json:"messages"`
-	}
-
-	if err := json.Unmarshal(data, &transcript); err != nil {
-		return &agent.TokenUsage{}
-	}
-
-	usage := &agent.TokenUsage{}
-
-	for i, msg := range transcript.Messages {
-		// Skip messages before startMessageIndex
-		if i < startMessageIndex {
-			continue
-		}
-
-		// Only count tokens from gemini (assistant) messages
-		if msg.Type != MessageTypeGemini {
-			continue
-		}
-
-		if msg.Tokens == nil {
-			continue
-		}
-
-		usage.APICallCount++
-		usage.InputTokens += msg.Tokens.Input
-		usage.OutputTokens += msg.Tokens.Output
-		usage.CacheReadTokens += msg.Tokens.Cached
-	}
-
-	return usage
-}
-
-// CalculateTokenUsageFromFile calculates token usage from a Gemini transcript file.
-// If startMessageIndex > 0, only considers messages from that index onwards.
-func CalculateTokenUsageFromFile(path string, startMessageIndex int) (*agent.TokenUsage, error) {
-	if path == "" {
-		return &agent.TokenUsage{}, nil
-	}
-
-	data, err := os.ReadFile(path) //nolint:gosec // Reading from controlled transcript path
-	if err != nil {
-		if os.IsNotExist(err) {
-			return &agent.TokenUsage{}, nil
-		}
-		return nil, fmt.Errorf("failed to read transcript: %w", err)
-	}
-
-	return CalculateTokenUsage(data, startMessageIndex), nil
 }

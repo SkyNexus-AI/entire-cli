@@ -66,7 +66,7 @@ func shouldUseColor(w io.Writer) bool {
 		return false
 	}
 	if f, ok := w.(*os.File); ok {
-		return term.IsTerminal(int(f.Fd()))
+		return term.IsTerminal(int(f.Fd())) //nolint:gosec // G115: uintptr->int is safe for fd
 	}
 	return false
 }
@@ -76,7 +76,7 @@ func shouldUseColor(w io.Writer) bool {
 func getTerminalWidth(w io.Writer) int {
 	// Try the output writer first
 	if f, ok := w.(*os.File); ok {
-		if width, _, err := term.GetSize(int(f.Fd())); err == nil && width > 0 {
+		if width, _, err := term.GetSize(int(f.Fd())); err == nil && width > 0 { //nolint:gosec // G115: uintptr->int is safe for fd
 			return min(width, 80)
 		}
 	}
@@ -86,7 +86,7 @@ func getTerminalWidth(w io.Writer) int {
 		if f == nil {
 			continue
 		}
-		if width, _, err := term.GetSize(int(f.Fd())); err == nil && width > 0 {
+		if width, _, err := term.GetSize(int(f.Fd())); err == nil && width > 0 { //nolint:gosec // G115: uintptr->int is safe for fd
 			return min(width, 80)
 		}
 	}

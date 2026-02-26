@@ -3,6 +3,7 @@
 package integration
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -31,6 +32,7 @@ func TestWorktreeOpenRepository(t *testing.T) {
 
 	cmd := exec.Command("git", "worktree", "add", worktreeDir, "-b", "test-branch")
 	cmd.Dir = env.RepoDir
+	cmd.Env = gitIsolatedEnv()
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("failed to create worktree: %v\nOutput: %s", err, output)
 	}
@@ -43,7 +45,7 @@ func TestWorktreeOpenRepository(t *testing.T) {
 		_ = os.Chdir(originalWd)
 	})
 
-	repo, err := strategy.OpenRepository()
+	repo, err := strategy.OpenRepository(context.Background())
 	if err != nil {
 		t.Fatalf("OpenRepository() failed in worktree: %v", err)
 	}

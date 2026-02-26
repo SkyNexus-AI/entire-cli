@@ -1,6 +1,7 @@
 package cursor
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -11,7 +12,7 @@ import (
 
 // ParseHookEvent translates a Cursor hook into a normalized lifecycle Event.
 // Returns nil if the hook has no lifecycle significance.
-func (c *CursorAgent) ParseHookEvent(hookName string, stdin io.Reader) (*agent.Event, error) {
+func (c *CursorAgent) ParseHookEvent(_ context.Context, hookName string, stdin io.Reader) (*agent.Event, error) {
 	switch hookName {
 	case HookNameSessionStart:
 		return c.parseSessionStart(stdin)
