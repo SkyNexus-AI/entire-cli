@@ -287,7 +287,7 @@ func handleLifecycleTurnEnd(ctx context.Context, ag agent.Agent, event *agent.Ev
 	}
 	commitMessage := generateCommitMessage(lastPrompt)
 	logging.Debug(logCtx, "using commit message",
-		slog.String("message", commitMessage))
+		slog.Int("message_length", len(commitMessage)))
 
 	// Get worktree root for path normalization
 	repoRoot, err := paths.WorktreeRoot(ctx)
@@ -465,17 +465,12 @@ func handleLifecycleSessionEnd(ctx context.Context, ag agent.Agent, event *agent
 // handleLifecycleSubagentStart handles subagent start: captures pre-task state.
 func handleLifecycleSubagentStart(ctx context.Context, ag agent.Agent, event *agent.Event) error {
 	logCtx := logging.WithAgent(logging.WithComponent(ctx, "lifecycle"), ag.Name())
-	logging.Info(logCtx, "subagent-start",
+	logging.Info(logCtx, "subagent started",
 		slog.String("event", event.Type.String()),
 		slog.String("session_id", event.SessionID),
 		slog.String("tool_use_id", event.ToolUseID),
+		slog.String("transcript", event.SessionRef),
 	)
-
-	// Log context
-	logging.Info(logCtx, "subagent started",
-		slog.String("session_id", event.SessionID),
-		slog.String("tool_use_id", event.ToolUseID),
-		slog.String("transcript", event.SessionRef))
 
 	// Capture pre-task state
 	if err := CapturePreTaskState(ctx, event.ToolUseID); err != nil {
@@ -488,13 +483,6 @@ func handleLifecycleSubagentStart(ctx context.Context, ag agent.Agent, event *ag
 // handleLifecycleSubagentEnd handles subagent end: detects changes, saves task checkpoint.
 func handleLifecycleSubagentEnd(ctx context.Context, ag agent.Agent, event *agent.Event) error {
 	logCtx := logging.WithAgent(logging.WithComponent(ctx, "lifecycle"), ag.Name())
-	logging.Info(logCtx, "subagent-end",
-		slog.String("event", event.Type.String()),
-		slog.String("session_id", event.SessionID),
-		slog.String("tool_use_id", event.ToolUseID),
-		slog.String("subagent_id", event.SubagentID),
-	)
-
 	if event.SubagentType == "" && event.TaskDescription == "" {
 		// Extract subagent type and description from tool input
 		event.SubagentType, event.TaskDescription = ParseSubagentTypeAndDescription(event.ToolInput)
@@ -512,6 +500,7 @@ func handleLifecycleSubagentEnd(ctx context.Context, ag agent.Agent, event *agen
 
 	// Log context
 	subagentEndAttrs := []any{
+		slog.String("event", event.Type.String()),
 		slog.String("session_id", event.SessionID),
 		slog.String("tool_use_id", event.ToolUseID),
 	}
