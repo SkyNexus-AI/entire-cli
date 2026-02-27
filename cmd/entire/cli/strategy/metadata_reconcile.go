@@ -83,7 +83,7 @@ func ReconcileDisconnectedMetadataBranch(repo *git.Repository) error {
 	for _, c := range localCommits {
 		tree, treeErr := c.Tree()
 		if treeErr != nil {
-			continue
+			return fmt.Errorf("failed to read tree for commit %s: %w", c.Hash.String()[:7], treeErr)
 		}
 		if len(tree.Entries) > 0 {
 			dataCommits = append(dataCommits, c)
