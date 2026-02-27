@@ -10,7 +10,7 @@ This skill validates the CLI's session management and rewind functionality by ru
 ## When to Use
 
 - User asks to "test against a test repo"
-- User wants to validate strategy changes (manual-commit, auto-commit, shadow, dual)
+- User wants to validate strategy changes (manual-commit)
 - User asks to verify session hooks, commits, or rewind functionality
 - After making changes to strategy code
 
@@ -54,7 +54,7 @@ Add this pattern to your Claude Code approved commands, or approve it once when 
 **Optional: Set strategy** (defaults to `manual-commit`):
 
 ```bash
-export STRATEGY=manual-commit  # or auto-commit, shadow, dual
+export STRATEGY=manual-commit
 ```
 
 ### Test Steps
@@ -87,15 +87,15 @@ Execute these steps in order:
 .claude/skills/test-repo/test-harness.sh list-rewind-points
 ```
 
-Expected results by strategy:
+Expected results:
 
-| Check | manual-commit/shadow | auto-commit/dual |
-|-------|---------------------|------------------|
-| Active branch | No Entire-* trailers | Entire-Checkpoint: trailer only |
-| Session state | ✓ Exists | ✗ Not used |
-| Shadow branch | ✓ entire/{hash} | ✗ None |
-| Metadata branch | ✓ entire/checkpoints/v1 | ✓ entire/checkpoints/v1 |
-| Rewind points | ✓ At least 1 | ✓ At least 1 |
+| Check | Result |
+|-------|--------|
+| Active branch | Optional Entire-Checkpoint: trailer |
+| Session state | ✓ Exists |
+| Shadow branch | ✓ entire/{hash} |
+| Metadata branch | ✓ entire/checkpoints/v1 |
+| Rewind points | ✓ At least 1 |
 
 #### 4. Test Rewind
 
@@ -107,8 +107,7 @@ Expected results by strategy:
 ```
 
 **Expected Behavior:**
-- **Manual-commit/shadow**: Shows warning listing untracked files that will be deleted (files created after the checkpoint that weren't present at session start)
-- **Auto-commit/dual**: No warning (git reset doesn't delete untracked files)
+- Shows warning listing untracked files that will be deleted (files created after the checkpoint that weren't present at session start)
 
 Example warning output (manual-commit):
 ```
@@ -144,7 +143,7 @@ go build -o /tmp/entire-bin ./cmd/entire && \
 
 ## Expected Results by Strategy
 
-### Manual-Commit Strategy (default, alias: shadow)
+### Manual-Commit Strategy (default)
 - Active branch commits: **NO modifications** (no commits created by Entire)
 - Shadow branches: `entire/<commit-hash[:7]>` created for checkpoints
 - Metadata: stored on both shadow branches and `entire/checkpoints/v1` branch (condensed on user commits)
@@ -152,15 +151,6 @@ go build -o /tmp/entire-bin ./cmd/entire && \
   - **Shows preview warning** listing untracked files that will be deleted
   - Preserves untracked files that existed at session start
 - AllowsMainBranch: **true** (safe on main/master)
-
-### Auto-Commit Strategy (alias: dual)
-- Active branch commits: **clean commits** with only `Entire-Checkpoint: <12-hex-char>` trailer
-- Shadow branches: none
-- Metadata: stored on orphan `entire/checkpoints/v1` branch at sharded paths
-- Rewind: full reset allowed if commit is only on current branch
-  - Uses `git reset --hard` which doesn't delete untracked files
-  - **No preview warnings** (untracked files are safe)
-- AllowsMainBranch: **false** (creates commits on active branch)
 
 ## Additional Testing (Optional)
 

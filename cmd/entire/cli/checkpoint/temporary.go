@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/entireio/cli/cmd/entire/cli/agent"
+	"github.com/entireio/cli/cmd/entire/cli/agent/types"
 	"github.com/entireio/cli/cmd/entire/cli/jsonutil"
 	"github.com/entireio/cli/cmd/entire/cli/logging"
 	"github.com/entireio/cli/cmd/entire/cli/paths"
@@ -106,7 +107,7 @@ func (s *GitStore) WriteTemporary(ctx context.Context, opts WriteTemporaryOption
 	}
 
 	// Build tree with changes
-	treeHash, err := s.buildTreeWithChanges(baseTreeHash, allFiles, allDeletedFiles, opts.MetadataDir, opts.MetadataDirAbs)
+	treeHash, err := s.buildTreeWithChanges(ctx, baseTreeHash, allFiles, allDeletedFiles, opts.MetadataDir, opts.MetadataDirAbs)
 	if err != nil {
 		return WriteTemporaryResult{}, fmt.Errorf("failed to build tree: %w", err)
 	}
@@ -144,7 +145,9 @@ func (s *GitStore) WriteTemporary(ctx context.Context, opts WriteTemporaryOption
 // Returns nil if the shadow branch doesn't exist.
 // worktreeID should be empty for main worktree or the internal git worktree name for linked worktrees.
 func (s *GitStore) ReadTemporary(ctx context.Context, baseCommit, worktreeID string) (*ReadTemporaryResult, error) {
-	_ = ctx // Reserved for future use
+	if err := ctx.Err(); err != nil {
+		return nil, err //nolint:wrapcheck // Propagating context cancellation
+	}
 
 	shadowBranchName := ShadowBranchNameForCommit(baseCommit, worktreeID)
 	refName := plumbing.NewBranchReferenceName(shadowBranchName)
@@ -174,7 +177,9 @@ func (s *GitStore) ReadTemporary(ctx context.Context, baseCommit, worktreeID str
 
 // ListTemporary lists all shadow branches with their checkpoint info.
 func (s *GitStore) ListTemporary(ctx context.Context) ([]TemporaryInfo, error) {
-	_ = ctx // Reserved for future use
+	if err := ctx.Err(); err != nil {
+		return nil, err //nolint:wrapcheck // Propagating context cancellation
+	}
 
 	iter, err := s.repo.Branches()
 	if err != nil {
@@ -183,6 +188,9 @@ func (s *GitStore) ListTemporary(ctx context.Context) ([]TemporaryInfo, error) {
 
 	var results []TemporaryInfo
 	err = iter.ForEach(func(ref *plumbing.Reference) error {
+		if err := ctx.Err(); err != nil {
+			return err //nolint:wrapcheck // Propagating context cancellation
+		}
 		branchName := ref.Name().Short()
 		if !strings.HasPrefix(branchName, ShadowBranchPrefix) {
 			return nil
@@ -226,8 +234,6 @@ func (s *GitStore) ListTemporary(ctx context.Context) ([]TemporaryInfo, error) {
 // Task checkpoints include both code changes and task-specific metadata.
 // Returns the commit hash of the created checkpoint.
 func (s *GitStore) WriteTemporaryTask(ctx context.Context, opts WriteTemporaryTaskOptions) (plumbing.Hash, error) {
-	_ = ctx // Reserved for future use
-
 	// Validate base commit - required for shadow branch naming
 	if opts.BaseCommit == "" {
 		return plumbing.ZeroHash, errors.New("BaseCommit is required for task checkpoint")
@@ -259,13 +265,13 @@ func (s *GitStore) WriteTemporaryTask(ctx context.Context, opts WriteTemporaryTa
 	allFiles = append(allFiles, opts.NewFiles...)
 
 	// Build new tree with code changes (no metadata dir yet)
-	newTreeHash, err := s.buildTreeWithChanges(baseTreeHash, allFiles, opts.DeletedFiles, "", "")
+	newTreeHash, err := s.buildTreeWithChanges(ctx, baseTreeHash, allFiles, opts.DeletedFiles, "", "")
 	if err != nil {
 		return plumbing.ZeroHash, fmt.Errorf("failed to build tree: %w", err)
 	}
 
 	// Add task metadata to tree
-	newTreeHash, err = s.addTaskMetadataToTree(newTreeHash, opts)
+	newTreeHash, err = s.addTaskMetadataToTree(ctx, newTreeHash, opts)
 	if err != nil {
 		return plumbing.ZeroHash, fmt.Errorf("failed to add task metadata: %w", err)
 	}
@@ -288,26 +294,20 @@ func (s *GitStore) WriteTemporaryTask(ctx context.Context, opts WriteTemporaryTa
 
 // addTaskMetadataToTree adds task checkpoint metadata to a git tree.
 // When IsIncremental is true, only adds the incremental checkpoint file.
-func (s *GitStore) addTaskMetadataToTree(baseTreeHash plumbing.Hash, opts WriteTemporaryTaskOptions) (plumbing.Hash, error) {
-	// Get base tree and flatten it
-	baseTree, err := s.repo.TreeObject(baseTreeHash)
-	if err != nil {
-		return plumbing.ZeroHash, fmt.Errorf("failed to get base tree: %w", err)
-	}
-
-	entries := make(map[string]object.TreeEntry)
-	if err := FlattenTree(s.repo, baseTree, "", entries); err != nil {
-		return plumbing.ZeroHash, fmt.Errorf("failed to flatten tree: %w", err)
-	}
-
+//
+// Uses ApplyTreeChanges (tree surgery) instead of FlattenTree+BuildTreeFromEntries,
+// so only affected subtrees are read/rebuilt.
+func (s *GitStore) addTaskMetadataToTree(ctx context.Context, baseTreeHash plumbing.Hash, opts WriteTemporaryTaskOptions) (plumbing.Hash, error) {
 	// Compute metadata paths
 	sessionMetadataDir := paths.EntireMetadataDir + "/" + opts.SessionID
 	taskMetadataDir := sessionMetadataDir + "/tasks/" + opts.ToolUseID
 
+	var changes []TreeChange
+
 	if opts.IsIncremental {
 		// Incremental checkpoint: only add the checkpoint file
-		// Use proper JSON marshaling to handle nil/empty IncrementalData correctly
 		var incData []byte
+		var err error
 		if opts.IncrementalData != nil {
 			incData, err = redact.JSONLBytes(opts.IncrementalData)
 			if err != nil {
@@ -336,24 +336,22 @@ func (s *GitStore) addTaskMetadataToTree(baseTreeHash plumbing.Hash, opts WriteT
 		}
 		cpFilename := fmt.Sprintf("%03d-%s.json", opts.IncrementalSequence, opts.ToolUseID)
 		cpPath := taskMetadataDir + "/checkpoints/" + cpFilename
-		entries[cpPath] = object.TreeEntry{
-			Name: cpPath,
-			Mode: filemode.Regular,
-			Hash: cpBlobHash,
-		}
+		changes = append(changes, TreeChange{
+			Path:  cpPath,
+			Entry: &object.TreeEntry{Mode: filemode.Regular, Hash: cpBlobHash},
+		})
 	} else {
 		// Final checkpoint: add transcripts and checkpoint.json
 
 		// Add session transcript (with chunking support for large transcripts)
 		if opts.TranscriptPath != "" {
 			if transcriptContent, readErr := os.ReadFile(opts.TranscriptPath); readErr == nil {
-				// Detect agent type from content for proper chunking
 				agentType := agent.DetectAgentTypeFromContent(transcriptContent)
 
 				// Chunk if necessary
-				chunks, chunkErr := agent.ChunkTranscript(transcriptContent, agentType)
+				chunks, chunkErr := agent.ChunkTranscript(ctx, transcriptContent, agentType)
 				if chunkErr != nil {
-					logging.Warn(context.Background(), "failed to chunk transcript, checkpoint will be saved without transcript",
+					logging.Warn(ctx, "failed to chunk transcript, checkpoint will be saved without transcript",
 						slog.String("error", chunkErr.Error()),
 						slog.String("session_id", opts.SessionID),
 					)
@@ -362,18 +360,17 @@ func (s *GitStore) addTaskMetadataToTree(baseTreeHash plumbing.Hash, opts WriteT
 						chunkPath := sessionMetadataDir + "/" + agent.ChunkFileName(paths.TranscriptFileName, i)
 						blobHash, blobErr := CreateBlobFromContent(s.repo, chunk)
 						if blobErr != nil {
-							logging.Warn(context.Background(), "failed to create blob for transcript chunk",
+							logging.Warn(ctx, "failed to create blob for transcript chunk",
 								slog.String("error", blobErr.Error()),
 								slog.String("session_id", opts.SessionID),
 								slog.Int("chunk_index", i),
 							)
 							continue
 						}
-						entries[chunkPath] = object.TreeEntry{
-							Name: chunkPath,
-							Mode: filemode.Regular,
-							Hash: blobHash,
-						}
+						changes = append(changes, TreeChange{
+							Path:  chunkPath,
+							Entry: &object.TreeEntry{Mode: filemode.Regular, Hash: blobHash},
+						})
 					}
 				}
 			}
@@ -382,13 +379,21 @@ func (s *GitStore) addTaskMetadataToTree(baseTreeHash plumbing.Hash, opts WriteT
 		// Add subagent transcript if available
 		if opts.SubagentTranscriptPath != "" && opts.AgentID != "" {
 			if agentContent, readErr := os.ReadFile(opts.SubagentTranscriptPath); readErr == nil {
+				redacted, jsonlErr := redact.JSONLBytes(agentContent)
+				if jsonlErr != nil {
+					logging.Warn(ctx, "subagent transcript is not valid JSONL, falling back to plain redaction",
+						slog.String("path", opts.SubagentTranscriptPath),
+						slog.String("error", jsonlErr.Error()),
+					)
+					redacted = redact.Bytes(agentContent)
+				}
+				agentContent = redacted
 				if blobHash, blobErr := CreateBlobFromContent(s.repo, agentContent); blobErr == nil {
 					agentPath := taskMetadataDir + "/agent-" + opts.AgentID + ".jsonl"
-					entries[agentPath] = object.TreeEntry{
-						Name: agentPath,
-						Mode: filemode.Regular,
-						Hash: blobHash,
-					}
+					changes = append(changes, TreeChange{
+						Path:  agentPath,
+						Entry: &object.TreeEntry{Mode: filemode.Regular, Hash: blobHash},
+					})
 				}
 			}
 		}
@@ -406,15 +411,13 @@ func (s *GitStore) addTaskMetadataToTree(baseTreeHash plumbing.Hash, opts WriteT
 			return plumbing.ZeroHash, fmt.Errorf("failed to create checkpoint blob: %w", err)
 		}
 		checkpointPath := taskMetadataDir + "/checkpoint.json"
-		entries[checkpointPath] = object.TreeEntry{
-			Name: checkpointPath,
-			Mode: filemode.Regular,
-			Hash: blobHash,
-		}
+		changes = append(changes, TreeChange{
+			Path:  checkpointPath,
+			Entry: &object.TreeEntry{Mode: filemode.Regular, Hash: blobHash},
+		})
 	}
 
-	// Build new tree from entries
-	return BuildTreeFromEntries(s.repo, entries)
+	return ApplyTreeChanges(s.repo, baseTreeHash, changes)
 }
 
 // ListTemporaryCheckpoints lists all checkpoint commits on a shadow branch.
@@ -436,7 +439,9 @@ func (s *GitStore) ListCheckpointsForBranch(ctx context.Context, branchName, ses
 // listCheckpointsForBranch lists checkpoint commits for a specific shadow branch name.
 // This is an internal helper used by ListTemporaryCheckpoints, ListCheckpointsForBranch, and ListAllTemporaryCheckpoints.
 func (s *GitStore) listCheckpointsForBranch(ctx context.Context, shadowBranchName, sessionID string, limit int) ([]TemporaryCheckpointInfo, error) {
-	_ = ctx // Reserved for future use
+	if err := ctx.Err(); err != nil {
+		return nil, err //nolint:wrapcheck // Propagating context cancellation
+	}
 
 	refName := plumbing.NewBranchReferenceName(shadowBranchName)
 
@@ -454,6 +459,9 @@ func (s *GitStore) listCheckpointsForBranch(ctx context.Context, shadowBranchNam
 	count := 0
 
 	err = iter.ForEach(func(c *object.Commit) error {
+		if err := ctx.Err(); err != nil {
+			return err //nolint:wrapcheck // Propagating context cancellation
+		}
 		if count >= limit*5 { // Scan more to allow for session filtering
 			return errStop
 		}
@@ -513,7 +521,9 @@ func (s *GitStore) listCheckpointsForBranch(ctx context.Context, shadowBranchNam
 // This is used for checkpoint lookup when the base commit is unknown (e.g., HEAD advanced since session start).
 // The sessionID filter, if provided, limits results to commits from that session.
 func (s *GitStore) ListAllTemporaryCheckpoints(ctx context.Context, sessionID string, limit int) ([]TemporaryCheckpointInfo, error) {
-	_ = ctx // Reserved for future use
+	if err := ctx.Err(); err != nil {
+		return nil, err //nolint:wrapcheck // Propagating context cancellation
+	}
 
 	// List all shadow branches
 	branches, err := s.ListTemporary(ctx)
@@ -528,6 +538,9 @@ func (s *GitStore) ListAllTemporaryCheckpoints(ctx context.Context, sessionID st
 		// Use the branch name directly to get checkpoints
 		branchCheckpoints, branchErr := s.listCheckpointsForBranch(ctx, branch.BranchName, sessionID, limit)
 		if branchErr != nil {
+			if errors.Is(branchErr, context.Canceled) || errors.Is(branchErr, context.DeadlineExceeded) {
+				return nil, branchErr
+			}
 			continue // Skip branches we can't read
 		}
 		results = append(results, branchCheckpoints...)
@@ -559,7 +572,7 @@ var errStop = errors.New("stop iteration")
 // commitHash is the commit to read from, metadataDir is the path within the tree.
 // agentType is used for reassembling chunked transcripts in the correct format.
 // Handles both chunked and non-chunked transcripts.
-func (s *GitStore) GetTranscriptFromCommit(commitHash plumbing.Hash, metadataDir string, agentType agent.AgentType) ([]byte, error) {
+func (s *GitStore) GetTranscriptFromCommit(ctx context.Context, commitHash plumbing.Hash, metadataDir string, agentType types.AgentType) ([]byte, error) {
 	commit, err := s.repo.CommitObject(commitHash)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get commit: %w", err)
@@ -574,7 +587,7 @@ func (s *GitStore) GetTranscriptFromCommit(commitHash plumbing.Hash, metadataDir
 	subTree, subTreeErr := tree.Tree(metadataDir)
 	if subTreeErr == nil {
 		// Use the helper function that handles chunking
-		transcript, err := readTranscriptFromTree(subTree, agentType)
+		transcript, err := readTranscriptFromTree(ctx, subTree, agentType)
 		if err == nil && transcript != nil {
 			return transcript, nil
 		}
@@ -613,9 +626,9 @@ func (s *GitStore) ShadowBranchExists(baseCommit, worktreeID string) bool {
 // worktreeID should be empty for main worktree or the internal git worktree name for linked worktrees.
 // Uses git CLI instead of go-git's RemoveReference because go-git v5 doesn't properly
 // persist deletions with packed refs or worktrees.
-func (s *GitStore) DeleteShadowBranch(baseCommit, worktreeID string) error {
+func (s *GitStore) DeleteShadowBranch(ctx context.Context, baseCommit, worktreeID string) error {
 	shadowBranchName := ShadowBranchNameForCommit(baseCommit, worktreeID)
-	cmd := exec.CommandContext(context.Background(), "git", "branch", "-D", "--", shadowBranchName) //nolint:gosec // shadowBranchName is constructed from commit hash, not user input
+	cmd := exec.CommandContext(ctx, "git", "branch", "-D", "--", shadowBranchName)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to delete shadow branch %s: %s: %w", shadowBranchName, strings.TrimSpace(string(output)), err)
 	}
@@ -687,68 +700,66 @@ func (s *GitStore) getOrCreateShadowBranch(branchName string) (plumbing.Hash, pl
 // buildTreeWithChanges builds a git tree with the given changes.
 // metadataDir is the relative path for git tree entries, metadataDirAbs is the absolute path
 // for filesystem operations (needed when CLI is run from a subdirectory).
+//
+// Uses ApplyTreeChanges (tree surgery) instead of FlattenTree+BuildTreeFromEntries,
+// so only affected subtrees are read/rebuilt — O(changed dirs) instead of O(total files).
 func (s *GitStore) buildTreeWithChanges(
+	ctx context.Context,
 	baseTreeHash plumbing.Hash,
 	modifiedFiles, deletedFiles []string,
 	metadataDir, metadataDirAbs string,
 ) (plumbing.Hash, error) {
-	// Get repo root for resolving file paths
+	// Get worktree root for resolving file paths
 	// This is critical because fileExists() and createBlobFromFile() use os.Stat()
 	// which resolves relative to CWD. The modifiedFiles are repo-relative paths,
 	// so we must resolve them against repo root, not CWD.
-	repoRoot, err := paths.RepoRoot()
+	repoRoot, err := paths.WorktreeRoot(ctx)
 	if err != nil {
-		return plumbing.ZeroHash, fmt.Errorf("failed to get repo root: %w", err)
+		return plumbing.ZeroHash, fmt.Errorf("failed to get worktree root: %w", err)
 	}
 
-	// Get the base tree
-	baseTree, err := s.repo.TreeObject(baseTreeHash)
-	if err != nil {
-		return plumbing.ZeroHash, fmt.Errorf("failed to get base tree: %w", err)
-	}
+	// Build list of tree changes
+	changes := make([]TreeChange, 0, len(modifiedFiles)+len(deletedFiles))
 
-	// Flatten existing tree
-	entries := make(map[string]object.TreeEntry)
-	if err := FlattenTree(s.repo, baseTree, "", entries); err != nil {
-		return plumbing.ZeroHash, fmt.Errorf("failed to flatten base tree: %w", err)
-	}
-
-	// Remove deleted files
+	// Deleted files → nil Entry means deletion
 	for _, file := range deletedFiles {
-		delete(entries, file)
+		changes = append(changes, TreeChange{Path: file, Entry: nil})
 	}
 
-	// Add/update modified files
+	// Modified/new files → create blobs from disk
 	for _, file := range modifiedFiles {
-		// Resolve path relative to repo root for filesystem operations
 		absPath := filepath.Join(repoRoot, file)
 		if !fileExists(absPath) {
-			delete(entries, file)
+			// File disappeared since detection — treat as deletion
+			changes = append(changes, TreeChange{Path: file, Entry: nil})
 			continue
 		}
 
-		blobHash, mode, err := createBlobFromFile(s.repo, absPath)
-		if err != nil {
+		blobHash, mode, blobErr := createBlobFromFile(s.repo, absPath)
+		if blobErr != nil {
 			// Skip files that can't be staged (may have been deleted since detection)
 			continue
 		}
 
-		entries[file] = object.TreeEntry{
-			Name: file,
-			Mode: mode,
-			Hash: blobHash,
-		}
+		changes = append(changes, TreeChange{
+			Path: file,
+			Entry: &object.TreeEntry{
+				Mode: mode,
+				Hash: blobHash,
+			},
+		})
 	}
 
-	// Add metadata directory files
+	// Metadata directory files
 	if metadataDir != "" && metadataDirAbs != "" {
-		if err := addDirectoryToEntriesWithAbsPath(s.repo, metadataDirAbs, metadataDir, entries); err != nil {
-			return plumbing.ZeroHash, fmt.Errorf("failed to add metadata directory: %w", err)
+		metaChanges, metaErr := addDirectoryToChanges(s.repo, metadataDirAbs, metadataDir)
+		if metaErr != nil {
+			return plumbing.ZeroHash, fmt.Errorf("failed to add metadata directory: %w", metaErr)
 		}
+		changes = append(changes, metaChanges...)
 	}
 
-	// Build tree
-	return BuildTreeFromEntries(s.repo, entries)
+	return ApplyTreeChanges(s.repo, baseTreeHash, changes)
 }
 
 // createCommit creates a commit object.
@@ -877,6 +888,25 @@ func addDirectoryToEntriesWithAbsPath(repo *git.Repository, dirPathAbs, dirPathR
 		if err != nil {
 			return err
 		}
+
+		// Skip symlinks to prevent reading files outside the metadata directory.
+		// A symlink could point to sensitive files (e.g., /etc/passwd) which would
+		// then be captured in the checkpoint and stored in git history.
+		// NOTE: filepath.Walk uses os.Stat (follows symlinks), so info.Mode() never
+		// reports ModeSymlink. We use os.Lstat to check the entry itself.
+		// This check MUST come before IsDir() because Walk follows symlinked
+		// directories and would recurse into them otherwise.
+		linfo, lstatErr := os.Lstat(path)
+		if lstatErr != nil {
+			return fmt.Errorf("failed to lstat %s: %w", path, lstatErr)
+		}
+		if linfo.Mode()&os.ModeSymlink != 0 {
+			if info.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
 		if info.IsDir() {
 			return nil
 		}
@@ -887,12 +917,17 @@ func addDirectoryToEntriesWithAbsPath(repo *git.Repository, dirPathAbs, dirPathR
 			return fmt.Errorf("failed to get relative path for %s: %w", path, err)
 		}
 
-		blobHash, mode, err := createBlobFromFile(repo, path)
+		// Prevent path traversal via symlinks pointing outside the metadata dir
+		if strings.HasPrefix(relWithinDir, "..") {
+			return fmt.Errorf("path traversal detected: %s", relWithinDir)
+		}
+
+		treePath := filepath.ToSlash(filepath.Join(dirPathRel, relWithinDir))
+
+		blobHash, mode, err := createRedactedBlobFromFile(repo, path, treePath)
 		if err != nil {
 			return fmt.Errorf("failed to create blob for %s: %w", path, err)
 		}
-
-		treePath := filepath.Join(dirPathRel, relWithinDir)
 		entries[treePath] = object.TreeEntry{
 			Name: treePath,
 			Mode: mode,
@@ -910,6 +945,58 @@ func addDirectoryToEntriesWithAbsPath(repo *git.Repository, dirPathAbs, dirPathR
 type treeNode struct {
 	entries map[string]*treeNode // subdirectories
 	files   []object.TreeEntry   // files in this directory
+}
+
+// addDirectoryToChanges walks a filesystem directory and returns TreeChange entries
+// for each file, suitable for use with ApplyTreeChanges.
+// dirPathAbs is the absolute filesystem path; dirPathRel is the git tree-relative path.
+func addDirectoryToChanges(repo *git.Repository, dirPathAbs, dirPathRel string) ([]TreeChange, error) {
+	var changes []TreeChange
+	err := filepath.Walk(dirPathAbs, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+
+		// Skip symlinks (same security rationale as addDirectoryToEntriesWithAbsPath)
+		linfo, lstatErr := os.Lstat(path)
+		if lstatErr != nil {
+			return fmt.Errorf("failed to lstat %s: %w", path, lstatErr)
+		}
+		if linfo.Mode()&os.ModeSymlink != 0 {
+			if info.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
+		if info.IsDir() {
+			return nil
+		}
+
+		relWithinDir, relErr := filepath.Rel(dirPathAbs, path)
+		if relErr != nil {
+			return fmt.Errorf("failed to get relative path for %s: %w", path, relErr)
+		}
+		if strings.HasPrefix(relWithinDir, "..") {
+			return fmt.Errorf("path traversal detected: %s", relWithinDir)
+		}
+
+		treePath := filepath.ToSlash(filepath.Join(dirPathRel, relWithinDir))
+
+		blobHash, mode, blobErr := createRedactedBlobFromFile(repo, path, treePath)
+		if blobErr != nil {
+			return fmt.Errorf("failed to create blob for %s: %w", path, blobErr)
+		}
+		changes = append(changes, TreeChange{
+			Path:  treePath,
+			Entry: &object.TreeEntry{Mode: mode, Hash: blobHash},
+		})
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to walk directory %s: %w", dirPathAbs, err)
+	}
+	return changes, nil
 }
 
 // BuildTreeFromEntries builds a proper git tree structure from flattened file entries.
@@ -1035,7 +1122,7 @@ type changedFilesResult struct {
 //
 // Uses `git status --porcelain -z` for reliable parsing of filenames with special characters.
 func collectChangedFiles(ctx context.Context, repo *git.Repository) (changedFilesResult, error) {
-	// Get repo root directory for running git command
+	// Get worktree root directory for running git command
 	wt, err := repo.Worktree()
 	if err != nil {
 		return changedFilesResult{}, fmt.Errorf("failed to get worktree: %w", err)

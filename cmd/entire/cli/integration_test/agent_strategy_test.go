@@ -3,7 +3,6 @@
 package integration
 
 import (
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,7 +11,6 @@ import (
 	"github.com/entireio/cli/cmd/entire/cli/agent"
 	"github.com/entireio/cli/cmd/entire/cli/agent/claudecode"
 	"github.com/entireio/cli/cmd/entire/cli/paths"
-	"github.com/entireio/cli/cmd/entire/cli/strategy"
 )
 
 // TestAgentStrategyComposition verifies that agent and strategy work together correctly.
@@ -20,96 +18,87 @@ import (
 func TestAgentStrategyComposition(t *testing.T) {
 	t.Parallel()
 
-	RunForAllStrategies(t, func(t *testing.T, env *TestEnv, strategyName string) {
-		// Get agent and strategy
-		ag, err := agent.Get("claude-code")
-		if err != nil {
-			t.Fatalf("Get(claude-code) error = %v", err)
-		}
+	env := NewFeatureBranchEnv(t)
+	// Get agent and strategy
+	ag, err := agent.Get("claude-code")
+	if err != nil {
+		t.Fatalf("Get(claude-code) error = %v", err)
+	}
 
-		_, err = strategy.Get(strategyName)
-		if err != nil {
-			t.Fatalf("Get(%s) error = %v", strategyName, err)
-		}
+	// Create a session with the agent
+	session := env.NewSession()
 
-		// Create a session with the agent
-		session := env.NewSession()
+	// Create test file
+	env.WriteFile("feature.go", "package main\n// new feature")
 
-		// Create test file
-		env.WriteFile("feature.go", "package main\n// new feature")
-
-		// Create transcript via agent's expected format
-		transcriptPath := session.CreateTranscript("Add a feature", []FileChange{
-			{Path: "feature.go", Content: "package main\n// new feature"},
-		})
-
-		// Read session via agent interface
-		agentSession, err := ag.ReadSession(&agent.HookInput{
-			SessionID:  session.ID,
-			SessionRef: transcriptPath,
-		})
-		if err != nil {
-			t.Fatalf("ReadSession() error = %v", err)
-		}
-
-		// Verify agent computed modified files
-		if len(agentSession.ModifiedFiles) == 0 {
-			t.Error("agent.ReadSession() should compute ModifiedFiles")
-		}
-
-		// Simulate session flow: UserPromptSubmit → make changes → Stop
-		if err := env.SimulateUserPromptSubmit(session.ID); err != nil {
-			t.Fatalf("SimulateUserPromptSubmit error = %v", err)
-		}
-
-		if err := env.SimulateStop(session.ID, transcriptPath); err != nil {
-			t.Fatalf("SimulateStop error = %v", err)
-		}
-
-		// Verify checkpoint was created
-		points := env.GetRewindPoints()
-		if len(points) == 0 {
-			t.Fatal("expected at least 1 rewind point after Stop hook")
-		}
+	// Create transcript via agent's expected format
+	transcriptPath := session.CreateTranscript("Add a feature", []FileChange{
+		{Path: "feature.go", Content: "package main\n// new feature"},
 	})
+
+	// Read session via agent interface
+	agentSession, err := ag.ReadSession(&agent.HookInput{
+		SessionID:  session.ID,
+		SessionRef: transcriptPath,
+	})
+	if err != nil {
+		t.Fatalf("ReadSession() error = %v", err)
+	}
+
+	// Verify agent computed modified files
+	if len(agentSession.ModifiedFiles) == 0 {
+		t.Error("agent.ReadSession() should compute ModifiedFiles")
+	}
+
+	// Simulate session flow: UserPromptSubmit → make changes → Stop
+	if err := env.SimulateUserPromptSubmit(session.ID); err != nil {
+		t.Fatalf("SimulateUserPromptSubmit error = %v", err)
+	}
+
+	if err := env.SimulateStop(session.ID, transcriptPath); err != nil {
+		t.Fatalf("SimulateStop error = %v", err)
+	}
+
+	// Verify checkpoint was created
+	points := env.GetRewindPoints()
+	if len(points) == 0 {
+		t.Fatal("expected at least 1 rewind point after Stop hook")
+	}
 }
 
 // TestAgentSessionIDTransformation verifies session ID transformation across agent/strategy boundary.
 func TestAgentSessionIDTransformation(t *testing.T) {
 	t.Parallel()
 
-	RunForAllStrategies(t, func(t *testing.T, env *TestEnv, strategyName string) {
-		// Create session and simulate full flow
-		session := env.NewSession()
-		env.WriteFile("test.go", "package main")
-		transcriptPath := session.CreateTranscript("Test", []FileChange{
-			{Path: "test.go", Content: "package main"},
-		})
-
-		// Simulate hooks
-		env.SimulateUserPromptSubmit(session.ID)
-		env.SimulateStop(session.ID, transcriptPath)
-
-		// Get rewind points and verify we can rewind
-		points := env.GetRewindPoints()
-		if len(points) == 0 {
-			t.Skip("no rewind points created")
-		}
-
-		// Rewind should work
-		if err := env.Rewind(points[0].ID); err != nil {
-			t.Errorf("Rewind() error = %v", err)
-		}
+	env := NewFeatureBranchEnv(t)
+	// Create session and simulate full flow
+	session := env.NewSession()
+	env.WriteFile("test.go", "package main")
+	transcriptPath := session.CreateTranscript("Test", []FileChange{
+		{Path: "test.go", Content: "package main"},
 	})
+
+	// Simulate hooks
+	env.SimulateUserPromptSubmit(session.ID)
+	env.SimulateStop(session.ID, transcriptPath)
+
+	// Get rewind points and verify we can rewind
+	points := env.GetRewindPoints()
+	if len(points) == 0 {
+		t.Skip("no rewind points created")
+	}
+
+	// Rewind should work
+	if err := env.Rewind(points[0].ID); err != nil {
+		t.Errorf("Rewind() error = %v", err)
+	}
 }
 
 // TestAgentTranscriptRestoration verifies transcript is restored correctly on rewind.
 func TestAgentTranscriptRestoration(t *testing.T) {
 	t.Parallel()
 
-	// Only test with manual-commit strategy as it has full transcript restoration
-	env := NewFeatureBranchEnv(t, strategy.StrategyNameManualCommit)
-
+	env := NewFeatureBranchEnv(t)
 	ag, _ := agent.Get("claude-code")
 
 	// Create first session
@@ -209,125 +198,6 @@ func TestAgentFormatResumeCommand(t *testing.T) {
 	if cmd != expected {
 		t.Errorf("FormatResumeCommand() = %q, want %q", cmd, expected)
 	}
-}
-
-// TestAgentHookParsing verifies hook input parsing via agent interface.
-func TestAgentHookParsing(t *testing.T) {
-	t.Parallel()
-
-	ag, _ := agent.Get("claude-code")
-
-	tests := []struct {
-		name     string
-		hookType agent.HookType
-		input    string
-		wantID   string
-		wantRef  string
-	}{
-		{
-			name:     "SessionStart",
-			hookType: agent.HookSessionStart,
-			input:    `{"session_id":"sess-123","transcript_path":"/tmp/transcript.jsonl"}`,
-			wantID:   "sess-123",
-			wantRef:  "/tmp/transcript.jsonl",
-		},
-		{
-			name:     "UserPromptSubmit",
-			hookType: agent.HookUserPromptSubmit,
-			input:    `{"session_id":"sess-456","transcript_path":""}`,
-			wantID:   "sess-456",
-			wantRef:  "",
-		},
-		{
-			name:     "Stop",
-			hookType: agent.HookStop,
-			input:    `{"session_id":"sess-789","transcript_path":"/path/to/transcript.jsonl"}`,
-			wantID:   "sess-789",
-			wantRef:  "/path/to/transcript.jsonl",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			reader := newStringReader(tt.input)
-			hookInput, err := ag.ParseHookInput(tt.hookType, reader)
-			if err != nil {
-				t.Fatalf("ParseHookInput() error = %v", err)
-			}
-
-			if hookInput.SessionID != tt.wantID {
-				t.Errorf("SessionID = %q, want %q", hookInput.SessionID, tt.wantID)
-			}
-			if hookInput.SessionRef != tt.wantRef {
-				t.Errorf("SessionRef = %q, want %q", hookInput.SessionRef, tt.wantRef)
-			}
-		})
-	}
-}
-
-// TestAgentPrePostToolHookParsing verifies PreToolUse and PostToolUse hook parsing.
-func TestAgentPrePostToolHookParsing(t *testing.T) {
-	t.Parallel()
-
-	ag, _ := agent.Get("claude-code")
-
-	t.Run("PreToolUse", func(t *testing.T) {
-		t.Parallel()
-
-		input := `{"session_id":"sess-123","transcript_path":"/tmp/t.jsonl","tool_use_id":"tool-456","tool_input":{"prompt":"test"}}`
-		reader := newStringReader(input)
-
-		hookInput, err := ag.ParseHookInput(agent.HookPreToolUse, reader)
-		if err != nil {
-			t.Fatalf("ParseHookInput(PreToolUse) error = %v", err)
-		}
-
-		if hookInput.ToolUseID != "tool-456" {
-			t.Errorf("ToolUseID = %q, want %q", hookInput.ToolUseID, "tool-456")
-		}
-	})
-
-	t.Run("PostToolUse with agent ID", func(t *testing.T) {
-		t.Parallel()
-
-		input := `{"session_id":"sess-123","transcript_path":"/tmp/t.jsonl","tool_use_id":"tool-789","tool_input":{},"tool_response":{"agentId":"agent-abc"}}`
-		reader := newStringReader(input)
-
-		hookInput, err := ag.ParseHookInput(agent.HookPostToolUse, reader)
-		if err != nil {
-			t.Fatalf("ParseHookInput(PostToolUse) error = %v", err)
-		}
-
-		if hookInput.ToolUseID != "tool-789" {
-			t.Errorf("ToolUseID = %q, want %q", hookInput.ToolUseID, "tool-789")
-		}
-
-		// Agent ID should be in RawData
-		if agentID, ok := hookInput.RawData["agent_id"]; !ok || agentID != "agent-abc" {
-			t.Errorf("RawData[agent_id] = %v, want %q", agentID, "agent-abc")
-		}
-	})
-}
-
-// stringReader implements io.Reader for test strings
-type stringReader struct {
-	data []byte
-	pos  int
-}
-
-func newStringReader(s string) *stringReader {
-	return &stringReader{data: []byte(s)}
-}
-
-func (r *stringReader) Read(p []byte) (n int, err error) {
-	if r.pos >= len(r.data) {
-		return 0, io.EOF
-	}
-	n = copy(p, r.data[r.pos:])
-	r.pos += n
-	return n, nil
 }
 
 // TestSetupAgentFlag verifies the --agent flag in enable command.

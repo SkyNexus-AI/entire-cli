@@ -9,7 +9,6 @@ import (
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint"
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint/id"
 	"github.com/entireio/cli/cmd/entire/cli/paths"
-	"github.com/entireio/cli/cmd/entire/cli/strategy"
 	"github.com/entireio/cli/cmd/entire/cli/trailers"
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
@@ -34,7 +33,7 @@ func TestManualCommit_Attribution(t *testing.T) {
 	env.GitAdd("main.go")
 	env.GitCommit("Initial commit")
 
-	env.InitEntire(strategy.StrategyNameManualCommit)
+	env.InitEntire()
 
 	initialHead := env.GetHeadHash()
 	t.Logf("Initial HEAD: %s", initialHead[:7])
@@ -181,7 +180,7 @@ func TestManualCommit_Attribution(t *testing.T) {
 
 	// Verify attribution was calculated and has reasonable values
 	// Note: The shadow branch includes all worktree changes (agent + user),
-	// so base→shadow diff includes user edits that were present during SaveChanges.
+	// so base→shadow diff includes user edits that were present during SaveStep.
 	// The attribution separates them using PromptAttributions.
 	//
 	// Expected: agent=13 (base→shadow includes user comments in worktree)
@@ -225,7 +224,7 @@ func TestManualCommit_AttributionDeletionOnly(t *testing.T) {
 	env.GitAdd("main.go")
 	env.GitCommit("Initial commit")
 
-	env.InitEntire(strategy.StrategyNameManualCommit)
+	env.InitEntire()
 
 	// ========================================
 	// CHECKPOINT 1: Agent REMOVES a function (deletion, no additions)
@@ -374,7 +373,7 @@ func TestManualCommit_AttributionNoDoubleCount(t *testing.T) {
 	env.GitAdd("main.go")
 	env.GitCommit("Initial commit")
 
-	env.InitEntire(strategy.StrategyNameManualCommit)
+	env.InitEntire()
 
 	// ========================================
 	// FIRST CYCLE: Checkpoint → user edit → commit

@@ -3,6 +3,7 @@ package claudecode
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/entireio/cli/cmd/entire/cli/agent"
+	"github.com/entireio/cli/cmd/entire/cli/agent/types"
 	"github.com/entireio/cli/cmd/entire/cli/paths"
 	"github.com/entireio/cli/cmd/entire/cli/transcript"
 )
@@ -33,12 +35,12 @@ func NewClaudeCodeAgent() agent.Agent {
 }
 
 // Name returns the agent registry key.
-func (c *ClaudeCodeAgent) Name() agent.AgentName {
+func (c *ClaudeCodeAgent) Name() types.AgentName {
 	return agent.AgentNameClaudeCode
 }
 
 // Type returns the agent type identifier.
-func (c *ClaudeCodeAgent) Type() agent.AgentType {
+func (c *ClaudeCodeAgent) Type() types.AgentType {
 	return agent.AgentTypeClaudeCode
 }
 
@@ -47,11 +49,13 @@ func (c *ClaudeCodeAgent) Description() string {
 	return "Claude Code - Anthropic's CLI coding assistant"
 }
 
+func (c *ClaudeCodeAgent) IsPreview() bool { return false }
+
 // DetectPresence checks if Claude Code is configured in the repository.
-func (c *ClaudeCodeAgent) DetectPresence() (bool, error) {
-	// Get repo root to check for .claude directory
+func (c *ClaudeCodeAgent) DetectPresence(ctx context.Context) (bool, error) {
+	// Get worktree root to check for .claude directory
 	// This is needed because the CLI may be run from a subdirectory
-	repoRoot, err := paths.RepoRoot()
+	repoRoot, err := paths.WorktreeRoot(ctx)
 	if err != nil {
 		// Not in a git repo, fall back to CWD-relative check
 		repoRoot = "."
@@ -68,80 +72,6 @@ func (c *ClaudeCodeAgent) DetectPresence() (bool, error) {
 		return true, nil
 	}
 	return false, nil
-}
-
-// GetHookConfigPath returns the path to Claude's hook config file.
-func (c *ClaudeCodeAgent) GetHookConfigPath() string {
-	return ".claude/settings.json"
-}
-
-// SupportsHooks returns true as Claude Code supports lifecycle hooks.
-func (c *ClaudeCodeAgent) SupportsHooks() bool {
-	return true
-}
-
-// ParseHookInput parses Claude Code hook input from stdin.
-func (c *ClaudeCodeAgent) ParseHookInput(hookType agent.HookType, reader io.Reader) (*agent.HookInput, error) {
-	data, err := io.ReadAll(reader)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read input: %w", err)
-	}
-
-	if len(data) == 0 {
-		return nil, errors.New("empty input")
-	}
-
-	input := &agent.HookInput{
-		HookType:  hookType,
-		Timestamp: time.Now(),
-		RawData:   make(map[string]interface{}),
-	}
-
-	// Parse based on hook type
-	switch hookType {
-	case agent.HookUserPromptSubmit:
-		var raw userPromptSubmitRaw
-		if err := json.Unmarshal(data, &raw); err != nil {
-			return nil, fmt.Errorf("failed to parse user prompt submit: %w", err)
-		}
-		input.SessionID = raw.SessionID
-		input.SessionRef = raw.TranscriptPath
-		input.UserPrompt = raw.Prompt
-
-	case agent.HookSessionStart, agent.HookSessionEnd, agent.HookStop:
-		var raw sessionInfoRaw
-		if err := json.Unmarshal(data, &raw); err != nil {
-			return nil, fmt.Errorf("failed to parse session info: %w", err)
-		}
-		input.SessionID = raw.SessionID
-		input.SessionRef = raw.TranscriptPath
-
-	case agent.HookPreToolUse:
-		var raw taskHookInputRaw
-		if err := json.Unmarshal(data, &raw); err != nil {
-			return nil, fmt.Errorf("failed to parse pre-tool input: %w", err)
-		}
-		input.SessionID = raw.SessionID
-		input.SessionRef = raw.TranscriptPath
-		input.ToolUseID = raw.ToolUseID
-		input.ToolInput = raw.ToolInput
-
-	case agent.HookPostToolUse:
-		var raw postToolHookInputRaw
-		if err := json.Unmarshal(data, &raw); err != nil {
-			return nil, fmt.Errorf("failed to parse post-tool input: %w", err)
-		}
-		input.SessionID = raw.SessionID
-		input.SessionRef = raw.TranscriptPath
-		input.ToolUseID = raw.ToolUseID
-		input.ToolInput = raw.ToolInput
-		// Store agent ID in raw data for Task tool results
-		if raw.ToolResponse.AgentID != "" {
-			input.RawData["agent_id"] = raw.ToolResponse.AgentID
-		}
-	}
-
-	return input, nil
 }
 
 // GetSessionID extracts the session ID from hook input.
@@ -207,7 +137,7 @@ func (c *ClaudeCodeAgent) ReadSession(input *agent.HookInput) (*agent.AgentSessi
 // WriteSession writes a session to Claude's storage (JSONL transcript file).
 // Uses the NativeData field which contains raw JSONL bytes.
 // The session must have been created by Claude Code (AgentName check).
-func (c *ClaudeCodeAgent) WriteSession(session *agent.AgentSession) error {
+func (c *ClaudeCodeAgent) WriteSession(_ context.Context, session *agent.AgentSession) error {
 	if session == nil {
 		return errors.New("session is nil")
 	}
@@ -362,9 +292,12 @@ func (c *ClaudeCodeAgent) GetTranscriptPosition(path string) (int, error) {
 	lineCount := 0
 
 	for {
-		_, err := reader.ReadBytes('\n')
+		line, err := reader.ReadBytes('\n')
 		if err != nil {
 			if err == io.EOF {
+				if len(line) > 0 {
+					lineCount++ // Count final line without trailing newline
+				}
 				break
 			}
 			return 0, fmt.Errorf("failed to read transcript: %w", err)
@@ -422,12 +355,10 @@ func (c *ClaudeCodeAgent) ExtractModifiedFilesFromOffset(path string, startOffse
 	return ExtractModifiedFiles(lines), lineNum, nil
 }
 
-// TranscriptChunker interface implementation
-
 // ChunkTranscript splits a JSONL transcript at line boundaries.
 // Claude Code uses JSONL format (one JSON object per line), so chunking
 // is done at newline boundaries to preserve message integrity.
-func (c *ClaudeCodeAgent) ChunkTranscript(content []byte, maxSize int) ([][]byte, error) {
+func (c *ClaudeCodeAgent) ChunkTranscript(_ context.Context, content []byte, maxSize int) ([][]byte, error) {
 	chunks, err := agent.ChunkJSONL(content, maxSize)
 	if err != nil {
 		return nil, fmt.Errorf("failed to chunk JSONL transcript: %w", err)
@@ -437,7 +368,7 @@ func (c *ClaudeCodeAgent) ChunkTranscript(content []byte, maxSize int) ([][]byte
 
 // ReassembleTranscript concatenates JSONL chunks with newlines.
 //
-//nolint:unparam // error return is required by interface, kept for consistency
+
 func (c *ClaudeCodeAgent) ReassembleTranscript(chunks [][]byte) ([]byte, error) {
 	return agent.ReassembleJSONL(chunks), nil
 }

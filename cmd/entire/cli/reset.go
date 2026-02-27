@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 
@@ -22,8 +23,6 @@ func newResetCmd() *cobra.Command {
 
 This allows starting fresh without existing checkpoints on your current commit.
 
-Only works with the manual-commit strategy. For auto-commit strategy,
-use Git directly: git reset --hard <commit>
 
 The command will:
   - Find all sessions where base_commit matches the current HEAD
@@ -39,28 +38,23 @@ Example: If HEAD is at commit abc1234567890, the command will:
 
 Without --force, prompts for confirmation before deleting.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			ctx := cmd.Context()
 			// Check if in git repository
-			if _, err := paths.RepoRoot(); err != nil {
+			if _, err := paths.WorktreeRoot(ctx); err != nil {
 				return errors.New("not a git repository")
 			}
 
 			// Get current strategy
-			strat := GetStrategy()
-
-			// Check if strategy supports reset
-			resetter, ok := strat.(strategy.SessionResetter)
-			if !ok {
-				return fmt.Errorf("strategy %s does not support reset", strat.Name())
-			}
+			strat := GetStrategy(ctx)
 
 			// Handle --session flag: reset a single session
 			if sessionFlag != "" {
-				return runResetSession(cmd, resetter, sessionFlag, forceFlag)
+				return runResetSession(ctx, cmd, strat, sessionFlag, forceFlag)
 			}
 
 			// Check for active sessions before bulk reset
 			if !forceFlag {
-				activeSessions, err := activeSessionsOnCurrentHead()
+				activeSessions, err := activeSessionsOnCurrentHead(ctx)
 				if err != nil {
 					fmt.Fprintf(cmd.ErrOrStderr(), "Warning: could not check for active sessions: %v\n", err)
 					fmt.Fprintln(cmd.ErrOrStderr(), "Use --force to override.")
@@ -100,7 +94,7 @@ Without --force, prompts for confirmation before deleting.`,
 			}
 
 			// Call strategy's Reset method
-			if err := resetter.Reset(); err != nil {
+			if err := strat.Reset(ctx); err != nil {
 				return fmt.Errorf("reset failed: %w", err)
 			}
 
@@ -115,9 +109,9 @@ Without --force, prompts for confirmation before deleting.`,
 }
 
 // runResetSession handles the --session flag: reset a single session.
-func runResetSession(cmd *cobra.Command, resetter strategy.SessionResetter, sessionID string, force bool) error {
+func runResetSession(ctx context.Context, cmd *cobra.Command, strat *strategy.ManualCommitStrategy, sessionID string, force bool) error {
 	// Verify the session exists
-	state, err := strategy.LoadSessionState(sessionID)
+	state, err := strategy.LoadSessionState(ctx, sessionID)
 	if err != nil {
 		return fmt.Errorf("failed to load session: %w", err)
 	}
@@ -152,7 +146,7 @@ func runResetSession(cmd *cobra.Command, resetter strategy.SessionResetter, sess
 		}
 	}
 
-	if err := resetter.ResetSession(sessionID); err != nil {
+	if err := strat.ResetSession(ctx, sessionID); err != nil {
 		return fmt.Errorf("reset session failed: %w", err)
 	}
 
@@ -162,8 +156,8 @@ func runResetSession(cmd *cobra.Command, resetter strategy.SessionResetter, sess
 
 // activeSessionsOnCurrentHead returns sessions on the current HEAD
 // that are in an active phase (ACTIVE).
-func activeSessionsOnCurrentHead() ([]*session.State, error) {
-	repo, err := openRepository()
+func activeSessionsOnCurrentHead(ctx context.Context) ([]*session.State, error) {
+	repo, err := openRepository(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -174,7 +168,7 @@ func activeSessionsOnCurrentHead() ([]*session.State, error) {
 	}
 	currentHead := head.Hash().String()
 
-	states, err := strategy.ListSessionStates()
+	states, err := strategy.ListSessionStates(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list session states: %w", err)
 	}

@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/entireio/cli/cmd/entire/cli/paths"
-	"github.com/entireio/cli/cmd/entire/cli/strategy"
 )
 
 func TestNewTestEnv(t *testing.T) {
@@ -49,32 +48,30 @@ func TestTestEnv_InitRepo(t *testing.T) {
 
 func TestTestEnv_InitEntire(t *testing.T) {
 	t.Parallel()
-	RunForAllStrategiesWithBasicEnv(t, func(t *testing.T, env *TestEnv, strategyName string) {
-		// Verify .entire directory exists
-		entireDir := filepath.Join(env.RepoDir, ".entire")
-		if _, err := os.Stat(entireDir); os.IsNotExist(err) {
-			t.Error(".entire directory should exist")
-		}
+	env := NewRepoEnv(t)
+	// Verify .entire directory exists
+	entireDir := filepath.Join(env.RepoDir, ".entire")
+	if _, err := os.Stat(entireDir); os.IsNotExist(err) {
+		t.Error(".entire directory should exist")
+	}
 
-		// Verify settings file exists and contains strategy
-		settingsPath := filepath.Join(entireDir, paths.SettingsFileName)
-		data, err := os.ReadFile(settingsPath)
-		if err != nil {
-			t.Fatalf("failed to read %s: %v", paths.SettingsFileName, err)
-		}
+	// Verify settings file exists and contains enabled
+	settingsPath := filepath.Join(entireDir, paths.SettingsFileName)
+	data, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatalf("failed to read %s: %v", paths.SettingsFileName, err)
+	}
 
-		settingsContent := string(data)
-		expectedStrategy := `"strategy": "` + strategyName + `"`
-		if !strings.Contains(settingsContent, expectedStrategy) {
-			t.Errorf("settings.json should contain %s, got: %s", expectedStrategy, settingsContent)
-		}
+	settingsContent := string(data)
+	if !strings.Contains(settingsContent, `"enabled"`) {
+		t.Errorf("settings.json should contain enabled field, got: %s", settingsContent)
+	}
 
-		// Verify tmp directory exists
-		tmpDir := filepath.Join(entireDir, "tmp")
-		if _, err := os.Stat(tmpDir); os.IsNotExist(err) {
-			t.Error(".entire/tmp directory should exist")
-		}
-	})
+	// Verify tmp directory exists
+	tmpDir := filepath.Join(entireDir, "tmp")
+	if _, err := os.Stat(tmpDir); os.IsNotExist(err) {
+		t.Error(".entire/tmp directory should exist")
+	}
 }
 
 func TestTestEnv_WriteAndReadFile(t *testing.T) {
@@ -161,7 +158,7 @@ func TestTestEnv_MultipleCommits(t *testing.T) {
 
 func TestNewRepoEnv(t *testing.T) {
 	t.Parallel()
-	env := NewRepoEnv(t, strategy.StrategyNameManualCommit)
+	env := NewRepoEnv(t)
 
 	// Verify .git directory exists
 	gitDir := filepath.Join(env.RepoDir, ".git")
@@ -178,7 +175,7 @@ func TestNewRepoEnv(t *testing.T) {
 
 func TestNewRepoWithCommit(t *testing.T) {
 	t.Parallel()
-	env := NewRepoWithCommit(t, strategy.StrategyNameManualCommit)
+	env := NewRepoWithCommit(t)
 
 	// Verify README exists
 	if !env.FileExists("README.md") {
@@ -194,7 +191,7 @@ func TestNewRepoWithCommit(t *testing.T) {
 
 func TestNewFeatureBranchEnv(t *testing.T) {
 	t.Parallel()
-	env := NewFeatureBranchEnv(t, strategy.StrategyNameManualCommit)
+	env := NewFeatureBranchEnv(t)
 
 	// Verify we're on feature branch
 	branch := env.GetCurrentBranch()
@@ -206,43 +203,4 @@ func TestNewFeatureBranchEnv(t *testing.T) {
 	if !env.FileExists("README.md") {
 		t.Error("README.md should exist")
 	}
-}
-
-func TestAllStrategies(t *testing.T) {
-	t.Parallel()
-	strategies := AllStrategies()
-	if len(strategies) != 2 {
-		t.Errorf("AllStrategies() returned %d strategies, want 2", len(strategies))
-	}
-
-	// Verify expected strategies are present
-	expected := []string{"auto-commit", "manual-commit"}
-	for _, exp := range expected {
-		found := false
-		for _, s := range strategies {
-			if s == exp {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Errorf("AllStrategies() missing %s", exp)
-		}
-	}
-}
-
-func TestRunForAllStrategies(t *testing.T) {
-	t.Parallel()
-	RunForAllStrategies(t, func(t *testing.T, env *TestEnv, strategyName string) {
-		// Verify we're on feature branch
-		branch := env.GetCurrentBranch()
-		if branch != "feature/test-branch" {
-			t.Errorf("GetCurrentBranch = %s, want feature/test-branch", branch)
-		}
-
-		// Verify strategy was passed correctly
-		if strategyName == "" {
-			t.Error("strategyName should not be empty")
-		}
-	})
 }

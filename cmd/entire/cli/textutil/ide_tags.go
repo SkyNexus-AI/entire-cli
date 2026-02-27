@@ -18,6 +18,7 @@ var systemTagRegexes = []*regexp.Regexp{
 	regexp.MustCompile(`(?s)<command-message[^>]*>.*?</command-message>`),
 	regexp.MustCompile(`(?s)<command-args[^>]*>.*?</command-args>`),
 	regexp.MustCompile(`(?s)<local-command-stdout[^>]*>.*?</local-command-stdout>`),
+	regexp.MustCompile(`</?user_query>`), // Cursor wraps user text in <user_query> tags; strip tags but keep content
 }
 
 // StripIDEContextTags removes IDE-injected context tags from prompt text.

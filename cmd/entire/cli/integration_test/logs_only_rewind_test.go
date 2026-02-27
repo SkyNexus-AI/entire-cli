@@ -7,8 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/entireio/cli/cmd/entire/cli/strategy"
 )
 
 // TestLogsOnlyRewind_AppearsInRewindList verifies that after user commits with
@@ -29,7 +27,7 @@ func TestLogsOnlyRewind_AppearsInRewindList(t *testing.T) {
 	env.GitAdd("README.md")
 	env.GitCommit("Initial commit")
 	env.GitCheckoutNewBranch("feature/logs-only-test")
-	env.InitEntire(strategy.StrategyNameManualCommit)
+	env.InitEntire()
 
 	t.Log("Phase 1: Create session and checkpoint")
 
@@ -117,7 +115,7 @@ func TestLogsOnlyRewind_RestoresTranscript(t *testing.T) {
 	env.GitAdd("README.md")
 	env.GitCommit("Initial commit")
 	env.GitCheckoutNewBranch("feature/logs-restore-test")
-	env.InitEntire(strategy.StrategyNameManualCommit)
+	env.InitEntire()
 
 	t.Log("Phase 1: Create session and commit")
 
@@ -224,7 +222,7 @@ func TestLogsOnlyRewind_DoesNotModifyWorkingDirectory(t *testing.T) {
 	env.GitAdd("README.md")
 	env.GitCommit("Initial commit")
 	env.GitCheckoutNewBranch("feature/no-modify-test")
-	env.InitEntire(strategy.StrategyNameManualCommit)
+	env.InitEntire()
 
 	t.Log("Phase 1: Create session 1 and commit")
 
@@ -327,7 +325,7 @@ func TestLogsOnlyRewind_DeduplicationWithCheckpoints(t *testing.T) {
 	env.GitAdd("README.md")
 	env.GitCommit("Initial commit")
 	env.GitCheckoutNewBranch("feature/dedup-test")
-	env.InitEntire(strategy.StrategyNameManualCommit)
+	env.InitEntire()
 
 	t.Log("Phase 1: Create checkpoint (but don't commit yet)")
 
@@ -407,7 +405,7 @@ func TestLogsOnlyRewind_MultipleCommits(t *testing.T) {
 	env.GitAdd("README.md")
 	env.GitCommit("Initial commit")
 	env.GitCheckoutNewBranch("feature/multi-commit-test")
-	env.InitEntire(strategy.StrategyNameManualCommit)
+	env.InitEntire()
 
 	var commitHashes []string
 
@@ -481,7 +479,7 @@ func TestLogsOnlyRewind_Reset(t *testing.T) {
 	env.GitAdd("README.md")
 	env.GitCommit("Initial commit")
 	env.GitCheckoutNewBranch("feature/reset-test")
-	env.InitEntire(strategy.StrategyNameManualCommit)
+	env.InitEntire()
 
 	t.Log("Phase 1: Create session 1 and commit")
 
@@ -586,7 +584,7 @@ func TestLogsOnlyRewind_ResetRestoresTranscript(t *testing.T) {
 	env.GitAdd("README.md")
 	env.GitCommit("Initial commit")
 	env.GitCheckoutNewBranch("feature/reset-transcript-test")
-	env.InitEntire(strategy.StrategyNameManualCommit)
+	env.InitEntire()
 
 	t.Log("Phase 1: Create session and commit")
 

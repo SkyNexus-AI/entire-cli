@@ -2,7 +2,7 @@
 
 ## Overview
 
-Entire CLI creates checkpoints for AI coding sessions. The system is agent-agnostic - it works with Claude Code, Cursor, Copilot, or any tool that triggers Entire hooks.
+Entire CLI creates checkpoints for AI coding sessions. The system is agent-agnostic - it works with Claude Code, Gemini CLI, OpenCode, Cursor, or any tool that triggers Entire hooks.
 
 ## Domain Model
 
@@ -145,13 +145,6 @@ func (s *ManualCommitStrategy) CondenseSession(
 ) (*CondenseResult, error)
 ```
 
-**Auto-commit** writes committed checkpoints directly:
-
-```go
-// SaveChanges creates a commit on the active branch and writes metadata.
-func (s *AutoCommitStrategy) SaveChanges(ctx SaveContext) error
-```
-
 ## Storage
 
 | Type | Location | Contents |
@@ -255,15 +248,13 @@ The checkpoint ID is the **stable identifier** that links user commits to metada
 **Format:** 12-hex-character random ID (e.g., `a3b2c4d5e6f7`)
 
 **Generation:**
-- Manual-commit: Generated during condensation (post-commit hook)
-- Auto-commit: Generated when creating the commit
+- Generated during condensation (post-commit hook)
 
 **Usage:**
 
-1. **User commit trailer** (both strategies):
+1. **User commit trailer**:
    - `Entire-Checkpoint: a3b2c4d5e6f7` added to user's commit message
-   - Auto-commit: Added programmatically
-   - Manual-commit: Added by `prepare-commit-msg` hook (user can remove)
+   - Added by `prepare-commit-msg` hook (user can remove)
 
 2. **Directory sharding** on `entire/checkpoints/v1`:
    - Path: `<id[:2]>/<id[2:]>/` (e.g., `a3/b2c4d5e6f7/`)
@@ -353,10 +344,11 @@ Strategies use `checkpoint.Store` primitives - storage details are encapsulated.
 
 Strategies determine checkpoint timing and type:
 
-| Strategy | On Save | On Task Complete | On User Commit |
-|----------|---------|------------------|----------------|
-| Manual-commit | Temporary | Temporary | Condense → Committed |
-| Auto-commit | Committed | Committed | — |
+| Event | Checkpoint Type |
+|-------|----------------|
+| On Save | Temporary |
+| On Task Complete | Temporary |
+| On User Commit | Condense → Committed |
 
 ## Rewind
 
@@ -393,4 +385,3 @@ If user does stash → pull → apply (HEAD changes without commit):
 | Current | Legacy |
 |---------|--------|
 | Manual-commit | Shadow |
-| Auto-commit | Dual |

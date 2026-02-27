@@ -34,6 +34,7 @@ func ParseFromBytes(content []byte) ([]Line, error) {
 
 		var line Line
 		if err := json.Unmarshal(lineBytes, &line); err == nil {
+			normalizeLineType(&line)
 			lines = append(lines, line)
 		}
 
@@ -49,15 +50,14 @@ func ParseFromBytes(content []byte) ([]Line, error) {
 // Uses bufio.Reader to handle arbitrarily long lines (no size limit).
 // Returns:
 //   - lines: parsed transcript lines from startLine onwards (malformed lines skipped)
-//   - totalLines: total number of lines in the file (including malformed ones)
 //   - error: any error encountered during reading
 //
 // The startLine parameter is 0-indexed (startLine=0 reads from the beginning).
 // This is useful for incremental parsing when you've already processed some lines.
-func ParseFromFileAtLine(path string, startLine int) ([]Line, int, error) {
+func ParseFromFileAtLine(path string, startLine int) ([]Line, error) {
 	file, err := os.Open(path) //nolint:gosec // path is a controlled transcript file path
 	if err != nil {
-		return nil, 0, fmt.Errorf("failed to open transcript: %w", err)
+		return nil, fmt.Errorf("failed to open transcript: %w", err)
 	}
 	defer func() { _ = file.Close() }()
 
@@ -68,7 +68,7 @@ func ParseFromFileAtLine(path string, startLine int) ([]Line, int, error) {
 	for {
 		lineBytes, err := reader.ReadBytes('\n')
 		if err != nil && err != io.EOF {
-			return nil, 0, fmt.Errorf("failed to read transcript: %w", err)
+			return nil, fmt.Errorf("failed to read transcript: %w", err)
 		}
 
 		// Handle empty line or EOF without content
@@ -83,6 +83,7 @@ func ParseFromFileAtLine(path string, startLine int) ([]Line, int, error) {
 		if totalLines >= startLine {
 			var line Line
 			if err := json.Unmarshal(lineBytes, &line); err == nil {
+				normalizeLineType(&line)
 				lines = append(lines, line)
 			}
 		}
@@ -93,7 +94,17 @@ func ParseFromFileAtLine(path string, startLine int) ([]Line, int, error) {
 		}
 	}
 
-	return lines, totalLines, nil
+	return lines, nil
+}
+
+// normalizeLineType ensures line.Type is populated for all transcript formats.
+// Claude Code uses "type" while Cursor uses "role" for the same purpose.
+// When Type is empty but Role is set, we copy Role into Type so all downstream
+// consumers can switch on Type uniformly.
+func normalizeLineType(line *Line) {
+	if line.Type == "" && line.Role != "" {
+		line.Type = line.Role
+	}
 }
 
 // SliceFromLine returns the content starting from line number `startLine` (0-indexed).

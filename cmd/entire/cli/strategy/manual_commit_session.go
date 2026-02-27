@@ -5,11 +5,11 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/entireio/cli/cmd/entire/cli/agent"
-	"github.com/entireio/cli/cmd/entire/cli/buildinfo"
+	"github.com/entireio/cli/cmd/entire/cli/agent/types"
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint"
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint/id"
 	"github.com/entireio/cli/cmd/entire/cli/paths"
+	"github.com/entireio/cli/cmd/entire/cli/versioninfo"
 
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
@@ -19,12 +19,12 @@ import (
 // Uses session.StateStore for persistence.
 
 // loadSessionState loads session state using the StateStore.
-func (s *ManualCommitStrategy) loadSessionState(sessionID string) (*SessionState, error) {
-	store, err := s.getStateStore()
+func (s *ManualCommitStrategy) loadSessionState(ctx context.Context, sessionID string) (*SessionState, error) {
+	store, err := s.getStateStore(ctx)
 	if err != nil {
 		return nil, err
 	}
-	state, err := store.Load(context.Background(), sessionID)
+	state, err := store.Load(ctx, sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load session state: %w", err)
 	}
@@ -32,24 +32,24 @@ func (s *ManualCommitStrategy) loadSessionState(sessionID string) (*SessionState
 }
 
 // saveSessionState saves session state using the StateStore.
-func (s *ManualCommitStrategy) saveSessionState(state *SessionState) error {
-	store, err := s.getStateStore()
+func (s *ManualCommitStrategy) saveSessionState(ctx context.Context, state *SessionState) error {
+	store, err := s.getStateStore(ctx)
 	if err != nil {
 		return err
 	}
-	if err := store.Save(context.Background(), state); err != nil {
+	if err := store.Save(ctx, state); err != nil {
 		return fmt.Errorf("failed to save session state: %w", err)
 	}
 	return nil
 }
 
 // clearSessionState clears session state using the StateStore.
-func (s *ManualCommitStrategy) clearSessionState(sessionID string) error {
-	store, err := s.getStateStore()
+func (s *ManualCommitStrategy) clearSessionState(ctx context.Context, sessionID string) error {
+	store, err := s.getStateStore(ctx)
 	if err != nil {
 		return err
 	}
-	if err := store.Clear(context.Background(), sessionID); err != nil {
+	if err := store.Clear(ctx, sessionID); err != nil {
 		return fmt.Errorf("failed to clear session state: %w", err)
 	}
 	return nil
@@ -57,13 +57,13 @@ func (s *ManualCommitStrategy) clearSessionState(sessionID string) error {
 
 // listAllSessionStates returns all active session states.
 // It filters out orphaned sessions whose shadow branch no longer exists.
-func (s *ManualCommitStrategy) listAllSessionStates() ([]*SessionState, error) {
-	store, err := s.getStateStore()
+func (s *ManualCommitStrategy) listAllSessionStates(ctx context.Context) ([]*SessionState, error) {
+	store, err := s.getStateStore(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get state store: %w", err)
 	}
 
-	sessionStates, err := store.List(context.Background())
+	sessionStates, err := store.List(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list session states: %w", err)
 	}
@@ -72,7 +72,7 @@ func (s *ManualCommitStrategy) listAllSessionStates() ([]*SessionState, error) {
 		return nil, nil
 	}
 
-	repo, err := OpenRepository()
+	repo, err := OpenRepository(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open git repository: %w", err)
 	}
@@ -91,7 +91,7 @@ func (s *ManualCommitStrategy) listAllSessionStates() ([]*SessionState, error) {
 		if _, err := repo.Reference(refName, true); err != nil {
 			if !state.Phase.IsActive() && state.LastCheckpointID.IsEmpty() {
 				//nolint:errcheck,gosec // G104: Cleanup is best-effort, shouldn't fail the list operation
-				store.Clear(context.Background(), state.SessionID)
+				store.Clear(ctx, state.SessionID)
 				continue
 			}
 		}
@@ -102,8 +102,8 @@ func (s *ManualCommitStrategy) listAllSessionStates() ([]*SessionState, error) {
 }
 
 // findSessionsForWorktree finds all sessions for the given worktree path.
-func (s *ManualCommitStrategy) findSessionsForWorktree(worktreePath string) ([]*SessionState, error) {
-	allStates, err := s.listAllSessionStates()
+func (s *ManualCommitStrategy) findSessionsForWorktree(ctx context.Context, worktreePath string) ([]*SessionState, error) {
+	allStates, err := s.listAllSessionStates(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -118,8 +118,8 @@ func (s *ManualCommitStrategy) findSessionsForWorktree(worktreePath string) ([]*
 }
 
 // findSessionsForCommit finds all sessions where base_commit matches the given SHA.
-func (s *ManualCommitStrategy) findSessionsForCommit(baseCommitSHA string) ([]*SessionState, error) {
-	allStates, err := s.listAllSessionStates()
+func (s *ManualCommitStrategy) findSessionsForCommit(ctx context.Context, baseCommitSHA string) ([]*SessionState, error) {
+	allStates, err := s.listAllSessionStates(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -135,14 +135,14 @@ func (s *ManualCommitStrategy) findSessionsForCommit(baseCommitSHA string) ([]*S
 
 // FindSessionsForCommit is the exported version of findSessionsForCommit.
 // Used by the rewind reset command to find sessions to clean up.
-func (s *ManualCommitStrategy) FindSessionsForCommit(baseCommitSHA string) ([]*SessionState, error) {
-	return s.findSessionsForCommit(baseCommitSHA)
+func (s *ManualCommitStrategy) FindSessionsForCommit(ctx context.Context, baseCommitSHA string) ([]*SessionState, error) {
+	return s.findSessionsForCommit(ctx, baseCommitSHA)
 }
 
 // ClearSessionState is the exported version of clearSessionState.
 // Used by the rewind reset command to clean up session state files.
-func (s *ManualCommitStrategy) ClearSessionState(sessionID string) error {
-	return s.clearSessionState(sessionID)
+func (s *ManualCommitStrategy) ClearSessionState(ctx context.Context, sessionID string) error {
+	return s.clearSessionState(ctx, sessionID)
 }
 
 // CountOtherActiveSessionsWithCheckpoints counts how many other active sessions
@@ -150,14 +150,14 @@ func (s *ManualCommitStrategy) ClearSessionState(sessionID string) error {
 // on the SAME base commit (current HEAD). This is used to show an informational message
 // about concurrent sessions that will be included in the next commit.
 // Returns 0, nil if no such sessions exist.
-func (s *ManualCommitStrategy) CountOtherActiveSessionsWithCheckpoints(currentSessionID string) (int, error) {
-	currentWorktree, err := GetWorktreePath()
+func (s *ManualCommitStrategy) CountOtherActiveSessionsWithCheckpoints(ctx context.Context, currentSessionID string) (int, error) {
+	currentWorktree, err := paths.WorktreeRoot(ctx)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("failed to get worktree root: %w", err)
 	}
 
 	// Get current HEAD to compare with session base commits
-	repo, err := OpenRepository()
+	repo, err := OpenRepository(ctx)
 	if err != nil {
 		return 0, err
 	}
@@ -167,7 +167,7 @@ func (s *ManualCommitStrategy) CountOtherActiveSessionsWithCheckpoints(currentSe
 	}
 	currentHead := head.Hash().String()
 
-	allStates, err := s.listAllSessionStates()
+	allStates, err := s.listAllSessionStates(ctx)
 	if err != nil {
 		return 0, err
 	}
@@ -192,13 +192,13 @@ func (s *ManualCommitStrategy) CountOtherActiveSessionsWithCheckpoints(currentSe
 // agentType is the human-readable name of the agent (e.g., "Claude Code").
 // transcriptPath is the path to the live transcript file (for mid-session commit detection).
 // userPrompt is the user's prompt text (stored truncated as FirstPrompt for display).
-func (s *ManualCommitStrategy) initializeSession(repo *git.Repository, sessionID string, agentType agent.AgentType, transcriptPath string, userPrompt string) (*SessionState, error) {
+func (s *ManualCommitStrategy) initializeSession(ctx context.Context, repo *git.Repository, sessionID string, agentType types.AgentType, transcriptPath string, userPrompt string) (*SessionState, error) {
 	head, err := repo.Head()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get HEAD: %w", err)
 	}
 
-	worktreePath, err := GetWorktreePath()
+	worktreePath, err := paths.WorktreeRoot(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get worktree path: %w", err)
 	}
@@ -210,7 +210,7 @@ func (s *ManualCommitStrategy) initializeSession(repo *git.Repository, sessionID
 	}
 
 	// Capture untracked files at session start to preserve them during rewind
-	untrackedFiles, err := collectUntrackedFiles()
+	untrackedFiles, err := collectUntrackedFiles(ctx)
 	if err != nil {
 		// Non-fatal: continue even if we can't collect untracked files
 		untrackedFiles = nil
@@ -226,7 +226,7 @@ func (s *ManualCommitStrategy) initializeSession(repo *git.Repository, sessionID
 	headHash := head.Hash().String()
 	state := &SessionState{
 		SessionID:             sessionID,
-		CLIVersion:            buildinfo.Version,
+		CLIVersion:            versioninfo.Version,
 		BaseCommit:            headHash,
 		AttributionBaseCommit: headHash,
 		WorktreePath:          worktreePath,
@@ -241,7 +241,7 @@ func (s *ManualCommitStrategy) initializeSession(repo *git.Repository, sessionID
 		FirstPrompt:           truncatePromptForStorage(userPrompt),
 	}
 
-	if err := s.saveSessionState(state); err != nil {
+	if err := s.saveSessionState(ctx, state); err != nil {
 		return nil, err
 	}
 

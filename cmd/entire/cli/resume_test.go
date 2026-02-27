@@ -1,10 +1,12 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint/id"
@@ -115,7 +117,7 @@ func TestBranchExistsLocally(t *testing.T) {
 	setupResumeTestRepo(t, tmpDir, true)
 
 	t.Run("returns true for existing branch", func(t *testing.T) {
-		exists, err := BranchExistsLocally("feature")
+		exists, err := BranchExistsLocally(context.Background(), "feature")
 		if err != nil {
 			t.Fatalf("BranchExistsLocally() error = %v", err)
 		}
@@ -125,7 +127,7 @@ func TestBranchExistsLocally(t *testing.T) {
 	})
 
 	t.Run("returns false for nonexistent branch", func(t *testing.T) {
-		exists, err := BranchExistsLocally("nonexistent")
+		exists, err := BranchExistsLocally(context.Background(), "nonexistent")
 		if err != nil {
 			t.Fatalf("BranchExistsLocally() error = %v", err)
 		}
@@ -142,13 +144,13 @@ func TestCheckoutBranch(t *testing.T) {
 	setupResumeTestRepo(t, tmpDir, true)
 
 	t.Run("successfully checks out existing branch", func(t *testing.T) {
-		err := CheckoutBranch("feature")
+		err := CheckoutBranch(context.Background(), "feature")
 		if err != nil {
 			t.Fatalf("CheckoutBranch() error = %v", err)
 		}
 
 		// Verify we're on the feature branch
-		branch, err := GetCurrentBranch()
+		branch, err := GetCurrentBranch(context.Background())
 		if err != nil {
 			t.Fatalf("GetCurrentBranch() error = %v", err)
 		}
@@ -158,11 +160,40 @@ func TestCheckoutBranch(t *testing.T) {
 	})
 
 	t.Run("returns error for nonexistent branch", func(t *testing.T) {
-		err := CheckoutBranch("nonexistent")
+		err := CheckoutBranch(context.Background(), "nonexistent")
 		if err == nil {
 			t.Error("CheckoutBranch() expected error for nonexistent branch, got nil")
 		}
 	})
+
+	t.Run("rejects ref starting with dash to prevent argument injection", func(t *testing.T) {
+		// "git checkout -b evil" would create a new branch named "evil" instead
+		// of failing, because git interprets "-b" as a flag.
+		err := CheckoutBranch(context.Background(), "-b evil")
+		if err == nil {
+			t.Fatal("CheckoutBranch() should reject refs starting with '-', got nil")
+		}
+		if !strings.Contains(err.Error(), "invalid ref") {
+			t.Errorf("CheckoutBranch() error = %q, want error containing 'invalid ref'", err.Error())
+		}
+	})
+}
+
+func TestPerformGitResetHard_RejectsArgumentInjection(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Chdir(tmpDir)
+
+	setupResumeTestRepo(t, tmpDir, false)
+
+	// "git reset --hard -q" would silently reset to HEAD in quiet mode instead
+	// of failing, because git interprets "-q" as the --quiet flag.
+	err := performGitResetHard(context.Background(), "-q")
+	if err == nil {
+		t.Fatal("performGitResetHard() should reject hashes starting with '-', got nil")
+	}
+	if !strings.Contains(err.Error(), "invalid commit hash") {
+		t.Errorf("performGitResetHard() error = %q, want error containing 'invalid commit hash'", err.Error())
+	}
 }
 
 func TestResumeFromCurrentBranch_NoCheckpoint(t *testing.T) {
@@ -173,77 +204,9 @@ func TestResumeFromCurrentBranch_NoCheckpoint(t *testing.T) {
 	setupResumeTestRepo(t, tmpDir, false)
 
 	// Run resumeFromCurrentBranch - should not error, just report no checkpoint found
-	err := resumeFromCurrentBranch("master", false)
+	err := resumeFromCurrentBranch(context.Background(), "master", false)
 	if err != nil {
 		t.Errorf("resumeFromCurrentBranch() returned error for commit without checkpoint: %v", err)
-	}
-}
-
-func TestResumeFromCurrentBranch_WithEntireCheckpointTrailer(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Chdir(tmpDir)
-
-	// Set up a fake Claude project directory for testing
-	claudeDir := filepath.Join(tmpDir, "claude-projects")
-	t.Setenv("ENTIRE_TEST_CLAUDE_PROJECT_DIR", claudeDir)
-
-	_, _, _ = setupResumeTestRepo(t, tmpDir, false)
-
-	// Set up the auto-commit strategy and create checkpoint metadata on entire/checkpoints/v1 branch
-	strat := strategy.NewAutoCommitStrategy()
-	if err := strat.EnsureSetup(); err != nil {
-		t.Fatalf("Failed to ensure setup: %v", err)
-	}
-
-	// Create metadata directory with session log (required for SaveChanges)
-	sessionID := "4f8c1176-7025-4530-a860-c6fc4c63a150"
-	sessionLogContent := `{"type":"test"}`
-	metadataDir := filepath.Join(tmpDir, paths.EntireMetadataDir, sessionID)
-	if err := os.MkdirAll(metadataDir, 0o755); err != nil {
-		t.Fatalf("Failed to create metadata dir: %v", err)
-	}
-	logFile := filepath.Join(metadataDir, paths.TranscriptFileName)
-	if err := os.WriteFile(logFile, []byte(sessionLogContent), 0o644); err != nil {
-		t.Fatalf("Failed to write log file: %v", err)
-	}
-
-	// Create a file change to commit
-	testFile := filepath.Join(tmpDir, "test.txt")
-	if err := os.WriteFile(testFile, []byte("metadata content"), 0o644); err != nil {
-		t.Fatalf("Failed to write test file: %v", err)
-	}
-
-	// Use SaveChanges to create a commit with checkpoint metadata on entire/checkpoints/v1 branch
-	ctx := strategy.SaveContext{
-		CommitMessage:  "test commit with checkpoint",
-		MetadataDir:    filepath.Join(paths.EntireMetadataDir, sessionID),
-		MetadataDirAbs: metadataDir,
-		NewFiles:       []string{},
-		ModifiedFiles:  []string{"test.txt"},
-		DeletedFiles:   []string{},
-		AuthorName:     "Test User",
-		AuthorEmail:    "test@example.com",
-	}
-	if err := strat.SaveChanges(ctx); err != nil {
-		t.Fatalf("Failed to save changes: %v", err)
-	}
-
-	// Run resumeFromCurrentBranch
-	err := resumeFromCurrentBranch("master", false)
-	if err != nil {
-		t.Errorf("resumeFromCurrentBranch() returned error: %v", err)
-	}
-
-	// Verify that the session log was written to the Claude project directory
-	expectedLogPath := filepath.Join(claudeDir, sessionID+".jsonl")
-
-	content, err := os.ReadFile(expectedLogPath)
-	if err != nil {
-		t.Fatalf("Failed to read session log from Claude project dir: %v (expected the log to be restored)", err)
-	}
-
-	if string(content) != sessionLogContent {
-		t.Errorf("Session log content mismatch.\nGot: %s\nWant: %s", string(content), sessionLogContent)
 	}
 }
 
@@ -265,7 +228,7 @@ func TestRunResume_AlreadyOnBranch(t *testing.T) {
 	}
 
 	// Run resume on the branch we're already on - should skip checkout
-	err := runResume("feature", false)
+	err := runResume(context.Background(), "feature", false)
 	// Should not error (no session, but shouldn't error)
 	if err != nil {
 		t.Errorf("runResume() returned error when already on branch: %v", err)
@@ -279,7 +242,7 @@ func TestRunResume_BranchDoesNotExist(t *testing.T) {
 	setupResumeTestRepo(t, tmpDir, false)
 
 	// Run resume on a branch that doesn't exist
-	err := runResume("nonexistent", false)
+	err := runResume(context.Background(), "nonexistent", false)
 	if err == nil {
 		t.Error("runResume() expected error for nonexistent branch, got nil")
 	}
@@ -298,7 +261,7 @@ func TestRunResume_UncommittedChanges(t *testing.T) {
 	}
 
 	// Run resume - should fail due to uncommitted changes
-	err := runResume("feature", false)
+	err := runResume(context.Background(), "feature", false)
 	if err == nil {
 		t.Error("runResume() expected error for uncommitted changes, got nil")
 	}
@@ -331,8 +294,7 @@ func createCheckpointOnMetadataBranch(t *testing.T, repo *git.Repository, sessio
 	metadataJSON := fmt.Sprintf(`{
   "checkpoint_id": %q,
   "session_id": %q,
-  "created_at": "2025-01-01T00:00:00Z",
-  "strategy": "auto-commit"
+  "created_at": "2025-01-01T00:00:00Z"
 }`, checkpointID.String(), sessionID)
 
 	// Create blob for metadata
@@ -501,7 +463,7 @@ func TestCheckRemoteMetadata_MetadataExistsOnRemote(t *testing.T) {
 	// Call checkRemoteMetadata - should find it on remote and attempt to fetch
 	// In this test environment without a real origin remote, the fetch will fail
 	// but it should return a SilentError (user-friendly error message already printed)
-	err = checkRemoteMetadata(repo, checkpointID)
+	err = checkRemoteMetadata(context.Background(), repo, checkpointID)
 	if err == nil {
 		t.Error("checkRemoteMetadata() should return SilentError when fetch fails")
 	} else {
@@ -526,7 +488,7 @@ func TestCheckRemoteMetadata_NoRemoteMetadataBranch(t *testing.T) {
 	// Don't create any remote ref - simulating no remote entire/checkpoints/v1
 
 	// Call checkRemoteMetadata - should handle gracefully (no remote branch)
-	err := checkRemoteMetadata(repo, "nonexistent123")
+	err := checkRemoteMetadata(context.Background(), repo, "nonexistent123")
 	if err != nil {
 		t.Errorf("checkRemoteMetadata() returned error when no remote branch: %v", err)
 	}
@@ -561,7 +523,7 @@ func TestCheckRemoteMetadata_CheckpointNotOnRemote(t *testing.T) {
 	}
 
 	// Call checkRemoteMetadata with a DIFFERENT checkpoint ID (not on remote)
-	err = checkRemoteMetadata(repo, "abcd12345678")
+	err = checkRemoteMetadata(context.Background(), repo, "abcd12345678")
 	if err != nil {
 		t.Errorf("checkRemoteMetadata() returned error for missing checkpoint: %v", err)
 	}
@@ -622,7 +584,7 @@ func TestResumeFromCurrentBranch_FallsBackToRemote(t *testing.T) {
 	// Run resumeFromCurrentBranch - should fall back to remote and attempt fetch
 	// In this test environment without a real origin remote, the fetch will fail
 	// but it should return a SilentError (user-friendly error message already printed)
-	err = resumeFromCurrentBranch("master", false)
+	err = resumeFromCurrentBranch(context.Background(), "master", false)
 	if err == nil {
 		t.Error("resumeFromCurrentBranch() should return SilentError when fetch fails")
 	} else {

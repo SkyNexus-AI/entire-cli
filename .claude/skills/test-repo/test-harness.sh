@@ -130,7 +130,7 @@ verify-shadow-branch)
   if git branch -a | grep -E "entire/[0-9a-f]"; then
     echo "✓ Shadow branch exists"
   else
-    echo "Note: No shadow branch (expected for auto-commit strategy)"
+    echo "Note: No shadow branch"
   fi
   ;;
 

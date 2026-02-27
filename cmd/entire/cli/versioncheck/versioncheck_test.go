@@ -2,6 +2,7 @@ package versioncheck
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -156,12 +157,12 @@ func TestFetchLatestVersion(t *testing.T) {
 	githubAPIURL = server.URL
 	t.Cleanup(func() { githubAPIURL = original })
 
-	version, err := fetchLatestVersion()
+	version, err := fetchLatestVersion(context.Background())
 	if err != nil {
-		t.Fatalf("fetchLatestVersion() error = %v", err)
+		t.Fatalf("fetchLatestVersion(context.Background()) error = %v", err)
 	}
 	if version != "v1.2.3" {
-		t.Errorf("fetchLatestVersion() = %q, want v1.2.3", version)
+		t.Errorf("fetchLatestVersion(context.Background()) = %q, want v1.2.3", version)
 	}
 }
 
@@ -181,9 +182,9 @@ func TestFetchLatestVersionPrerelease(t *testing.T) {
 	githubAPIURL = server.URL
 	t.Cleanup(func() { githubAPIURL = original })
 
-	_, err := fetchLatestVersion()
+	_, err := fetchLatestVersion(context.Background())
 	if err == nil {
-		t.Fatal("fetchLatestVersion() expected error for prerelease, got nil")
+		t.Fatal("fetchLatestVersion(context.Background()) expected error for prerelease, got nil")
 	}
 }
 
@@ -197,9 +198,9 @@ func TestFetchLatestVersionServerError(t *testing.T) {
 	githubAPIURL = server.URL
 	t.Cleanup(func() { githubAPIURL = original })
 
-	_, err := fetchLatestVersion()
+	_, err := fetchLatestVersion(context.Background())
 	if err == nil {
-		t.Fatal("fetchLatestVersion() expected error for 500 response, got nil")
+		t.Fatal("fetchLatestVersion(context.Background()) expected error for 500 response, got nil")
 	}
 }
 
@@ -280,7 +281,7 @@ func TestCheckAndNotify_SkipsDevVersion(t *testing.T) {
 	server := newVersionServer(t, "v9.9.9")
 	cmd, buf := setupCheckAndNotifyTest(t, server.URL)
 
-	CheckAndNotify(cmd.OutOrStdout(), "dev")
+	CheckAndNotify(context.Background(), cmd.OutOrStdout(), "dev")
 
 	if buf.Len() != 0 {
 		t.Errorf("expected no output for dev version, got %q", buf.String())
@@ -291,7 +292,7 @@ func TestCheckAndNotify_SkipsEmptyVersion(t *testing.T) {
 	server := newVersionServer(t, "v9.9.9")
 	cmd, buf := setupCheckAndNotifyTest(t, server.URL)
 
-	CheckAndNotify(cmd.OutOrStdout(), "")
+	CheckAndNotify(context.Background(), cmd.OutOrStdout(), "")
 
 	if buf.Len() != 0 {
 		t.Errorf("expected no output for empty version, got %q", buf.String())
@@ -315,7 +316,7 @@ func TestCheckAndNotify_SkipsWhenCacheIsFresh(t *testing.T) {
 		t.Fatalf("saveCache() error = %v", err)
 	}
 
-	CheckAndNotify(cmd.OutOrStdout(), "1.0.0")
+	CheckAndNotify(context.Background(), cmd.OutOrStdout(), "1.0.0")
 
 	if buf.Len() != 0 {
 		t.Errorf("expected no output when cache is fresh, got %q", buf.String())
@@ -326,7 +327,7 @@ func TestCheckAndNotify_PrintsNotificationWhenOutdated(t *testing.T) {
 	server := newVersionServer(t, "v2.0.0")
 	cmd, buf := setupCheckAndNotifyTest(t, server.URL)
 
-	CheckAndNotify(cmd.OutOrStdout(), "1.0.0")
+	CheckAndNotify(context.Background(), cmd.OutOrStdout(), "1.0.0")
 
 	output := buf.String()
 	if !strings.Contains(output, "v2.0.0") {
@@ -341,7 +342,7 @@ func TestCheckAndNotify_NoNotificationWhenUpToDate(t *testing.T) {
 	server := newVersionServer(t, "v1.0.0")
 	cmd, buf := setupCheckAndNotifyTest(t, server.URL)
 
-	CheckAndNotify(cmd.OutOrStdout(), "1.0.0")
+	CheckAndNotify(context.Background(), cmd.OutOrStdout(), "1.0.0")
 
 	if buf.Len() != 0 {
 		t.Errorf("expected no output when up to date, got %q", buf.String())
@@ -356,7 +357,7 @@ func TestCheckAndNotify_FetchFailureUpdatesCacheToPreventRetry(t *testing.T) {
 
 	cmd, buf := setupCheckAndNotifyTest(t, server.URL)
 
-	CheckAndNotify(cmd.OutOrStdout(), "1.0.0")
+	CheckAndNotify(context.Background(), cmd.OutOrStdout(), "1.0.0")
 
 	// No notification on fetch failure
 	if buf.Len() != 0 {

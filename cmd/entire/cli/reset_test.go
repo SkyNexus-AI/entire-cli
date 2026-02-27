@@ -29,7 +29,7 @@ func setupResetTestRepo(t *testing.T) (*git.Repository, plumbing.Hash) {
 	}
 
 	t.Chdir(dir)
-	paths.ClearRepoRootCache()
+	paths.ClearWorktreeRootCache()
 
 	// Create initial commit
 	emptyTree := &object.Tree{Entries: []object.TreeEntry{}}
@@ -212,7 +212,7 @@ func TestResetCmd_NotGitRepo(t *testing.T) {
 	// Create temp dir (not git repo)
 	dir := t.TempDir()
 	t.Chdir(dir)
-	paths.ClearRepoRootCache()
+	paths.ClearWorktreeRootCache()
 
 	// Run reset
 	cmd := newResetCmd()
@@ -229,30 +229,6 @@ func TestResetCmd_NotGitRepo(t *testing.T) {
 	output := stderr.String()
 	if !strings.Contains(output, "not a git repository") {
 		t.Errorf("Expected 'not a git repository' message, got: %s", output)
-	}
-}
-
-func TestResetCmd_AutoCommitStrategy(t *testing.T) {
-	setupResetTestRepo(t)
-
-	// Write auto-commit strategy settings
-	writeSettings(t, `{"strategy": "auto-commit", "enabled": true}`)
-
-	// Run reset
-	cmd := newResetCmd()
-	var stdout, stderr bytes.Buffer
-	cmd.SetOut(&stdout)
-	cmd.SetErr(&stderr)
-
-	err := cmd.Execute()
-	if err == nil {
-		t.Fatal("reset command should return error for auto-commit strategy")
-	}
-
-	// Verify helpful error message
-	output := stderr.String()
-	if !strings.Contains(output, "strategy auto-commit does not support reset") {
-		t.Errorf("Expected message about auto-commit strategy, got: %s", output)
 	}
 }
 

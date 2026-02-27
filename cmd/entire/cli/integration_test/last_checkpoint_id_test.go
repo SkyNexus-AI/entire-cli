@@ -8,7 +8,6 @@ import (
 
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint/id"
 	"github.com/entireio/cli/cmd/entire/cli/paths"
-	"github.com/entireio/cli/cmd/entire/cli/strategy"
 )
 
 // TestShadowStrategy_OneCheckpointPerCommit tests the 1:1 checkpoint model:
@@ -24,7 +23,7 @@ import (
 func TestShadowStrategy_OneCheckpointPerCommit(t *testing.T) {
 	t.Parallel()
 
-	env := NewFeatureBranchEnv(t, strategy.StrategyNameManualCommit)
+	env := NewFeatureBranchEnv(t)
 
 	session := env.NewSession()
 
@@ -93,7 +92,7 @@ func TestShadowStrategy_OneCheckpointPerCommit(t *testing.T) {
 func TestShadowStrategy_LastCheckpointID_ClearedOnNewPrompt(t *testing.T) {
 	t.Parallel()
 
-	env := NewFeatureBranchEnv(t, strategy.StrategyNameManualCommit)
+	env := NewFeatureBranchEnv(t)
 
 	// === First session work ===
 	session1 := env.NewSession()
@@ -178,7 +177,7 @@ func TestShadowStrategy_LastCheckpointID_ClearedOnNewPrompt(t *testing.T) {
 func TestShadowStrategy_LastCheckpointID_NotSetWithoutCondensation(t *testing.T) {
 	t.Parallel()
 
-	env := NewFeatureBranchEnv(t, strategy.StrategyNameManualCommit)
+	env := NewFeatureBranchEnv(t)
 
 	// Create a file directly (not through a Claude session)
 	env.WriteFile("manual.txt", "manual content")
@@ -201,7 +200,7 @@ func TestShadowStrategy_LastCheckpointID_NotSetWithoutCondensation(t *testing.T)
 func TestShadowStrategy_NewSessionIgnoresOldCheckpointIDs(t *testing.T) {
 	t.Parallel()
 
-	env := NewFeatureBranchEnv(t, strategy.StrategyNameManualCommit)
+	env := NewFeatureBranchEnv(t)
 
 	// === Create an OLD session on the initial commit ===
 	oldSession := env.NewSession()
@@ -266,7 +265,7 @@ func TestShadowStrategy_NewSessionIgnoresOldCheckpointIDs(t *testing.T) {
 func TestShadowStrategy_ShadowBranchCleanedUpAfterCondensation(t *testing.T) {
 	t.Parallel()
 
-	env := NewFeatureBranchEnv(t, strategy.StrategyNameManualCommit)
+	env := NewFeatureBranchEnv(t)
 
 	session := env.NewSession()
 
@@ -318,7 +317,7 @@ func TestShadowStrategy_ShadowBranchCleanedUpAfterCondensation(t *testing.T) {
 func TestShadowStrategy_BaseCommitUpdatedAfterCondensation(t *testing.T) {
 	t.Parallel()
 
-	env := NewFeatureBranchEnv(t, strategy.StrategyNameManualCommit)
+	env := NewFeatureBranchEnv(t)
 
 	session := env.NewSession()
 

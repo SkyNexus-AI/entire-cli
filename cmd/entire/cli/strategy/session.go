@@ -1,6 +1,7 @@
 package strategy
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -59,42 +60,17 @@ type Checkpoint struct {
 	ToolUseID string
 }
 
-// PromptResponse represents a single user prompt and assistant response pair.
-type PromptResponse struct {
-	// Prompt is the user's message
-	Prompt string
-
-	// Response is the assistant's response
-	Response string
-
-	// Files is the list of files modified during this prompt/response
-	Files []string
-}
-
-// CheckpointDetails contains detailed information extracted from a checkpoint's transcript.
-// This is used by the explain command to display checkpoint content.
-type CheckpointDetails struct {
-	// Interactions contains all prompt/response pairs in this checkpoint.
-	// For strategies like auto-commit/commit, this typically has one entry.
-	// For strategies like shadow, this may have multiple entries.
-	Interactions []PromptResponse
-
-	// Files is the aggregate list of all files modified in this checkpoint.
-	// This is a convenience field that combines files from all interactions.
-	Files []string
-}
-
 // ListSessions returns all sessions from the entire/checkpoints/v1 branch,
 // plus any additional sessions from strategies implementing SessionSource.
 // It automatically discovers all registered strategies and merges their sessions.
-func ListSessions() ([]Session, error) {
-	repo, err := OpenRepository()
+func ListSessions(ctx context.Context) ([]Session, error) {
+	repo, err := OpenRepository(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open git repository: %w", err)
 	}
 
 	// Get checkpoints from the entire/checkpoints/v1 branch
-	checkpoints, err := ListCheckpoints()
+	checkpoints, err := ListCheckpoints(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list checkpoints: %w", err)
 	}
@@ -144,20 +120,9 @@ func ListSessions() ([]Session, error) {
 		}
 	}
 
-	// Check all registered strategies for additional sessions
-	for _, name := range List() {
-		strat, stratErr := Get(name)
-		if stratErr != nil {
-			continue
-		}
-		source, ok := strat.(SessionSource)
-		if !ok {
-			continue
-		}
-		additionalSessions, addErr := source.GetAdditionalSessions()
-		if addErr != nil {
-			continue // Skip strategies that fail to provide additional sessions
-		}
+	// Check for additional sessions
+	strat := NewManualCommitStrategy()
+	if additionalSessions, err := strat.GetAdditionalSessions(ctx); err == nil {
 		for _, addSession := range additionalSessions {
 			if addSession == nil {
 				continue
@@ -208,8 +173,8 @@ func ListSessions() ([]Session, error) {
 
 // GetSession finds a session by ID (supports prefix matching).
 // Returns ErrNoSession if no matching session is found.
-func GetSession(sessionID string) (*Session, error) {
-	sessions, err := ListSessions()
+func GetSession(ctx context.Context, sessionID string) (*Session, error) {
+	sessions, err := ListSessions(ctx)
 	if err != nil {
 		return nil, err
 	}

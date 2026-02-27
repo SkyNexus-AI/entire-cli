@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"runtime"
 
-	"github.com/entireio/cli/cmd/entire/cli/buildinfo"
 	"github.com/entireio/cli/cmd/entire/cli/telemetry"
 	"github.com/entireio/cli/cmd/entire/cli/versioncheck"
+	"github.com/entireio/cli/cmd/entire/cli/versioninfo"
 	"github.com/spf13/cobra"
 )
 
@@ -28,9 +28,10 @@ Environment Variables:
 
 func NewRootCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "entire",
-		Short: "Entire CLI",
-		Long:  "The command-line interface for Entire" + gettingStarted + accessibilityHelp,
+		Use:     "entire",
+		Short:   "Entire CLI",
+		Long:    "The command-line interface for Entire" + gettingStarted + accessibilityHelp,
+		Version: versioninfo.Version,
 		// Let main.go handle error printing to avoid duplication
 		SilenceErrors: true,
 		SilenceUsage:  true,
@@ -48,7 +49,7 @@ func NewRootCmd() *cobra.Command {
 
 			// Load settings once for telemetry and version check
 			var telemetryEnabled *bool
-			settings, err := LoadEntireSettings()
+			settings, err := LoadEntireSettings(cmd.Context())
 			if err == nil {
 				telemetryEnabled = settings.Telemetry
 			}
@@ -56,14 +57,14 @@ func NewRootCmd() *cobra.Command {
 			// Check if telemetry is enabled
 			if telemetryEnabled != nil && *telemetryEnabled {
 				// Use detached tracking (non-blocking)
-				installedAgents := GetAgentsWithHooksInstalled()
+				installedAgents := GetAgentsWithHooksInstalled(cmd.Context())
 				agentStr := JoinAgentNames(installedAgents)
-				telemetry.TrackCommandDetached(cmd, settings.Strategy, agentStr, settings.Enabled, buildinfo.Version)
+				telemetry.TrackCommandDetached(cmd, agentStr, settings.Enabled, versioninfo.Version)
 			}
 
 			// Version check and notification (synchronous with 2s timeout)
 			// Runs AFTER command completes to avoid interfering with interactive modes
-			versioncheck.CheckAndNotify(cmd.OutOrStdout(), buildinfo.Version)
+			versioncheck.CheckAndNotify(cmd.Context(), cmd.OutOrStdout(), versioninfo.Version)
 		},
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return cmd.Help()
@@ -81,10 +82,11 @@ func NewRootCmd() *cobra.Command {
 	cmd.AddCommand(newHooksCmd())
 	cmd.AddCommand(newVersionCmd())
 	cmd.AddCommand(newExplainCmd())
-	cmd.AddCommand(newDebugCmd())
 	cmd.AddCommand(newDoctorCmd())
 	cmd.AddCommand(newSendAnalyticsCmd())
 	cmd.AddCommand(newCurlBashPostInstallCmd())
+
+	cmd.SetVersionTemplate(versionString())
 
 	// Replace default help command with custom one that supports -t flag
 	cmd.SetHelpCommand(NewHelpCmd(cmd))
@@ -92,14 +94,19 @@ func NewRootCmd() *cobra.Command {
 	return cmd
 }
 
+func versionString() string {
+	return fmt.Sprintf("Entire CLI %s (%s)\nGo version: %s\nOS/Arch: %s/%s\n",
+		versioninfo.Version, versioninfo.Commit, runtime.Version(), runtime.GOOS, runtime.GOARCH)
+}
+
 func newVersionCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "version",
 		Short: "Show build information",
-		Run: func(_ *cobra.Command, _ []string) {
-			fmt.Printf("Entire CLI %s (%s)\n", buildinfo.Version, buildinfo.Commit)
-			fmt.Printf("Go version: %s\n", runtime.Version())
-			fmt.Printf("OS/Arch: %s/%s\n", runtime.GOOS, runtime.GOARCH)
+		Run: func(cmd *cobra.Command, _ []string) {
+			// Use OutOrStdout explicitly — cobra's cmd.Print() defaults to
+			// stderr in v1.10+, but version output should go to stdout.
+			fmt.Fprint(cmd.OutOrStdout(), versionString())
 		},
 	}
 }

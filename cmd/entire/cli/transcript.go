@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -9,7 +10,9 @@ import (
 	"path/filepath"
 	"strings"
 
+	agentpkg "github.com/entireio/cli/cmd/entire/cli/agent"
 	"github.com/entireio/cli/cmd/entire/cli/agent/claudecode"
+	"github.com/entireio/cli/cmd/entire/cli/paths"
 	"github.com/entireio/cli/cmd/entire/cli/textutil"
 	"github.com/entireio/cli/cmd/entire/cli/transcript"
 )
@@ -172,25 +175,6 @@ func extractLastUserPrompt(transcript []transcriptLine) string {
 	return prompts[len(prompts)-1]
 }
 
-// extractLastAssistantMessage extracts the last text message from the assistant
-func extractLastAssistantMessage(transcript []transcriptLine) string {
-	for i := len(transcript) - 1; i >= 0; i-- {
-		if transcript[i].Type == transcriptTypeAssistant {
-			var msg assistantMessage
-			if err := json.Unmarshal(transcript[i].Message, &msg); err != nil {
-				continue
-			}
-
-			for _, block := range msg.Content {
-				if block.Type == contentTypeText && block.Text != "" {
-					return block.Text
-				}
-			}
-		}
-	}
-	return ""
-}
-
 // findLastUserUUID finds the UUID of the last user message (that has string content)
 func findLastUserUUID(transcript []transcriptLine) string {
 	for i := len(transcript) - 1; i >= 0; i-- {
@@ -275,44 +259,19 @@ func extractModifiedFiles(transcript []transcriptLine) []string {
 	return files
 }
 
-// extractKeyActions extracts key actions from the transcript for context file
-func extractKeyActions(transcript []transcriptLine, maxActions int) []string {
-	var keyActions []string
-
-	for _, line := range transcript {
-		if line.Type == transcriptTypeAssistant {
-			var msg assistantMessage
-			if err := json.Unmarshal(line.Message, &msg); err != nil {
-				continue
-			}
-
-			for _, block := range msg.Content {
-				if block.Type == contentTypeToolUse {
-					var input toolInput
-					_ = json.Unmarshal(block.Input, &input) //nolint:errcheck // Best-effort parsing for display purposes
-
-					detail := input.Description
-					if detail == "" {
-						detail = input.Command
-					}
-					if detail == "" {
-						detail = input.FilePath
-					}
-					if detail == "" {
-						detail = input.Pattern
-					}
-
-					action := "- **" + block.Name + "**: " + detail
-					keyActions = append(keyActions, action)
-					if len(keyActions) >= maxActions {
-						return keyActions
-					}
-				}
-			}
-		}
+// resolveTranscriptPath determines the correct file path for an agent's session transcript.
+// Computes the path dynamically from the current repo location for cross-machine portability.
+func resolveTranscriptPath(ctx context.Context, sessionID string, agent agentpkg.Agent) (string, error) {
+	repoRoot, err := paths.WorktreeRoot(ctx)
+	if err != nil {
+		return "", fmt.Errorf("failed to get worktree root: %w", err)
 	}
 
-	return keyActions
+	sessionDir, err := agent.GetSessionDir(repoRoot)
+	if err != nil {
+		return "", fmt.Errorf("failed to get agent session directory: %w", err)
+	}
+	return agent.ResolveSessionFile(sessionDir, sessionID), nil
 }
 
 // AgentTranscriptPath returns the path to a subagent's transcript file.

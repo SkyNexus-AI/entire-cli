@@ -20,7 +20,7 @@ func TestSetupGeminiHooks_AddsAllRequiredHooks(t *testing.T) {
 	t.Parallel()
 	env := NewTestEnv(t)
 	env.InitRepo()
-	env.InitEntire("manual-commit") // Sets up .entire/settings.json
+	env.InitEntire() // Sets up .entire/settings.json
 
 	// Create initial commit (required for setup)
 	env.WriteFile("README.md", "# Test")
@@ -83,7 +83,7 @@ func TestSetupGeminiHooks_PreservesExistingSettings(t *testing.T) {
 	t.Parallel()
 	env := NewTestEnv(t)
 	env.InitRepo()
-	env.InitEntire("manual-commit")
+	env.InitEntire()
 
 	env.WriteFile("README.md", "# Test")
 	env.GitAdd("README.md")

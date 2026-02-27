@@ -40,7 +40,7 @@ func (silentLogger) Errorf(_ string, _ ...interface{}) {}
 
 // BuildEventPayload constructs the event payload for tracking.
 // Exported for testing. Returns nil if the payload cannot be built.
-func BuildEventPayload(cmd *cobra.Command, strategy, agent string, isEntireEnabled bool, version string) *EventPayload {
+func BuildEventPayload(cmd *cobra.Command, agent string, isEntireEnabled bool, version string) *EventPayload {
 	if cmd == nil {
 		return nil
 	}
@@ -64,7 +64,6 @@ func BuildEventPayload(cmd *cobra.Command, strategy, agent string, isEntireEnabl
 
 	properties := map[string]any{
 		"command":         cmd.CommandPath(),
-		"strategy":        strategy,
 		"agent":           selectedAgent,
 		"isEntireEnabled": isEntireEnabled,
 		"cli_version":     version,
@@ -86,7 +85,7 @@ func BuildEventPayload(cmd *cobra.Command, strategy, agent string, isEntireEnabl
 
 // TrackCommandDetached tracks a command execution by spawning a detached subprocess.
 // This returns immediately without blocking the CLI.
-func TrackCommandDetached(cmd *cobra.Command, strategy, agent string, isEntireEnabled bool, version string) {
+func TrackCommandDetached(cmd *cobra.Command, agent string, isEntireEnabled bool, version string) {
 	// Check opt-out environment variables
 	if os.Getenv("ENTIRE_TELEMETRY_OPTOUT") != "" {
 		return
@@ -100,7 +99,7 @@ func TrackCommandDetached(cmd *cobra.Command, strategy, agent string, isEntireEn
 		return
 	}
 
-	payload := BuildEventPayload(cmd, strategy, agent, isEntireEnabled, version)
+	payload := BuildEventPayload(cmd, agent, isEntireEnabled, version)
 	if payload == nil {
 		return
 	}

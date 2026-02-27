@@ -15,12 +15,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/entireio/cli/cmd/entire/cli/agent"
+	"github.com/entireio/cli/cmd/entire/cli/agent/types"
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint"
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint/id"
 	"github.com/entireio/cli/cmd/entire/cli/jsonutil"
 	"github.com/entireio/cli/cmd/entire/cli/paths"
-	"github.com/entireio/cli/cmd/entire/cli/strategy"
 	"github.com/entireio/cli/cmd/entire/cli/trailers"
 
 	"github.com/go-git/go-git/v5"
@@ -44,11 +43,12 @@ func getTestBinary() string {
 
 // TestEnv manages an isolated test environment for integration tests.
 type TestEnv struct {
-	T                *testing.T
-	RepoDir          string
-	ClaudeProjectDir string
-	GeminiProjectDir string
-	SessionCounter   int
+	T                  *testing.T
+	RepoDir            string
+	ClaudeProjectDir   string
+	GeminiProjectDir   string
+	OpenCodeProjectDir string
+	SessionCounter     int
 }
 
 // NewTestEnv creates a new isolated test environment.
@@ -73,16 +73,21 @@ func NewTestEnv(t *testing.T) *TestEnv {
 	if resolved, err := filepath.EvalSymlinks(geminiProjectDir); err == nil {
 		geminiProjectDir = resolved
 	}
+	openCodeProjectDir := t.TempDir()
+	if resolved, err := filepath.EvalSymlinks(openCodeProjectDir); err == nil {
+		openCodeProjectDir = resolved
+	}
 
 	env := &TestEnv{
-		T:                t,
-		RepoDir:          repoDir,
-		ClaudeProjectDir: claudeProjectDir,
-		GeminiProjectDir: geminiProjectDir,
+		T:                  t,
+		RepoDir:            repoDir,
+		ClaudeProjectDir:   claudeProjectDir,
+		GeminiProjectDir:   geminiProjectDir,
+		OpenCodeProjectDir: openCodeProjectDir,
 	}
 
 	// Note: Don't use t.Setenv here - it's incompatible with t.Parallel()
-	// CLI commands receive ENTIRE_TEST_CLAUDE_PROJECT_DIR or ENTIRE_TEST_GEMINI_PROJECT_DIR via cmd.Env instead
+	// CLI commands receive ENTIRE_TEST_*_PROJECT_DIR via cmd.Env instead
 
 	return env
 }
@@ -102,12 +107,39 @@ func (env *TestEnv) Cleanup() {
 	// No-op - temp dirs are cleaned up by t.TempDir()
 }
 
+// gitIsolatedEnv returns os.Environ() with git isolation variables set.
+// This prevents user/system git config (global gitignore, aliases, etc.) from
+// affecting test behavior. Use this for any exec.Command that runs git or the
+// CLI binary in integration tests.
+//
+// See https://git-scm.com/docs/git#Documentation/git.txt-GITCONFIGGLOBAL
+//
+// Existing GIT_CONFIG_GLOBAL/GIT_CONFIG_SYSTEM entries are filtered out before
+// appending overrides to ensure they take effect regardless of parent env.
+func gitIsolatedEnv() []string {
+	env := os.Environ()
+	filtered := make([]string, 0, len(env)+2)
+	for _, e := range env {
+		if strings.HasPrefix(e, "GIT_CONFIG_GLOBAL=") || strings.HasPrefix(e, "GIT_CONFIG_SYSTEM=") {
+			continue
+		}
+		filtered = append(filtered, e)
+	}
+	return append(filtered,
+		"GIT_CONFIG_GLOBAL=/dev/null", // Isolate from user's global git config (e.g. global gitignore)
+		"GIT_CONFIG_SYSTEM=/dev/null", // Isolate from system git config
+	)
+}
+
 // cliEnv returns the environment variables for CLI execution.
-// Includes both Claude and Gemini project dirs so tests work for any agent.
+// Includes Claude, Gemini, and OpenCode project dirs so tests work for any agent.
+// Delegates to gitIsolatedEnv() for git config isolation.
 func (env *TestEnv) cliEnv() []string {
-	return append(os.Environ(),
+	return append(gitIsolatedEnv(),
 		"ENTIRE_TEST_CLAUDE_PROJECT_DIR="+env.ClaudeProjectDir,
 		"ENTIRE_TEST_GEMINI_PROJECT_DIR="+env.GeminiProjectDir,
+		"ENTIRE_TEST_OPENCODE_PROJECT_DIR="+env.OpenCodeProjectDir,
+		"ENTIRE_TEST_TTY=0", // Prevent interactive prompts from blocking in tests
 	)
 }
 
@@ -153,19 +185,19 @@ func (env *TestEnv) RunCLIWithStdin(stdin string, args ...string) string {
 
 // NewRepoEnv creates a TestEnv with an initialized git repo and Entire.
 // This is a convenience factory for tests that need a basic repo setup.
-func NewRepoEnv(t *testing.T, strategy string) *TestEnv {
+func NewRepoEnv(t *testing.T) *TestEnv {
 	t.Helper()
 	env := NewTestEnv(t)
 	env.InitRepo()
-	env.InitEntire(strategy)
+	env.InitEntire()
 	return env
 }
 
 // NewRepoWithCommit creates a TestEnv with a git repo, Entire, and an initial commit.
 // The initial commit contains a README.md and .gitignore (excluding .entire/).
-func NewRepoWithCommit(t *testing.T, strategy string) *TestEnv {
+func NewRepoWithCommit(t *testing.T) *TestEnv {
 	t.Helper()
-	env := NewRepoEnv(t, strategy)
+	env := NewRepoEnv(t)
 	env.WriteFile(".gitignore", ".entire/\n")
 	env.WriteFile("README.md", "# Test Repository")
 	env.GitAdd(".gitignore")
@@ -178,76 +210,11 @@ func NewRepoWithCommit(t *testing.T, strategy string) *TestEnv {
 // It initializes the repo, creates an initial commit on main,
 // and checks out a feature branch. This is the most common setup
 // for session and rewind tests since Entire tracking skips main/master.
-func NewFeatureBranchEnv(t *testing.T, strategyName string) *TestEnv {
+func NewFeatureBranchEnv(t *testing.T) *TestEnv {
 	t.Helper()
-	env := NewRepoWithCommit(t, strategyName)
+	env := NewRepoWithCommit(t)
 	env.GitCheckoutNewBranch("feature/test-branch")
 	return env
-}
-
-// AllStrategies returns all strategy names for parameterized tests.
-func AllStrategies() []string {
-	return []string{
-		strategy.StrategyNameAutoCommit,
-		strategy.StrategyNameManualCommit,
-	}
-}
-
-// RunForAllStrategies runs a test function for each strategy in parallel.
-// This reduces boilerplate for tests that need to verify behavior across all strategies.
-// Each subtest gets its own TestEnv with a feature branch ready for testing.
-func RunForAllStrategies(t *testing.T, testFn func(t *testing.T, env *TestEnv, strategyName string)) {
-	t.Helper()
-	for _, strat := range AllStrategies() {
-		strat := strat // capture for parallel
-		t.Run(strat, func(t *testing.T) {
-			t.Parallel()
-			env := NewFeatureBranchEnv(t, strat)
-			testFn(t, env, strat)
-		})
-	}
-}
-
-// RunForAllStrategiesWithRepoEnv runs a test function for each strategy in parallel,
-// using NewRepoWithCommit instead of NewFeatureBranchEnv. Use this for tests
-// that need to test behavior on the main branch.
-func RunForAllStrategiesWithRepoEnv(t *testing.T, testFn func(t *testing.T, env *TestEnv, strategyName string)) {
-	t.Helper()
-	for _, strat := range AllStrategies() {
-		strat := strat // capture for parallel
-		t.Run(strat, func(t *testing.T) {
-			t.Parallel()
-			env := NewRepoWithCommit(t, strat)
-			testFn(t, env, strat)
-		})
-	}
-}
-
-// RunForAllStrategiesWithBasicEnv runs a test function for each strategy in parallel,
-// using NewRepoEnv (git repo + entire init, no commits). Use this for tests
-// that need to verify basic initialization behavior.
-func RunForAllStrategiesWithBasicEnv(t *testing.T, testFn func(t *testing.T, env *TestEnv, strategyName string)) {
-	t.Helper()
-	for _, strat := range AllStrategies() {
-		strat := strat // capture for parallel
-		t.Run(strat, func(t *testing.T) {
-			t.Parallel()
-			env := NewRepoEnv(t, strat)
-			testFn(t, env, strat)
-		})
-	}
-}
-
-// RunForStrategiesSequential runs a test function for specific strategies sequentially.
-// Use this for tests that cannot be parallelized (e.g., tests using os.Chdir).
-// The strategies parameter allows testing a subset of strategies.
-func RunForStrategiesSequential(t *testing.T, strategies []string, testFn func(t *testing.T, strategyName string)) {
-	t.Helper()
-	for _, strat := range strategies {
-		t.Run(strat, func(t *testing.T) {
-			testFn(t, strat)
-		})
-	}
 }
 
 // InitRepo initializes a git repository in the test environment.
@@ -279,31 +246,32 @@ func (env *TestEnv) InitRepo() {
 }
 
 // InitEntire initializes the .entire directory with the specified strategy.
-func (env *TestEnv) InitEntire(strategyName string) {
-	env.InitEntireWithOptions(strategyName, nil)
+func (env *TestEnv) InitEntire() {
+	env.InitEntireWithOptions(nil)
 }
 
 // InitEntireWithOptions initializes the .entire directory with the specified strategy and options.
-func (env *TestEnv) InitEntireWithOptions(strategyName string, strategyOptions map[string]any) {
+func (env *TestEnv) InitEntireWithOptions(strategyOptions map[string]any) {
 	env.T.Helper()
-	env.initEntireInternal(strategyName, "", strategyOptions)
+	env.initEntireInternal(strategyOptions)
 }
 
 // InitEntireWithAgent initializes an Entire test environment with a specific agent.
-// If agentName is empty, defaults to claude-code.
-func (env *TestEnv) InitEntireWithAgent(strategyName string, agentName agent.AgentName) {
+// The agent name is for test documentation only — the CLI resolves the agent from
+// hook commands and checkpoint metadata, not from settings.json.
+func (env *TestEnv) InitEntireWithAgent(_ types.AgentName) {
 	env.T.Helper()
-	env.initEntireInternal(strategyName, agentName, nil)
+	env.initEntireInternal(nil)
 }
 
 // InitEntireWithAgentAndOptions initializes Entire with the specified strategy, agent, and options.
-func (env *TestEnv) InitEntireWithAgentAndOptions(strategyName string, agentName agent.AgentName, strategyOptions map[string]any) {
+func (env *TestEnv) InitEntireWithAgentAndOptions(_ types.AgentName, strategyOptions map[string]any) {
 	env.T.Helper()
-	env.initEntireInternal(strategyName, agentName, strategyOptions)
+	env.initEntireInternal(strategyOptions)
 }
 
 // initEntireInternal is the common implementation for InitEntire variants.
-func (env *TestEnv) initEntireInternal(strategyName string, agentName agent.AgentName, strategyOptions map[string]any) {
+func (env *TestEnv) initEntireInternal(strategyOptions map[string]any) {
 	env.T.Helper()
 
 	// Create .entire directory structure
@@ -319,13 +287,12 @@ func (env *TestEnv) initEntireInternal(strategyName string, agentName agent.Agen
 	}
 
 	// Write settings.json
+	// Note: The agent name is NOT stored in settings.json — the CLI determines
+	// the agent from installed hooks (detect presence) or checkpoint metadata.
+	// The settings parser uses DisallowUnknownFields(), so only recognized fields are allowed.
 	settings := map[string]any{
-		"strategy":  strategyName,
+		"enabled":   true,
 		"local_dev": true, // Note: git-triggered hooks won't work (path is relative); tests call hooks via getTestBinary() instead
-	}
-	// Only add agent if specified (otherwise defaults to claude-code)
-	if agentName != "" {
-		settings["agent"] = string(agentName)
 	}
 	if strategyOptions != nil {
 		settings["strategy_options"] = strategyOptions
@@ -468,7 +435,7 @@ func (env *TestEnv) GitCommitWithMetadata(message, metadataDir string) {
 }
 
 // GitCommitWithCheckpointID creates a commit with Entire-Checkpoint trailer.
-// This simulates commits created by the auto-commit strategy.
+// This simulates commits.
 func (env *TestEnv) GitCommitWithCheckpointID(message, checkpointID string) {
 	env.T.Helper()
 
@@ -613,6 +580,7 @@ func (env *TestEnv) GitCheckoutNewBranch(branchName string) {
 
 	cmd := exec.Command("git", "checkout", "-b", branchName)
 	cmd.Dir = env.RepoDir
+	cmd.Env = gitIsolatedEnv()
 	if output, err := cmd.CombinedOutput(); err != nil {
 		env.T.Fatalf("failed to checkout new branch %s: %v\nOutput: %s", branchName, err, output)
 	}
@@ -944,11 +912,11 @@ func (env *TestEnv) gitCommitWithShadowHooks(message string, simulateTTY bool, f
 	if simulateTTY {
 		// Simulate human at terminal: ENTIRE_TEST_TTY=1 makes hasTTY() return true
 		// and askConfirmTTY() return defaultYes without reading from /dev/tty.
-		prepCmd.Env = append(os.Environ(), "ENTIRE_TEST_TTY=1")
+		prepCmd.Env = append(gitIsolatedEnv(), "ENTIRE_TEST_TTY=1")
 	} else {
 		// Simulate agent: ENTIRE_TEST_TTY=0 makes hasTTY() return false,
 		// triggering the fast path that adds trailers for ACTIVE sessions.
-		prepCmd.Env = append(os.Environ(), "ENTIRE_TEST_TTY=0")
+		prepCmd.Env = append(gitIsolatedEnv(), "ENTIRE_TEST_TTY=0")
 	}
 	if output, err := prepCmd.CombinedOutput(); err != nil {
 		env.T.Logf("prepare-commit-msg output: %s", output)
@@ -1014,7 +982,7 @@ func (env *TestEnv) GitCommitAmendWithShadowHooks(message string, files ...strin
 	// Set ENTIRE_TEST_TTY=1 to simulate human (amend is always a human operation).
 	prepCmd := exec.Command(getTestBinary(), "hooks", "git", "prepare-commit-msg", msgFile, "commit")
 	prepCmd.Dir = env.RepoDir
-	prepCmd.Env = append(os.Environ(), "ENTIRE_TEST_TTY=1")
+	prepCmd.Env = append(gitIsolatedEnv(), "ENTIRE_TEST_TTY=1")
 	if output, err := prepCmd.CombinedOutput(); err != nil {
 		env.T.Logf("prepare-commit-msg (amend) output: %s", output)
 	}
@@ -1078,7 +1046,7 @@ func (env *TestEnv) GitCommitWithTrailerRemoved(message string, files ...string)
 	// the user removes the trailer before committing).
 	prepCmd := exec.Command(getTestBinary(), "hooks", "git", "prepare-commit-msg", msgFile)
 	prepCmd.Dir = env.RepoDir
-	prepCmd.Env = append(os.Environ(), "ENTIRE_TEST_TTY=1")
+	prepCmd.Env = append(gitIsolatedEnv(), "ENTIRE_TEST_TTY=1")
 	if output, err := prepCmd.CombinedOutput(); err != nil {
 		env.T.Logf("prepare-commit-msg output: %s", output)
 	}
@@ -1130,6 +1098,85 @@ func (env *TestEnv) GitCommitWithTrailerRemoved(message string, files ...string)
 	}
 
 	// Run post-commit hook - since trailer was removed, no condensation should happen
+	postCmd := exec.Command(getTestBinary(), "hooks", "git", "post-commit")
+	postCmd.Dir = env.RepoDir
+	if output, err := postCmd.CombinedOutput(); err != nil {
+		env.T.Logf("post-commit output: %s", output)
+	}
+}
+
+// GitRm stages file deletions using git rm.
+func (env *TestEnv) GitRm(paths ...string) {
+	env.T.Helper()
+
+	args := append([]string{"rm", "--"}, paths...)
+	cmd := exec.Command("git", args...)
+	cmd.Dir = env.RepoDir
+	cmd.Env = gitIsolatedEnv()
+	if output, err := cmd.CombinedOutput(); err != nil {
+		env.T.Fatalf("git rm failed: %v\nOutput: %s", err, output)
+	}
+}
+
+// GitCommitStagedWithShadowHooks commits whatever is already staged (without adding files first),
+// running the prepare-commit-msg and post-commit hooks like a real workflow.
+// Use this after GitRm or when files are already staged.
+func (env *TestEnv) GitCommitStagedWithShadowHooks(message string) {
+	env.T.Helper()
+	env.gitCommitStagedWithShadowHooks(message, true)
+}
+
+// gitCommitStagedWithShadowHooks is the shared implementation for committing staged changes with hooks.
+func (env *TestEnv) gitCommitStagedWithShadowHooks(message string, simulateTTY bool) {
+	env.T.Helper()
+
+	// Create a temp file for the commit message (prepare-commit-msg hook modifies this)
+	msgFile := filepath.Join(env.RepoDir, ".git", "COMMIT_EDITMSG")
+	if err := os.WriteFile(msgFile, []byte(message), 0o644); err != nil {
+		env.T.Fatalf("failed to write commit message file: %v", err)
+	}
+
+	// Run prepare-commit-msg hook using the shared binary.
+	prepCmd := exec.Command(getTestBinary(), "hooks", "git", "prepare-commit-msg", msgFile, "message")
+	prepCmd.Dir = env.RepoDir
+	if simulateTTY {
+		prepCmd.Env = append(gitIsolatedEnv(), "ENTIRE_TEST_TTY=1")
+	} else {
+		prepCmd.Env = append(gitIsolatedEnv(), "ENTIRE_TEST_TTY=0")
+	}
+	if output, err := prepCmd.CombinedOutput(); err != nil {
+		env.T.Logf("prepare-commit-msg output: %s", output)
+	}
+
+	// Read the modified message
+	modifiedMsg, err := os.ReadFile(msgFile)
+	if err != nil {
+		env.T.Fatalf("failed to read modified commit message: %v", err)
+	}
+
+	// Create the commit using go-git with the modified message
+	repo, err := git.PlainOpen(env.RepoDir)
+	if err != nil {
+		env.T.Fatalf("failed to open git repo: %v", err)
+	}
+
+	worktree, err := repo.Worktree()
+	if err != nil {
+		env.T.Fatalf("failed to get worktree: %v", err)
+	}
+
+	_, err = worktree.Commit(string(modifiedMsg), &git.CommitOptions{
+		Author: &object.Signature{
+			Name:  "Test User",
+			Email: "test@example.com",
+			When:  time.Now(),
+		},
+	})
+	if err != nil {
+		env.T.Fatalf("failed to commit: %v", err)
+	}
+
+	// Run post-commit hook
 	postCmd := exec.Command(getTestBinary(), "hooks", "git", "post-commit")
 	postCmd.Dir = env.RepoDir
 	if output, err := postCmd.CombinedOutput(); err != nil {
@@ -1472,7 +1519,10 @@ func (env *TestEnv) validateSessionMetadata(v CheckpointValidation) {
 	}
 }
 
-// validateTranscriptJSONL validates that full.jsonl exists and is valid JSONL.
+// validateTranscriptJSONL validates that full.jsonl exists and is valid JSON or JSONL.
+// It supports both:
+// - JSON format (single document, used by OpenCode and Gemini CLI)
+// - JSONL format (one JSON object per line, used by Claude Code)
 func (env *TestEnv) validateTranscriptJSONL(checkpointID string, expectedContent []string) {
 	env.T.Helper()
 
@@ -1482,23 +1532,29 @@ func (env *TestEnv) validateTranscriptJSONL(checkpointID string, expectedContent
 		env.T.Fatalf("Transcript not found at %s", transcriptPath)
 	}
 
-	// Validate it's valid JSONL (each non-empty line should be valid JSON)
-	lines := strings.Split(content, "\n")
-	validLines := 0
-	for i, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
+	// First try to parse as a single JSON document (OpenCode/Gemini format)
+	var jsonDoc any
+	if err := json.Unmarshal([]byte(content), &jsonDoc); err == nil {
+		// Valid JSON document - validation passed
+	} else {
+		// Fall back to JSONL validation (Claude Code format)
+		lines := strings.Split(content, "\n")
+		validLines := 0
+		for i, line := range lines {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			validLines++
+			var obj map[string]any
+			if err := json.Unmarshal([]byte(line), &obj); err != nil {
+				env.T.Errorf("Transcript line %d is not valid JSON: %v\nLine: %s", i+1, err, line)
+			}
 		}
-		validLines++
-		var obj map[string]any
-		if err := json.Unmarshal([]byte(line), &obj); err != nil {
-			env.T.Errorf("Transcript line %d is not valid JSON: %v\nLine: %s", i+1, err, line)
-		}
-	}
 
-	if validLines == 0 {
-		env.T.Error("Transcript is empty (no valid JSONL lines)")
+		if validLines == 0 {
+			env.T.Error("Transcript is empty (no valid JSON content)")
+		}
 	}
 
 	// Validate expected content appears in transcript

@@ -70,6 +70,11 @@ linters:
     - whitespace
     - wrapcheck
   settings:
+    gosec:
+      excludes:
+        - G204 # subprocess with variables is expected for git/opencode CLI wrappers
+        - G702 # command injection via taint - controlled CLI inputs
+        - G705 # XSS not applicable to CLI stderr output
     dupl:
       # Token threshold for duplication detection
       # Lower = more sensitive (catches smaller duplicates)
@@ -103,10 +108,12 @@ linters:
         - stdlib
         - grpc.DialOption
         - github.com/entireio/cli/cmd/entire/cli/agent.Agent
+        - github.com/entireio/cli/cmd/entire/cli/strategy.Strategy
         - github.com/go-git/go-git/v6/plumbing/storer.ReferenceIter
         - github.com/go-git/go-git/v6/plumbing.EncodedObject
         - github.com/go-git/go-git/v6/storage.Storer
         - github.com/go-git/go-git/v6/plumbing/storer.EncodedObjectIter
+        - github.com/entireio/cli/e2e/agents.Session
         - github.com/go-git/go-billy/v6.Filesystem
     nolintlint:
       require-explanation: true
@@ -127,6 +134,16 @@ linters:
           - gosec
           - wrapcheck
           - forbidigo
+      - path: ^e2e/
+        linters:
+          - errcheck
+          - gochecknoinits
+          - goconst
+          - gosec
+          - noctx
+          - revive
+          - usetesting
+          - wrapcheck
       - path: ^test/workloads/
         linters:
           - wrapcheck

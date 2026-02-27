@@ -66,12 +66,12 @@ func TestGetCurrentBranch(t *testing.T) {
 	gitCheckout(t, tmpDir, "feature")
 
 	// Test getting current branch
-	branch, err := GetCurrentBranch()
+	branch, err := GetCurrentBranch(context.Background())
 	if err != nil {
-		t.Fatalf("GetCurrentBranch() error = %v", err)
+		t.Fatalf("GetCurrentBranch(context.Background()) error = %v", err)
 	}
 	if branch != "feature" {
-		t.Errorf("GetCurrentBranch() = %v, want feature", branch)
+		t.Errorf("GetCurrentBranch(context.Background()) = %v, want feature", branch)
 	}
 }
 
@@ -112,9 +112,9 @@ func TestGetCurrentBranchDetachedHead(t *testing.T) {
 	gitCheckout(t, tmpDir, commit.String())
 
 	// Test should error on detached HEAD
-	_, err = GetCurrentBranch()
+	_, err = GetCurrentBranch(context.Background())
 	if err == nil {
-		t.Error("GetCurrentBranch() expected error for detached HEAD, got nil")
+		t.Error("GetCurrentBranch(context.Background()) expected error for detached HEAD, got nil")
 	}
 }
 
@@ -182,12 +182,12 @@ func TestGetMergeBase(t *testing.T) {
 	}
 
 	// Test getting merge base
-	mergeBase, err := GetMergeBase("feature", "main")
+	mergeBase, err := GetMergeBase(context.Background(), "feature", "main")
 	if err != nil {
-		t.Fatalf("GetMergeBase() error = %v", err)
+		t.Fatalf("GetMergeBase(context.Background(),) error = %v", err)
 	}
 	if mergeBase.String() != baseCommit.String() {
-		t.Errorf("GetMergeBase() = %v, want %v", mergeBase, baseCommit)
+		t.Errorf("GetMergeBase(context.Background(),) = %v, want %v", mergeBase, baseCommit)
 	}
 }
 
@@ -223,9 +223,9 @@ func TestGetMergeBaseNonExistentBranch(t *testing.T) {
 	}
 
 	// Test with non-existent branch
-	_, err = GetMergeBase("feature", "nonexistent")
+	_, err = GetMergeBase(context.Background(), "feature", "nonexistent")
 	if err == nil {
-		t.Error("GetMergeBase() expected error for nonexistent branch, got nil")
+		t.Error("GetMergeBase(context.Background(),) expected error for nonexistent branch, got nil")
 	}
 }
 
@@ -263,12 +263,12 @@ func TestHasUncommittedChanges(t *testing.T) {
 	}
 
 	// Test clean working tree
-	hasChanges, err := HasUncommittedChanges()
+	hasChanges, err := HasUncommittedChanges(context.Background())
 	if err != nil {
-		t.Fatalf("HasUncommittedChanges() error = %v", err)
+		t.Fatalf("HasUncommittedChanges(context.Background()) error = %v", err)
 	}
 	if hasChanges {
-		t.Error("HasUncommittedChanges() = true, want false for clean tree")
+		t.Error("HasUncommittedChanges(context.Background()) = true, want false for clean tree")
 	}
 
 	// Make unstaged change
@@ -277,12 +277,12 @@ func TestHasUncommittedChanges(t *testing.T) {
 	}
 
 	// Test with unstaged changes
-	hasChanges, err = HasUncommittedChanges()
+	hasChanges, err = HasUncommittedChanges(context.Background())
 	if err != nil {
-		t.Fatalf("HasUncommittedChanges() error = %v", err)
+		t.Fatalf("HasUncommittedChanges(context.Background()) error = %v", err)
 	}
 	if !hasChanges {
-		t.Error("HasUncommittedChanges() = false, want true for modified file")
+		t.Error("HasUncommittedChanges(context.Background()) = false, want true for modified file")
 	}
 
 	// Stage the change
@@ -291,12 +291,12 @@ func TestHasUncommittedChanges(t *testing.T) {
 	}
 
 	// Test with staged changes
-	hasChanges, err = HasUncommittedChanges()
+	hasChanges, err = HasUncommittedChanges(context.Background())
 	if err != nil {
-		t.Fatalf("HasUncommittedChanges() error = %v", err)
+		t.Fatalf("HasUncommittedChanges(context.Background()) error = %v", err)
 	}
 	if !hasChanges {
-		t.Error("HasUncommittedChanges() = false, want true for staged file")
+		t.Error("HasUncommittedChanges(context.Background()) = false, want true for staged file")
 	}
 
 	// Commit and add untracked file
@@ -313,12 +313,12 @@ func TestHasUncommittedChanges(t *testing.T) {
 	}
 
 	// Test with untracked file (should be true)
-	hasChanges, err = HasUncommittedChanges()
+	hasChanges, err = HasUncommittedChanges(context.Background())
 	if err != nil {
-		t.Fatalf("HasUncommittedChanges() error = %v", err)
+		t.Fatalf("HasUncommittedChanges(context.Background()) error = %v", err)
 	}
 	if !hasChanges {
-		t.Error("HasUncommittedChanges() = false, want true for untracked file")
+		t.Error("HasUncommittedChanges(context.Background()) = false, want true for untracked file")
 	}
 
 	// Clean up untracked file for next test
@@ -351,12 +351,12 @@ func TestHasUncommittedChanges(t *testing.T) {
 	// Test with globally gitignored file - should return false (clean)
 	// This catches regressions if someone switches back to go-git's Status()
 	// which doesn't read core.excludesfile (global gitignore)
-	hasChanges, err = HasUncommittedChanges()
+	hasChanges, err = HasUncommittedChanges(context.Background())
 	if err != nil {
-		t.Fatalf("HasUncommittedChanges() error = %v", err)
+		t.Fatalf("HasUncommittedChanges(context.Background()) error = %v", err)
 	}
 	if hasChanges {
-		t.Error("HasUncommittedChanges() = true, want false for globally gitignored file (core.excludesfile)")
+		t.Error("HasUncommittedChanges(context.Background()) = true, want false for globally gitignored file (core.excludesfile)")
 	}
 }
 
@@ -456,21 +456,21 @@ func TestFindNewUntrackedFiles(t *testing.T) {
 
 func TestGetGitConfigValue(t *testing.T) {
 	// Test that invalid keys return empty string
-	invalid := getGitConfigValue("nonexistent.key.that.does.not.exist")
+	invalid := getGitConfigValue(context.Background(), "nonexistent.key.that.does.not.exist")
 	if invalid != "" {
 		t.Errorf("expected empty string for invalid key, got %q", invalid)
 	}
 
 	// Test that it returns a value for user.name (assuming git is configured on test machine)
 	// This is a basic sanity check - it may return empty on unconfigured systems
-	name := getGitConfigValue("user.name")
+	name := getGitConfigValue(context.Background(), "user.name")
 	t.Logf("git config user.name returned: %q", name)
 }
 
 func TestGetGitConfigValueTrimsWhitespace(t *testing.T) {
 	// The git config command returns values with trailing newline
 	// Verify that getGitConfigValue trims whitespace properly
-	email := getGitConfigValue("user.email")
+	email := getGitConfigValue(context.Background(), "user.email")
 	t.Logf("git config user.email returned: %q", email)
 
 	// If email is set, verify no leading/trailing whitespace
@@ -507,16 +507,16 @@ func TestGetGitAuthorReturnsAuthor(t *testing.T) {
 	}
 
 	// Test GetGitAuthor
-	author, err := GetGitAuthor()
+	author, err := GetGitAuthor(context.Background())
 	if err != nil {
-		t.Fatalf("GetGitAuthor() error = %v", err)
+		t.Fatalf("GetGitAuthor(context.Background()) error = %v", err)
 	}
 
 	if author.Name != "Test Author" {
-		t.Errorf("GetGitAuthor().Name = %q, want %q", author.Name, "Test Author")
+		t.Errorf("GetGitAuthor(context.Background()).Name = %q, want %q", author.Name, "Test Author")
 	}
 	if author.Email != "test@example.com" {
-		t.Errorf("GetGitAuthor().Email = %q, want %q", author.Email, "test@example.com")
+		t.Errorf("GetGitAuthor(context.Background()).Email = %q, want %q", author.Email, "test@example.com")
 	}
 }
 
@@ -533,18 +533,18 @@ func TestGetGitAuthorFallsBackToGitCommand(t *testing.T) {
 	}
 
 	// GetGitAuthor should NOT error - it falls back to git command or returns defaults
-	author, err := GetGitAuthor()
+	author, err := GetGitAuthor(context.Background())
 	if err != nil {
-		t.Fatalf("GetGitAuthor() should not error, got: %v", err)
+		t.Fatalf("GetGitAuthor(context.Background()) should not error, got: %v", err)
 	}
 
 	// Verify it's not nil first
 	if author == nil {
-		t.Fatal("GetGitAuthor() returned nil author")
+		t.Fatal("GetGitAuthor(context.Background()) returned nil author")
 	}
 
 	// The author should have some value (either from global git config or defaults)
-	t.Logf("GetGitAuthor() returned Name=%q, Email=%q", author.Name, author.Email)
+	t.Logf("GetGitAuthor(context.Background()) returned Name=%q, Email=%q", author.Name, author.Email)
 }
 
 func TestGetGitAuthorReturnsDefaultsWhenNoConfig(t *testing.T) {
@@ -560,22 +560,22 @@ func TestGetGitAuthorReturnsDefaultsWhenNoConfig(t *testing.T) {
 
 	// Even without config, GetGitAuthor should not error
 	// It will return either values from global git config OR defaults
-	author, err := GetGitAuthor()
+	author, err := GetGitAuthor(context.Background())
 	if err != nil {
-		t.Fatalf("GetGitAuthor() should not error even without config, got: %v", err)
+		t.Fatalf("GetGitAuthor(context.Background()) should not error even without config, got: %v", err)
 	}
 
 	// Just verify we got a non-nil result first
 	if author == nil {
-		t.Fatal("GetGitAuthor() returned nil")
+		t.Fatal("GetGitAuthor(context.Background()) returned nil")
 	}
 
 	// Name and Email should be non-empty (either from global config or defaults)
 	if author.Name == "" {
-		t.Error("GetGitAuthor().Name is empty, expected a value or default")
+		t.Error("GetGitAuthor(context.Background()).Name is empty, expected a value or default")
 	}
 	if author.Email == "" {
-		t.Error("GetGitAuthor().Email is empty, expected a value or default")
+		t.Error("GetGitAuthor(context.Background()).Email is empty, expected a value or default")
 	}
 }
 
@@ -620,22 +620,22 @@ func TestBranchExistsOnRemote(t *testing.T) {
 	}
 
 	t.Run("returns true when branch exists on remote", func(t *testing.T) {
-		exists, err := BranchExistsOnRemote("feature")
+		exists, err := BranchExistsOnRemote(context.Background(), "feature")
 		if err != nil {
-			t.Fatalf("BranchExistsOnRemote() error = %v", err)
+			t.Fatalf("BranchExistsOnRemote(context.Background(),) error = %v", err)
 		}
 		if !exists {
-			t.Error("BranchExistsOnRemote() = false, want true for existing remote branch")
+			t.Error("BranchExistsOnRemote(context.Background(),) = false, want true for existing remote branch")
 		}
 	})
 
 	t.Run("returns false when branch does not exist on remote", func(t *testing.T) {
-		exists, err := BranchExistsOnRemote("nonexistent")
+		exists, err := BranchExistsOnRemote(context.Background(), "nonexistent")
 		if err != nil {
-			t.Fatalf("BranchExistsOnRemote() error = %v", err)
+			t.Fatalf("BranchExistsOnRemote(context.Background(),) error = %v", err)
 		}
 		if exists {
-			t.Error("BranchExistsOnRemote() = true, want false for nonexistent remote branch")
+			t.Error("BranchExistsOnRemote(context.Background(),) = true, want false for nonexistent remote branch")
 		}
 	})
 }

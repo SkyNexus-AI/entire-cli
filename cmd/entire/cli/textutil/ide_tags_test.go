@@ -88,6 +88,16 @@ func TestStripIDEContextTags(t *testing.T) {
 			input:    "<ide_opened_file>file.go</ide_opened_file><system-reminder>reminder</system-reminder>\n\nactual prompt",
 			expected: "actual prompt",
 		},
+		{
+			name:     "cursor user_query tags stripped keeping content",
+			input:    "<user_query>\ncreate a file with contents 'a'\n</user_query>",
+			expected: "create a file with contents 'a'",
+		},
+		{
+			name:     "cursor user_query with surrounding text",
+			input:    "<user_query>\nhello world\n</user_query>",
+			expected: "hello world",
+		},
 	}
 
 	for _, tt := range tests {

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -108,7 +109,7 @@ func TestExplainCommit_NotFound(t *testing.T) {
 	}
 
 	var stdout bytes.Buffer
-	err := runExplainCommit(&stdout, "nonexistent", false, false, false, false)
+	err := runExplainCommit(context.Background(), &stdout, "nonexistent", false, false, false, false)
 
 	if err == nil {
 		t.Error("expected error for nonexistent commit, got nil")
@@ -152,7 +153,7 @@ func TestExplainCommit_NoEntireData(t *testing.T) {
 	}
 
 	var stdout bytes.Buffer
-	err = runExplainCommit(&stdout, commitHash.String(), false, false, false, false)
+	err = runExplainCommit(context.Background(), &stdout, commitHash.String(), false, false, false, false)
 	if err != nil {
 		t.Fatalf("runExplainCommit() should not error for non-Entire commits, got: %v", err)
 	}
@@ -222,7 +223,7 @@ func TestExplainCommit_WithMetadataTrailerButNoCheckpoint(t *testing.T) {
 	}
 
 	var stdout bytes.Buffer
-	err = runExplainCommit(&stdout, commitHash.String(), false, false, false, false)
+	err = runExplainCommit(context.Background(), &stdout, commitHash.String(), false, false, false, false)
 	if err != nil {
 		t.Fatalf("runExplainCommit() error = %v", err)
 	}
@@ -277,7 +278,7 @@ func TestExplainDefault_ShowsBranchView(t *testing.T) {
 	}
 
 	var stdout bytes.Buffer
-	err = runExplainDefault(&stdout, true) // noPager=true for test
+	err = runExplainDefault(context.Background(), &stdout, true) // noPager=true for test
 
 	// Should NOT error - should show branch view
 	if err != nil {
@@ -333,7 +334,7 @@ func TestExplainDefault_NoCheckpoints_ShowsHelpfulMessage(t *testing.T) {
 	}
 
 	var stdout bytes.Buffer
-	err = runExplainDefault(&stdout, true) // noPager=true for test
+	err = runExplainDefault(context.Background(), &stdout, true) // noPager=true for test
 
 	// Should NOT error
 	if err != nil {
@@ -354,7 +355,7 @@ func TestExplainDefault_NoCheckpoints_ShowsHelpfulMessage(t *testing.T) {
 func TestExplainBothFlagsError(t *testing.T) {
 	// Test that providing both --session and --commit returns an error
 	var stdout, stderr bytes.Buffer
-	err := runExplain(&stdout, &stderr, "session-id", "commit-sha", "", false, false, false, false, false, false, false)
+	err := runExplain(context.Background(), &stdout, &stderr, "session-id", "commit-sha", "", false, false, false, false, false, false, false)
 
 	if err == nil {
 		t.Error("expected error when both flags provided, got nil")
@@ -453,7 +454,7 @@ func TestFormatSessionInfo_WithSourceRef(t *testing.T) {
 	session := &strategy.Session{
 		ID:          "2025-12-09-test-session-abc",
 		Description: "Test description",
-		Strategy:    "auto-commit",
+		Strategy:    "manual-commit",
 		StartTime:   now,
 		Checkpoints: []strategy.Checkpoint{
 			{
@@ -486,19 +487,12 @@ func TestFormatSessionInfo_WithSourceRef(t *testing.T) {
 	}
 }
 
-// Helper to verify common session functions work with SessionSource interface
-func TestStrategySessionSourceInterface(t *testing.T) {
-	// This ensures manual-commit strategy implements SessionSource
-	var s = strategy.NewManualCommitStrategy()
-
-	// Cast to SessionSource - manual-commit strategy should implement it
-	source, ok := s.(strategy.SessionSource)
-	if !ok {
-		t.Fatal("ManualCommitStrategy should implement SessionSource interface")
-	}
+// TestManualCommitStrategyCallable verifies that the strategy's methods are callable
+func TestManualCommitStrategyCallable(t *testing.T) {
+	s := strategy.NewManualCommitStrategy()
 
 	// GetAdditionalSessions should exist and be callable
-	_, err := source.GetAdditionalSessions()
+	_, err := s.GetAdditionalSessions(context.Background())
 	if err != nil {
 		t.Logf("GetAdditionalSessions returned error: %v", err)
 	}
@@ -508,7 +502,7 @@ func TestFormatSessionInfo_CheckpointNumberingReversed(t *testing.T) {
 	now := time.Now()
 	session := &strategy.Session{
 		ID:          "2025-12-09-test-session",
-		Strategy:    "auto-commit",
+		Strategy:    "manual-commit",
 		StartTime:   now.Add(-2 * time.Hour),
 		Checkpoints: []strategy.Checkpoint{}, // Not used for format test
 	}
@@ -594,7 +588,7 @@ func TestFormatSessionInfo_CheckpointWithTaskMarker(t *testing.T) {
 	now := time.Now()
 	session := &strategy.Session{
 		ID:          "2025-12-09-task-session",
-		Strategy:    "auto-commit",
+		Strategy:    "manual-commit",
 		StartTime:   now,
 		Checkpoints: []strategy.Checkpoint{},
 	}
@@ -625,7 +619,7 @@ func TestFormatSessionInfo_CheckpointWithDate(t *testing.T) {
 	timestamp := time.Date(2025, 12, 10, 14, 35, 0, 0, time.UTC)
 	session := &strategy.Session{
 		ID:          "2025-12-10-dated-session",
-		Strategy:    "auto-commit",
+		Strategy:    "manual-commit",
 		StartTime:   timestamp,
 		Checkpoints: []strategy.Checkpoint{},
 	}
@@ -652,7 +646,7 @@ func TestFormatSessionInfo_ShowsMessageWhenNoInteractions(t *testing.T) {
 	now := time.Now()
 	session := &strategy.Session{
 		ID:          "2025-12-12-incremental-session",
-		Strategy:    "auto-commit",
+		Strategy:    "manual-commit",
 		StartTime:   now,
 		Checkpoints: []strategy.Checkpoint{},
 	}
@@ -690,7 +684,7 @@ func TestFormatSessionInfo_ShowsMessageAndFilesWhenNoInteractions(t *testing.T) 
 	now := time.Now()
 	session := &strategy.Session{
 		ID:          "2025-12-12-incremental-with-files",
-		Strategy:    "auto-commit",
+		Strategy:    "manual-commit",
 		StartTime:   now,
 		Checkpoints: []strategy.Checkpoint{},
 	}
@@ -729,7 +723,7 @@ func TestFormatSessionInfo_DoesNotShowMessageWhenHasInteractions(t *testing.T) {
 	now := time.Now()
 	session := &strategy.Session{
 		ID:          "2025-12-12-full-checkpoint",
-		Strategy:    "auto-commit",
+		Strategy:    "manual-commit",
 		StartTime:   now,
 		Checkpoints: []strategy.Checkpoint{},
 	}
@@ -814,7 +808,7 @@ func TestRunExplain_MutualExclusivityError(t *testing.T) {
 	var buf, errBuf bytes.Buffer
 
 	// Providing both --session and --checkpoint should error
-	err := runExplain(&buf, &errBuf, "session-id", "", "checkpoint-id", false, false, false, false, false, false, false)
+	err := runExplain(context.Background(), &buf, &errBuf, "session-id", "", "checkpoint-id", false, false, false, false, false, false, false)
 
 	if err == nil {
 		t.Error("expected error when multiple flags provided")
@@ -858,7 +852,7 @@ func TestRunExplainCheckpoint_NotFound(t *testing.T) {
 	}
 
 	var buf, errBuf bytes.Buffer
-	err = runExplainCheckpoint(&buf, &errBuf, "nonexistent123", false, false, false, false, false, false, false)
+	err = runExplainCheckpoint(context.Background(), &buf, &errBuf, "nonexistent123", false, false, false, false, false, false, false)
 
 	if err == nil {
 		t.Error("expected error for nonexistent checkpoint")
@@ -1522,7 +1516,7 @@ func TestGetBranchCheckpoints_ReadsPromptFromShadowBranch(t *testing.T) {
 	}
 
 	// Now call getBranchCheckpoints and verify the prompt is read
-	points, err := getBranchCheckpoints(repo, 10)
+	points, err := getBranchCheckpoints(context.Background(), repo, 10)
 	if err != nil {
 		t.Fatalf("getBranchCheckpoints() error = %v", err)
 	}
@@ -1555,10 +1549,10 @@ func TestGetCurrentWorktreeHash_MainWorktree(t *testing.T) {
 		t.Fatalf("failed to init git repo: %v", err)
 	}
 
-	hash := getCurrentWorktreeHash()
+	hash := getCurrentWorktreeHash(context.Background())
 	expected := checkpoint.HashWorktreeID("") // Main worktree has empty ID
 	if hash != expected {
-		t.Errorf("getCurrentWorktreeHash() = %q, want %q (hash of empty worktree ID)", hash, expected)
+		t.Errorf("getCurrentWorktreeHash(context.Background()) = %q, want %q (hash of empty worktree ID)", hash, expected)
 	}
 }
 
@@ -1642,7 +1636,7 @@ func TestGetReachableTemporaryCheckpoints_FiltersByWorktree(t *testing.T) {
 	writeCheckpoints(sessionIDOther, "other-worktree") // Different worktree
 
 	// getBranchCheckpoints should only include local worktree's checkpoints
-	points, err := getBranchCheckpoints(repo, 20)
+	points, err := getBranchCheckpoints(context.Background(), repo, 20)
 	if err != nil {
 		t.Fatalf("getBranchCheckpoints error: %v", err)
 	}
@@ -1708,7 +1702,7 @@ func TestRunExplainBranchDefault_DetachedHead(t *testing.T) {
 	}
 
 	var stdout bytes.Buffer
-	err = runExplainBranchDefault(&stdout, true)
+	err = runExplainBranchDefault(context.Background(), &stdout, true)
 
 	// Should NOT error
 	if err != nil {
@@ -1769,21 +1763,21 @@ func TestIsAncestorOf(t *testing.T) {
 
 	t.Run("commit is ancestor of later commit", func(t *testing.T) {
 		// commit1 should be an ancestor of commit2
-		if !strategy.IsAncestorOf(repo, commit1, commit2) {
+		if !strategy.IsAncestorOf(context.Background(), repo, commit1, commit2) {
 			t.Error("expected commit1 to be ancestor of commit2")
 		}
 	})
 
 	t.Run("commit is not ancestor of earlier commit", func(t *testing.T) {
 		// commit2 should NOT be an ancestor of commit1
-		if strategy.IsAncestorOf(repo, commit2, commit1) {
+		if strategy.IsAncestorOf(context.Background(), repo, commit2, commit1) {
 			t.Error("expected commit2 to NOT be ancestor of commit1")
 		}
 	})
 
 	t.Run("commit is ancestor of itself", func(t *testing.T) {
 		// A commit should be considered an ancestor of itself
-		if !strategy.IsAncestorOf(repo, commit1, commit1) {
+		if !strategy.IsAncestorOf(context.Background(), repo, commit1, commit1) {
 			t.Error("expected commit to be ancestor of itself")
 		}
 	})
@@ -1825,7 +1819,7 @@ func TestGetBranchCheckpoints_OnFeatureBranch(t *testing.T) {
 	}
 
 	// Get checkpoints (should be empty, but shouldn't error)
-	points, err := getBranchCheckpoints(repo, 20)
+	points, err := getBranchCheckpoints(context.Background(), repo, 20)
 	if err != nil {
 		t.Fatalf("getBranchCheckpoints() error = %v", err)
 	}
@@ -2116,7 +2110,7 @@ func TestGetBranchCheckpoints_FiltersMainCommits(t *testing.T) {
 	// Get checkpoints - should only include feature branch commits, not main
 	// Note: Without actual checkpoint data in entire/checkpoints/v1, this returns empty
 	// but the important thing is it doesn't error and the filtering logic runs
-	points, err := getBranchCheckpoints(repo, 20)
+	points, err := getBranchCheckpoints(context.Background(), repo, 20)
 	if err != nil {
 		t.Fatalf("getBranchCheckpoints() error = %v", err)
 	}
@@ -2334,7 +2328,7 @@ func TestRunExplainCommit_NoCheckpointTrailer(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	err = runExplainCommit(&buf, hash.String()[:7], false, false, false, false)
+	err = runExplainCommit(context.Background(), &buf, hash.String()[:7], false, false, false, false)
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -2382,7 +2376,7 @@ func TestRunExplainCommit_WithCheckpointTrailer(t *testing.T) {
 	var buf bytes.Buffer
 	// This should try to look up the checkpoint and fail (checkpoint doesn't exist in store)
 	// but it should still attempt the lookup rather than showing commit details
-	err = runExplainCommit(&buf, hash.String()[:7], false, false, false, false)
+	err = runExplainCommit(context.Background(), &buf, hash.String()[:7], false, false, false, false)
 
 	// Should error because the checkpoint doesn't exist in the store
 	if err == nil {
@@ -2487,14 +2481,30 @@ func TestFormatBranchCheckpoints_SessionFilter(t *testing.T) {
 }
 
 func TestRunExplain_SessionFlagFiltersListView(t *testing.T) {
-	// Test that --session alone (without --checkpoint or --commit) filters the list view
-	// This is a unit test for the routing logic
+	// Test that --session alone (without --checkpoint or --commit) filters the list view.
+	// This is a unit test for the routing logic.
+	// Use a fresh git repo so we don't walk the real repo's shadow branches (which is slow).
+	tmp := t.TempDir()
+	for _, args := range [][]string{
+		{"init"},
+		{"config", "user.email", "test@test.com"},
+		{"config", "user.name", "Test User"},
+		{"commit", "--allow-empty", "-m", "init"},
+	} {
+		cmd := exec.CommandContext(context.Background(), "git", args...)
+		cmd.Dir = tmp
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	t.Chdir(tmp)
+
 	var buf, errBuf bytes.Buffer
 
 	// When session is specified alone, it should NOT error for mutual exclusivity
 	// It should route to the list view with a filter (which may fail for other reasons
 	// like not being in a git repo, but not for mutual exclusivity)
-	err := runExplain(&buf, &errBuf, "some-session", "", "", false, false, false, false, false, false, false)
+	err := runExplain(context.Background(), &buf, &errBuf, "some-session", "", "", false, false, false, false, false, false, false)
 
 	// Should NOT be a mutual exclusivity error
 	if err != nil && strings.Contains(err.Error(), "cannot specify multiple") {
@@ -2506,7 +2516,7 @@ func TestRunExplain_SessionWithCheckpointStillMutuallyExclusive(t *testing.T) {
 	// Test that --session with --checkpoint is still an error
 	var buf, errBuf bytes.Buffer
 
-	err := runExplain(&buf, &errBuf, "some-session", "", "some-checkpoint", false, false, false, false, false, false, false)
+	err := runExplain(context.Background(), &buf, &errBuf, "some-session", "", "some-checkpoint", false, false, false, false, false, false, false)
 
 	if err == nil {
 		t.Error("expected error when --session and --checkpoint both specified")
@@ -2520,7 +2530,7 @@ func TestRunExplain_SessionWithCommitStillMutuallyExclusive(t *testing.T) {
 	// Test that --session with --commit is still an error
 	var buf, errBuf bytes.Buffer
 
-	err := runExplain(&buf, &errBuf, "some-session", "some-commit", "", false, false, false, false, false, false, false)
+	err := runExplain(context.Background(), &buf, &errBuf, "some-session", "some-commit", "", false, false, false, false, false, false, false)
 
 	if err == nil {
 		t.Error("expected error when --session and --commit both specified")
@@ -2662,7 +2672,7 @@ func TestGetAssociatedCommits(t *testing.T) {
 	}
 
 	// Test: should find the one commit with matching checkpoint
-	commits, err := getAssociatedCommits(repo, checkpointID, false)
+	commits, err := getAssociatedCommits(context.Background(), repo, checkpointID, false)
 	if err != nil {
 		t.Fatalf("getAssociatedCommits error: %v", err)
 	}
@@ -2721,7 +2731,7 @@ func TestGetAssociatedCommits_NoMatches(t *testing.T) {
 
 	// Search for a checkpoint ID that doesn't exist (valid format: 12 hex chars)
 	checkpointID := id.MustCheckpointID("aaaa11112222")
-	commits, err := getAssociatedCommits(repo, checkpointID, false)
+	commits, err := getAssociatedCommits(context.Background(), repo, checkpointID, false)
 	if err != nil {
 		t.Fatalf("getAssociatedCommits error: %v", err)
 	}
@@ -2806,7 +2816,7 @@ func TestGetAssociatedCommits_MultipleMatches(t *testing.T) {
 	}
 
 	// Test: should find both commits with matching checkpoint
-	commits, err := getAssociatedCommits(repo, checkpointID, false)
+	commits, err := getAssociatedCommits(context.Background(), repo, checkpointID, false)
 	if err != nil {
 		t.Fatalf("getAssociatedCommits error: %v", err)
 	}
@@ -3042,7 +3052,7 @@ func TestGetBranchCheckpoints_WithMergeFromMain(t *testing.T) {
 
 	// Test getAssociatedCommits - should find BOTH feature checkpoint commits
 	// by walking first-parent chain (skipping the merge's second parent into main)
-	commits1, err := getAssociatedCommits(repo, cpID1, false)
+	commits1, err := getAssociatedCommits(context.Background(), repo, cpID1, false)
 	if err != nil {
 		t.Fatalf("getAssociatedCommits for cpID1 error: %v", err)
 	}
@@ -3050,7 +3060,7 @@ func TestGetBranchCheckpoints_WithMergeFromMain(t *testing.T) {
 		t.Errorf("expected 1 commit for cpID1 (first feature checkpoint), got %d", len(commits1))
 	}
 
-	commits2, err := getAssociatedCommits(repo, cpID2, false)
+	commits2, err := getAssociatedCommits(context.Background(), repo, cpID2, false)
 	if err != nil {
 		t.Fatalf("getAssociatedCommits for cpID2 error: %v", err)
 	}
@@ -3167,7 +3177,7 @@ func TestGetBranchCheckpoints_MergeCommitAtHEAD(t *testing.T) {
 	// HEAD is the merge commit itself.
 	// getAssociatedCommits should walk: merge -> featureCommit -> initial
 	// and find the checkpoint on featureCommit.
-	commits, err := getAssociatedCommits(repo, cpID, false)
+	commits, err := getAssociatedCommits(context.Background(), repo, cpID, false)
 	if err != nil {
 		t.Fatalf("getAssociatedCommits error: %v", err)
 	}
@@ -3271,7 +3281,7 @@ func TestWalkFirstParentCommits_SkipsMergeParents(t *testing.T) {
 	// Walk should visit: M (merge) -> B (feature) -> A (initial)
 	// It should NOT visit C (main work), because that's the second parent of the merge.
 	var visited []string
-	err = walkFirstParentCommits(repo, mergeHash, 0, func(c *object.Commit) error {
+	err = walkFirstParentCommits(context.Background(), repo, mergeHash, 0, func(c *object.Commit) error {
 		visited = append(visited, strings.Split(c.Message, "\n")[0])
 		return nil
 	})
@@ -3418,7 +3428,7 @@ func TestGetAssociatedCommits_SearchAllFindsMergedBranchCommits(t *testing.T) {
 
 	// Without --search-all (first-parent only): should NOT find the feature commit
 	// because it's on the second parent of the merge
-	commits, err := getAssociatedCommits(repo, checkpointID, false)
+	commits, err := getAssociatedCommits(context.Background(), repo, checkpointID, false)
 	if err != nil {
 		t.Fatalf("getAssociatedCommits error: %v", err)
 	}
@@ -3427,7 +3437,7 @@ func TestGetAssociatedCommits_SearchAllFindsMergedBranchCommits(t *testing.T) {
 	}
 
 	// With --search-all (full DAG walk): SHOULD find the feature commit
-	commits, err = getAssociatedCommits(repo, checkpointID, true)
+	commits, err = getAssociatedCommits(context.Background(), repo, checkpointID, true)
 	if err != nil {
 		t.Fatalf("getAssociatedCommits --search-all error: %v", err)
 	}
@@ -3525,7 +3535,7 @@ func TestGetBranchCheckpoints_DefaultBranchFindsMergedCheckpoints(t *testing.T) 
 	if err := store.WriteCommitted(context.Background(), checkpoint.WriteCommittedOptions{
 		CheckpointID: cpID,
 		SessionID:    "test-session",
-		Strategy:     "auto-commit",
+		Strategy:     "manual-commit",
 		FilesTouched: []string{"test.txt"},
 		Prompts:      []string{"add feature"},
 	}); err != nil {
@@ -3533,7 +3543,7 @@ func TestGetBranchCheckpoints_DefaultBranchFindsMergedCheckpoints(t *testing.T) 
 	}
 
 	// getBranchCheckpoints on master should find the checkpoint from the merged feature branch
-	points, err := getBranchCheckpoints(repo, 100)
+	points, err := getBranchCheckpoints(context.Background(), repo, 100)
 	if err != nil {
 		t.Fatalf("getBranchCheckpoints error: %v", err)
 	}

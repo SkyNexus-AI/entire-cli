@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/entireio/cli/cmd/entire/cli/agent"
+	"github.com/entireio/cli/cmd/entire/cli/agent/types"
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint/id"
 
 	"github.com/go-git/go-git/v5/plumbing"
@@ -239,7 +240,7 @@ type WriteCommittedOptions struct {
 	// This is useful for copying task metadata files, subagent transcripts, etc.
 	MetadataDir string
 
-	// Task checkpoint fields (for auto-commit strategy task checkpoints)
+	// Task checkpoint fields (for task/subagent checkpoints)
 	IsTask    bool   // Whether this is a task checkpoint
 	ToolUseID string // Tool use ID for task checkpoints
 
@@ -259,7 +260,7 @@ type WriteCommittedOptions struct {
 	CommitSubject string // Subject line for the metadata commit (overrides default)
 
 	// Agent identifies the agent that created this checkpoint (e.g., "Claude Code", "Cursor")
-	Agent agent.AgentType
+	Agent types.AgentType
 
 	// TurnID correlates checkpoints from the same agent turn.
 	TurnID string
@@ -285,11 +286,6 @@ type WriteCommittedOptions struct {
 	//   - the transcript was empty or too short to summarize
 	//   - the checkpoint predates the summarization feature
 	Summary *Summary
-
-	// SessionTranscriptPath is the home-relative path to the session transcript file.
-	// Persisted in CommittedMetadata so restore can write the transcript back to
-	// the correct location without reconstructing agent-specific paths.
-	SessionTranscriptPath string
 }
 
 // UpdateCommittedOptions contains options for updating an existing committed checkpoint.
@@ -313,7 +309,7 @@ type UpdateCommittedOptions struct {
 	Context []byte
 
 	// Agent identifies the agent type (needed for transcript chunking)
-	Agent agent.AgentType
+	Agent types.AgentType
 }
 
 // CommittedInfo contains summary information about a committed checkpoint.
@@ -334,7 +330,7 @@ type CommittedInfo struct {
 	FilesTouched []string
 
 	// Agent identifies the agent that created this checkpoint
-	Agent agent.AgentType
+	Agent types.AgentType
 
 	// IsTask indicates if this is a task checkpoint
 	IsTask bool
@@ -376,7 +372,7 @@ type CommittedMetadata struct {
 	FilesTouched     []string        `json:"files_touched"`
 
 	// Agent identifies the agent that created this checkpoint (e.g., "Claude Code", "Cursor")
-	Agent agent.AgentType `json:"agent,omitempty"`
+	Agent types.AgentType `json:"agent,omitempty"`
 
 	// TurnID correlates checkpoints from the same agent turn.
 	// When a turn's work spans multiple commits, each gets its own checkpoint
@@ -402,11 +398,6 @@ type CommittedMetadata struct {
 
 	// InitialAttribution is line-level attribution calculated at commit time
 	InitialAttribution *InitialAttribution `json:"initial_attribution,omitempty"`
-
-	// TranscriptPath is the home-relative path to the session transcript file.
-	// Persisted so restore can write the transcript back to the correct location
-	// without needing to reconstruct agent-specific paths (e.g. SHA-256 hashed dirs for Gemini).
-	TranscriptPath string `json:"transcript_path,omitempty"`
 }
 
 // GetTranscriptStart returns the transcript line offset at which this checkpoint's data begins.

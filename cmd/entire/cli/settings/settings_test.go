@@ -1,6 +1,7 @@
 package settings
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,7 +20,7 @@ func TestLoad_RejectsUnknownKeys(t *testing.T) {
 
 	// Create settings.json with an unknown key
 	settingsFile := filepath.Join(entireDir, "settings.json")
-	settingsContent := `{"strategy": "manual-commit", "unknown_key": "value"}`
+	settingsContent := `{"enabled": true, "unknown_key": "value"}`
 	if err := os.WriteFile(settingsFile, []byte(settingsContent), 0644); err != nil {
 		t.Fatalf("failed to write settings file: %v", err)
 	}
@@ -33,7 +34,7 @@ func TestLoad_RejectsUnknownKeys(t *testing.T) {
 	t.Chdir(tmpDir)
 
 	// Try to load settings - should fail due to unknown key
-	_, err := Load()
+	_, err := Load(context.Background())
 	if err == nil {
 		t.Error("expected error for unknown key, got nil")
 	} else if !containsUnknownField(err.Error()) {
@@ -54,7 +55,6 @@ func TestLoad_AcceptsValidKeys(t *testing.T) {
 	// Create settings.json with all valid keys
 	settingsFile := filepath.Join(entireDir, "settings.json")
 	settingsContent := `{
-		"strategy": "auto-commit",
 		"enabled": true,
 		"local_dev": false,
 		"log_level": "debug",
@@ -74,15 +74,12 @@ func TestLoad_AcceptsValidKeys(t *testing.T) {
 	t.Chdir(tmpDir)
 
 	// Load settings - should succeed
-	settings, err := Load()
+	settings, err := Load(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	// Verify values
-	if settings.Strategy != "auto-commit" {
-		t.Errorf("expected strategy 'auto-commit', got %q", settings.Strategy)
-	}
 	if !settings.Enabled {
 		t.Error("expected enabled to be true")
 	}
@@ -106,7 +103,7 @@ func TestLoad_LocalSettingsRejectsUnknownKeys(t *testing.T) {
 
 	// Create valid settings.json
 	settingsFile := filepath.Join(entireDir, "settings.json")
-	settingsContent := `{"strategy": "manual-commit"}`
+	settingsContent := `{"enabled": true}`
 	if err := os.WriteFile(settingsFile, []byte(settingsContent), 0644); err != nil {
 		t.Fatalf("failed to write settings file: %v", err)
 	}
@@ -127,11 +124,124 @@ func TestLoad_LocalSettingsRejectsUnknownKeys(t *testing.T) {
 	t.Chdir(tmpDir)
 
 	// Try to load settings - should fail due to unknown key in local settings
-	_, err := Load()
+	_, err := Load(context.Background())
 	if err == nil {
 		t.Error("expected error for unknown key in local settings, got nil")
 	} else if !containsUnknownField(err.Error()) {
 		t.Errorf("expected unknown field error, got: %v", err)
+	}
+}
+
+func TestLoad_AcceptsDeprecatedStrategyField(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	entireDir := filepath.Join(tmpDir, ".entire")
+	if err := os.MkdirAll(entireDir, 0o755); err != nil {
+		t.Fatalf("failed to create .entire directory: %v", err)
+	}
+
+	settingsFile := filepath.Join(entireDir, "settings.json")
+	if err := os.WriteFile(settingsFile, []byte(`{"enabled": true, "strategy": "auto-commit"}`), 0o644); err != nil {
+		t.Fatalf("failed to write settings file: %v", err)
+	}
+
+	if err := os.MkdirAll(filepath.Join(tmpDir, ".git"), 0o755); err != nil {
+		t.Fatalf("failed to create .git directory: %v", err)
+	}
+
+	t.Chdir(tmpDir)
+
+	s, err := Load(context.Background())
+	if err != nil {
+		t.Fatalf("expected no error for deprecated strategy field, got: %v", err)
+	}
+	if s.Strategy != "auto-commit" {
+		t.Errorf("expected strategy 'auto-commit', got %q", s.Strategy)
+	}
+}
+
+func TestGetCommitLinking_DefaultsToPrompt(t *testing.T) {
+	s := &EntireSettings{Enabled: true}
+	if got := s.GetCommitLinking(); got != CommitLinkingPrompt {
+		t.Errorf("GetCommitLinking() = %q, want %q", got, CommitLinkingPrompt)
+	}
+}
+
+func TestGetCommitLinking_ReturnsExplicitValue(t *testing.T) {
+	s := &EntireSettings{Enabled: true, CommitLinking: CommitLinkingAlways}
+	if got := s.GetCommitLinking(); got != CommitLinkingAlways {
+		t.Errorf("GetCommitLinking() = %q, want %q", got, CommitLinkingAlways)
+	}
+
+	s.CommitLinking = CommitLinkingPrompt
+	if got := s.GetCommitLinking(); got != CommitLinkingPrompt {
+		t.Errorf("GetCommitLinking() = %q, want %q", got, CommitLinkingPrompt)
+	}
+}
+
+func TestLoad_CommitLinkingField(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	entireDir := filepath.Join(tmpDir, ".entire")
+	if err := os.MkdirAll(entireDir, 0o755); err != nil {
+		t.Fatalf("failed to create .entire directory: %v", err)
+	}
+
+	settingsFile := filepath.Join(entireDir, "settings.json")
+	if err := os.WriteFile(settingsFile, []byte(`{"enabled": true, "commit_linking": "always"}`), 0o644); err != nil {
+		t.Fatalf("failed to write settings file: %v", err)
+	}
+
+	if err := os.MkdirAll(filepath.Join(tmpDir, ".git"), 0o755); err != nil {
+		t.Fatalf("failed to create .git directory: %v", err)
+	}
+
+	t.Chdir(tmpDir)
+
+	s, err := Load(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if s.CommitLinking != CommitLinkingAlways {
+		t.Errorf("CommitLinking = %q, want %q", s.CommitLinking, CommitLinkingAlways)
+	}
+	if got := s.GetCommitLinking(); got != CommitLinkingAlways {
+		t.Errorf("GetCommitLinking() = %q, want %q", got, CommitLinkingAlways)
+	}
+}
+
+func TestMergeJSON_CommitLinking(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	entireDir := filepath.Join(tmpDir, ".entire")
+	if err := os.MkdirAll(entireDir, 0o755); err != nil {
+		t.Fatalf("failed to create .entire directory: %v", err)
+	}
+
+	// Base settings without commit_linking
+	settingsFile := filepath.Join(entireDir, "settings.json")
+	if err := os.WriteFile(settingsFile, []byte(`{"enabled": true}`), 0o644); err != nil {
+		t.Fatalf("failed to write settings file: %v", err)
+	}
+
+	// Local override with commit_linking
+	localFile := filepath.Join(entireDir, "settings.local.json")
+	if err := os.WriteFile(localFile, []byte(`{"commit_linking": "always"}`), 0o644); err != nil {
+		t.Fatalf("failed to write local settings file: %v", err)
+	}
+
+	if err := os.MkdirAll(filepath.Join(tmpDir, ".git"), 0o755); err != nil {
+		t.Fatalf("failed to create .git directory: %v", err)
+	}
+
+	t.Chdir(tmpDir)
+
+	s, err := Load(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if s.CommitLinking != CommitLinkingAlways {
+		t.Errorf("CommitLinking = %q, want %q (expected local override)", s.CommitLinking, CommitLinkingAlways)
 	}
 }
 

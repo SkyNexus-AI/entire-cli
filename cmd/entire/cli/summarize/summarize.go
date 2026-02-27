@@ -10,6 +10,8 @@ import (
 
 	"github.com/entireio/cli/cmd/entire/cli/agent"
 	"github.com/entireio/cli/cmd/entire/cli/agent/geminicli"
+	"github.com/entireio/cli/cmd/entire/cli/agent/opencode"
+	"github.com/entireio/cli/cmd/entire/cli/agent/types"
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint"
 	"github.com/entireio/cli/cmd/entire/cli/transcript"
 )
@@ -25,7 +27,7 @@ import (
 //   - generator: summary generator to use (if nil, uses default ClaudeGenerator)
 //
 // Returns nil, error if transcript is empty or cannot be parsed.
-func GenerateFromTranscript(ctx context.Context, transcriptBytes []byte, filesTouched []string, agentType agent.AgentType, generator Generator) (*checkpoint.Summary, error) {
+func GenerateFromTranscript(ctx context.Context, transcriptBytes []byte, filesTouched []string, agentType types.AgentType, generator Generator) (*checkpoint.Summary, error) {
 	if len(transcriptBytes) == 0 {
 		return nil, errors.New("empty transcript")
 	}
@@ -111,13 +113,15 @@ var minimalDetailTools = map[string]bool{
 
 // BuildCondensedTranscriptFromBytes parses transcript bytes and extracts a condensed view.
 // This is a convenience function that combines parsing and condensing.
-// The agentType parameter determines which parser to use (Claude JSONL vs Gemini JSON).
-func BuildCondensedTranscriptFromBytes(content []byte, agentType agent.AgentType) ([]Entry, error) {
+// The agentType parameter determines which parser to use (Claude/OpenCode JSONL vs Gemini JSON).
+func BuildCondensedTranscriptFromBytes(content []byte, agentType types.AgentType) ([]Entry, error) {
 	switch agentType {
 	case agent.AgentTypeGemini:
 		return buildCondensedTranscriptFromGemini(content)
-	case agent.AgentTypeClaudeCode, agent.AgentTypeUnknown:
-		// Claude format - fall through to shared logic below
+	case agent.AgentTypeOpenCode:
+		return buildCondensedTranscriptFromOpenCode(content)
+	case agent.AgentTypeClaudeCode, agent.AgentTypeCursor, agent.AgentTypeUnknown:
+		// Claude/cursor format - fall through to shared logic below
 	}
 	// Claude format (JSONL) - handles Claude Code, Unknown, and any future agent types
 	lines, err := transcript.ParseFromBytes(content)
@@ -157,7 +161,7 @@ func buildCondensedTranscriptFromGemini(content []byte) ([]Entry, error) {
 				entries = append(entries, Entry{
 					Type:       EntryTypeTool,
 					ToolName:   tc.Name,
-					ToolDetail: extractGeminiToolDetail(tc.Args),
+					ToolDetail: extractGenericToolDetail(tc.Args),
 				})
 			}
 		}
@@ -166,11 +170,66 @@ func buildCondensedTranscriptFromGemini(content []byte) ([]Entry, error) {
 	return entries, nil
 }
 
-// extractGeminiToolDetail extracts an appropriate detail string from Gemini tool args.
-func extractGeminiToolDetail(args map[string]interface{}) string {
-	// Check common fields in order of preference
+// buildCondensedTranscriptFromOpenCode parses OpenCode export JSON transcript and extracts a condensed view.
+func buildCondensedTranscriptFromOpenCode(content []byte) ([]Entry, error) {
+	session, err := opencode.ParseExportSession(content)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse OpenCode transcript: %w", err)
+	}
+	if session == nil {
+		return nil, nil
+	}
+
+	var entries []Entry
+	for _, msg := range session.Messages {
+		switch msg.Info.Role {
+		case "user":
+			text := opencode.ExtractTextFromParts(msg.Parts)
+			if text != "" {
+				entries = append(entries, Entry{
+					Type:    EntryTypeUser,
+					Content: text,
+				})
+			}
+		case "assistant":
+			text := opencode.ExtractTextFromParts(msg.Parts)
+			if text != "" {
+				entries = append(entries, Entry{
+					Type:    EntryTypeAssistant,
+					Content: text,
+				})
+			}
+			for _, part := range msg.Parts {
+				if part.Type == "tool" && part.State != nil {
+					entries = append(entries, Entry{
+						Type:       EntryTypeTool,
+						ToolName:   part.Tool,
+						ToolDetail: extractOpenCodeToolDetail(part.State.Input),
+					})
+				}
+			}
+		}
+	}
+
+	return entries, nil
+}
+
+// extractOpenCodeToolDetail extracts a detail string from an OpenCode tool's input map.
+// OpenCode uses camelCase keys (e.g., "filePath" instead of "file_path").
+func extractOpenCodeToolDetail(input map[string]interface{}) string {
+	for _, key := range []string{"description", "command", "filePath", "path", "pattern"} {
+		if v, ok := input[key].(string); ok && v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// extractGenericToolDetail extracts an appropriate detail string from a tool's input/args map.
+// Checks common fields in order of preference. Used by Gemini condensation.
+func extractGenericToolDetail(input map[string]interface{}) string {
 	for _, key := range []string{"description", "command", "file_path", "path", "pattern"} {
-		if v, ok := args[key].(string); ok && v != "" {
+		if v, ok := input[key].(string); ok && v != "" {
 			return v
 		}
 	}

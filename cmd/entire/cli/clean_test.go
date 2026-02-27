@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -23,7 +24,7 @@ func setupCleanTestRepo(t *testing.T) (*git.Repository, plumbing.Hash) {
 	}
 
 	t.Chdir(dir)
-	paths.ClearRepoRootCache()
+	paths.ClearWorktreeRootCache()
 
 	// Create initial commit
 	emptyTree := &object.Tree{Entries: []object.TreeEntry{}}
@@ -69,7 +70,7 @@ func TestRunClean_NoOrphanedItems(t *testing.T) {
 	setupCleanTestRepo(t)
 
 	var stdout bytes.Buffer
-	err := runClean(&stdout, false)
+	err := runClean(context.Background(), &stdout, false)
 	if err != nil {
 		t.Fatalf("runClean() error = %v", err)
 	}
@@ -99,7 +100,7 @@ func TestRunClean_PreviewMode(t *testing.T) {
 	}
 
 	var stdout bytes.Buffer
-	err := runClean(&stdout, false) // force=false
+	err := runClean(context.Background(), &stdout, false) // force=false
 	if err != nil {
 		t.Fatalf("runClean() error = %v", err)
 	}
@@ -107,8 +108,8 @@ func TestRunClean_PreviewMode(t *testing.T) {
 	output := stdout.String()
 
 	// Should show preview header
-	if !strings.Contains(output, "orphaned items") {
-		t.Errorf("Expected 'orphaned items' in output, got: %s", output)
+	if !strings.Contains(output, "items to clean") {
+		t.Errorf("Expected 'items to clean' in output, got: %s", output)
 	}
 
 	// Should list the shadow branches
@@ -151,7 +152,7 @@ func TestRunClean_ForceMode(t *testing.T) {
 	}
 
 	var stdout bytes.Buffer
-	err := runClean(&stdout, true) // force=true
+	err := runClean(context.Background(), &stdout, true) // force=true
 	if err != nil {
 		t.Fatalf("runClean() error = %v", err)
 	}
@@ -187,7 +188,7 @@ func TestRunClean_SessionsBranchPreserved(t *testing.T) {
 	}
 
 	var stdout bytes.Buffer
-	err := runClean(&stdout, true) // force=true
+	err := runClean(context.Background(), &stdout, true) // force=true
 	if err != nil {
 		t.Fatalf("runClean() error = %v", err)
 	}
@@ -208,10 +209,10 @@ func TestRunClean_SessionsBranchPreserved(t *testing.T) {
 func TestRunClean_NotGitRepository(t *testing.T) {
 	dir := t.TempDir()
 	t.Chdir(dir)
-	paths.ClearRepoRootCache()
+	paths.ClearWorktreeRootCache()
 
 	var stdout bytes.Buffer
-	err := runClean(&stdout, false)
+	err := runClean(context.Background(), &stdout, false)
 
 	// Should return error for non-git directory
 	if err == nil {
@@ -240,10 +241,10 @@ func TestRunClean_Subdirectory(t *testing.T) {
 	}
 
 	t.Chdir(subDir)
-	paths.ClearRepoRootCache()
+	paths.ClearWorktreeRootCache()
 
 	var stdout bytes.Buffer
-	err = runClean(&stdout, false)
+	err = runClean(context.Background(), &stdout, false)
 	if err != nil {
 		t.Fatalf("runClean() from subdirectory error = %v", err)
 	}
@@ -274,7 +275,7 @@ func TestRunCleanWithItems_PartialFailure(t *testing.T) {
 	}
 
 	var stdout bytes.Buffer
-	err := runCleanWithItems(&stdout, true, items) // force=true
+	err := runCleanWithItems(context.Background(), &stdout, true, items, nil) // force=true
 
 	// Should return an error because one branch failed to delete
 	if err == nil {
@@ -310,7 +311,7 @@ func TestRunCleanWithItems_AllFailures(t *testing.T) {
 	}
 
 	var stdout bytes.Buffer
-	err := runCleanWithItems(&stdout, true, items) // force=true
+	err := runCleanWithItems(context.Background(), &stdout, true, items, nil) // force=true
 
 	// Should return an error because all items failed to delete
 	if err == nil {
@@ -338,7 +339,7 @@ func TestRunCleanWithItems_NoItems(t *testing.T) {
 	setupCleanTestRepo(t)
 
 	var stdout bytes.Buffer
-	err := runCleanWithItems(&stdout, false, []strategy.CleanupItem{})
+	err := runCleanWithItems(context.Background(), &stdout, false, []strategy.CleanupItem{}, nil)
 	if err != nil {
 		t.Fatalf("runCleanWithItems() error = %v", err)
 	}
@@ -360,7 +361,7 @@ func TestRunCleanWithItems_MixedTypes_Preview(t *testing.T) {
 	}
 
 	var stdout bytes.Buffer
-	err := runCleanWithItems(&stdout, false, items) // preview mode
+	err := runCleanWithItems(context.Background(), &stdout, false, items, nil) // preview mode
 	if err != nil {
 		t.Fatalf("runCleanWithItems() error = %v", err)
 	}
@@ -379,7 +380,7 @@ func TestRunCleanWithItems_MixedTypes_Preview(t *testing.T) {
 	}
 
 	// Should show total count
-	if !strings.Contains(output, "Found 3 orphaned items") {
-		t.Errorf("Expected 'Found 3 orphaned items', got: %s", output)
+	if !strings.Contains(output, "Found 3 items to clean") {
+		t.Errorf("Expected 'Found 3 items to clean', got: %s", output)
 	}
 }

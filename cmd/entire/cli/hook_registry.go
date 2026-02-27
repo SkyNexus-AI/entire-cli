@@ -1,7 +1,9 @@
+// hook_registry.go provides hook command registration for agents.
+// The lifecycle dispatcher (DispatchLifecycleEvent) handles all lifecycle events.
+// PostTodo is the only hook that's handled directly (not via lifecycle dispatcher).
 package cli
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -10,187 +12,13 @@ import (
 	"github.com/entireio/cli/cmd/entire/cli/agent"
 	"github.com/entireio/cli/cmd/entire/cli/agent/claudecode"
 	"github.com/entireio/cli/cmd/entire/cli/agent/geminicli"
+	"github.com/entireio/cli/cmd/entire/cli/agent/types"
 	"github.com/entireio/cli/cmd/entire/cli/logging"
 	"github.com/entireio/cli/cmd/entire/cli/paths"
+	"github.com/entireio/cli/cmd/entire/cli/strategy"
 
 	"github.com/spf13/cobra"
 )
-
-// HookHandlerFunc is a function that handles a specific hook event.
-type HookHandlerFunc func() error
-
-// hookRegistry maps (agentName, hookName) to handler functions.
-// This allows agents to define their hook vocabulary while keeping
-// handler logic in the CLI package (avoiding circular dependencies).
-var hookRegistry = map[agent.AgentName]map[string]HookHandlerFunc{}
-
-// RegisterHookHandler registers a handler for an agent's hook.
-func RegisterHookHandler(agentName agent.AgentName, hookName string, handler HookHandlerFunc) {
-	if hookRegistry[agentName] == nil {
-		hookRegistry[agentName] = make(map[string]HookHandlerFunc)
-	}
-	hookRegistry[agentName][hookName] = handler
-}
-
-// GetHookHandler returns the handler for an agent's hook, or nil if not found.
-func GetHookHandler(agentName agent.AgentName, hookName string) HookHandlerFunc {
-	if handlers, ok := hookRegistry[agentName]; ok {
-		return handlers[hookName]
-	}
-	return nil
-}
-
-// init registers Claude Code hook handlers.
-// Each handler checks if Entire is enabled before executing.
-//
-//nolint:gochecknoinits // Hook handler registration at startup is the intended pattern
-func init() {
-	// Register Claude Code handlers
-	RegisterHookHandler(agent.AgentNameClaudeCode, claudecode.HookNameSessionStart, func() error {
-		enabled, err := IsEnabled()
-		if err == nil && !enabled {
-			return nil
-		}
-		return handleClaudeCodeSessionStart()
-	})
-
-	RegisterHookHandler(agent.AgentNameClaudeCode, claudecode.HookNameSessionEnd, func() error {
-		enabled, err := IsEnabled()
-		if err == nil && !enabled {
-			return nil
-		}
-		return handleClaudeCodeSessionEnd()
-	})
-
-	RegisterHookHandler(agent.AgentNameClaudeCode, claudecode.HookNameStop, func() error {
-		enabled, err := IsEnabled()
-		if err == nil && !enabled {
-			return nil
-		}
-		return commitWithMetadata()
-	})
-
-	RegisterHookHandler(agent.AgentNameClaudeCode, claudecode.HookNameUserPromptSubmit, func() error {
-		enabled, err := IsEnabled()
-		if err == nil && !enabled {
-			return nil
-		}
-		return captureInitialState()
-	})
-
-	RegisterHookHandler(agent.AgentNameClaudeCode, claudecode.HookNamePreTask, func() error {
-		enabled, err := IsEnabled()
-		if err == nil && !enabled {
-			return nil
-		}
-		return handleClaudeCodePreTask()
-	})
-
-	RegisterHookHandler(agent.AgentNameClaudeCode, claudecode.HookNamePostTask, func() error {
-		enabled, err := IsEnabled()
-		if err == nil && !enabled {
-			return nil
-		}
-		return handleClaudeCodePostTask()
-	})
-
-	RegisterHookHandler(agent.AgentNameClaudeCode, claudecode.HookNamePostTodo, func() error {
-		enabled, err := IsEnabled()
-		if err == nil && !enabled {
-			return nil
-		}
-		return handleClaudeCodePostTodo()
-	})
-
-	// Register Gemini CLI handlers
-	RegisterHookHandler(agent.AgentNameGemini, geminicli.HookNameSessionStart, func() error {
-		enabled, err := IsEnabled()
-		if err == nil && !enabled {
-			return nil
-		}
-		return handleGeminiSessionStart()
-	})
-
-	RegisterHookHandler(agent.AgentNameGemini, geminicli.HookNameSessionEnd, func() error {
-		enabled, err := IsEnabled()
-		if err == nil && !enabled {
-			return nil
-		}
-		return handleGeminiSessionEnd()
-	})
-
-	RegisterHookHandler(agent.AgentNameGemini, geminicli.HookNameBeforeTool, func() error {
-		enabled, err := IsEnabled()
-		if err == nil && !enabled {
-			return nil
-		}
-		return handleGeminiBeforeTool()
-	})
-
-	RegisterHookHandler(agent.AgentNameGemini, geminicli.HookNameAfterTool, func() error {
-		enabled, err := IsEnabled()
-		if err == nil && !enabled {
-			return nil
-		}
-		return handleGeminiAfterTool()
-	})
-
-	RegisterHookHandler(agent.AgentNameGemini, geminicli.HookNameBeforeAgent, func() error {
-		enabled, err := IsEnabled()
-		if err == nil && !enabled {
-			return nil
-		}
-		return handleGeminiBeforeAgent()
-	})
-
-	RegisterHookHandler(agent.AgentNameGemini, geminicli.HookNameAfterAgent, func() error {
-		enabled, err := IsEnabled()
-		if err == nil && !enabled {
-			return nil
-		}
-		return handleGeminiAfterAgent()
-	})
-
-	RegisterHookHandler(agent.AgentNameGemini, geminicli.HookNameBeforeModel, func() error {
-		enabled, err := IsEnabled()
-		if err == nil && !enabled {
-			return nil
-		}
-		return handleGeminiBeforeModel()
-	})
-
-	RegisterHookHandler(agent.AgentNameGemini, geminicli.HookNameAfterModel, func() error {
-		enabled, err := IsEnabled()
-		if err == nil && !enabled {
-			return nil
-		}
-		return handleGeminiAfterModel()
-	})
-
-	RegisterHookHandler(agent.AgentNameGemini, geminicli.HookNameBeforeToolSelection, func() error {
-		enabled, err := IsEnabled()
-		if err == nil && !enabled {
-			return nil
-		}
-		return handleGeminiBeforeToolSelection()
-	})
-
-	RegisterHookHandler(agent.AgentNameGemini, geminicli.HookNamePreCompress, func() error {
-		enabled, err := IsEnabled()
-		if err == nil && !enabled {
-			return nil
-		}
-		return handleGeminiPreCompress()
-	})
-
-	RegisterHookHandler(agent.AgentNameGemini, geminicli.HookNameNotification, func() error {
-		enabled, err := IsEnabled()
-		if err == nil && !enabled {
-			return nil
-		}
-		return handleGeminiNotification()
-	})
-}
 
 // agentHookLogCleanup stores the cleanup function for agent hook logging.
 // Set by PersistentPreRunE, called by PersistentPostRunE.
@@ -199,14 +27,12 @@ var agentHookLogCleanup func()
 // currentHookAgentName stores the agent name for the currently executing hook.
 // Set by newAgentHookVerbCmdWithLogging before calling the handler.
 // This allows handlers to know which agent invoked the hook without guessing.
-var currentHookAgentName agent.AgentName
+var currentHookAgentName types.AgentName
 
 // GetCurrentHookAgent returns the agent for the currently executing hook.
 // Returns the agent based on the hook command structure (e.g., "entire hooks claude-code ...")
 // rather than guessing from directory presence.
 // Falls back to GetAgent() if not in a hook context.
-//
-
 func GetCurrentHookAgent() (agent.Agent, error) {
 	if currentHookAgentName == "" {
 		return nil, errors.New("not in a hook context: agent name not set")
@@ -219,15 +45,15 @@ func GetCurrentHookAgent() (agent.Agent, error) {
 	return ag, nil
 }
 
-// newAgentHooksCmd creates a hooks subcommand for an agent that implements HookHandler.
+// newAgentHooksCmd creates a hooks subcommand for an agent that implements HookSupport.
 // It dynamically creates subcommands for each hook the agent supports.
-func newAgentHooksCmd(agentName agent.AgentName, handler agent.HookHandler) *cobra.Command {
+func newAgentHooksCmd(agentName types.AgentName, handler agent.HookSupport) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:    string(agentName),
 		Short:  handler.Description() + " hook handlers",
 		Hidden: true,
-		PersistentPreRunE: func(_ *cobra.Command, _ []string) error {
-			agentHookLogCleanup = initHookLogging()
+		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
+			agentHookLogCleanup = initHookLogging(cmd.Context())
 			return nil
 		},
 		PersistentPostRunE: func(_ *cobra.Command, _ []string) error {
@@ -238,7 +64,7 @@ func newAgentHooksCmd(agentName agent.AgentName, handler agent.HookHandler) *cob
 		},
 	}
 
-	for _, hookName := range handler.GetHookNames() {
+	for _, hookName := range handler.HookNames() {
 		cmd.AddCommand(newAgentHookVerbCmdWithLogging(agentName, hookName))
 	}
 
@@ -261,26 +87,32 @@ func getHookType(hookName string) string {
 }
 
 // newAgentHookVerbCmdWithLogging creates a command for a specific hook verb with structured logging.
-// It logs hook invocation at DEBUG level and completion with duration at INFO level.
-func newAgentHookVerbCmdWithLogging(agentName agent.AgentName, hookName string) *cobra.Command {
+// It uses the lifecycle dispatcher (ParseHookEvent → DispatchLifecycleEvent) as the primary path.
+// PostTodo is handled directly as it's Claude-specific and not part of the lifecycle dispatcher.
+func newAgentHookVerbCmdWithLogging(agentName types.AgentName, hookName string) *cobra.Command {
 	return &cobra.Command{
 		Use:    hookName,
 		Hidden: true,
 		Short:  "Called on " + hookName,
-		RunE: func(_ *cobra.Command, _ []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			// Skip silently if not in a git repository - hooks shouldn't prevent the agent from working
-			if _, err := paths.RepoRoot(); err != nil {
+			if _, err := paths.WorktreeRoot(cmd.Context()); err != nil {
+				return nil
+			}
+
+			// Skip if Entire is not enabled
+			enabled, err := IsEnabled(cmd.Context())
+			if err == nil && !enabled {
 				return nil
 			}
 
 			start := time.Now()
 
 			// Initialize logging context with agent name
-			ctx := logging.WithAgent(logging.WithComponent(context.Background(), "hooks"), agentName)
+			ctx := logging.WithAgent(logging.WithComponent(cmd.Context(), "hooks"), agentName)
 
-			// Get strategy name for logging
-			strategyName := unknownStrategyName //nolint:ineffassign,wastedassign // already present in codebase
-			strategyName = GetStrategy().Name()
+			// Strategy name for logging
+			strategyName := strategy.StrategyNameManualCommit
 
 			hookType := getHookType(hookName)
 
@@ -290,21 +122,36 @@ func newAgentHookVerbCmdWithLogging(agentName agent.AgentName, hookName string) 
 				slog.String("strategy", strategyName),
 			)
 
-			handler := GetHookHandler(agentName, hookName)
-			if handler == nil {
-				logging.Error(ctx, "no handler registered",
-					slog.String("hook", hookName),
-					slog.String("hook_type", hookType),
-				)
-				return fmt.Errorf("no handler registered for %s/%s", agentName, hookName)
-			}
-
 			// Set the current hook agent so handlers can retrieve it
-			// without guessing from directory presence
 			currentHookAgentName = agentName
 			defer func() { currentHookAgentName = "" }()
 
-			hookErr := handler()
+			// Use the lifecycle dispatcher for all hooks
+			var hookErr error
+			ag, agentErr := agent.Get(agentName)
+			if agentErr != nil {
+				return fmt.Errorf("failed to get agent %q: %w", agentName, agentErr)
+			}
+
+			handler, ok := ag.(agent.HookSupport)
+			if !ok {
+				return fmt.Errorf("agent %q does not support hooks", agentName)
+			}
+
+			// Use cmd.InOrStdin() to support testing with cmd.SetIn()
+			event, parseErr := handler.ParseHookEvent(ctx, hookName, cmd.InOrStdin())
+			if parseErr != nil {
+				return fmt.Errorf("failed to parse hook event: %w", parseErr)
+			}
+
+			if event != nil {
+				// Lifecycle event — use the generic dispatcher
+				hookErr = DispatchLifecycleEvent(ctx, ag, event)
+			} else if agentName == agent.AgentNameClaudeCode && hookName == claudecode.HookNamePostTodo {
+				// PostTodo is Claude-specific: creates incremental checkpoints during subagent execution
+				hookErr = handleClaudeCodePostTodo(ctx)
+			}
+			// Other pass-through hooks (nil event, no special handling) are no-ops
 
 			logging.LogDuration(ctx, slog.LevelDebug, "hook completed", start,
 				slog.String("hook", hookName),

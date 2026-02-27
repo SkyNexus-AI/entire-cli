@@ -55,7 +55,7 @@ func TestEventPayloadSerialization(t *testing.T) {
 
 func TestTrackCommandDetachedSkipsNilCommand(_ *testing.T) {
 	// Should not panic with nil command
-	TrackCommandDetached(nil, "manual-commit", "claude-code", true, "1.0.0")
+	TrackCommandDetached(nil, "claude-code", true, "1.0.0")
 }
 
 func TestTrackCommandDetachedSkipsHiddenCommands(_ *testing.T) {
@@ -65,7 +65,7 @@ func TestTrackCommandDetachedSkipsHiddenCommands(_ *testing.T) {
 	}
 
 	// Should not panic and should skip hidden commands
-	TrackCommandDetached(hiddenCmd, "manual-commit", "claude-code", true, "1.0.0")
+	TrackCommandDetached(hiddenCmd, "claude-code", true, "1.0.0")
 }
 
 func TestTrackCommandDetachedRespectsOptOut(t *testing.T) {
@@ -76,7 +76,7 @@ func TestTrackCommandDetachedRespectsOptOut(t *testing.T) {
 	}
 
 	// Should not panic and should respect opt-out
-	TrackCommandDetached(cmd, "manual-commit", "claude-code", true, "1.0.0")
+	TrackCommandDetached(cmd, "claude-code", true, "1.0.0")
 }
 
 func TestBuildEventPayloadAgent(t *testing.T) {
@@ -92,7 +92,7 @@ func TestBuildEventPayloadAgent(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cmd := &cobra.Command{Use: "test"}
-			payload := BuildEventPayload(cmd, "manual-commit", tt.inputAgent, true, "1.0.0")
+			payload := BuildEventPayload(cmd, tt.inputAgent, true, "1.0.0")
 			if payload == nil {
 				t.Fatal("Expected non-nil payload")
 				return

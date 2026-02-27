@@ -60,18 +60,6 @@ body:
     validations:
       required: true
 
-  - type: dropdown
-    id: strategy
-    attributes:
-      label: Strategy
-      description: "Which strategy is configured? (check `.entire/settings.json` or `entire status`)"
-      options:
-        - manual-commit (default)
-        - auto-commit
-        - Not sure
-    validations:
-      required: true
-
   - type: input
     id: terminal
     attributes:

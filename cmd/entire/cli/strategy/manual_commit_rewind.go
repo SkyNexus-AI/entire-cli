@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/entireio/cli/cmd/entire/cli/agent"
+	"github.com/entireio/cli/cmd/entire/cli/agent/types"
 	cpkg "github.com/entireio/cli/cmd/entire/cli/checkpoint"
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint/id"
 	"github.com/entireio/cli/cmd/entire/cli/paths"
@@ -25,8 +26,8 @@ import (
 
 // GetRewindPoints returns available rewind points.
 // Uses checkpoint.GitStore.ListTemporaryCheckpoints for reading from shadow branches.
-func (s *ManualCommitStrategy) GetRewindPoints(limit int) ([]RewindPoint, error) {
-	repo, err := OpenRepository()
+func (s *ManualCommitStrategy) GetRewindPoints(ctx context.Context, limit int) ([]RewindPoint, error) {
+	repo, err := OpenRepository(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open git repository: %w", err)
 	}
@@ -44,7 +45,7 @@ func (s *ManualCommitStrategy) GetRewindPoints(limit int) ([]RewindPoint, error)
 	}
 
 	// Find sessions for current HEAD
-	sessions, err := s.findSessionsForCommit(head.Hash().String())
+	sessions, err := s.findSessionsForCommit(ctx, head.Hash().String())
 	if err != nil {
 		// Log error but continue to check for logs-only points
 		sessions = nil
@@ -57,7 +58,7 @@ func (s *ManualCommitStrategy) GetRewindPoints(limit int) ([]RewindPoint, error)
 	sessionPrompts := make(map[string]string)
 
 	for _, state := range sessions {
-		checkpoints, err := store.ListTemporaryCheckpoints(context.Background(), state.BaseCommit, state.WorktreeID, state.SessionID, limit)
+		checkpoints, err := store.ListTemporaryCheckpoints(ctx, state.BaseCommit, state.WorktreeID, state.SessionID, limit)
 		if err != nil {
 			continue // Error reading checkpoints, skip this session
 		}
@@ -94,7 +95,7 @@ func (s *ManualCommitStrategy) GetRewindPoints(limit int) ([]RewindPoint, error)
 	}
 
 	// Also include logs-only points from commit history
-	logsOnlyPoints, err := s.GetLogsOnlyRewindPoints(limit)
+	logsOnlyPoints, err := s.GetLogsOnlyRewindPoints(ctx, limit)
 	if err == nil && len(logsOnlyPoints) > 0 {
 		// Build set of existing point IDs for deduplication
 		existingIDs := make(map[string]bool)
@@ -132,14 +133,14 @@ func (s *ManualCommitStrategy) GetRewindPoints(limit int) ([]RewindPoint, error)
 // 2. Building a map of checkpoint ID -> checkpoint info
 // 3. Scanning the current branch history for commits with Entire-Checkpoint trailers
 // 4. Matching by checkpoint ID (stable across amend/rebase)
-func (s *ManualCommitStrategy) GetLogsOnlyRewindPoints(limit int) ([]RewindPoint, error) {
-	repo, err := OpenRepository()
+func (s *ManualCommitStrategy) GetLogsOnlyRewindPoints(ctx context.Context, limit int) ([]RewindPoint, error) {
+	repo, err := OpenRepository(ctx)
 	if err != nil {
 		return nil, err
 	}
 
 	// Get all checkpoints from entire/checkpoints/v1 branch
-	checkpoints, err := s.listCheckpoints()
+	checkpoints, err := s.listCheckpoints(ctx)
 	if err != nil {
 		// No checkpoints yet is fine
 		return nil, nil //nolint:nilerr // Expected when no checkpoints exist
@@ -179,6 +180,9 @@ func (s *ManualCommitStrategy) GetLogsOnlyRewindPoints(limit int) ([]RewindPoint
 	count := 0
 
 	err = iter.ForEach(func(c *object.Commit) error {
+		if err := ctx.Err(); err != nil {
+			return err //nolint:wrapcheck // Propagating context cancellation
+		}
 		if count >= logsOnlyScanLimit {
 			return errStop
 		}
@@ -249,8 +253,8 @@ func (s *ManualCommitStrategy) GetLogsOnlyRewindPoints(limit int) ([]RewindPoint
 // Rewind restores the working directory to a checkpoint.
 //
 
-func (s *ManualCommitStrategy) Rewind(point RewindPoint) error {
-	repo, err := OpenRepository()
+func (s *ManualCommitStrategy) Rewind(ctx context.Context, point RewindPoint) error {
+	repo, err := OpenRepository(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to open git repository: %w", err)
 	}
@@ -269,7 +273,7 @@ func (s *ManualCommitStrategy) Rewind(point RewindPoint) error {
 
 	// Reset the shadow branch to the rewound checkpoint
 	// This ensures the next checkpoint will only include prompts from this point forward
-	if err := s.resetShadowBranchToCheckpoint(repo, commit); err != nil {
+	if err := s.resetShadowBranchToCheckpoint(ctx, repo, commit); err != nil {
 		// Log warning but don't fail - file restoration is the primary operation
 		fmt.Fprintf(os.Stderr, "[entire] Warning: failed to reset shadow branch: %v\n", err)
 	}
@@ -278,7 +282,7 @@ func (s *ManualCommitStrategy) Rewind(point RewindPoint) error {
 	sessionID, hasSessionTrailer := trailers.ParseSession(commit.Message)
 	var preservedUntrackedFiles map[string]bool
 	if hasSessionTrailer {
-		state, stateErr := s.loadSessionState(sessionID)
+		state, stateErr := s.loadSessionState(ctx, sessionID)
 		if stateErr == nil && state != nil && len(state.UntrackedFilesAtStart) > 0 {
 			preservedUntrackedFiles = make(map[string]bool)
 			for _, f := range state.UntrackedFilesAtStart {
@@ -290,6 +294,9 @@ func (s *ManualCommitStrategy) Rewind(point RewindPoint) error {
 	// Build set of files in the checkpoint tree (excluding metadata)
 	checkpointFiles := make(map[string]bool)
 	err = tree.Files().ForEach(func(f *object.File) error {
+		if err := ctx.Err(); err != nil {
+			return err //nolint:wrapcheck // Propagating context cancellation
+		}
 		if !strings.HasPrefix(f.Name, entireDir) {
 			checkpointFiles[f.Name] = true
 		}
@@ -317,71 +324,55 @@ func (s *ManualCommitStrategy) Rewind(point RewindPoint) error {
 	trackedFiles := make(map[string]bool)
 	//nolint:errcheck // Error is not critical for rewind
 	_ = headTree.Files().ForEach(func(f *object.File) error {
+		if err := ctx.Err(); err != nil {
+			return err //nolint:wrapcheck // Propagating context cancellation
+		}
 		trackedFiles[f.Name] = true
 		return nil
 	})
 
 	// Get repository root to walk from there
-	repoRoot, err := GetWorktreePath()
+	repoRoot, err := paths.WorktreeRoot(ctx)
 	if err != nil {
 		repoRoot = "." // Fallback to current directory
 	}
 
-	// Find and delete untracked files that aren't in the checkpoint
-	// These are likely files created by the agent in later checkpoints
-	err = filepath.Walk(repoRoot, func(path string, info os.FileInfo, walkErr error) error {
-		if walkErr != nil {
-			return nil //nolint:nilerr // Skip filesystem errors during walk
-		}
-
-		// Get path relative to repo root
-		relPath, relErr := filepath.Rel(repoRoot, path)
-		if relErr != nil {
-			return nil //nolint:nilerr // Skip paths we can't make relative
-		}
-
-		// Skip directories and protected paths
-		if info.IsDir() {
-			if isProtectedPath(relPath) {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-
-		// Skip files in protected directories
-		if isProtectedPath(relPath) {
-			return nil
-		}
-
+	// Find and delete untracked files that aren't in the checkpoint.
+	// Uses git ls-files to only consider non-ignored files, avoiding walks through
+	// large ignored directories like node_modules/.
+	untrackedNow, err := collectUntrackedFiles(ctx)
+	if err != nil {
+		// Non-fatal - continue with restoration
+		fmt.Fprintf(os.Stderr, "Warning: error listing untracked files: %v\n", err)
+	}
+	for _, relPath := range untrackedNow {
 		// If file is in checkpoint, it will be restored
 		if checkpointFiles[relPath] {
-			return nil
+			continue
 		}
 
 		// If file is tracked in HEAD, don't delete (user's committed work)
 		if trackedFiles[relPath] {
-			return nil
+			continue
 		}
 
 		// If file existed at session start, preserve it (untracked user files)
 		if preservedUntrackedFiles[relPath] {
-			return nil
+			continue
 		}
 
-		// File is untracked and not in checkpoint - delete it (use absolute path)
-		if removeErr := os.Remove(path); removeErr == nil {
+		// File is untracked and not in checkpoint - delete it
+		absPath := filepath.Join(repoRoot, relPath)
+		if removeErr := os.Remove(absPath); removeErr == nil {
 			fmt.Fprintf(os.Stderr, "  Deleted: %s\n", relPath)
 		}
-
-		return nil
-	})
-	if err != nil {
-		// Non-fatal - continue with restoration
-		fmt.Fprintf(os.Stderr, "Warning: error walking directory: %v\n", err)
 	}
 
 	// Restore files from checkpoint
 	err = tree.Files().ForEach(func(f *object.File) error {
+		if err := ctx.Err(); err != nil {
+			return err //nolint:wrapcheck // Propagating context cancellation
+		}
 		// Skip metadata directories - these are for checkpoint storage, not working dir
 		if strings.HasPrefix(f.Name, entireDir) {
 			return nil
@@ -431,7 +422,7 @@ func (s *ManualCommitStrategy) Rewind(point RewindPoint) error {
 // resetShadowBranchToCheckpoint resets the shadow branch HEAD to the given checkpoint.
 // This ensures that when the user commits after rewinding, the next checkpoint will only
 // include prompts from the rewound point, not prompts from later checkpoints.
-func (s *ManualCommitStrategy) resetShadowBranchToCheckpoint(repo *git.Repository, commit *object.Commit) error {
+func (s *ManualCommitStrategy) resetShadowBranchToCheckpoint(ctx context.Context, repo *git.Repository, commit *object.Commit) error {
 	// Extract session ID from the checkpoint commit's Entire-Session trailer
 	sessionID, found := trailers.ParseSession(commit.Message)
 	if !found {
@@ -439,7 +430,7 @@ func (s *ManualCommitStrategy) resetShadowBranchToCheckpoint(repo *git.Repositor
 	}
 
 	// Load session state to get the shadow branch name
-	state, err := s.loadSessionState(sessionID)
+	state, err := s.loadSessionState(ctx, sessionID)
 	if err != nil {
 		return fmt.Errorf("failed to load session state: %w", err)
 	}
@@ -465,19 +456,19 @@ func (s *ManualCommitStrategy) resetShadowBranchToCheckpoint(repo *git.Repositor
 // For manual-commit strategy, rewind restores files from a checkpoint - uncommitted changes are expected
 // and will be replaced by the checkpoint contents. Returns true with a warning message showing
 // what changes will be reverted.
-func (s *ManualCommitStrategy) CanRewind() (bool, string, error) {
-	return checkCanRewindWithWarning()
+func (s *ManualCommitStrategy) CanRewind(ctx context.Context) (bool, string, error) {
+	return checkCanRewindWithWarning(ctx)
 }
 
 // PreviewRewind returns what will happen if rewinding to the given point.
 // This allows showing warnings about untracked files that will be deleted.
-func (s *ManualCommitStrategy) PreviewRewind(point RewindPoint) (*RewindPreview, error) {
+func (s *ManualCommitStrategy) PreviewRewind(ctx context.Context, point RewindPoint) (*RewindPreview, error) {
 	// Logs-only points don't modify the working directory
 	if point.IsLogsOnly {
 		return &RewindPreview{}, nil
 	}
 
-	repo, err := OpenRepository()
+	repo, err := OpenRepository(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open git repository: %w", err)
 	}
@@ -498,7 +489,7 @@ func (s *ManualCommitStrategy) PreviewRewind(point RewindPoint) (*RewindPreview,
 	sessionID, hasSessionTrailer := trailers.ParseSession(commit.Message)
 	var preservedUntrackedFiles map[string]bool
 	if hasSessionTrailer {
-		state, stateErr := s.loadSessionState(sessionID)
+		state, stateErr := s.loadSessionState(ctx, sessionID)
 		if stateErr == nil && state != nil && len(state.UntrackedFilesAtStart) > 0 {
 			preservedUntrackedFiles = make(map[string]bool)
 			for _, f := range state.UntrackedFilesAtStart {
@@ -511,6 +502,9 @@ func (s *ManualCommitStrategy) PreviewRewind(point RewindPoint) (*RewindPreview,
 	checkpointFiles := make(map[string]bool)
 	var filesToRestore []string
 	err = tree.Files().ForEach(func(f *object.File) error {
+		if err := ctx.Err(); err != nil {
+			return err //nolint:wrapcheck // Propagating context cancellation
+		}
 		if !strings.HasPrefix(f.Name, entireDir) {
 			checkpointFiles[f.Name] = true
 			filesToRestore = append(filesToRestore, f.Name)
@@ -539,66 +533,35 @@ func (s *ManualCommitStrategy) PreviewRewind(point RewindPoint) (*RewindPreview,
 	trackedFiles := make(map[string]bool)
 	//nolint:errcheck // Error is not critical for preview
 	_ = headTree.Files().ForEach(func(f *object.File) error {
+		if err := ctx.Err(); err != nil {
+			return err //nolint:wrapcheck // Propagating context cancellation
+		}
 		trackedFiles[f.Name] = true
 		return nil
 	})
 
-	// Get repository root to walk from there
-	repoRoot, err := GetWorktreePath()
-	if err != nil {
-		repoRoot = "."
-	}
-
-	// Find untracked files that would be deleted
+	// Find untracked files that would be deleted.
+	// Uses git ls-files to only consider non-ignored files.
 	var filesToDelete []string
-	err = filepath.Walk(repoRoot, func(path string, info os.FileInfo, walkErr error) error {
-		if walkErr != nil {
-			return nil //nolint:nilerr // Skip filesystem errors during walk
-		}
-
-		relPath, relErr := filepath.Rel(repoRoot, path)
-		if relErr != nil {
-			return nil //nolint:nilerr // Skip paths we can't make relative
-		}
-
-		// Skip directories and protected paths
-		if info.IsDir() {
-			if isProtectedPath(relPath) {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-
-		// Skip files in protected directories
-		if isProtectedPath(relPath) {
-			return nil
-		}
-
-		// If file is in checkpoint, it will be restored (not deleted)
-		if checkpointFiles[relPath] {
-			return nil
-		}
-
-		// If file is tracked in HEAD, don't delete (user's committed work)
-		if trackedFiles[relPath] {
-			return nil
-		}
-
-		// If file existed at session start, preserve it (untracked user files)
-		if preservedUntrackedFiles[relPath] {
-			return nil
-		}
-
-		// File is untracked and not in checkpoint - will be deleted
-		filesToDelete = append(filesToDelete, relPath)
-		return nil
-	})
-	if err != nil {
-		// Non-fatal, return what we have
-		return &RewindPreview{ //nolint:nilerr // Partial result is still useful
+	untrackedNow, untrackedErr := collectUntrackedFiles(ctx)
+	if untrackedErr != nil {
+		fmt.Fprintf(os.Stderr, "Warning: could not list untracked files for preview: %v\n", untrackedErr)
+		return &RewindPreview{
 			FilesToRestore: filesToRestore,
 			FilesToDelete:  filesToDelete,
 		}, nil
+	}
+	for _, relPath := range untrackedNow {
+		if checkpointFiles[relPath] {
+			continue
+		}
+		if trackedFiles[relPath] {
+			continue
+		}
+		if preservedUntrackedFiles[relPath] {
+			continue
+		}
+		filesToDelete = append(filesToDelete, relPath)
 	}
 
 	// Sort for consistent output
@@ -617,7 +580,7 @@ func (s *ManualCommitStrategy) PreviewRewind(point RewindPoint) (*RewindPreview,
 // When multiple sessions were condensed to the same checkpoint, ALL sessions are restored.
 // If force is false, prompts for confirmation when local logs have newer timestamps.
 // Returns info about each restored session so callers can print correct per-session resume commands.
-func (s *ManualCommitStrategy) RestoreLogsOnly(point RewindPoint, force bool) ([]RestoredSession, error) {
+func (s *ManualCommitStrategy) RestoreLogsOnly(ctx context.Context, point RewindPoint, force bool) ([]RestoredSession, error) {
 	if !point.IsLogsOnly {
 		return nil, errors.New("not a logs-only rewind point")
 	}
@@ -633,7 +596,7 @@ func (s *ManualCommitStrategy) RestoreLogsOnly(point RewindPoint, force bool) ([
 	}
 
 	// Read checkpoint summary to get session count
-	summary, err := store.ReadCommitted(context.Background(), point.CheckpointID)
+	summary, err := store.ReadCommitted(ctx, point.CheckpointID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read checkpoint: %w", err)
 	}
@@ -641,15 +604,15 @@ func (s *ManualCommitStrategy) RestoreLogsOnly(point RewindPoint, force bool) ([
 		return nil, fmt.Errorf("checkpoint not found: %s", point.CheckpointID)
 	}
 
-	// Get repo root for agent session directory lookup
-	repoRoot, err := paths.RepoRoot()
+	// Get worktree root for agent session directory lookup
+	repoRoot, err := paths.WorktreeRoot(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get repository root: %w", err)
+		return nil, fmt.Errorf("failed to get worktree root: %w", err)
 	}
 
 	// Check for newer local logs if not forcing
 	if !force {
-		sessions := s.classifySessionsForRestore(context.Background(), repoRoot, store, point.CheckpointID, summary)
+		sessions := s.classifySessionsForRestore(ctx, repoRoot, store, point.CheckpointID, summary)
 		hasConflicts := false
 		for _, sess := range sessions {
 			if sess.Status == StatusLocalNewer {
@@ -678,7 +641,7 @@ func (s *ManualCommitStrategy) RestoreLogsOnly(point RewindPoint, force bool) ([
 	// Restore all sessions (oldest to newest, using 0-based indexing)
 	var restored []RestoredSession
 	for i := range totalSessions {
-		content, readErr := store.ReadSessionContent(context.Background(), point.CheckpointID, i)
+		content, readErr := store.ReadSessionContent(ctx, point.CheckpointID, i)
 		if readErr != nil {
 			fmt.Fprintf(os.Stderr, "  Warning: failed to read session %d: %v\n", i, readErr)
 			continue
@@ -704,19 +667,13 @@ func (s *ManualCommitStrategy) RestoreLogsOnly(point RewindPoint, force bool) ([
 			continue
 		}
 
-		// Prefer transcript path from checkpoint metadata (works for all agents).
-		// Fall back to agent-based resolution for old checkpoints without this field.
-		var sessionFile string
-		if resolved := resolveTranscriptPathFromMetadata(content.Metadata.TranscriptPath); resolved != "" {
-			sessionFile = resolved
-		} else {
-			sessionAgentDir, dirErr := sessionAgent.GetSessionDir(repoRoot)
-			if dirErr != nil {
-				fmt.Fprintf(os.Stderr, "  Warning: failed to get session dir for session %d: %v\n", i, dirErr)
-				continue
-			}
-			sessionFile = ResolveSessionFilePath(sessionID, sessionAgent, sessionAgentDir)
+		// Compute transcript path from current repo location for cross-machine portability.
+		sessionAgentDir, dirErr := sessionAgent.GetSessionDir(repoRoot)
+		if dirErr != nil {
+			fmt.Fprintf(os.Stderr, "  Warning: failed to get session dir for session %d: %v\n", i, dirErr)
+			continue
 		}
+		sessionFile := sessionAgent.ResolveSessionFile(sessionAgentDir, sessionID)
 
 		// Get first prompt for display
 		promptPreview := ExtractFirstPrompt(content.Prompts)
@@ -741,65 +698,39 @@ func (s *ManualCommitStrategy) RestoreLogsOnly(point RewindPoint, force bool) ([
 			continue
 		}
 
-		if writeErr := os.WriteFile(sessionFile, content.Transcript, 0o600); writeErr != nil {
+		agentSession := &agent.AgentSession{
+			SessionID:  sessionID,
+			AgentName:  sessionAgent.Name(),
+			RepoPath:   repoRoot,
+			SessionRef: sessionFile,
+			NativeData: content.Transcript,
+		}
+		if writeErr := sessionAgent.WriteSession(ctx, agentSession); writeErr != nil {
 			if totalSessions > 1 {
-				fmt.Fprintf(os.Stderr, "    Warning: failed to write transcript: %v\n", writeErr)
+				fmt.Fprintf(os.Stderr, "    Warning: failed to write session: %v\n", writeErr)
 				continue
 			}
-			return nil, fmt.Errorf("failed to write transcript: %w", writeErr)
+			return nil, fmt.Errorf("failed to write session: %w", writeErr)
 		}
 
 		restored = append(restored, RestoredSession{
 			SessionID: sessionID,
 			Agent:     sessionAgent.Type(),
 			Prompt:    promptPreview,
+			CreatedAt: content.Metadata.CreatedAt,
 		})
 	}
 
 	return restored, nil
 }
 
-// resolveTranscriptPathFromMetadata expands a home-relative transcript path
-// from checkpoint metadata to an absolute path. Returns "" if the path is empty.
-func resolveTranscriptPathFromMetadata(homeRelPath string) string {
-	if homeRelPath == "" {
-		return ""
-	}
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		return ""
-	}
-	return filepath.Join(home, homeRelPath)
-}
-
 // ResolveAgentForRewind resolves the agent from checkpoint metadata.
-// Falls back to the default agent (Claude) for old checkpoints that lack agent info.
-func ResolveAgentForRewind(agentType agent.AgentType) (agent.Agent, error) {
-	if !isSpecificAgentType(agentType) {
-		ag := agent.Default()
-		if ag == nil {
-			return nil, errors.New("no default agent registered")
-		}
-		return ag, nil
-	}
+func ResolveAgentForRewind(agentType types.AgentType) (agent.Agent, error) {
 	ag, err := agent.GetByAgentType(agentType)
 	if err != nil {
 		return nil, fmt.Errorf("resolving agent %q: %w", agentType, err)
 	}
 	return ag, nil
-}
-
-// ResolveSessionFilePath determines the correct file path for an agent's session transcript.
-// Checks session state for transcript_path first (needed for agents like Gemini that store
-// transcripts at paths that GetSessionDir can't reconstruct, e.g. SHA-256 hashed directories).
-// Falls back to the agent's ExtractAgentSessionID + ResolveSessionFile with fallbackSessionDir.
-func ResolveSessionFilePath(sessionID string, ag agent.Agent, fallbackSessionDir string) string {
-	state, err := LoadSessionState(sessionID)
-	if err == nil && state != nil && state.TranscriptPath != "" {
-		return state.TranscriptPath
-	}
-
-	return ag.ResolveSessionFile(fallbackSessionDir, sessionID)
 }
 
 // readSessionPrompt reads the first prompt from the session's prompt.txt file stored in git.
@@ -875,17 +806,12 @@ func (s *ManualCommitStrategy) classifySessionsForRestore(ctx context.Context, r
 			continue
 		}
 
-		// Prefer transcript path from checkpoint metadata, fall back to agent-based resolution.
-		var localPath string
-		if resolved := resolveTranscriptPathFromMetadata(content.Metadata.TranscriptPath); resolved != "" {
-			localPath = resolved
-		} else {
-			sessionAgentDir, dirErr := sessionAgent.GetSessionDir(repoRoot)
-			if dirErr != nil {
-				continue
-			}
-			localPath = ResolveSessionFilePath(sessionID, sessionAgent, sessionAgentDir)
+		// Compute transcript path from current repo location for cross-machine portability.
+		sessionAgentDir, dirErr := sessionAgent.GetSessionDir(repoRoot)
+		if dirErr != nil {
+			continue
 		}
+		localPath := sessionAgent.ResolveSessionFile(sessionAgentDir, sessionID)
 
 		localTime := paths.GetLastTimestampFromFile(localPath)
 		checkpointTime := paths.GetLastTimestampFromBytes(content.Transcript)

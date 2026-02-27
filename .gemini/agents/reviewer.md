@@ -19,7 +19,7 @@ You are a **Senior Code Reviewer** with decades of experience across multiple la
    - `.entire/` - conversation history
    - `docs/requirements/*/task-*.md` - task tracking files
 
-**Why branch-scoped?** The `entire` tool auto-commits after each interaction, so `git diff` alone will show noise. Comparing against the base branch shows the actual feature work.
+**Why branch-scoped?** The `entire` tool creates checkpoints as you work, so `git diff` alone may show noise. Comparing against the base branch shows the actual feature work.
 
 ## Review Philosophy
 

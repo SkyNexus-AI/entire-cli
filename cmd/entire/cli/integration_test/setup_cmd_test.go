@@ -65,114 +65,109 @@ func (env *TestEnv) SetEnabled(enabled bool) {
 
 func TestEnableDisable(t *testing.T) {
 	t.Parallel()
-	RunForAllStrategiesWithBasicEnv(t, func(t *testing.T, env *TestEnv, strategyName string) {
-		// Initially should be enabled (default)
-		stdout := env.RunCLI("status")
-		if !strings.Contains(stdout, "Enabled") {
-			t.Errorf("Expected status to show 'Enabled', got: %s", stdout)
-		}
+	env := NewRepoEnv(t)
+	// Initially should be enabled (default)
+	stdout := env.RunCLI("status")
+	if !strings.Contains(stdout, "Enabled") {
+		t.Errorf("Expected status to show 'Enabled', got: %s", stdout)
+	}
 
-		// Disable
-		stdout = env.RunCLI("disable")
-		if !strings.Contains(stdout, "disabled") {
-			t.Errorf("Expected disable output to contain 'disabled', got: %s", stdout)
-		}
+	// Disable (using --project so re-enable can override cleanly)
+	stdout = env.RunCLI("disable", "--project")
+	if !strings.Contains(stdout, "disabled") {
+		t.Errorf("Expected disable output to contain 'disabled', got: %s", stdout)
+	}
 
-		// Check status is now disabled
-		stdout = env.RunCLI("status")
-		if !strings.Contains(stdout, "Disabled") {
-			t.Errorf("Expected status to show 'Disabled', got: %s", stdout)
-		}
+	// Check status is now disabled
+	stdout = env.RunCLI("status")
+	if !strings.Contains(stdout, "Disabled") {
+		t.Errorf("Expected status to show 'Disabled', got: %s", stdout)
+	}
 
-		// Re-enable (using --strategy flag for non-interactive mode)
-		stdout = env.RunCLI("enable", "--strategy", strategyName)
-		if !strings.Contains(stdout, "Ready.") {
-			t.Errorf("Expected enable output to contain 'Ready.', got: %s", stdout)
-		}
+	// Re-enable (using --agent for non-interactive mode)
+	stdout = env.RunCLI("enable", "--agent", "claude-code", "--telemetry=false")
+	if !strings.Contains(stdout, "Ready.") {
+		t.Errorf("Expected enable output to contain 'Ready.', got: %s", stdout)
+	}
 
-		// Check status is now enabled
-		stdout = env.RunCLI("status")
-		if !strings.Contains(stdout, "Enabled") {
-			t.Errorf("Expected status to show 'Enabled', got: %s", stdout)
-		}
-	})
+	// Check status is now enabled
+	stdout = env.RunCLI("status")
+	if !strings.Contains(stdout, "Enabled") {
+		t.Errorf("Expected status to show 'Enabled', got: %s", stdout)
+	}
 }
 
 func TestRewindBlockedWhenDisabled(t *testing.T) {
 	t.Parallel()
-	RunForAllStrategiesWithRepoEnv(t, func(t *testing.T, env *TestEnv, strategyName string) {
-		// Disable Entire
-		env.SetEnabled(false)
+	env := NewRepoWithCommit(t)
+	// Disable Entire
+	env.SetEnabled(false)
 
-		// Try to run rewind --list - should show disabled message (not error)
-		stdout, err := env.RunCLIWithError("rewind", "--list")
-		if err != nil {
-			t.Fatalf("rewind --list command failed unexpectedly: %v\nOutput: %s", err, stdout)
-		}
-		if !strings.Contains(stdout, "Entire is disabled") {
-			t.Errorf("Expected disabled message, got: %s", stdout)
-		}
-		if !strings.Contains(stdout, "entire enable") {
-			t.Errorf("Expected message to mention 'entire enable', got: %s", stdout)
-		}
-	})
+	// Try to run rewind --list - should show disabled message (not error)
+	stdout, err := env.RunCLIWithError("rewind", "--list")
+	if err != nil {
+		t.Fatalf("rewind --list command failed unexpectedly: %v\nOutput: %s", err, stdout)
+	}
+	if !strings.Contains(stdout, "Entire is disabled") {
+		t.Errorf("Expected disabled message, got: %s", stdout)
+	}
+	if !strings.Contains(stdout, "entire enable") {
+		t.Errorf("Expected message to mention 'entire enable', got: %s", stdout)
+	}
 }
 
 func TestHooksSilentWhenDisabled(t *testing.T) {
 	t.Parallel()
-	RunForAllStrategiesWithRepoEnv(t, func(t *testing.T, env *TestEnv, strategyName string) {
-		// Create an untracked file
-		env.WriteFile("newfile.txt", "content")
+	env := NewRepoWithCommit(t)
+	// Create an untracked file
+	env.WriteFile("newfile.txt", "content")
 
-		// Disable Entire
-		env.SetEnabled(false)
+	// Disable Entire
+	env.SetEnabled(false)
 
-		// Run hook - should exit silently (no error, no state file created)
-		err := env.SimulateUserPromptSubmit("test-session-disabled")
-		if err != nil {
-			t.Fatalf("Hook should exit silently when disabled, got error: %v", err)
-		}
+	// Run hook - should exit silently (no error, no state file created)
+	err := env.SimulateUserPromptSubmit("test-session-disabled")
+	if err != nil {
+		t.Fatalf("Hook should exit silently when disabled, got error: %v", err)
+	}
 
-		// Verify no state file was created (hook exited early)
-		statePath := filepath.Join(env.RepoDir, ".entire", "tmp", "pre-prompt-test-session-disabled.json")
-		if _, err := os.Stat(statePath); err == nil {
-			t.Error("pre-prompt state file should NOT exist when disabled")
-		}
-	})
+	// Verify no state file was created (hook exited early)
+	statePath := filepath.Join(env.RepoDir, ".entire", "tmp", "pre-prompt-test-session-disabled.json")
+	if _, err := os.Stat(statePath); err == nil {
+		t.Error("pre-prompt state file should NOT exist when disabled")
+	}
 }
 
 func TestStatusWhenDisabled(t *testing.T) {
 	t.Parallel()
-	RunForAllStrategiesWithBasicEnv(t, func(t *testing.T, env *TestEnv, strategyName string) {
-		// Disable Entire
-		env.SetEnabled(false)
+	env := NewRepoEnv(t)
+	// Disable Entire
+	env.SetEnabled(false)
 
-		// Status command should still work and show disabled
-		stdout := env.RunCLI("status")
-		if !strings.Contains(stdout, "Disabled") {
-			t.Errorf("Expected status to show 'Disabled', got: %s", stdout)
-		}
-	})
+	// Status command should still work and show disabled
+	stdout := env.RunCLI("status")
+	if !strings.Contains(stdout, "Disabled") {
+		t.Errorf("Expected status to show 'Disabled', got: %s", stdout)
+	}
 }
 
 func TestEnableWhenDisabled(t *testing.T) {
 	t.Parallel()
-	RunForAllStrategiesWithBasicEnv(t, func(t *testing.T, env *TestEnv, strategyName string) {
-		// Disable Entire
-		env.SetEnabled(false)
+	env := NewRepoEnv(t)
+	// Disable Entire
+	env.SetEnabled(false)
 
-		// Enable command should work (using --strategy flag for non-interactive mode)
-		stdout := env.RunCLI("enable", "--strategy", strategyName)
-		if !strings.Contains(stdout, "Ready.") {
-			t.Errorf("Expected enable output to contain 'Ready.', got: %s", stdout)
-		}
+	// Enable command should work (using --agent for non-interactive mode)
+	stdout := env.RunCLI("enable", "--agent", "claude-code", "--telemetry=false")
+	if !strings.Contains(stdout, "Ready.") {
+		t.Errorf("Expected enable output to contain 'Ready.', got: %s", stdout)
+	}
 
-		// Verify it's now enabled
-		stdout = env.RunCLI("status")
-		if !strings.Contains(stdout, "Enabled") {
-			t.Errorf("Expected status to show 'Enabled' after re-enabling, got: %s", stdout)
-		}
-	})
+	// Verify it's now enabled
+	stdout = env.RunCLI("status")
+	if !strings.Contains(stdout, "Enabled") {
+		t.Errorf("Expected status to show 'Enabled' after re-enabling, got: %s", stdout)
+	}
 }
 
 func TestEnableDefaultStrategy(t *testing.T) {
@@ -192,7 +187,7 @@ func TestEnableDefaultStrategy(t *testing.T) {
 		t.Errorf("Expected output to contain 'Ready.', got: %s", stdout)
 	}
 
-	// Verify settings file has manual-commit strategy
+	// Verify settings file exists and has enabled field
 	settingsPath := filepath.Join(env.RepoDir, ".entire", paths.SettingsFileName)
 	data, err := os.ReadFile(settingsPath)
 	if err != nil {
@@ -204,16 +199,16 @@ func TestEnableDefaultStrategy(t *testing.T) {
 		t.Fatalf("Failed to parse settings: %v", err)
 	}
 
-	strategy, ok := settings["strategy"].(string)
+	enabled, ok := settings["enabled"].(bool)
 	if !ok {
-		t.Fatalf("Strategy not found in settings: %v", settings)
+		t.Fatalf("Enabled not found in settings: %v", settings)
 	}
 
-	if strategy != "manual-commit" {
-		t.Errorf("Expected default strategy to be 'manual-commit', got: %s", strategy)
+	if !enabled {
+		t.Error("Expected enabled to be true")
 	}
 
-	// Also verify via status command
+	// Verify status shows manual-commit (the only strategy)
 	stdout = env.RunCLI("status")
 	if !strings.Contains(stdout, "manual-commit") {
 		t.Errorf("Expected status to show 'manual-commit', got: %s", stdout)

@@ -1,8 +1,9 @@
 [tools]
 # Please also keep the version aligned in the go.mod file
-go = { version = '1.25.6', postinstall = "go install github.com/go-delve/delve/cmd/dlv@latest" }
-golangci-lint = '2.8.0'
+go = { version = '1.26.0', postinstall = "go install github.com/go-delve/delve/cmd/dlv@latest && go install gotest.tools/gotestsum@latest" }
+golangci-lint = '2.10.1'
 shellcheck = 'latest'
+tmux = 'latest'
 
 [tasks.fmt]
 description = "Run gofmt"
@@ -20,90 +21,7 @@ run = "go test -tags=integration ./cmd/entire/cli/integration_test/..."
 description = "Run all tests (unit + integration) with race detection"
 run = "go test -tags=integration -race ./..."
 
-[tasks.build]
-description = "Build the CLI"
-run = """
-VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "dev")
-COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
-go build -ldflags "-X github.com/entireio/cli/cmd/entire/cli/buildinfo.Version=${VERSION} -X github.com/entireio/cli/cmd/entire/cli/buildinfo.Commit=${COMMIT}" -o entire ./cmd/entire
-"""
-
 [tasks."build:all"]
 description = "Build for all platforms using goreleaser"
 run = "goreleaser build --snapshot --clean"
 
-[tasks."completions"]
-description = "generate entire shell completions"
-quiet = true
-run = """
-rm -rf completions
-mkdir completions
-for sh in bash zsh fish; do
-    go run ./cmd/entire/main.go completion "$sh" >"completions/entire.$sh"
-done
-"""
-
-[tasks.dup]
-description = "Check for code duplication (threshold 50, with summary)"
-run = """
-#!/usr/bin/env bash
-set -euo pipefail
-
-# Create temp files with proper extensions (works on both Linux and macOS)
-tmpdir=$(mktemp -d)
-config="$tmpdir/config.yaml"
-json_out="$tmpdir/output.json"
-
-cat > "$config" << 'YAML'
-version: "2"
-linters:
-  default: none
-  enable: [dupl]
-  settings:
-    dupl:
-      threshold: 50
-YAML
-
-# Run with JSON output for summary, text output for details
-golangci-lint run -c "$config" --new=false --max-issues-per-linter=0 --max-same-issues=0 \
-  --output.json.path="$json_out" --output.text.path=/dev/stderr ./... 2>&1 || true
-
-# Print summary grouped by file
-echo ""
-echo "=== Duplication Summary (by file) ==="
-if command -v jq &>/dev/null && [ -s "$json_out" ]; then
-  jq -r '.Issues // [] | group_by(.Pos.Filename) | map({file: (.[0].Pos.Filename | split("/") | .[-1]), count: length}) | sort_by(-.count) | .[] | "  " + (.count|tostring) + " " + .file' "$json_out" 2>/dev/null || echo "  (no issues)"
-else
-  echo "  (install jq for summary)"
-fi
-
-rm -rf "$tmpdir"
-"""
-
-[tasks."dup:staged"]
-description = "Check duplication in staged files only (threshold 75, same as CI)"
-run = """
-#!/usr/bin/env bash
-set -euo pipefail
-
-# Get staged Go files, preserving paths with spaces using null delimiters throughout
-if ! git diff --cached --name-only -z --diff-filter=ACM | grep -z '\\.go$' | grep -zq .; then
-  echo "No staged Go files to check"
-  exit 0
-fi
-echo "Checking staged files for duplication..."
-git diff --cached --name-only -z --diff-filter=ACM | grep -z '\\.go$' | xargs -0 golangci-lint run --enable-only dupl --new=false --max-issues-per-linter=0 --max-same-issues=0
-"""
-
-[tasks."test:e2e"]
-description = "Run E2E tests with real agent calls (requires claude CLI)"
-# -count=1 disables test caching since E2E tests call real external agents
-run = "go test -tags=e2e -count=1 -timeout=30m -v ./cmd/entire/cli/e2e_test/..."
-
-[tasks."test:e2e:claude"]
-description = "Run E2E tests with Claude Code (haiku model)"
-run = "E2E_AGENT=claude-code go test -tags=e2e -count=1 -timeout=30m -v ./cmd/entire/cli/e2e_test/..."
-
-[tasks."test:e2e:gemini"]
-description = "Run E2E tests with Gemini CLI (sequential to avoid rate limits)"
-run = "E2E_AGENT=gemini go test -tags=e2e -count=1 -parallel 1 -timeout=30m -v ./cmd/entire/cli/e2e_test/..."

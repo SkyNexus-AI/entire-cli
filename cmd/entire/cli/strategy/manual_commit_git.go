@@ -5,12 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"os"
 	"path/filepath"
 	"sort"
 
 	"github.com/entireio/cli/cmd/entire/cli/agent"
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint"
+	"github.com/entireio/cli/cmd/entire/cli/checkpoint/id"
 	"github.com/entireio/cli/cmd/entire/cli/logging"
 	"github.com/entireio/cli/cmd/entire/cli/paths"
 	"github.com/entireio/cli/cmd/entire/cli/trailers"
@@ -18,33 +18,33 @@ import (
 	"github.com/go-git/go-git/v5"
 )
 
-// SaveChanges saves a checkpoint to the shadow branch.
+// SaveStep saves a checkpoint to the shadow branch.
 // Uses checkpoint.GitStore.WriteTemporary for git operations.
-func (s *ManualCommitStrategy) SaveChanges(ctx SaveContext) error {
-	repo, err := OpenRepository()
+func (s *ManualCommitStrategy) SaveStep(ctx context.Context, step StepContext) error {
+	repo, err := OpenRepository(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to open git repository: %w", err)
 	}
 
 	// Extract session ID from metadata dir
-	sessionID := filepath.Base(ctx.MetadataDir)
+	sessionID := filepath.Base(step.MetadataDir)
 
 	// Load or initialize session state
-	state, err := s.loadSessionState(sessionID)
+	state, err := s.loadSessionState(ctx, sessionID)
 	if err != nil {
 		return fmt.Errorf("failed to load session state: %w", err)
 	}
 	// Initialize if state is nil OR BaseCommit is empty (can happen with partial state from warnings)
 	if state == nil || state.BaseCommit == "" {
-		agentType := resolveAgentType(ctx.AgentType, state)
-		state, err = s.initializeSession(repo, sessionID, agentType, "", "") // No transcript/prompt in fallback
+		agentType := resolveAgentType(step.AgentType, state)
+		state, err = s.initializeSession(ctx, repo, sessionID, agentType, "", "") // No transcript/prompt in fallback
 		if err != nil {
 			return fmt.Errorf("failed to initialize session: %w", err)
 		}
 	}
 
 	// Check if HEAD has changed (e.g., Claude did a rebase via tool call) and migrate if needed
-	if err := s.migrateAndPersistIfNeeded(repo, state); err != nil {
+	if err := s.migrateAndPersistIfNeeded(ctx, repo, state); err != nil {
 		return err
 	}
 
@@ -70,7 +70,7 @@ func (s *ManualCommitStrategy) SaveChanges(ctx SaveContext) error {
 	}
 
 	// Log the prompt attribution for debugging
-	attrLogCtx := logging.WithComponent(context.Background(), "attribution")
+	attrLogCtx := logging.WithComponent(ctx, "attribution")
 	logging.Debug(attrLogCtx, "prompt attribution at checkpoint save",
 		slog.Int("checkpoint_number", promptAttr.CheckpointNumber),
 		slog.Int("user_added", promptAttr.UserLinesAdded),
@@ -81,18 +81,18 @@ func (s *ManualCommitStrategy) SaveChanges(ctx SaveContext) error {
 
 	// Use WriteTemporary to create the checkpoint
 	isFirstCheckpointOfSession := state.StepCount == 0
-	result, err := store.WriteTemporary(context.Background(), checkpoint.WriteTemporaryOptions{
+	result, err := store.WriteTemporary(ctx, checkpoint.WriteTemporaryOptions{
 		SessionID:         sessionID,
 		BaseCommit:        state.BaseCommit,
 		WorktreeID:        state.WorktreeID,
-		ModifiedFiles:     ctx.ModifiedFiles,
-		NewFiles:          ctx.NewFiles,
-		DeletedFiles:      ctx.DeletedFiles,
-		MetadataDir:       ctx.MetadataDir,
-		MetadataDirAbs:    ctx.MetadataDirAbs,
-		CommitMessage:     ctx.CommitMessage,
-		AuthorName:        ctx.AuthorName,
-		AuthorEmail:       ctx.AuthorEmail,
+		ModifiedFiles:     step.ModifiedFiles,
+		NewFiles:          step.NewFiles,
+		DeletedFiles:      step.DeletedFiles,
+		MetadataDir:       step.MetadataDir,
+		MetadataDirAbs:    step.MetadataDirAbs,
+		CommitMessage:     step.CommitMessage,
+		AuthorName:        step.AuthorName,
+		AuthorEmail:       step.AuthorEmail,
 		IsFirstCheckpoint: isFirstCheckpointOfSession,
 	})
 	if err != nil {
@@ -101,14 +101,13 @@ func (s *ManualCommitStrategy) SaveChanges(ctx SaveContext) error {
 
 	// If checkpoint was skipped due to deduplication (no changes), return early
 	if result.Skipped {
-		logCtx := logging.WithComponent(context.Background(), "checkpoint")
+		logCtx := logging.WithComponent(ctx, "checkpoint")
 		logging.Info(logCtx, "checkpoint skipped (no changes)",
 			slog.String("strategy", "manual-commit"),
 			slog.String("checkpoint_type", "session"),
 			slog.Int("checkpoint_count", state.StepCount),
 			slog.String("shadow_branch", shadowBranchName),
 		)
-		fmt.Fprintf(os.Stderr, "Skipped checkpoint (no changes since last checkpoint)\n")
 		return nil
 	}
 
@@ -123,38 +122,40 @@ func (s *ManualCommitStrategy) SaveChanges(ctx SaveContext) error {
 	state.PromptAttributions = append(state.PromptAttributions, promptAttr)
 
 	// Track touched files (modified, new, and deleted)
-	state.FilesTouched = mergeFilesTouched(state.FilesTouched, ctx.ModifiedFiles, ctx.NewFiles, ctx.DeletedFiles)
+	state.FilesTouched = mergeFilesTouched(state.FilesTouched, step.ModifiedFiles, step.NewFiles, step.DeletedFiles)
 
 	// On first checkpoint, record the transcript identifier for this session
 	if state.StepCount == 1 {
-		state.TranscriptIdentifierAtStart = ctx.StepTranscriptIdentifier
+		state.TranscriptIdentifierAtStart = step.StepTranscriptIdentifier
 	}
 
 	// Accumulate token usage
-	if ctx.TokenUsage != nil {
-		state.TokenUsage = accumulateTokenUsage(state.TokenUsage, ctx.TokenUsage)
+	if step.TokenUsage != nil {
+		state.TokenUsage = accumulateTokenUsage(state.TokenUsage, step.TokenUsage)
 	}
 
 	// Save updated state
-	if err := s.saveSessionState(state); err != nil {
+	if err := s.saveSessionState(ctx, state); err != nil {
 		return fmt.Errorf("failed to save session state: %w", err)
 	}
 
 	if !branchExisted {
-		fmt.Fprintf(os.Stderr, "Created shadow branch '%s' and committed changes\n", shadowBranchName)
+		logging.Info(logging.WithComponent(ctx, "checkpoint"), "created shadow branch and committed changes",
+			slog.String("shadow_branch", shadowBranchName))
 	} else {
-		fmt.Fprintf(os.Stderr, "Committed changes to shadow branch '%s'\n", shadowBranchName)
+		logging.Info(logging.WithComponent(ctx, "checkpoint"), "committed changes to shadow branch",
+			slog.String("shadow_branch", shadowBranchName))
 	}
 
 	// Log checkpoint creation
-	logCtx := logging.WithComponent(context.Background(), "checkpoint")
+	logCtx := logging.WithComponent(ctx, "checkpoint")
 	logging.Info(logCtx, "checkpoint saved",
 		slog.String("strategy", "manual-commit"),
 		slog.String("checkpoint_type", "session"),
 		slog.Int("checkpoint_count", state.StepCount),
-		slog.Int("modified_files", len(ctx.ModifiedFiles)),
-		slog.Int("new_files", len(ctx.NewFiles)),
-		slog.Int("deleted_files", len(ctx.DeletedFiles)),
+		slog.Int("modified_files", len(step.ModifiedFiles)),
+		slog.Int("new_files", len(step.NewFiles)),
+		slog.Int("deleted_files", len(step.DeletedFiles)),
 		slog.String("shadow_branch", shadowBranchName),
 		slog.Bool("branch_created", !branchExisted),
 	)
@@ -162,26 +163,26 @@ func (s *ManualCommitStrategy) SaveChanges(ctx SaveContext) error {
 	return nil
 }
 
-// SaveTaskCheckpoint saves a task checkpoint to the shadow branch.
+// SaveTaskStep saves a task step checkpoint to the shadow branch.
 // Uses checkpoint.GitStore.WriteTemporaryTask for git operations.
-func (s *ManualCommitStrategy) SaveTaskCheckpoint(ctx TaskCheckpointContext) error {
-	repo, err := OpenRepository()
+func (s *ManualCommitStrategy) SaveTaskStep(ctx context.Context, step TaskStepContext) error {
+	repo, err := OpenRepository(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to open git repository: %w", err)
 	}
 
 	// Load session state
-	state, err := s.loadSessionState(ctx.SessionID)
+	state, err := s.loadSessionState(ctx, step.SessionID)
 	if err != nil || state == nil || state.BaseCommit == "" {
-		agentType := resolveAgentType(ctx.AgentType, state)
-		state, err = s.initializeSession(repo, ctx.SessionID, agentType, "", "") // No transcript/prompt in fallback
+		agentType := resolveAgentType(step.AgentType, state)
+		state, err = s.initializeSession(ctx, repo, step.SessionID, agentType, "", "") // No transcript/prompt in fallback
 		if err != nil {
 			return fmt.Errorf("failed to initialize session for task checkpoint: %w", err)
 		}
 	}
 
 	// Check if HEAD has changed (e.g., Claude did a rebase via tool call) and migrate if needed
-	if err := s.migrateAndPersistIfNeeded(repo, state); err != nil {
+	if err := s.migrateAndPersistIfNeeded(ctx, repo, state); err != nil {
 		return err
 	}
 
@@ -196,92 +197,94 @@ func (s *ManualCommitStrategy) SaveTaskCheckpoint(ctx TaskCheckpointContext) err
 	branchExisted := store.ShadowBranchExists(state.BaseCommit, state.WorktreeID)
 
 	// Compute metadata paths for commit message
-	sessionMetadataDir := paths.SessionMetadataDirFromSessionID(ctx.SessionID)
-	taskMetadataDir := TaskMetadataDir(sessionMetadataDir, ctx.ToolUseID)
+	sessionMetadataDir := paths.SessionMetadataDirFromSessionID(step.SessionID)
+	taskMetadataDir := TaskMetadataDir(sessionMetadataDir, step.ToolUseID)
 
 	// Generate commit message
-	shortToolUseID := ctx.ToolUseID
-	if len(shortToolUseID) > 12 {
-		shortToolUseID = shortToolUseID[:12]
+	shortToolUseID := step.ToolUseID
+	if len(shortToolUseID) > id.ShortIDLength {
+		shortToolUseID = shortToolUseID[:id.ShortIDLength]
 	}
 
 	var messageSubject string
-	if ctx.IsIncremental {
+	if step.IsIncremental {
 		messageSubject = FormatIncrementalSubject(
-			ctx.IncrementalType,
-			ctx.SubagentType,
-			ctx.TaskDescription,
-			ctx.TodoContent,
-			ctx.IncrementalSequence,
+			step.IncrementalType,
+			step.SubagentType,
+			step.TaskDescription,
+			step.TodoContent,
+			step.IncrementalSequence,
 			shortToolUseID,
 		)
 	} else {
-		messageSubject = FormatSubagentEndMessage(ctx.SubagentType, ctx.TaskDescription, shortToolUseID)
+		messageSubject = FormatSubagentEndMessage(step.SubagentType, step.TaskDescription, shortToolUseID)
 	}
 	commitMsg := trailers.FormatShadowTaskCommit(
 		messageSubject,
 		taskMetadataDir,
-		ctx.SessionID,
+		step.SessionID,
 	)
 
 	// Use WriteTemporaryTask to create the checkpoint
-	_, err = store.WriteTemporaryTask(context.Background(), checkpoint.WriteTemporaryTaskOptions{
-		SessionID:              ctx.SessionID,
+	_, err = store.WriteTemporaryTask(ctx, checkpoint.WriteTemporaryTaskOptions{
+		SessionID:              step.SessionID,
 		BaseCommit:             state.BaseCommit,
 		WorktreeID:             state.WorktreeID,
-		ToolUseID:              ctx.ToolUseID,
-		AgentID:                ctx.AgentID,
-		ModifiedFiles:          ctx.ModifiedFiles,
-		NewFiles:               ctx.NewFiles,
-		DeletedFiles:           ctx.DeletedFiles,
-		TranscriptPath:         ctx.TranscriptPath,
-		SubagentTranscriptPath: ctx.SubagentTranscriptPath,
-		CheckpointUUID:         ctx.CheckpointUUID,
+		ToolUseID:              step.ToolUseID,
+		AgentID:                step.AgentID,
+		ModifiedFiles:          step.ModifiedFiles,
+		NewFiles:               step.NewFiles,
+		DeletedFiles:           step.DeletedFiles,
+		TranscriptPath:         step.TranscriptPath,
+		SubagentTranscriptPath: step.SubagentTranscriptPath,
+		CheckpointUUID:         step.CheckpointUUID,
 		CommitMessage:          commitMsg,
-		AuthorName:             ctx.AuthorName,
-		AuthorEmail:            ctx.AuthorEmail,
-		IsIncremental:          ctx.IsIncremental,
-		IncrementalSequence:    ctx.IncrementalSequence,
-		IncrementalType:        ctx.IncrementalType,
-		IncrementalData:        ctx.IncrementalData,
+		AuthorName:             step.AuthorName,
+		AuthorEmail:            step.AuthorEmail,
+		IsIncremental:          step.IsIncremental,
+		IncrementalSequence:    step.IncrementalSequence,
+		IncrementalType:        step.IncrementalType,
+		IncrementalData:        step.IncrementalData,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to write task checkpoint: %w", err)
 	}
 
 	// Track touched files (modified, new, and deleted)
-	state.FilesTouched = mergeFilesTouched(state.FilesTouched, ctx.ModifiedFiles, ctx.NewFiles, ctx.DeletedFiles)
+	state.FilesTouched = mergeFilesTouched(state.FilesTouched, step.ModifiedFiles, step.NewFiles, step.DeletedFiles)
 
 	// Save updated state
-	if err := s.saveSessionState(state); err != nil {
+	if err := s.saveSessionState(ctx, state); err != nil {
 		return fmt.Errorf("failed to save session state: %w", err)
 	}
 
 	if !branchExisted {
-		fmt.Fprintf(os.Stderr, "Created shadow branch '%s' and committed task checkpoint\n", shadowBranchName)
+		logging.Info(logging.WithComponent(ctx, "checkpoint"), "created shadow branch and committed task checkpoint",
+			slog.String("shadow_branch", shadowBranchName))
 	} else {
-		fmt.Fprintf(os.Stderr, "Committed task checkpoint to shadow branch '%s'\n", shadowBranchName)
+		logging.Info(logging.WithComponent(ctx, "checkpoint"), "committed task checkpoint to shadow branch",
+			slog.String("shadow_branch", shadowBranchName))
 	}
 
 	// Log task checkpoint creation
-	logCtx := logging.WithComponent(context.Background(), "checkpoint")
+	logCtx := logging.WithComponent(ctx, "checkpoint")
 	attrs := []any{
 		slog.String("strategy", "manual-commit"),
 		slog.String("checkpoint_type", "task"),
-		slog.String("checkpoint_uuid", ctx.CheckpointUUID),
-		slog.String("tool_use_id", ctx.ToolUseID),
-		slog.String("subagent_type", ctx.SubagentType),
-		slog.Int("modified_files", len(ctx.ModifiedFiles)),
-		slog.Int("new_files", len(ctx.NewFiles)),
-		slog.Int("deleted_files", len(ctx.DeletedFiles)),
+		slog.String("checkpoint_uuid", step.CheckpointUUID),
+		slog.String("tool_use_id", step.ToolUseID),
+		slog.String("subagent_type", step.SubagentType),
+		slog.Int("modified_files", len(step.ModifiedFiles)),
+		slog.Int("new_files", len(step.NewFiles)),
+		slog.Int("deleted_files", len(step.DeletedFiles)),
 		slog.String("shadow_branch", shadowBranchName),
 		slog.Bool("branch_created", !branchExisted),
 	}
-	if ctx.IsIncremental {
+	if step.IsIncremental {
 		attrs = append(attrs,
 			slog.Bool("is_incremental", true),
-			slog.String("incremental_type", ctx.IncrementalType),
-			slog.Int("incremental_sequence", ctx.IncrementalSequence),
+			slog.String("incremental_type", step.IncrementalType),
+			slog.Int("incremental_sequence", step.IncrementalSequence),
 		)
 	}
 	logging.Info(logCtx, "task checkpoint saved", attrs...)
@@ -349,8 +352,8 @@ func accumulateTokenUsage(existing, incoming *agent.TokenUsage) *agent.TokenUsag
 // Returns nil if the branch doesn't exist (idempotent).
 // Uses git CLI instead of go-git's RemoveReference because go-git v5
 // doesn't properly persist deletions with packed refs or worktrees.
-func deleteShadowBranch(_ *git.Repository, branchName string) error {
-	err := DeleteBranchCLI(branchName)
+func deleteShadowBranch(ctx context.Context, _ *git.Repository, branchName string) error {
+	err := DeleteBranchCLI(ctx, branchName)
 	if err != nil {
 		// If the branch doesn't exist, treat as idempotent - not an error condition.
 		if errors.Is(err, ErrBranchNotFound) {

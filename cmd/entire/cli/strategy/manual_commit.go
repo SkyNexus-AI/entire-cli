@@ -1,6 +1,7 @@
 package strategy
 
 import (
+	"context"
 	"fmt"
 	"sync"
 
@@ -29,9 +30,9 @@ type ManualCommitStrategy struct {
 
 // getStateStore returns the session state store, initializing it lazily if needed.
 // Thread-safe via sync.Once.
-func (s *ManualCommitStrategy) getStateStore() (*session.StateStore, error) {
+func (s *ManualCommitStrategy) getStateStore(_ context.Context) (*session.StateStore, error) {
 	s.stateStoreOnce.Do(func() {
-		store, err := session.NewStateStore()
+		store, err := session.NewStateStore(context.Background()) //nolint:contextcheck // sync.Once must use background context to avoid caching errors from a cancelled caller context
 		if err != nil {
 			s.stateStoreErr = fmt.Errorf("failed to create state store: %w", err)
 			return
@@ -45,7 +46,7 @@ func (s *ManualCommitStrategy) getStateStore() (*session.StateStore, error) {
 // Thread-safe via sync.Once.
 func (s *ManualCommitStrategy) getCheckpointStore() (*checkpoint.GitStore, error) {
 	s.checkpointStoreOnce.Do(func() {
-		repo, err := OpenRepository()
+		repo, err := OpenRepository(context.Background())
 		if err != nil {
 			s.checkpointStoreErr = fmt.Errorf("failed to open repository: %w", err)
 			return
@@ -56,33 +57,13 @@ func (s *ManualCommitStrategy) getCheckpointStore() (*checkpoint.GitStore, error
 }
 
 // NewManualCommitStrategy creates a new manual-commit strategy instance.
-//
-
-func NewManualCommitStrategy() Strategy { //nolint:ireturn // factory returns interface by design
+func NewManualCommitStrategy() *ManualCommitStrategy {
 	return &ManualCommitStrategy{}
-}
-
-// NewShadowStrategy creates a new manual-commit strategy instance.
-// This legacy constructor delegates to NewManualCommitStrategy.
-//
-
-func NewShadowStrategy() Strategy { //nolint:ireturn // factory returns interface by design
-	return NewManualCommitStrategy()
-}
-
-// Name returns the strategy name.
-func (s *ManualCommitStrategy) Name() string {
-	return StrategyNameManualCommit
-}
-
-// Description returns the strategy description.
-func (s *ManualCommitStrategy) Description() string {
-	return "Manual commit checkpoints with session logs on entire/checkpoints/v1"
 }
 
 // ValidateRepository validates that the repository is suitable for this strategy.
 func (s *ManualCommitStrategy) ValidateRepository() error {
-	repo, err := OpenRepository()
+	repo, err := OpenRepository(context.Background())
 	if err != nil {
 		return fmt.Errorf("not a git repository: %w", err)
 	}
@@ -95,39 +76,15 @@ func (s *ManualCommitStrategy) ValidateRepository() error {
 	return nil
 }
 
-// EnsureSetup ensures the strategy is properly set up.
-func (s *ManualCommitStrategy) EnsureSetup() error {
-	if err := EnsureEntireGitignore(); err != nil {
-		return err
-	}
-
-	// Ensure the entire/checkpoints/v1 orphan branch exists for permanent session storage
-	repo, err := OpenRepository()
-	if err != nil {
-		return fmt.Errorf("failed to open git repository: %w", err)
-	}
-	if err := EnsureMetadataBranch(repo); err != nil {
-		return fmt.Errorf("failed to ensure metadata branch: %w", err)
-	}
-
-	// Install generic hooks (they delegate to strategy at runtime)
-	if !IsGitHookInstalled() {
-		if _, err := InstallGitHook(true); err != nil {
-			return fmt.Errorf("failed to install git hooks: %w", err)
-		}
-	}
-	return nil
-}
-
 // ListOrphanedItems returns orphaned items created by the manual-commit strategy.
 // This includes:
 //   - Shadow branches that weren't auto-cleaned during commit condensation
 //   - Session state files with no corresponding checkpoints or shadow branches
-func (s *ManualCommitStrategy) ListOrphanedItems() ([]CleanupItem, error) {
+func (s *ManualCommitStrategy) ListOrphanedItems(ctx context.Context) ([]CleanupItem, error) {
 	var items []CleanupItem
 
 	// Shadow branches (should have been auto-cleaned after condensation)
-	branches, err := ListShadowBranches()
+	branches, err := ListShadowBranches(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -143,10 +100,4 @@ func (s *ManualCommitStrategy) ListOrphanedItems() ([]CleanupItem, error) {
 	// which is strategy-agnostic (checks both shadow branches and checkpoints)
 
 	return items, nil
-}
-
-//nolint:gochecknoinits // Standard pattern for strategy registration
-func init() {
-	// Register manual-commit as the primary strategy name
-	Register(StrategyNameManualCommit, NewManualCommitStrategy)
 }

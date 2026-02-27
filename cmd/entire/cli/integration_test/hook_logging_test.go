@@ -20,7 +20,7 @@ func TestHookLogging_WritesToSessionLogFile(t *testing.T) {
 
 	env := NewTestEnv(t)
 	env.InitRepo()
-	env.InitEntire("manual-commit") // Use manual-commit strategy (doesn't matter for logging)
+	env.InitEntire()
 
 	// Create a session state file in .git/entire-sessions/ with a known session ID
 	sessionID := "test-logging-session-123"
@@ -36,7 +36,7 @@ func TestHookLogging_WritesToSessionLogFile(t *testing.T) {
 	// Use post-commit since it takes no arguments
 	cmd := exec.Command(getTestBinary(), "hooks", "git", "post-commit")
 	cmd.Dir = env.RepoDir
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(gitIsolatedEnv(),
 		"ENTIRE_TEST_CLAUDE_PROJECT_DIR="+env.ClaudeProjectDir,
 		"ENTIRE_LOG_LEVEL=debug",
 	)
@@ -86,14 +86,14 @@ func TestHookLogging_WritesWithoutSession(t *testing.T) {
 
 	env := NewTestEnv(t)
 	env.InitRepo()
-	env.InitEntire("manual-commit")
+	env.InitEntire()
 
 	// Don't create a session state file - logging should still write to entire.log
 
 	// Run a hook with ENTIRE_LOG_LEVEL=debug
 	cmd := exec.Command(getTestBinary(), "hooks", "git", "post-commit")
 	cmd.Dir = env.RepoDir
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(gitIsolatedEnv(),
 		"ENTIRE_TEST_CLAUDE_PROJECT_DIR="+env.ClaudeProjectDir,
 		"ENTIRE_LOG_LEVEL=debug",
 	)

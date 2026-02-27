@@ -1,6 +1,7 @@
 package strategy
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -70,7 +71,7 @@ func TestPromptAttribution_UsesWorktreeNotStagingArea(t *testing.T) {
 	}
 
 	// === PROMPT 1 START: Initialize session ===
-	if err := s.InitializeSession(sessionID, "Claude Code", "", ""); err != nil {
+	if err := s.InitializeSession(context.Background(), sessionID, "Claude Code", "", ""); err != nil {
 		t.Fatalf("InitializeSession() prompt 1 error = %v", err)
 	}
 
@@ -79,7 +80,7 @@ func TestPromptAttribution_UsesWorktreeNotStagingArea(t *testing.T) {
 		t.Fatalf("failed to write agent changes: %v", err)
 	}
 
-	err = s.SaveChanges(SaveContext{
+	err = s.SaveStep(context.Background(), StepContext{
 		SessionID:      sessionID,
 		ModifiedFiles:  []string{"test.go"},
 		NewFiles:       []string{},
@@ -91,7 +92,7 @@ func TestPromptAttribution_UsesWorktreeNotStagingArea(t *testing.T) {
 		AuthorEmail:    "test@test.com",
 	})
 	if err != nil {
-		t.Fatalf("SaveChanges() checkpoint 1 error = %v", err)
+		t.Fatalf("SaveStep() checkpoint 1 error = %v", err)
 	}
 
 	// === USER PARTIAL STAGING SCENARIO ===
@@ -115,12 +116,12 @@ func TestPromptAttribution_UsesWorktreeNotStagingArea(t *testing.T) {
 
 	// === PROMPT 2 START: Initialize session again ===
 	// This should capture ALL 10 worktree lines to match what WriteTemporary will capture
-	if err := s.InitializeSession(sessionID, "Claude Code", "", ""); err != nil {
+	if err := s.InitializeSession(context.Background(), sessionID, "Claude Code", "", ""); err != nil {
 		t.Fatalf("InitializeSession() prompt 2 error = %v", err)
 	}
 
 	// Verify PendingPromptAttribution shows worktree changes (10 lines), not just staged (5 lines)
-	state, err := s.loadSessionState(sessionID)
+	state, err := s.loadSessionState(context.Background(), sessionID)
 	if err != nil {
 		t.Fatalf("loadSessionState() after prompt 2 error = %v", err)
 	}
@@ -144,7 +145,7 @@ func TestPromptAttribution_UsesWorktreeNotStagingArea(t *testing.T) {
 	// === Verify checkpoint captures the same content ===
 	// This demonstrates why we need to read from worktree: the checkpoint will capture
 	// the full worktree content (10 lines), so PromptAttribution must also count 10 lines
-	err = s.SaveChanges(SaveContext{
+	err = s.SaveStep(context.Background(), StepContext{
 		SessionID:      sessionID,
 		ModifiedFiles:  []string{"test.go"},
 		NewFiles:       []string{},
@@ -156,11 +157,11 @@ func TestPromptAttribution_UsesWorktreeNotStagingArea(t *testing.T) {
 		AuthorEmail:    "test@test.com",
 	})
 	if err != nil {
-		t.Fatalf("SaveChanges() checkpoint 2 error = %v", err)
+		t.Fatalf("SaveStep() checkpoint 2 error = %v", err)
 	}
 
 	// Reload state to see final PromptAttributions
-	state, err = s.loadSessionState(sessionID)
+	state, err = s.loadSessionState(context.Background(), sessionID)
 	if err != nil {
 		t.Fatalf("loadSessionState() after checkpoint 2 error = %v", err)
 	}
@@ -224,7 +225,7 @@ func TestPromptAttribution_UnstagedChanges(t *testing.T) {
 	}
 
 	// Initialize and create checkpoint 1
-	if err := s.InitializeSession(sessionID, "Claude Code", "", ""); err != nil {
+	if err := s.InitializeSession(context.Background(), sessionID, "Claude Code", "", ""); err != nil {
 		t.Fatalf("InitializeSession() prompt 1 error = %v", err)
 	}
 
@@ -232,7 +233,7 @@ func TestPromptAttribution_UnstagedChanges(t *testing.T) {
 		t.Fatalf("failed to write agent changes: %v", err)
 	}
 
-	err = s.SaveChanges(SaveContext{
+	err = s.SaveStep(context.Background(), StepContext{
 		SessionID:      sessionID,
 		ModifiedFiles:  []string{"test.go"},
 		NewFiles:       []string{},
@@ -244,7 +245,7 @@ func TestPromptAttribution_UnstagedChanges(t *testing.T) {
 		AuthorEmail:    "test@test.com",
 	})
 	if err != nil {
-		t.Fatalf("SaveChanges() checkpoint 1 error = %v", err)
+		t.Fatalf("SaveStep() checkpoint 1 error = %v", err)
 	}
 
 	// === USER UNSTAGED CHANGES ===
@@ -258,11 +259,11 @@ func TestPromptAttribution_UnstagedChanges(t *testing.T) {
 
 	// === PROMPT 2 START ===
 	// Should read from worktree (since nothing is staged)
-	if err := s.InitializeSession(sessionID, "Claude Code", "", ""); err != nil {
+	if err := s.InitializeSession(context.Background(), sessionID, "Claude Code", "", ""); err != nil {
 		t.Fatalf("InitializeSession() prompt 2 error = %v", err)
 	}
 
-	state, err := s.loadSessionState(sessionID)
+	state, err := s.loadSessionState(context.Background(), sessionID)
 	if err != nil {
 		t.Fatalf("loadSessionState() error = %v", err)
 	}
@@ -324,7 +325,7 @@ func TestPromptAttribution_AlwaysStored(t *testing.T) {
 	}
 
 	// Initialize and create checkpoint 1
-	if err := s.InitializeSession(sessionID, "Claude Code", "", ""); err != nil {
+	if err := s.InitializeSession(context.Background(), sessionID, "Claude Code", "", ""); err != nil {
 		t.Fatalf("InitializeSession() prompt 1 error = %v", err)
 	}
 
@@ -332,7 +333,7 @@ func TestPromptAttribution_AlwaysStored(t *testing.T) {
 		t.Fatalf("failed to write agent changes: %v", err)
 	}
 
-	err = s.SaveChanges(SaveContext{
+	err = s.SaveStep(context.Background(), StepContext{
 		SessionID:      sessionID,
 		ModifiedFiles:  []string{"test.go"},
 		NewFiles:       []string{},
@@ -344,7 +345,7 @@ func TestPromptAttribution_AlwaysStored(t *testing.T) {
 		AuthorEmail:    "test@test.com",
 	})
 	if err != nil {
-		t.Fatalf("SaveChanges() checkpoint 1 error = %v", err)
+		t.Fatalf("SaveStep() checkpoint 1 error = %v", err)
 	}
 
 	// === USER MAKES NO CHANGES ===
@@ -352,11 +353,11 @@ func TestPromptAttribution_AlwaysStored(t *testing.T) {
 
 	// === PROMPT 2 START ===
 	// Even though user made no changes, PendingPromptAttribution should be stored
-	if err := s.InitializeSession(sessionID, "Claude Code", "", ""); err != nil {
+	if err := s.InitializeSession(context.Background(), sessionID, "Claude Code", "", ""); err != nil {
 		t.Fatalf("InitializeSession() prompt 2 error = %v", err)
 	}
 
-	state, err := s.loadSessionState(sessionID)
+	state, err := s.loadSessionState(context.Background(), sessionID)
 	if err != nil {
 		t.Fatalf("loadSessionState() error = %v", err)
 	}
@@ -386,7 +387,7 @@ func TestPromptAttribution_AlwaysStored(t *testing.T) {
 		t.Fatalf("failed to write agent changes 2: %v", err)
 	}
 
-	err = s.SaveChanges(SaveContext{
+	err = s.SaveStep(context.Background(), StepContext{
 		SessionID:      sessionID,
 		ModifiedFiles:  []string{"test.go"},
 		NewFiles:       []string{},
@@ -398,11 +399,11 @@ func TestPromptAttribution_AlwaysStored(t *testing.T) {
 		AuthorEmail:    "test@test.com",
 	})
 	if err != nil {
-		t.Fatalf("SaveChanges() checkpoint 2 error = %v", err)
+		t.Fatalf("SaveStep() checkpoint 2 error = %v", err)
 	}
 
 	// Verify PromptAttributions array now contains the zero-value entry
-	state, err = s.loadSessionState(sessionID)
+	state, err = s.loadSessionState(context.Background(), sessionID)
 	if err != nil {
 		t.Fatalf("loadSessionState() after checkpoint 2 error = %v", err)
 	}
@@ -479,12 +480,12 @@ func TestPromptAttribution_CapturesPrePromptEdits(t *testing.T) {
 
 	// === PROMPT 1 START ===
 	// This should capture the user's pre-prompt edits (2 lines)
-	if err := s.InitializeSession(sessionID, "Claude Code", "", ""); err != nil {
+	if err := s.InitializeSession(context.Background(), sessionID, "Claude Code", "", ""); err != nil {
 		t.Fatalf("InitializeSession() error = %v", err)
 	}
 
 	// Verify PendingPromptAttribution captured pre-prompt edits
-	state, err := s.loadSessionState(sessionID)
+	state, err := s.loadSessionState(context.Background(), sessionID)
 	if err != nil {
 		t.Fatalf("loadSessionState() error = %v", err)
 	}
@@ -510,7 +511,7 @@ func TestPromptAttribution_CapturesPrePromptEdits(t *testing.T) {
 		t.Fatalf("failed to write agent changes: %v", err)
 	}
 
-	err = s.SaveChanges(SaveContext{
+	err = s.SaveStep(context.Background(), StepContext{
 		SessionID:      sessionID,
 		ModifiedFiles:  []string{"test.go"},
 		NewFiles:       []string{},
@@ -522,11 +523,11 @@ func TestPromptAttribution_CapturesPrePromptEdits(t *testing.T) {
 		AuthorEmail:    "test@test.com",
 	})
 	if err != nil {
-		t.Fatalf("SaveChanges() error = %v", err)
+		t.Fatalf("SaveStep() error = %v", err)
 	}
 
 	// Reload state to verify PromptAttributions
-	state, err = s.loadSessionState(sessionID)
+	state, err = s.loadSessionState(context.Background(), sessionID)
 	if err != nil {
 		t.Fatalf("loadSessionState() after checkpoint error = %v", err)
 	}

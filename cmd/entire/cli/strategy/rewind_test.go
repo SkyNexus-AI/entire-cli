@@ -1,6 +1,7 @@
 package strategy
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -13,52 +14,6 @@ import (
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing/object"
 )
-
-func TestRewindPointIsTaskCheckpoint(t *testing.T) {
-	// Test that RewindPoint has IsTaskCheckpoint and ToolUseID fields
-
-	// Session checkpoint (default)
-	sessionPoint := RewindPoint{
-		// Only checking IsTaskCheckpoint and ToolUseID fields
-	}
-	if sessionPoint.IsTaskCheckpoint {
-		t.Error("session checkpoint should have IsTaskCheckpoint=false by default")
-	}
-	if sessionPoint.ToolUseID != "" {
-		t.Error("session checkpoint should have empty ToolUseID by default")
-	}
-
-	// Task checkpoint
-	taskPoint := RewindPoint{
-		IsTaskCheckpoint: true,
-		ToolUseID:        "toolu_abc123",
-	}
-	if !taskPoint.IsTaskCheckpoint {
-		t.Error("task checkpoint should have IsTaskCheckpoint=true")
-	}
-	if taskPoint.ToolUseID != "toolu_abc123" {
-		t.Errorf("task checkpoint should have ToolUseID='toolu_abc123', got %q", taskPoint.ToolUseID)
-	}
-}
-
-func TestRewindPointExtractToolUseID(t *testing.T) {
-	// Test helper to extract ToolUseID from task metadata dir
-	tests := []struct {
-		metadataDir string
-		want        string
-	}{
-		{".entire/metadata/2025-01-28-session/tasks/toolu_abc123", "toolu_abc123"},
-		{".entire/metadata/2025-01-28-session/tasks/toolu_xyz789", "toolu_xyz789"},
-		{".entire/metadata/2025-01-28-session", ""},
-	}
-
-	for _, tt := range tests {
-		got := ExtractToolUseIDFromTaskMetadataDir(tt.metadataDir)
-		if got != tt.want {
-			t.Errorf("ExtractToolUseIDFromTaskMetadataDir(%q) = %q, want %q", tt.metadataDir, got, tt.want)
-		}
-	}
-}
 
 func TestShadowStrategy_PreviewRewind(t *testing.T) {
 	dir := t.TempDir()
@@ -122,7 +77,7 @@ func TestShadowStrategy_PreviewRewind(t *testing.T) {
 		StepCount:             1,
 		WorktreePath:          dir,
 	}
-	if err := s.saveSessionState(state); err != nil {
+	if err := s.saveSessionState(context.Background(), state); err != nil {
 		t.Fatalf("failed to save session state: %v", err)
 	}
 
@@ -169,7 +124,7 @@ func TestShadowStrategy_PreviewRewind(t *testing.T) {
 	}
 
 	// Test PreviewRewind
-	preview, err := s.PreviewRewind(point)
+	preview, err := s.PreviewRewind(context.Background(), point)
 	if err != nil {
 		t.Fatalf("PreviewRewind() error = %v", err)
 	}
@@ -230,7 +185,7 @@ func TestShadowStrategy_PreviewRewind_LogsOnly(t *testing.T) {
 		Date:         time.Now(),
 	}
 
-	preview, err := s.PreviewRewind(point)
+	preview, err := s.PreviewRewind(context.Background(), point)
 	if err != nil {
 		t.Fatalf("PreviewRewind() error = %v", err)
 	}
@@ -248,65 +203,14 @@ func TestShadowStrategy_PreviewRewind_LogsOnly(t *testing.T) {
 	}
 }
 
-func TestDualStrategy_PreviewRewind(t *testing.T) {
-	dir := t.TempDir()
-	_, err := git.PlainInit(dir, false)
-	if err != nil {
-		t.Fatalf("failed to init git repo: %v", err)
-	}
-
-	t.Chdir(dir)
-
-	s := &AutoCommitStrategy{}
-
-	// Dual strategy uses git reset which doesn't delete untracked files
-	point := RewindPoint{
-		ID:      "abc123",
-		Message: "Checkpoint",
-		Date:    time.Now(),
-	}
-
-	preview, err := s.PreviewRewind(point)
-	if err != nil {
-		t.Fatalf("PreviewRewind() error = %v", err)
-	}
-
-	if preview == nil {
-		t.Fatal("PreviewRewind() returned nil preview")
-	}
-
-	// Should be empty since git reset doesn't delete untracked files
-	if len(preview.FilesToDelete) > 0 {
-		t.Errorf("Dual strategy preview should have no files to delete, got: %v", preview.FilesToDelete)
-	}
-}
-
 func TestResolveAgentForRewind(t *testing.T) {
 	t.Parallel()
 
-	t.Run("empty type falls back to default agent", func(t *testing.T) {
+	t.Run("empty type returns error", func(t *testing.T) {
 		t.Parallel()
-		ag, err := ResolveAgentForRewind("")
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if ag == nil {
-			t.Fatal("expected non-nil agent")
-		}
-		// Default is Claude
-		if ag.Name() != agent.AgentNameClaudeCode {
-			t.Errorf("Name() = %q, want %q", ag.Name(), agent.AgentNameClaudeCode)
-		}
-	})
-
-	t.Run("AgentTypeUnknown falls back to default agent", func(t *testing.T) {
-		t.Parallel()
-		ag, err := ResolveAgentForRewind("Agent")
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if ag.Name() != agent.AgentNameClaudeCode {
-			t.Errorf("Name() = %q, want %q", ag.Name(), agent.AgentNameClaudeCode)
+		_, err := ResolveAgentForRewind("")
+		if err == nil {
+			t.Error("expected error for empty agent type")
 		}
 	})
 

@@ -149,7 +149,6 @@ Logs are tagged with a `component` field indicating the logging source:
 | `cmd/entire/cli/hook_registry.go` | Hook wrapper logging |
 | `cmd/entire/cli/strategy/manual_commit_git.go` | Manual-commit checkpoint logging |
 | `cmd/entire/cli/strategy/manual_commit_hooks.go` | Condensation and branch cleanup logging |
-| `cmd/entire/cli/strategy/auto_commit.go` | Auto-commit checkpoint logging |
 
 ### Log Entry Structure
 

@@ -552,9 +552,6 @@ func mustMarshal(t *testing.T, v interface{}) []byte {
 func TestCalculateTotalTokenUsage_PerCheckpoint(t *testing.T) {
 	t.Parallel()
 
-	tmpDir := t.TempDir()
-	transcriptPath := tmpDir + "/transcript.jsonl"
-
 	// Build transcript with 3 turns:
 	// Turn 1: user + assistant (100 input, 50 output)
 	// Turn 2: user + assistant (200 input, 100 output)
@@ -568,7 +565,7 @@ func TestCalculateTotalTokenUsage_PerCheckpoint(t *testing.T) {
 	// 4: user message 3
 	// 5: assistant response 3 (300/150 tokens)
 
-	transcriptContent := []byte(
+	transcriptData := []byte(
 		`{"type":"user","uuid":"u1","message":{"content":"first prompt"}}` + "\n" +
 			`{"type":"assistant","uuid":"a1","message":{"id":"m1","usage":{"input_tokens":100,"output_tokens":50}}}` + "\n" +
 			`{"type":"user","uuid":"u2","message":{"content":"second prompt"}}` + "\n" +
@@ -576,12 +573,11 @@ func TestCalculateTotalTokenUsage_PerCheckpoint(t *testing.T) {
 			`{"type":"user","uuid":"u3","message":{"content":"third prompt"}}` + "\n" +
 			`{"type":"assistant","uuid":"a3","message":{"id":"m3","usage":{"input_tokens":300,"output_tokens":150}}}` + "\n",
 	)
-	if err := os.WriteFile(transcriptPath, transcriptContent, 0o600); err != nil {
-		t.Fatalf("failed to write transcript: %v", err)
-	}
+
+	c := &ClaudeCodeAgent{}
 
 	// Test 1: From line 0 - all 3 turns = 600 input, 300 output
-	usage1, err := CalculateTotalTokenUsage(transcriptPath, 0, "")
+	usage1, err := c.CalculateTotalTokenUsage(transcriptData, 0, "")
 	if err != nil {
 		t.Fatalf("CalculateTotalTokenUsage(0) error: %v", err)
 	}
@@ -594,7 +590,7 @@ func TestCalculateTotalTokenUsage_PerCheckpoint(t *testing.T) {
 	}
 
 	// Test 2: From line 2 (after turn 1) - turns 2+3 only = 500 input, 250 output
-	usage2, err := CalculateTotalTokenUsage(transcriptPath, 2, "")
+	usage2, err := c.CalculateTotalTokenUsage(transcriptData, 2, "")
 	if err != nil {
 		t.Fatalf("CalculateTotalTokenUsage(2) error: %v", err)
 	}
@@ -607,7 +603,7 @@ func TestCalculateTotalTokenUsage_PerCheckpoint(t *testing.T) {
 	}
 
 	// Test 3: From line 4 (after turns 1+2) - turn 3 only = 300 input, 150 output
-	usage3, err := CalculateTotalTokenUsage(transcriptPath, 4, "")
+	usage3, err := c.CalculateTotalTokenUsage(transcriptData, 4, "")
 	if err != nil {
 		t.Fatalf("CalculateTotalTokenUsage(4) error: %v", err)
 	}
@@ -618,6 +614,16 @@ func TestCalculateTotalTokenUsage_PerCheckpoint(t *testing.T) {
 	if usage3.APICallCount != 1 {
 		t.Errorf("From line 4: got APICallCount=%d, want 1", usage3.APICallCount)
 	}
+}
+
+// buildJSONL is a test helper that builds JSONL bytes from transcript lines.
+func buildJSONL(lines ...string) []byte {
+	var buf strings.Builder
+	for _, line := range lines {
+		buf.WriteString(line)
+		buf.WriteByte('\n')
+	}
+	return []byte(buf.String())
 }
 
 // writeJSONLFile is a test helper that writes JSONL transcript lines to a file.
@@ -720,27 +726,27 @@ func TestExtractAllModifiedFiles_IncludesSubagentFiles(t *testing.T) {
 	t.Parallel()
 
 	tmpDir := t.TempDir()
-	transcriptPath := tmpDir + "/transcript.jsonl"
 	subagentsDir := tmpDir + "/tasks/toolu_task1"
+	c := &ClaudeCodeAgent{}
 
 	if err := os.MkdirAll(subagentsDir, 0o755); err != nil {
 		t.Fatalf("failed to create subagents dir: %v", err)
 	}
 
-	// Main transcript: Write to main.go + Task call spawning subagent "sub1"
-	writeJSONLFile(t, transcriptPath,
+	// Main transcript as bytes: Write to main.go + Task call spawning subagent "sub1"
+	transcriptData := buildJSONL(
 		makeWriteToolLine(t, "a1", "/repo/main.go"),
 		makeTaskToolUseLine(t, "a2", "toolu_task1"),
 		makeTaskResultLine(t, "u1", "toolu_task1", "sub1"),
 	)
 
-	// Subagent transcript: Write to helper.go + Edit to utils.go
+	// Subagent transcript: Write to helper.go + Edit to utils.go (still on disk)
 	writeJSONLFile(t, subagentsDir+"/agent-sub1.jsonl",
 		makeWriteToolLine(t, "sa1", "/repo/helper.go"),
 		makeEditToolLine(t, "sa2", "/repo/utils.go"),
 	)
 
-	files, err := ExtractAllModifiedFiles(transcriptPath, 0, subagentsDir)
+	files, err := c.ExtractAllModifiedFiles(transcriptData, 0, subagentsDir)
 	if err != nil {
 		t.Fatalf("ExtractAllModifiedFiles() error: %v", err)
 	}
@@ -769,15 +775,15 @@ func TestExtractAllModifiedFiles_DeduplicatesAcrossAgents(t *testing.T) {
 	t.Parallel()
 
 	tmpDir := t.TempDir()
-	transcriptPath := tmpDir + "/transcript.jsonl"
 	subagentsDir := tmpDir + "/tasks/toolu_task1"
+	c := &ClaudeCodeAgent{}
 
 	if err := os.MkdirAll(subagentsDir, 0o755); err != nil {
 		t.Fatalf("failed to create subagents dir: %v", err)
 	}
 
-	// Main transcript: Write to shared.go + Task call
-	writeJSONLFile(t, transcriptPath,
+	// Main transcript as bytes: Write to shared.go + Task call
+	transcriptData := buildJSONL(
 		makeWriteToolLine(t, "a1", "/repo/shared.go"),
 		makeTaskToolUseLine(t, "a2", "toolu_task1"),
 		makeTaskResultLine(t, "u1", "toolu_task1", "sub1"),
@@ -788,7 +794,7 @@ func TestExtractAllModifiedFiles_DeduplicatesAcrossAgents(t *testing.T) {
 		makeEditToolLine(t, "sa1", "/repo/shared.go"),
 	)
 
-	files, err := ExtractAllModifiedFiles(transcriptPath, 0, subagentsDir)
+	files, err := c.ExtractAllModifiedFiles(transcriptData, 0, subagentsDir)
 	if err != nil {
 		t.Fatalf("ExtractAllModifiedFiles() error: %v", err)
 	}
@@ -805,14 +811,14 @@ func TestExtractAllModifiedFiles_NoSubagents(t *testing.T) {
 	t.Parallel()
 
 	tmpDir := t.TempDir()
-	transcriptPath := tmpDir + "/transcript.jsonl"
+	c := &ClaudeCodeAgent{}
 
-	// Main transcript: Write to a file, no Task calls
-	writeJSONLFile(t, transcriptPath,
+	// Main transcript as bytes: Write to a file, no Task calls
+	transcriptData := buildJSONL(
 		makeWriteToolLine(t, "a1", "/repo/solo.go"),
 	)
 
-	files, err := ExtractAllModifiedFiles(transcriptPath, 0, tmpDir+"/nonexistent")
+	files, err := c.ExtractAllModifiedFiles(transcriptData, 0, tmpDir+"/nonexistent")
 	if err != nil {
 		t.Fatalf("ExtractAllModifiedFiles() error: %v", err)
 	}
@@ -829,28 +835,28 @@ func TestExtractAllModifiedFiles_SubagentOnlyChanges(t *testing.T) {
 	t.Parallel()
 
 	tmpDir := t.TempDir()
-	transcriptPath := tmpDir + "/transcript.jsonl"
 	subagentsDir := tmpDir + "/tasks/toolu_task1"
+	c := &ClaudeCodeAgent{}
 
 	if err := os.MkdirAll(subagentsDir, 0o755); err != nil {
 		t.Fatalf("failed to create subagents dir: %v", err)
 	}
 
-	// Main transcript: ONLY a Task call, no direct file modifications
+	// Main transcript as bytes: ONLY a Task call, no direct file modifications
 	// This is the key bug scenario - if we only look at the main transcript,
 	// we miss all the subagent's file changes entirely.
-	writeJSONLFile(t, transcriptPath,
+	transcriptData := buildJSONL(
 		makeTaskToolUseLine(t, "a1", "toolu_task1"),
 		makeTaskResultLine(t, "u1", "toolu_task1", "sub1"),
 	)
 
-	// Subagent transcript: Write to two files
+	// Subagent transcript: Write to two files (still on disk)
 	writeJSONLFile(t, subagentsDir+"/agent-sub1.jsonl",
 		makeWriteToolLine(t, "sa1", "/repo/subagent_file1.go"),
 		makeWriteToolLine(t, "sa2", "/repo/subagent_file2.go"),
 	)
 
-	files, err := ExtractAllModifiedFiles(transcriptPath, 0, subagentsDir)
+	files, err := c.ExtractAllModifiedFiles(transcriptData, 0, subagentsDir)
 	if err != nil {
 		t.Fatalf("ExtractAllModifiedFiles() error: %v", err)
 	}

@@ -26,281 +26,269 @@ import (
 // 3. PostTask creates the final task checkpoint commit
 func TestSubagentCheckpoints_FullFlow(t *testing.T) {
 	t.Parallel()
-	RunForAllStrategies(t, func(t *testing.T, env *TestEnv, strategyName string) {
-		// Create a session
-		session := env.NewSession()
+	env := NewFeatureBranchEnv(t)
+	// Create a session
+	session := env.NewSession()
 
-		// Create transcript (needed by hooks)
-		session.CreateTranscript("Implement feature X", []FileChange{
-			{Path: "feature.go", Content: "package main"},
-		})
-
-		// Simulate user prompt submit first (captures pre-prompt state)
-		err := env.SimulateUserPromptSubmit(session.ID)
-		if err != nil {
-			t.Fatalf("SimulateUserPromptSubmit failed: %v", err)
-		}
-
-		// Task tool use ID (simulates Claude's Task tool invocation)
-		taskToolUseID := "toolu_01TaskABC123"
-
-		// Step 1: PreTask - creates pre-task file
-		err = env.SimulatePreTask(session.ID, session.TranscriptPath, taskToolUseID)
-		if err != nil {
-			t.Fatalf("SimulatePreTask failed: %v", err)
-		}
-
-		// Verify pre-task file was created
-		preTaskFile := filepath.Join(env.RepoDir, ".entire", "tmp", "pre-task-"+taskToolUseID+".json")
-		if _, err := os.Stat(preTaskFile); os.IsNotExist(err) {
-			t.Error("pre-task file should exist after SimulatePreTask")
-		}
-
-		// Step 2: PostTodo - simulate TodoWrite calls with file changes between them
-		// Note: Only PostTodo calls that detect file changes will create incremental commits
-
-		// First TodoWrite - no file changes, should be skipped
-		err = env.SimulatePostTodo(PostTodoInput{
-			SessionID:      session.ID,
-			TranscriptPath: session.TranscriptPath,
-			ToolUseID:      "toolu_01TodoWrite001",
-			Todos: []Todo{
-				{Content: "Create feature file", Status: "in_progress", ActiveForm: "Creating feature file"},
-				{Content: "Write tests", Status: "pending", ActiveForm: "Writing tests"},
-			},
-		})
-		if err != nil {
-			t.Fatalf("SimulatePostTodo failed for first todo: %v", err)
-		}
-
-		// Create a file change
-		env.WriteFile("feature.go", "package main\n\nfunc Feature() {}\n")
-
-		// Second TodoWrite - should create incremental checkpoint (has file changes)
-		err = env.SimulatePostTodo(PostTodoInput{
-			SessionID:      session.ID,
-			TranscriptPath: session.TranscriptPath,
-			ToolUseID:      "toolu_01TodoWrite002",
-			Todos: []Todo{
-				{Content: "Create feature file", Status: "completed", ActiveForm: "Creating feature file"},
-				{Content: "Write tests", Status: "in_progress", ActiveForm: "Writing tests"},
-			},
-		})
-		if err != nil {
-			t.Fatalf("SimulatePostTodo failed for second todo: %v", err)
-		}
-
-		// Create another file change
-		env.WriteFile("feature_test.go", "package main\n\nimport \"testing\"\n\nfunc TestFeature(t *testing.T) {}\n")
-
-		// Third TodoWrite - should create another incremental checkpoint
-		err = env.SimulatePostTodo(PostTodoInput{
-			SessionID:      session.ID,
-			TranscriptPath: session.TranscriptPath,
-			ToolUseID:      "toolu_01TodoWrite003",
-			Todos: []Todo{
-				{Content: "Create feature file", Status: "completed", ActiveForm: "Creating feature file"},
-				{Content: "Write tests", Status: "completed", ActiveForm: "Writing tests"},
-			},
-		})
-		if err != nil {
-			t.Fatalf("SimulatePostTodo failed for third todo: %v", err)
-		}
-
-		// Step 3: PostTask - creates final task checkpoint
-		err = env.SimulatePostTask(PostTaskInput{
-			SessionID:      session.ID,
-			TranscriptPath: session.TranscriptPath,
-			ToolUseID:      taskToolUseID,
-			AgentID:        "agent-123",
-		})
-		if err != nil {
-			t.Fatalf("SimulatePostTask failed: %v", err)
-		}
-
-		// Verify pre-task file is cleaned up
-		if _, err := os.Stat(preTaskFile); !os.IsNotExist(err) {
-			t.Error("Pre-task file should be removed after PostTask")
-		}
-
-		// Verify checkpoints are stored in final location (strategy-specific)
-		verifyCheckpointStorage(t, env, strategyName, session.ID, taskToolUseID)
+	// Create transcript (needed by hooks)
+	session.CreateTranscript("Implement feature X", []FileChange{
+		{Path: "feature.go", Content: "package main"},
 	})
+
+	// Simulate user prompt submit first (captures pre-prompt state)
+	err := env.SimulateUserPromptSubmit(session.ID)
+	if err != nil {
+		t.Fatalf("SimulateUserPromptSubmit failed: %v", err)
+	}
+
+	// Task tool use ID (simulates Claude's Task tool invocation)
+	taskToolUseID := "toolu_01TaskABC123"
+
+	// Step 1: PreTask - creates pre-task file
+	err = env.SimulatePreTask(session.ID, session.TranscriptPath, taskToolUseID)
+	if err != nil {
+		t.Fatalf("SimulatePreTask failed: %v", err)
+	}
+
+	// Verify pre-task file was created
+	preTaskFile := filepath.Join(env.RepoDir, ".entire", "tmp", "pre-task-"+taskToolUseID+".json")
+	if _, err := os.Stat(preTaskFile); os.IsNotExist(err) {
+		t.Error("pre-task file should exist after SimulatePreTask")
+	}
+
+	// Step 2: PostTodo - simulate TodoWrite calls with file changes between them
+	// Note: Only PostTodo calls that detect file changes will create incremental commits
+
+	// First TodoWrite - no file changes, should be skipped
+	err = env.SimulatePostTodo(PostTodoInput{
+		SessionID:      session.ID,
+		TranscriptPath: session.TranscriptPath,
+		ToolUseID:      "toolu_01TodoWrite001",
+		Todos: []Todo{
+			{Content: "Create feature file", Status: "in_progress", ActiveForm: "Creating feature file"},
+			{Content: "Write tests", Status: "pending", ActiveForm: "Writing tests"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("SimulatePostTodo failed for first todo: %v", err)
+	}
+
+	// Create a file change
+	env.WriteFile("feature.go", "package main\n\nfunc Feature() {}\n")
+
+	// Second TodoWrite - should create incremental checkpoint (has file changes)
+	err = env.SimulatePostTodo(PostTodoInput{
+		SessionID:      session.ID,
+		TranscriptPath: session.TranscriptPath,
+		ToolUseID:      "toolu_01TodoWrite002",
+		Todos: []Todo{
+			{Content: "Create feature file", Status: "completed", ActiveForm: "Creating feature file"},
+			{Content: "Write tests", Status: "in_progress", ActiveForm: "Writing tests"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("SimulatePostTodo failed for second todo: %v", err)
+	}
+
+	// Create another file change
+	env.WriteFile("feature_test.go", "package main\n\nimport \"testing\"\n\nfunc TestFeature(t *testing.T) {}\n")
+
+	// Third TodoWrite - should create another incremental checkpoint
+	err = env.SimulatePostTodo(PostTodoInput{
+		SessionID:      session.ID,
+		TranscriptPath: session.TranscriptPath,
+		ToolUseID:      "toolu_01TodoWrite003",
+		Todos: []Todo{
+			{Content: "Create feature file", Status: "completed", ActiveForm: "Creating feature file"},
+			{Content: "Write tests", Status: "completed", ActiveForm: "Writing tests"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("SimulatePostTodo failed for third todo: %v", err)
+	}
+
+	// Step 3: PostTask - creates final task checkpoint
+	err = env.SimulatePostTask(PostTaskInput{
+		SessionID:      session.ID,
+		TranscriptPath: session.TranscriptPath,
+		ToolUseID:      taskToolUseID,
+		AgentID:        "agent-123",
+	})
+	if err != nil {
+		t.Fatalf("SimulatePostTask failed: %v", err)
+	}
+
+	// Verify pre-task file is cleaned up
+	if _, err := os.Stat(preTaskFile); !os.IsNotExist(err) {
+		t.Error("Pre-task file should be removed after PostTask")
+	}
+
+	// Verify checkpoints are stored in final location (strategy-specific)
+	verifyCheckpointStorage(t, env, session.ID, taskToolUseID)
 }
 
 // TestSubagentCheckpoints_NoFileChanges tests that PostTodo is skipped when no file changes
 func TestSubagentCheckpoints_NoFileChanges(t *testing.T) {
 	t.Parallel()
-	RunForAllStrategies(t, func(t *testing.T, env *TestEnv, strategyName string) {
-		// Create a session
-		session := env.NewSession()
+	env := NewFeatureBranchEnv(t)
+	// Create a session
+	session := env.NewSession()
 
-		// Create transcript
-		session.CreateTranscript("Quick task", []FileChange{})
+	// Create transcript
+	session.CreateTranscript("Quick task", []FileChange{})
 
-		// Simulate user prompt submit
-		err := env.SimulateUserPromptSubmit(session.ID)
-		if err != nil {
-			t.Fatalf("SimulateUserPromptSubmit failed: %v", err)
-		}
+	// Simulate user prompt submit
+	err := env.SimulateUserPromptSubmit(session.ID)
+	if err != nil {
+		t.Fatalf("SimulateUserPromptSubmit failed: %v", err)
+	}
 
-		// Create pre-task file to simulate subagent context
-		taskToolUseID := "toolu_01TaskNoChanges"
-		err = env.SimulatePreTask(session.ID, session.TranscriptPath, taskToolUseID)
-		if err != nil {
-			t.Fatalf("SimulatePreTask failed: %v", err)
-		}
+	// Create pre-task file to simulate subagent context
+	taskToolUseID := "toolu_01TaskNoChanges"
+	err = env.SimulatePreTask(session.ID, session.TranscriptPath, taskToolUseID)
+	if err != nil {
+		t.Fatalf("SimulatePreTask failed: %v", err)
+	}
 
-		// Get git log before PostTodo
-		beforeCommits := env.GetGitLog()
+	// Get git log before PostTodo
+	beforeCommits := env.GetGitLog()
 
-		// Call PostTodo WITHOUT making any file changes
-		err = env.SimulatePostTodo(PostTodoInput{
-			SessionID:      session.ID,
-			TranscriptPath: session.TranscriptPath,
-			ToolUseID:      "toolu_01TodoWriteNoChange",
-			Todos: []Todo{
-				{Content: "Some task", Status: "pending", ActiveForm: "Doing task"},
-			},
-		})
-		if err != nil {
-			t.Fatalf("SimulatePostTodo should not fail: %v", err)
-		}
-
-		// Get git log after PostTodo
-		afterCommits := env.GetGitLog()
-
-		// Verify no new commits were created
-		if len(afterCommits) != len(beforeCommits) {
-			t.Errorf("Expected no new commits when no file changes, before=%d after=%d", len(beforeCommits), len(afterCommits))
-		}
+	// Call PostTodo WITHOUT making any file changes
+	err = env.SimulatePostTodo(PostTodoInput{
+		SessionID:      session.ID,
+		TranscriptPath: session.TranscriptPath,
+		ToolUseID:      "toolu_01TodoWriteNoChange",
+		Todos: []Todo{
+			{Content: "Some task", Status: "pending", ActiveForm: "Doing task"},
+		},
 	})
+	if err != nil {
+		t.Fatalf("SimulatePostTodo should not fail: %v", err)
+	}
+
+	// Get git log after PostTodo
+	afterCommits := env.GetGitLog()
+
+	// Verify no new commits were created
+	if len(afterCommits) != len(beforeCommits) {
+		t.Errorf("Expected no new commits when no file changes, before=%d after=%d", len(beforeCommits), len(afterCommits))
+	}
 }
 
 // TestSubagentCheckpoints_PostTaskNoFileChanges tests that PostTask is skipped when no file changes
 // and the pre-task state is still cleaned up.
 func TestSubagentCheckpoints_PostTaskNoFileChanges(t *testing.T) {
 	t.Parallel()
-	RunForAllStrategies(t, func(t *testing.T, env *TestEnv, strategyName string) {
-		// Create a session
-		session := env.NewSession()
+	env := NewFeatureBranchEnv(t)
+	// Create a session
+	session := env.NewSession()
 
-		// Create transcript (no file changes in transcript either)
-		session.CreateTranscript("Quick task with no file changes", []FileChange{})
+	// Create transcript (no file changes in transcript either)
+	session.CreateTranscript("Quick task with no file changes", []FileChange{})
 
-		// Simulate user prompt submit
-		err := env.SimulateUserPromptSubmit(session.ID)
-		if err != nil {
-			t.Fatalf("SimulateUserPromptSubmit failed: %v", err)
-		}
+	// Simulate user prompt submit
+	err := env.SimulateUserPromptSubmit(session.ID)
+	if err != nil {
+		t.Fatalf("SimulateUserPromptSubmit failed: %v", err)
+	}
 
-		// Create pre-task file to simulate subagent context
-		taskToolUseID := "toolu_01TaskNoFileChanges"
-		err = env.SimulatePreTask(session.ID, session.TranscriptPath, taskToolUseID)
-		if err != nil {
-			t.Fatalf("SimulatePreTask failed: %v", err)
-		}
+	// Create pre-task file to simulate subagent context
+	taskToolUseID := "toolu_01TaskNoFileChanges"
+	err = env.SimulatePreTask(session.ID, session.TranscriptPath, taskToolUseID)
+	if err != nil {
+		t.Fatalf("SimulatePreTask failed: %v", err)
+	}
 
-		// Verify pre-task file was created
-		preTaskFile := filepath.Join(env.RepoDir, ".entire", "tmp", "pre-task-"+taskToolUseID+".json")
-		if _, err := os.Stat(preTaskFile); os.IsNotExist(err) {
-			t.Fatal("pre-task file should exist after SimulatePreTask")
-		}
+	// Verify pre-task file was created
+	preTaskFile := filepath.Join(env.RepoDir, ".entire", "tmp", "pre-task-"+taskToolUseID+".json")
+	if _, err := os.Stat(preTaskFile); os.IsNotExist(err) {
+		t.Fatal("pre-task file should exist after SimulatePreTask")
+	}
 
-		// Get git log before PostTask
-		beforeCommits := env.GetGitLog()
+	// Get git log before PostTask
+	beforeCommits := env.GetGitLog()
 
-		// Call PostTask WITHOUT making any file changes
-		err = env.SimulatePostTask(PostTaskInput{
-			SessionID:      session.ID,
-			TranscriptPath: session.TranscriptPath,
-			ToolUseID:      taskToolUseID,
-			AgentID:        "agent-no-changes",
-		})
-		if err != nil {
-			t.Fatalf("SimulatePostTask should not fail: %v", err)
-		}
-
-		// Get git log after PostTask
-		afterCommits := env.GetGitLog()
-
-		// Verify no new commits were created on the main branch
-		if len(afterCommits) != len(beforeCommits) {
-			t.Errorf("Expected no new commits when no file changes, before=%d after=%d", len(beforeCommits), len(afterCommits))
-		}
-
-		// Verify pre-task file is cleaned up even though no checkpoint was created
-		if _, err := os.Stat(preTaskFile); !os.IsNotExist(err) {
-			t.Error("Pre-task file should be removed after PostTask even with no file changes")
-		}
+	// Call PostTask WITHOUT making any file changes
+	err = env.SimulatePostTask(PostTaskInput{
+		SessionID:      session.ID,
+		TranscriptPath: session.TranscriptPath,
+		ToolUseID:      taskToolUseID,
+		AgentID:        "agent-no-changes",
 	})
+	if err != nil {
+		t.Fatalf("SimulatePostTask should not fail: %v", err)
+	}
+
+	// Get git log after PostTask
+	afterCommits := env.GetGitLog()
+
+	// Verify no new commits were created on the main branch
+	if len(afterCommits) != len(beforeCommits) {
+		t.Errorf("Expected no new commits when no file changes, before=%d after=%d", len(beforeCommits), len(afterCommits))
+	}
+
+	// Verify pre-task file is cleaned up even though no checkpoint was created
+	if _, err := os.Stat(preTaskFile); !os.IsNotExist(err) {
+		t.Error("Pre-task file should be removed after PostTask even with no file changes")
+	}
 }
 
 // TestSubagentCheckpoints_NoPreTaskFile tests that PostTodo is a no-op
 // when there's no active pre-task file (main agent context).
 func TestSubagentCheckpoints_NoPreTaskFile(t *testing.T) {
 	t.Parallel()
-	RunForAllStrategies(t, func(t *testing.T, env *TestEnv, strategyName string) {
-		// Create a session
-		session := env.NewSession()
+	env := NewFeatureBranchEnv(t)
+	// Create a session
+	session := env.NewSession()
 
-		// Create transcript
-		session.CreateTranscript("Quick task", []FileChange{})
+	// Create transcript
+	session.CreateTranscript("Quick task", []FileChange{})
 
-		// Simulate user prompt submit
-		err := env.SimulateUserPromptSubmit(session.ID)
-		if err != nil {
-			t.Fatalf("SimulateUserPromptSubmit failed: %v", err)
-		}
+	// Simulate user prompt submit
+	err := env.SimulateUserPromptSubmit(session.ID)
+	if err != nil {
+		t.Fatalf("SimulateUserPromptSubmit failed: %v", err)
+	}
 
-		// Create a file change so that PostTodo would trigger if in subagent context
-		env.WriteFile("test.txt", "content")
+	// Create a file change so that PostTodo would trigger if in subagent context
+	env.WriteFile("test.txt", "content")
 
-		// Get git log before PostTodo
-		beforeCommits := env.GetGitLog()
+	// Get git log before PostTodo
+	beforeCommits := env.GetGitLog()
 
-		// Call PostTodo WITHOUT calling PreTask first
-		// This simulates a TodoWrite from the main agent (not a subagent)
-		err = env.SimulatePostTodo(PostTodoInput{
-			SessionID:      session.ID,
-			TranscriptPath: session.TranscriptPath,
-			ToolUseID:      "toolu_01MainAgentTodo",
-			Todos: []Todo{
-				{Content: "Some task", Status: "pending", ActiveForm: "Doing task"},
-			},
-		})
-		if err != nil {
-			t.Fatalf("SimulatePostTodo should not fail: %v", err)
-		}
-
-		// Get git log after PostTodo
-		afterCommits := env.GetGitLog()
-
-		// Verify no new commits were created (not in subagent context)
-		if len(afterCommits) != len(beforeCommits) {
-			t.Errorf("Expected no new commits when not in subagent context, before=%d after=%d", len(beforeCommits), len(afterCommits))
-		}
+	// Call PostTodo WITHOUT calling PreTask first
+	// This simulates a TodoWrite from the main agent (not a subagent)
+	err = env.SimulatePostTodo(PostTodoInput{
+		SessionID:      session.ID,
+		TranscriptPath: session.TranscriptPath,
+		ToolUseID:      "toolu_01MainAgentTodo",
+		Todos: []Todo{
+			{Content: "Some task", Status: "pending", ActiveForm: "Doing task"},
+		},
 	})
+	if err != nil {
+		t.Fatalf("SimulatePostTodo should not fail: %v", err)
+	}
+
+	// Get git log after PostTodo
+	afterCommits := env.GetGitLog()
+
+	// Verify no new commits were created (not in subagent context)
+	if len(afterCommits) != len(beforeCommits) {
+		t.Errorf("Expected no new commits when not in subagent context, before=%d after=%d", len(beforeCommits), len(afterCommits))
+	}
 }
 
 // verifyCheckpointStorage verifies that checkpoints are stored in the correct
 // location based on the strategy type.
 // Note: Incremental checkpoints are stored in separate commits during task execution,
 // while the final checkpoint.json is created at PostTask time.
-func verifyCheckpointStorage(t *testing.T, env *TestEnv, strategyName, sessionID, taskToolUseID string) {
+func verifyCheckpointStorage(t *testing.T, env *TestEnv, sessionID, taskToolUseID string) {
 	t.Helper()
 
-	switch strategyName {
-	case strategy.StrategyNameManualCommit:
-		// Shadow strategy stores checkpoints in git tree on shadow branch (entire/<head-hash>)
-		// We need to verify that checkpoint data exists in the shadow branch tree
-		verifyShadowCheckpointStorage(t, env, sessionID, taskToolUseID)
-
-	case strategy.StrategyNameAutoCommit:
-		// Dual strategy stores metadata on orphan entire/checkpoints/v1 branch
-		// Verify that commits were created (incremental + final)
-		t.Logf("Note: auto-commit strategy stores checkpoints in entire/checkpoints/v1 branch")
-	}
+	// Manual-commit stores checkpoints in git tree on shadow branch (entire/<head-hash>)
+	// We need to verify that checkpoint data exists in the shadow branch tree
+	verifyShadowCheckpointStorage(t, env, sessionID, taskToolUseID)
 }
 
 // verifyShadowCheckpointStorage verifies that checkpoints are stored in the shadow branch git tree.

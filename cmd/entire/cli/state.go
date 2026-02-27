@@ -1,15 +1,19 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/entireio/cli/cmd/entire/cli/agent"
 	"github.com/entireio/cli/cmd/entire/cli/jsonutil"
+	"github.com/entireio/cli/cmd/entire/cli/logging"
 	"github.com/entireio/cli/cmd/entire/cli/paths"
 	"github.com/entireio/cli/cmd/entire/cli/strategy"
 
@@ -22,18 +26,26 @@ type PrePromptState struct {
 	Timestamp      string   `json:"timestamp"`
 	UntrackedFiles []string `json:"untracked_files"`
 
-	// StartMessageIndex is the message count in the transcript when this state
-	// was captured. Used for calculating token usage since the prompt started.
-	// Only set for Gemini sessions. Zero means not set or session just started.
+	// TranscriptOffset is the unified transcript position when this state was captured.
+	// For Claude Code (JSONL), this is the line count.
+	// For Gemini CLI (JSON), this is the message count.
+	// Zero means not set or session just started.
+	TranscriptOffset int `json:"transcript_offset,omitempty"`
+
+	// LastTranscriptIdentifier is the agent-specific identifier at the transcript position.
+	// UUID for Claude Code, message ID for Gemini CLI. Optional metadata.
+	LastTranscriptIdentifier string `json:"last_transcript_identifier,omitempty"`
+
+	// Deprecated: StartMessageIndex is the old Gemini-specific field.
+	// Migrated to TranscriptOffset on load.
 	StartMessageIndex int `json:"start_message_index,omitempty"`
 
-	// Transcript position at prompt start - tracks what was added during this step/turn.
-	// Used for Claude Code sessions.
-	LastTranscriptIdentifier string `json:"last_transcript_identifier,omitempty"` // Last identifier when prompt started (UUID for Claude, message ID for Gemini)
-	StepTranscriptStart      int    `json:"step_transcript_start,omitempty"`      // Transcript line count when this step/turn started
+	// Deprecated: StepTranscriptStart is the old Claude-specific field.
+	// Migrated to TranscriptOffset on load.
+	StepTranscriptStart int `json:"step_transcript_start,omitempty"`
 
-	// Deprecated: LastTranscriptLineCount is the old name for StepTranscriptStart.
-	// Kept for backward compatibility when reading state files written by older CLI versions.
+	// Deprecated: LastTranscriptLineCount is the oldest name for transcript position.
+	// Migrated to TranscriptOffset on load.
 	LastTranscriptLineCount int `json:"last_transcript_line_count,omitempty"`
 }
 
@@ -54,23 +66,39 @@ func (s *PrePromptState) PreUntrackedFiles() []string {
 
 // normalizePrePromptState migrates deprecated fields after loading from JSON.
 func (s *PrePromptState) normalizePrePromptState() {
+	// Migrate the oldest field to the intermediate field first
 	if s.StepTranscriptStart == 0 && s.LastTranscriptLineCount > 0 {
 		s.StepTranscriptStart = s.LastTranscriptLineCount
 	}
 	s.LastTranscriptLineCount = 0
+
+	// Migrate all deprecated fields to the unified TranscriptOffset
+	if s.TranscriptOffset == 0 {
+		if s.StepTranscriptStart > 0 {
+			s.TranscriptOffset = s.StepTranscriptStart
+		} else if s.StartMessageIndex > 0 {
+			s.TranscriptOffset = s.StartMessageIndex
+		}
+	}
+	s.StepTranscriptStart = 0
+	s.StartMessageIndex = 0
 }
 
 // CapturePrePromptState captures current untracked files and transcript position before a prompt
 // and saves them to a state file.
+//
+// The agent parameter is used to determine the transcript position via TranscriptAnalyzer.
+// If the agent does not implement TranscriptAnalyzer, the transcript offset will be 0.
+// The sessionRef parameter is optional — if empty, transcript position won't be captured.
+//
 // Works correctly from any subdirectory within the repository.
-// The transcriptPath parameter is optional - if empty, transcript position won't be captured.
-func CapturePrePromptState(sessionID, transcriptPath string) error {
+func CapturePrePromptState(ctx context.Context, ag agent.Agent, sessionID, sessionRef string) error {
 	if sessionID == "" {
 		sessionID = unknownSessionID
 	}
 
 	// Get absolute path for tmp directory
-	tmpDirAbs, err := paths.AbsPath(paths.EntireTmpDir)
+	tmpDirAbs, err := paths.AbsPath(ctx, paths.EntireTmpDir)
 	if err != nil {
 		tmpDirAbs = paths.EntireTmpDir // Fallback to relative
 	}
@@ -81,29 +109,30 @@ func CapturePrePromptState(sessionID, transcriptPath string) error {
 	}
 
 	// Get list of untracked files (excluding .entire directory itself)
-	untrackedFiles, err := getUntrackedFilesForState()
+	untrackedFiles, err := getUntrackedFilesForState(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to get untracked files: %w", err)
 	}
 
-	// Get transcript position (last UUID and line count)
-	var transcriptPos TranscriptPosition
-	if transcriptPath != "" {
-		transcriptPos, err = GetTranscriptPosition(transcriptPath)
-		if err != nil {
-			// Log warning but don't fail - transcript position is optional
-			fmt.Fprintf(os.Stderr, "Warning: failed to get transcript position: %v\n", err)
+	// Get transcript position using TranscriptAnalyzer if available
+	var transcriptOffset int
+	if analyzer, ok := ag.(agent.TranscriptAnalyzer); ok && sessionRef != "" {
+		pos, posErr := analyzer.GetTranscriptPosition(sessionRef)
+		if posErr != nil {
+			logging.Warn(logging.WithComponent(ctx, "state"), "failed to get transcript position",
+				slog.String("error", posErr.Error()))
+		} else {
+			transcriptOffset = pos
 		}
 	}
 
 	// Create state file
-	stateFile := prePromptStateFile(sessionID)
+	stateFile := prePromptStateFile(ctx, sessionID)
 	state := PrePromptState{
-		SessionID:                sessionID,
-		Timestamp:                time.Now().UTC().Format(time.RFC3339),
-		UntrackedFiles:           untrackedFiles,
-		LastTranscriptIdentifier: transcriptPos.LastUUID,
-		StepTranscriptStart:      transcriptPos.LineCount,
+		SessionID:        sessionID,
+		Timestamp:        time.Now().UTC().Format(time.RFC3339),
+		UntrackedFiles:   untrackedFiles,
+		TranscriptOffset: transcriptOffset,
 	}
 
 	data, err := jsonutil.MarshalIndentWithNewline(state, "", "  ")
@@ -115,85 +144,16 @@ func CapturePrePromptState(sessionID, transcriptPath string) error {
 		return fmt.Errorf("failed to write state file: %w", err)
 	}
 
-	fmt.Fprintf(os.Stderr, "Captured state before prompt: %d untracked files, transcript at line %d (uuid: %s)\n",
-		len(untrackedFiles), transcriptPos.LineCount, transcriptPos.LastUUID)
-	return nil
-}
-
-// CaptureGeminiPrePromptState captures current untracked files and transcript position
-// before a prompt for Gemini sessions. This is called by the BeforeAgent hook.
-// The transcriptPath is the path to the Gemini session transcript (JSON format).
-func CaptureGeminiPrePromptState(sessionID, transcriptPath string) error {
-	if sessionID == "" {
-		sessionID = unknownSessionID
-	}
-
-	// Get absolute path for tmp directory
-	tmpDirAbs, err := paths.AbsPath(paths.EntireTmpDir)
-	if err != nil {
-		tmpDirAbs = paths.EntireTmpDir // Fallback to relative
-	}
-
-	// Create tmp directory if it doesn't exist
-	if err := os.MkdirAll(tmpDirAbs, 0o750); err != nil {
-		return fmt.Errorf("failed to create tmp directory: %w", err)
-	}
-
-	// Get list of untracked files (excluding .entire directory itself)
-	untrackedFiles, err := getUntrackedFilesForState()
-	if err != nil {
-		return fmt.Errorf("failed to get untracked files: %w", err)
-	}
-
-	// Get transcript position (message count and last message ID) for Gemini
-	var startMessageIndex int
-	var lastMessageID string
-	if transcriptPath != "" {
-		// Read transcript and extract both message count and last message ID
-		if data, readErr := os.ReadFile(transcriptPath); readErr == nil && len(data) > 0 { //nolint:gosec // Reading from controlled transcript path
-			var transcript struct {
-				Messages []struct {
-					ID string `json:"id"`
-				} `json:"messages"`
-			}
-			if jsonErr := json.Unmarshal(data, &transcript); jsonErr == nil {
-				startMessageIndex = len(transcript.Messages)
-				if startMessageIndex > 0 {
-					lastMessageID = transcript.Messages[startMessageIndex-1].ID
-				}
-			} else {
-				fmt.Fprintf(os.Stderr, "Warning: failed to parse transcript for message tracking: %v\n", jsonErr)
-			}
-		}
-	}
-
-	// Create state file
-	stateFile := prePromptStateFile(sessionID)
-	state := PrePromptState{
-		SessionID:                sessionID,
-		Timestamp:                time.Now().UTC().Format(time.RFC3339),
-		UntrackedFiles:           untrackedFiles,
-		StartMessageIndex:        startMessageIndex,
-		LastTranscriptIdentifier: lastMessageID,
-	}
-
-	data, err := json.MarshalIndent(state, "", "  ")
-	if err != nil {
-		return fmt.Errorf("failed to marshal state: %w", err)
-	}
-
-	if err := os.WriteFile(stateFile, data, 0o600); err != nil {
-		return fmt.Errorf("failed to write state file: %w", err)
-	}
-
-	fmt.Fprintf(os.Stderr, "Captured Gemini state before prompt: %d untracked files, transcript position: %d (last msg id: %s)\n", len(untrackedFiles), startMessageIndex, lastMessageID)
+	logging.Debug(logging.WithComponent(ctx, "state"), "captured state before prompt",
+		slog.Int("untracked_files", len(untrackedFiles)),
+		slog.Int("transcript_offset", transcriptOffset))
 	return nil
 }
 
 // LoadPrePromptState loads previously captured state.
 // Returns nil if no state file exists.
-func LoadPrePromptState(sessionID string) (*PrePromptState, error) {
-	stateFile := prePromptStateFile(sessionID)
+func LoadPrePromptState(ctx context.Context, sessionID string) (*PrePromptState, error) {
+	stateFile := prePromptStateFile(ctx, sessionID)
 
 	if !fileExists(stateFile) {
 		return nil, nil //nolint:nilnil // already present in codebase
@@ -215,8 +175,8 @@ func LoadPrePromptState(sessionID string) (*PrePromptState, error) {
 }
 
 // CleanupPrePromptState removes the state file after use
-func CleanupPrePromptState(sessionID string) error {
-	stateFile := prePromptStateFile(sessionID)
+func CleanupPrePromptState(ctx context.Context, sessionID string) error {
+	stateFile := prePromptStateFile(ctx, sessionID)
 	if fileExists(stateFile) {
 		return os.Remove(stateFile) //nolint:wrapcheck // already present in codebase
 	}
@@ -239,8 +199,8 @@ type FileChanges struct {
 // Modified includes both worktree and staging modified/added files.
 // Deleted includes both staged and unstaged deletions.
 // All results exclude .entire/ directory.
-func DetectFileChanges(previouslyUntracked []string) (*FileChanges, error) {
-	repo, err := openRepository()
+func DetectFileChanges(ctx context.Context, previouslyUntracked []string) (*FileChanges, error) {
+	repo, err := openRepository(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open repository: %w", err)
 	}
@@ -292,15 +252,15 @@ func DetectFileChanges(previouslyUntracked []string) (*FileChanges, error) {
 
 // filterToUncommittedFiles removes files from the list that are already committed to HEAD
 // with matching content. This prevents re-adding files that an agent committed mid-turn
-// (already condensed by PostCommit) back to FilesTouched via SaveChanges. Files not in
+// (already condensed by PostCommit) back to FilesTouched via SaveStep. Files not in
 // HEAD or with different content in the working tree are kept. Fails open: if any git
 // operation errors, returns the original list unchanged.
-func filterToUncommittedFiles(files []string, repoRoot string) []string {
+func filterToUncommittedFiles(ctx context.Context, files []string, repoRoot string) []string {
 	if len(files) == 0 {
 		return files
 	}
 
-	repo, err := openRepository()
+	repo, err := openRepository(ctx)
 	if err != nil {
 		return files // fail open
 	}
@@ -371,10 +331,28 @@ func FilterAndNormalizePaths(files []string, cwd string) []string {
 	return result
 }
 
+// mergeUnique appends elements from extra into base, skipping duplicates already in base.
+func mergeUnique(base, extra []string) []string {
+	if len(extra) == 0 {
+		return base
+	}
+	seen := make(map[string]bool, len(base))
+	for _, s := range base {
+		seen[s] = true
+	}
+	for _, s := range extra {
+		if !seen[s] {
+			seen[s] = true
+			base = append(base, s)
+		}
+	}
+	return base
+}
+
 // prePromptStateFile returns the absolute path to the pre-prompt state file for a session.
 // Works correctly from any subdirectory within the repository.
-func prePromptStateFile(sessionID string) string {
-	tmpDirAbs, err := paths.AbsPath(paths.EntireTmpDir)
+func prePromptStateFile(ctx context.Context, sessionID string) string {
+	tmpDirAbs, err := paths.AbsPath(ctx, paths.EntireTmpDir)
 	if err != nil {
 		tmpDirAbs = paths.EntireTmpDir // Fallback to relative
 	}
@@ -383,8 +361,8 @@ func prePromptStateFile(sessionID string) string {
 
 // getUntrackedFilesForState returns a list of untracked files using go-git
 // Excludes .entire directory
-func getUntrackedFilesForState() ([]string, error) {
-	repo, err := openRepository()
+func getUntrackedFilesForState(ctx context.Context) ([]string, error) {
+	repo, err := openRepository(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -434,13 +412,13 @@ func (s *PreTaskState) PreUntrackedFiles() []string {
 // CapturePreTaskState captures current untracked files before a Task execution
 // and saves them to a state file.
 // Works correctly from any subdirectory within the repository.
-func CapturePreTaskState(toolUseID string) error {
+func CapturePreTaskState(ctx context.Context, toolUseID string) error {
 	if toolUseID == "" {
 		return errors.New("tool_use_id is required")
 	}
 
 	// Get absolute path for tmp directory
-	tmpDirAbs, err := paths.AbsPath(paths.EntireTmpDir)
+	tmpDirAbs, err := paths.AbsPath(ctx, paths.EntireTmpDir)
 	if err != nil {
 		tmpDirAbs = paths.EntireTmpDir // Fallback to relative
 	}
@@ -451,13 +429,13 @@ func CapturePreTaskState(toolUseID string) error {
 	}
 
 	// Get list of untracked files (excluding .entire directory itself)
-	untrackedFiles, err := getUntrackedFilesForState()
+	untrackedFiles, err := getUntrackedFilesForState(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to get untracked files: %w", err)
 	}
 
 	// Create state file
-	stateFile := preTaskStateFile(toolUseID)
+	stateFile := preTaskStateFile(ctx, toolUseID)
 	state := PreTaskState{
 		ToolUseID:      toolUseID,
 		Timestamp:      time.Now().UTC().Format(time.RFC3339),
@@ -473,14 +451,15 @@ func CapturePreTaskState(toolUseID string) error {
 		return fmt.Errorf("failed to write state file: %w", err)
 	}
 
-	fmt.Fprintf(os.Stderr, "Captured state before task: %d untracked files\n", len(untrackedFiles))
+	logging.Debug(logging.WithComponent(ctx, "state"), "captured state before task",
+		slog.Int("untracked_files", len(untrackedFiles)))
 	return nil
 }
 
 // LoadPreTaskState loads previously captured task state.
 // Returns nil if no state file exists.
-func LoadPreTaskState(toolUseID string) (*PreTaskState, error) {
-	stateFile := preTaskStateFile(toolUseID)
+func LoadPreTaskState(ctx context.Context, toolUseID string) (*PreTaskState, error) {
+	stateFile := preTaskStateFile(ctx, toolUseID)
 
 	if !fileExists(stateFile) {
 		return nil, nil //nolint:nilnil // already present in codebase
@@ -500,8 +479,8 @@ func LoadPreTaskState(toolUseID string) (*PreTaskState, error) {
 }
 
 // CleanupPreTaskState removes the task state file after use
-func CleanupPreTaskState(toolUseID string) error {
-	stateFile := preTaskStateFile(toolUseID)
+func CleanupPreTaskState(ctx context.Context, toolUseID string) error {
+	stateFile := preTaskStateFile(ctx, toolUseID)
 	if fileExists(stateFile) {
 		return os.Remove(stateFile) //nolint:wrapcheck // already present in codebase
 	}
@@ -510,8 +489,8 @@ func CleanupPreTaskState(toolUseID string) error {
 
 // preTaskStateFile returns the absolute path to the pre-task state file for a tool use.
 // Works correctly from any subdirectory within the repository.
-func preTaskStateFile(toolUseID string) string {
-	tmpDirAbs, err := paths.AbsPath(paths.EntireTmpDir)
+func preTaskStateFile(ctx context.Context, toolUseID string) string {
+	tmpDirAbs, err := paths.AbsPath(ctx, paths.EntireTmpDir)
 	if err != nil {
 		tmpDirAbs = paths.EntireTmpDir // Fallback to relative
 	}
@@ -526,8 +505,8 @@ const preTaskFilePrefix = "pre-task-"
 // When multiple pre-task files exist (nested subagents), returns the most recently
 // modified one.
 // Works correctly from any subdirectory within the repository.
-func FindActivePreTaskFile() (taskToolUseID string, found bool) {
-	tmpDirAbs, err := paths.AbsPath(paths.EntireTmpDir)
+func FindActivePreTaskFile(ctx context.Context) (taskToolUseID string, found bool) {
+	tmpDirAbs, err := paths.AbsPath(ctx, paths.EntireTmpDir)
 	if err != nil {
 		tmpDirAbs = paths.EntireTmpDir // Fallback to relative
 	}

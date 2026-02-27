@@ -10,8 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/entireio/cli/cmd/entire/cli/strategy"
-
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
@@ -31,7 +29,7 @@ func TestSessionIDConflict_OrphanedBranchIsReset(t *testing.T) {
 	env.GitCommit("Initial commit")
 
 	env.GitCheckoutNewBranch("feature/test")
-	env.InitEntire(strategy.StrategyNameManualCommit)
+	env.InitEntire()
 
 	baseHead := env.GetHeadHash()
 	shadowBranch := env.GetShadowBranchNameForCommit(baseHead)
@@ -107,7 +105,7 @@ func TestSessionIDConflict_NoConflictWithSameSession(t *testing.T) {
 	env.GitCommit("Initial commit")
 
 	env.GitCheckoutNewBranch("feature/test")
-	env.InitEntire(strategy.StrategyNameManualCommit)
+	env.InitEntire()
 
 	// Create a session and checkpoint
 	session := env.NewSession()
@@ -143,7 +141,7 @@ func TestSessionIDConflict_NoShadowBranch(t *testing.T) {
 	env.GitCommit("Initial commit")
 
 	env.GitCheckoutNewBranch("feature/test")
-	env.InitEntire(strategy.StrategyNameManualCommit)
+	env.InitEntire()
 
 	baseHead := env.GetHeadHash()
 	shadowBranch := env.GetShadowBranchNameForCommit(baseHead)
@@ -175,7 +173,7 @@ func TestSessionIDConflict_ManuallyCreatedOrphanedBranch(t *testing.T) {
 	env.GitCommit("Initial commit")
 
 	env.GitCheckoutNewBranch("feature/test")
-	env.InitEntire(strategy.StrategyNameManualCommit)
+	env.InitEntire()
 
 	baseHead := env.GetHeadHash()
 	shadowBranch := env.GetShadowBranchNameForCommit(baseHead)
@@ -286,7 +284,7 @@ func TestSessionIDConflict_ShadowBranchWithoutTrailer(t *testing.T) {
 	env.GitCommit("Initial commit")
 
 	env.GitCheckoutNewBranch("feature/test")
-	env.InitEntire(strategy.StrategyNameManualCommit)
+	env.InitEntire()
 
 	baseHead := env.GetHeadHash()
 	shadowBranch := env.GetShadowBranchNameForCommit(baseHead)
@@ -321,7 +319,7 @@ func TestSessionStart_InformationalMessage(t *testing.T) {
 	env.GitCommit("Initial commit")
 
 	env.GitCheckoutNewBranch("feature/test")
-	env.InitEntire(strategy.StrategyNameManualCommit)
+	env.InitEntire()
 
 	// Create first session and save a checkpoint (so StepCount > 0)
 	session1 := env.NewSession()
@@ -418,7 +416,7 @@ func TestSessionStart_InformationalMessageNoConcurrentSessions(t *testing.T) {
 	env.GitCommit("Initial commit")
 
 	env.GitCheckoutNewBranch("feature/test")
-	env.InitEntire(strategy.StrategyNameManualCommit)
+	env.InitEntire()
 
 	// Start a single session (no other sessions)
 	session1 := env.NewSession()

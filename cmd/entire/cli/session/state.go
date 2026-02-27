@@ -9,9 +9,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/entireio/cli/cmd/entire/cli/agent"
+	"github.com/entireio/cli/cmd/entire/cli/agent/types"
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint/id"
 	"github.com/entireio/cli/cmd/entire/cli/jsonutil"
 	"github.com/entireio/cli/cmd/entire/cli/logging"
@@ -21,6 +23,10 @@ import (
 const (
 	// SessionStateDirName is the directory name for session state files within git common dir.
 	SessionStateDirName = "entire-sessions"
+
+	// StaleSessionThreshold is the duration after which an ended session is considered stale
+	// and will be automatically deleted during load/list operations.
+	StaleSessionThreshold = 7 * 24 * time.Hour
 )
 
 // State represents the state of an active session.
@@ -109,7 +115,7 @@ type State struct {
 	LastCheckpointID id.CheckpointID `json:"last_checkpoint_id,omitempty"`
 
 	// AgentType identifies the agent that created this session (e.g., "Claude Code", "Gemini CLI", "Cursor")
-	AgentType agent.AgentType `json:"agent_type,omitempty"`
+	AgentType types.AgentType `json:"agent_type,omitempty"`
 
 	// Token usage tracking (accumulated across all checkpoints in this session)
 	TokenUsage *agent.TokenUsage `json:"token_usage,omitempty"`
@@ -133,7 +139,7 @@ type State struct {
 	PromptAttributions []PromptAttribution `json:"prompt_attributions,omitempty"`
 
 	// PendingPromptAttribution holds attribution calculated at prompt start (before agent runs).
-	// This is moved to PromptAttributions when SaveChanges is called.
+	// This is moved to PromptAttributions when SaveStep is called.
 	PendingPromptAttribution *PromptAttribution `json:"pending_prompt_attribution,omitempty"`
 }
 
@@ -166,12 +172,12 @@ type PromptAttribution struct {
 
 // NormalizeAfterLoad applies backward-compatible migrations to state loaded from disk.
 // Call this after deserializing a State from JSON.
-func (s *State) NormalizeAfterLoad() {
+func (s *State) NormalizeAfterLoad(ctx context.Context) {
 	// Normalize legacy phase values. "active_committed" was removed with the
 	// 1:1 checkpoint model in favor of the state machine handling commits
 	// during ACTIVE phase with immediate condensation.
 	if s.Phase == "active_committed" {
-		logCtx := logging.WithComponent(context.Background(), "session")
+		logCtx := logging.WithComponent(ctx, "session")
 		logging.Info(logCtx, "migrating legacy active_committed phase to active",
 			slog.String("session_id", s.SessionID),
 		)
@@ -205,6 +211,13 @@ func (s *State) NormalizeAfterLoad() {
 	}
 }
 
+// IsStale returns true when the last time a session saw interaction exceeds StaleSessionThreshold.
+// If LastInteractionTime isn't set, we don't consider a session stale to avoid aggressively
+// deleting things.
+func (s *State) IsStale() bool {
+	return s.LastInteractionTime != nil && time.Since(*s.LastInteractionTime) > StaleSessionThreshold
+}
+
 // StateStore provides low-level operations for managing session state files.
 //
 // StateStore is a primitive for session state persistence. It is NOT the same as
@@ -220,8 +233,8 @@ type StateStore struct {
 
 // NewStateStore creates a new state store.
 // Uses the git common dir to store session state (shared across worktrees).
-func NewStateStore() (*StateStore, error) {
-	commonDir, err := getGitCommonDir()
+func NewStateStore(ctx context.Context) (*StateStore, error) {
+	commonDir, err := getGitCommonDir(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get git common dir: %w", err)
 	}
@@ -237,10 +250,9 @@ func NewStateStoreWithDir(stateDir string) *StateStore {
 }
 
 // Load loads the session state for the given session ID.
-// Returns (nil, nil) when session file doesn't exist (not an error condition).
+// Returns (nil, nil) when session file doesn't exist or session is stale (not an error condition).
+// Stale sessions (ended longer than StaleSessionThreshold ago) are automatically deleted.
 func (s *StateStore) Load(ctx context.Context, sessionID string) (*State, error) {
-	_ = ctx // Reserved for future use
-
 	// Validate session ID to prevent path traversal
 	if err := validation.ValidateSessionID(sessionID); err != nil {
 		return nil, fmt.Errorf("invalid session ID: %w", err)
@@ -260,7 +272,17 @@ func (s *StateStore) Load(ctx context.Context, sessionID string) (*State, error)
 	if err := json.Unmarshal(data, &state); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal session state: %w", err)
 	}
-	state.NormalizeAfterLoad()
+	state.NormalizeAfterLoad(ctx)
+
+	if state.IsStale() {
+		logCtx := logging.WithComponent(ctx, "session")
+		logging.Debug(logCtx, "deleting stale session state",
+			slog.String("session_id", sessionID),
+		)
+		_ = s.Clear(ctx, sessionID) //nolint:errcheck // best-effort cleanup of stale session
+		return nil, nil             //nolint:nilnil // stale session treated as not found
+	}
+
 	return &state, nil
 }
 
@@ -326,8 +348,6 @@ func (s *StateStore) RemoveAll() error {
 
 // List returns all session states.
 func (s *StateStore) List(ctx context.Context) ([]*State, error) {
-	_ = ctx // Reserved for future use
-
 	entries, err := os.ReadDir(s.stateDir)
 	if os.IsNotExist(err) {
 		return nil, nil
@@ -351,7 +371,7 @@ func (s *StateStore) List(ctx context.Context) ([]*State, error) {
 			continue // Skip corrupted state files
 		}
 		if state == nil {
-			continue
+			continue // Not found or stale (Load handles cleanup)
 		}
 
 		states = append(states, state)
@@ -364,11 +384,43 @@ func (s *StateStore) stateFilePath(sessionID string) string {
 	return filepath.Join(s.stateDir, sessionID+".json")
 }
 
+// gitCommonDirCache caches the git common dir to avoid repeated subprocess calls.
+// Keyed by working directory to handle directory changes (same pattern as paths.WorktreeRoot).
+var (
+	gitCommonDirMu       sync.RWMutex
+	gitCommonDirCache    string
+	gitCommonDirCacheDir string
+)
+
+// ClearGitCommonDirCache clears the cached git common dir.
+// Useful for testing when changing directories.
+func ClearGitCommonDirCache() {
+	gitCommonDirMu.Lock()
+	gitCommonDirCache = ""
+	gitCommonDirCacheDir = ""
+	gitCommonDirMu.Unlock()
+}
+
 // getGitCommonDir returns the path to the shared git directory.
 // In a regular checkout, this is .git/
 // In a worktree, this is the main repo's .git/ (not .git/worktrees/<name>/)
-func getGitCommonDir() (string, error) {
-	ctx := context.Background()
+// The result is cached per working directory.
+func getGitCommonDir(ctx context.Context) (string, error) {
+	cwd, err := os.Getwd() //nolint:forbidigo // used for cache key, not git-relative paths
+	if err != nil {
+		cwd = ""
+	}
+
+	// Check cache with read lock first
+	gitCommonDirMu.RLock()
+	if gitCommonDirCache != "" && gitCommonDirCacheDir == cwd {
+		cached := gitCommonDirCache
+		gitCommonDirMu.RUnlock()
+		return cached, nil
+	}
+	gitCommonDirMu.RUnlock()
+
+	// Cache miss — resolve via git subprocess
 	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--git-common-dir")
 	cmd.Dir = "."
 	output, err := cmd.Output()
@@ -383,6 +435,12 @@ func getGitCommonDir() (string, error) {
 	if !filepath.IsAbs(commonDir) {
 		commonDir = filepath.Join(".", commonDir)
 	}
+	commonDir = filepath.Clean(commonDir)
 
-	return filepath.Clean(commonDir), nil
+	gitCommonDirMu.Lock()
+	gitCommonDirCache = commonDir
+	gitCommonDirCacheDir = cwd
+	gitCommonDirMu.Unlock()
+
+	return commonDir, nil
 }

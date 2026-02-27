@@ -226,7 +226,7 @@ func CalculateTokenUsageFromFile(path string, startLine int) (*agent.TokenUsage,
 		return &agent.TokenUsage{}, nil
 	}
 
-	lines, _, err := transcript.ParseFromFileAtLine(path, startLine)
+	lines, err := transcript.ParseFromFileAtLine(path, startLine)
 	if err != nil {
 		return nil, err //nolint:wrapcheck // caller adds context
 	}
@@ -326,15 +326,16 @@ func extractAgentIDFromText(text string) string {
 }
 
 // CalculateTotalTokenUsage calculates token usage for a turn, including subagents.
-// It parses the main transcript from startLine, extracts spawned agent IDs,
-// and calculates their token usage from transcripts in subagentsDir.
-func CalculateTotalTokenUsage(transcriptPath string, startLine int, subagentsDir string) (*agent.TokenUsage, error) {
-	if transcriptPath == "" {
+// It parses the main transcript bytes from startLine, extracts spawned agent IDs,
+// and calculates their token usage from transcript files in subagentsDir.
+func (c *ClaudeCodeAgent) CalculateTotalTokenUsage(transcriptData []byte, startLine int, subagentsDir string) (*agent.TokenUsage, error) {
+	if len(transcriptData) == 0 {
 		return &agent.TokenUsage{}, nil
 	}
 
-	// Parse transcript ONCE
-	parsed, _, err := transcript.ParseFromFileAtLine(transcriptPath, startLine)
+	// Slice to the relevant portion and parse
+	sliced := transcript.SliceFromLine(transcriptData, startLine)
+	parsed, err := transcript.ParseFromBytes(sliced)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse transcript: %w", err)
 	}
@@ -345,8 +346,8 @@ func CalculateTotalTokenUsage(transcriptPath string, startLine int, subagentsDir
 	// Extract spawned agent IDs from the same parsed transcript
 	agentIDs := ExtractSpawnedAgentIDs(parsed)
 
-	// Calculate subagent token usage
-	if len(agentIDs) > 0 {
+	// Calculate subagent token usage (skip when subagentsDir is empty to avoid reading from cwd)
+	if len(agentIDs) > 0 && subagentsDir != "" {
 		subagentUsage := &agent.TokenUsage{}
 		for agentID := range agentIDs {
 			agentPath := filepath.Join(subagentsDir, fmt.Sprintf("agent-%s.jsonl", agentID))
@@ -370,17 +371,18 @@ func CalculateTotalTokenUsage(transcriptPath string, startLine int, subagentsDir
 }
 
 // ExtractAllModifiedFiles extracts files modified by both the main agent and
-// any subagents spawned via the Task tool. It parses the main transcript from
+// any subagents spawned via the Task tool. It parses the main transcript bytes from
 // startLine, collects modified files from the main agent, then reads each
 // subagent's transcript from subagentsDir to collect their modified files too.
 // The result is a deduplicated list of all modified file paths.
-func ExtractAllModifiedFiles(transcriptPath string, startLine int, subagentsDir string) ([]string, error) {
-	if transcriptPath == "" {
+func (c *ClaudeCodeAgent) ExtractAllModifiedFiles(transcriptData []byte, startLine int, subagentsDir string) ([]string, error) {
+	if len(transcriptData) == 0 {
 		return nil, nil
 	}
 
-	// Parse main transcript once
-	parsed, _, err := transcript.ParseFromFileAtLine(transcriptPath, startLine)
+	// Slice to the relevant portion and parse
+	sliced := transcript.SliceFromLine(transcriptData, startLine)
+	parsed, err := transcript.ParseFromBytes(sliced)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse transcript: %w", err)
 	}
@@ -395,11 +397,14 @@ func ExtractAllModifiedFiles(transcriptPath string, startLine int, subagentsDir 
 		}
 	}
 
-	// Find spawned subagents and collect their modified files
+	// Find spawned subagents and collect their modified files (skip when subagentsDir is empty to avoid reading from cwd)
 	agentIDs := ExtractSpawnedAgentIDs(parsed)
+	if subagentsDir == "" {
+		return files, nil
+	}
 	for agentID := range agentIDs {
 		agentPath := filepath.Join(subagentsDir, fmt.Sprintf("agent-%s.jsonl", agentID))
-		agentLines, _, agentErr := transcript.ParseFromFileAtLine(agentPath, 0)
+		agentLines, agentErr := transcript.ParseFromFileAtLine(agentPath, 0)
 		if agentErr != nil {
 			// Subagent transcript may not exist yet or may have been cleaned up
 			continue

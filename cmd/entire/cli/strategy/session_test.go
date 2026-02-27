@@ -1,6 +1,7 @@
 package strategy
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"path/filepath"
@@ -161,17 +162,12 @@ func TestEmptySession(t *testing.T) {
 	}
 }
 
-// TestShadowStrategyImplementsSessionSource verifies that manual-commit strategy implements SessionSource
-func TestManualCommitStrategyImplementsSessionSource(t *testing.T) {
-	// Manual-commit strategy should implement SessionSource
-	var strat = NewManualCommitStrategy()
-	source, ok := strat.(SessionSource)
-	if !ok {
-		t.Fatal("ManualCommitStrategy should implement SessionSource interface")
-	}
+// TestManualCommitStrategyGetAdditionalSessions verifies that GetAdditionalSessions is callable
+func TestManualCommitStrategyGetAdditionalSessions(t *testing.T) {
+	strat := NewManualCommitStrategy()
 
 	// GetAdditionalSessions should be callable
-	_, err := source.GetAdditionalSessions()
+	_, err := strat.GetAdditionalSessions(context.Background())
 	if err != nil {
 		t.Logf("GetAdditionalSessions returned error: %v", err)
 	}
@@ -179,12 +175,12 @@ func TestManualCommitStrategyImplementsSessionSource(t *testing.T) {
 
 func TestListSessionsFunctionsWithoutRepo(t *testing.T) {
 	// Without a git repo, these will fail - just verifying they're callable
-	_, err := ListSessions()
+	_, err := ListSessions(context.Background())
 	if err != nil {
 		t.Logf("ListSessions returned error (expected without git repo): %v", err)
 	}
 
-	_, err = GetSession("test-session-id")
+	_, err = GetSession(context.Background(), "test-session-id")
 	if err != nil && !errors.Is(err, ErrNoSession) {
 		t.Logf("GetSession returned error (expected without git repo): %v", err)
 	}
@@ -196,13 +192,13 @@ func TestListSessionsEmptyRepo(t *testing.T) {
 	t.Chdir(tmpDir)
 
 	// No entire/checkpoints/v1 branch exists yet
-	sessions, err := ListSessions()
+	sessions, err := ListSessions(context.Background())
 	if err != nil {
-		t.Fatalf("ListSessions() error = %v, want nil", err)
+		t.Fatalf("ListSessions(context.Background()) error = %v, want nil", err)
 	}
 
 	if len(sessions) != 0 {
-		t.Errorf("ListSessions() returned %d sessions, want 0", len(sessions))
+		t.Errorf("ListSessions(context.Background()) returned %d sessions, want 0", len(sessions))
 	}
 }
 
@@ -217,21 +213,21 @@ func TestListSessionsWithCheckpoints(t *testing.T) {
 	initTestRepo(t, tmpDir)
 	t.Chdir(tmpDir)
 
-	repo, err := OpenRepository()
+	repo, err := OpenRepository(context.Background())
 	if err != nil {
-		t.Fatalf("OpenRepository() failed: %v", err)
+		t.Fatalf("OpenRepository(context.Background()) failed: %v", err)
 	}
 
 	// Create entire/checkpoints/v1 branch with test checkpoints
 	createTestMetadataBranch(t, repo, testSessionID)
 
-	sessions, err := ListSessions()
+	sessions, err := ListSessions(context.Background())
 	if err != nil {
-		t.Fatalf("ListSessions() error = %v, want nil", err)
+		t.Fatalf("ListSessions(context.Background()) error = %v, want nil", err)
 	}
 
 	if len(sessions) != 1 {
-		t.Fatalf("ListSessions() returned %d sessions, want 1", len(sessions))
+		t.Fatalf("ListSessions(context.Background()) returned %d sessions, want 1", len(sessions))
 	}
 
 	sess := sessions[0]
@@ -257,22 +253,22 @@ func TestListSessionsWithDescription(t *testing.T) {
 	initTestRepo(t, tmpDir)
 	t.Chdir(tmpDir)
 
-	repo, err := OpenRepository()
+	repo, err := OpenRepository(context.Background())
 	if err != nil {
-		t.Fatalf("OpenRepository() failed: %v", err)
+		t.Fatalf("OpenRepository(context.Background()) failed: %v", err)
 	}
 
 	// Create entire/checkpoints/v1 branch with test checkpoint including prompt.txt
 	expectedDesc := "Fix the bug in the login form"
 	createTestMetadataBranchWithPrompt(t, repo, testSessionID, testCheckpointID, expectedDesc)
 
-	sessions, err := ListSessions()
+	sessions, err := ListSessions(context.Background())
 	if err != nil {
-		t.Fatalf("ListSessions() error = %v, want nil", err)
+		t.Fatalf("ListSessions(context.Background()) error = %v, want nil", err)
 	}
 
 	if len(sessions) != 1 {
-		t.Fatalf("ListSessions() returned %d sessions, want 1", len(sessions))
+		t.Fatalf("ListSessions(context.Background()) returned %d sessions, want 1", len(sessions))
 	}
 
 	sess := sessions[0]
@@ -292,15 +288,15 @@ func TestGetSessionByID(t *testing.T) {
 	initTestRepo(t, tmpDir)
 	t.Chdir(tmpDir)
 
-	repo, err := OpenRepository()
+	repo, err := OpenRepository(context.Background())
 	if err != nil {
-		t.Fatalf("OpenRepository() failed: %v", err)
+		t.Fatalf("OpenRepository(context.Background()) failed: %v", err)
 	}
 
 	createTestMetadataBranch(t, repo, testSessionID)
 
 	// Test exact match
-	sess, err := GetSession(testSessionID)
+	sess, err := GetSession(context.Background(), testSessionID)
 	if err != nil {
 		t.Fatalf("GetSession() error = %v, want nil", err)
 	}
@@ -309,7 +305,7 @@ func TestGetSessionByID(t *testing.T) {
 	}
 
 	// Test prefix match
-	sess, err = GetSession("2025-01-15")
+	sess, err = GetSession(context.Background(), "2025-01-15")
 	if err != nil {
 		t.Fatalf("GetSession() with prefix error = %v, want nil", err)
 	}
@@ -323,7 +319,7 @@ func TestGetSessionNotFound(t *testing.T) {
 	initTestRepo(t, tmpDir)
 	t.Chdir(tmpDir)
 
-	_, err := GetSession("nonexistent-session")
+	_, err := GetSession(context.Background(), "nonexistent-session")
 	if !errors.Is(err, ErrNoSession) {
 		t.Errorf("GetSession() error = %v, want ErrNoSession", err)
 	}
@@ -347,9 +343,9 @@ func TestListSessionsMultiSessionCheckpoint(t *testing.T) {
 	initTestRepo(t, tmpDir)
 	t.Chdir(tmpDir)
 
-	repo, err := OpenRepository()
+	repo, err := OpenRepository(context.Background())
 	if err != nil {
-		t.Fatalf("OpenRepository() failed: %v", err)
+		t.Fatalf("OpenRepository(context.Background()) failed: %v", err)
 	}
 
 	// Create a multi-session checkpoint with 2 sessions:
@@ -361,14 +357,14 @@ func TestListSessionsMultiSessionCheckpoint(t *testing.T) {
 
 	createTestMultiSessionCheckpoint(t, repo, checkpointID, sessionB, []string{sessionA, sessionB})
 
-	sessions, err := ListSessions()
+	sessions, err := ListSessions(context.Background())
 	if err != nil {
-		t.Fatalf("ListSessions() error = %v, want nil", err)
+		t.Fatalf("ListSessions(context.Background()) error = %v, want nil", err)
 	}
 
 	// Should return 2 sessions - one for each session ID in the checkpoint
 	if len(sessions) != 2 {
-		t.Fatalf("ListSessions() returned %d sessions, want 2 (both session-A and session-B)", len(sessions))
+		t.Fatalf("ListSessions(context.Background()) returned %d sessions, want 2 (both session-A and session-B)", len(sessions))
 	}
 
 	// Verify both sessions are present
@@ -378,10 +374,10 @@ func TestListSessionsMultiSessionCheckpoint(t *testing.T) {
 	}
 
 	if !sessionIDs[sessionA] {
-		t.Errorf("ListSessions() missing archived session %q", sessionA)
+		t.Errorf("ListSessions(context.Background()) missing archived session %q", sessionA)
 	}
 	if !sessionIDs[sessionB] {
-		t.Errorf("ListSessions() missing latest session %q", sessionB)
+		t.Errorf("ListSessions(context.Background()) missing latest session %q", sessionB)
 	}
 
 	// Both sessions should have the same checkpoint

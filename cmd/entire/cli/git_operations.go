@@ -17,8 +17,8 @@ import (
 
 // openRepository opens the git repository with linked worktree support enabled.
 // This is a convenience wrapper around strategy.OpenRepository() for use in the CLI package.
-func openRepository() (*git.Repository, error) {
-	repo, err := strategy.OpenRepository()
+func openRepository(ctx context.Context) (*git.Repository, error) {
+	repo, err := strategy.OpenRepository(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open repository: %w", err)
 	}
@@ -35,8 +35,8 @@ type GitAuthor struct {
 // It checks local config first, then falls back to global config.
 // If go-git can't find the config, it falls back to using the git command.
 // Returns fallback defaults if no user is configured anywhere.
-func GetGitAuthor() (*GitAuthor, error) {
-	repo, err := openRepository()
+func GetGitAuthor(ctx context.Context) (*GitAuthor, error) {
+	repo, err := openRepository(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open git repository: %w", err)
 	}
@@ -47,12 +47,12 @@ func GetGitAuthor() (*GitAuthor, error) {
 	// This handles cases where go-git can't find the config (e.g., different HOME paths,
 	// non-standard config locations, or environment issues in hook contexts)
 	if name == "Unknown" {
-		if gitName := getGitConfigValue("user.name"); gitName != "" {
+		if gitName := getGitConfigValue(ctx, "user.name"); gitName != "" {
 			name = gitName
 		}
 	}
 	if email == "unknown@local" {
-		if gitEmail := getGitConfigValue("user.email"); gitEmail != "" {
+		if gitEmail := getGitConfigValue(ctx, "user.email"); gitEmail != "" {
 			email = gitEmail
 		}
 	}
@@ -65,8 +65,7 @@ func GetGitAuthor() (*GitAuthor, error) {
 
 // getGitConfigValue retrieves a git config value using the git command.
 // Returns empty string if the value is not set or on error.
-func getGitConfigValue(key string) string {
-	ctx := context.Background()
+func getGitConfigValue(ctx context.Context, key string) string {
 	cmd := exec.CommandContext(ctx, "git", "config", "--get", key)
 	output, err := cmd.Output()
 	if err != nil {
@@ -80,8 +79,8 @@ func getGitConfigValue(key string) string {
 // 1. Checking the remote origin's HEAD reference
 // 2. Falling back to common names (main, master) if remote HEAD is unavailable
 // Returns (isDefault, branchName, error)
-func IsOnDefaultBranch() (bool, string, error) {
-	repo, err := openRepository()
+func IsOnDefaultBranch(ctx context.Context) (bool, string, error) {
+	repo, err := openRepository(ctx)
 	if err != nil {
 		return false, "", fmt.Errorf("failed to open git repository: %w", err)
 	}
@@ -142,8 +141,8 @@ func getDefaultBranchFromRemote(repo *git.Repository) string {
 // Returns (shouldSkip, branchName). If shouldSkip is true, the caller should
 // skip the operation to avoid polluting main/master history.
 // If the branch cannot be determined, returns (false, "") to allow the operation.
-func ShouldSkipOnDefaultBranch() (bool, string) {
-	isDefault, branchName, err := IsOnDefaultBranch()
+func ShouldSkipOnDefaultBranch(ctx context.Context) (bool, string) {
+	isDefault, branchName, err := IsOnDefaultBranch(ctx)
 	if err != nil {
 		// If we can't determine, allow the operation
 		return false, ""
@@ -153,8 +152,8 @@ func ShouldSkipOnDefaultBranch() (bool, string) {
 
 // GetCurrentBranch returns the name of the current branch.
 // Returns an error if in detached HEAD state or if not in a git repository.
-func GetCurrentBranch() (string, error) {
-	repo, err := openRepository()
+func GetCurrentBranch(ctx context.Context) (string, error) {
+	repo, err := openRepository(ctx)
 	if err != nil {
 		return "", fmt.Errorf("failed to open git repository: %w", err)
 	}
@@ -173,8 +172,8 @@ func GetCurrentBranch() (string, error) {
 
 // GetMergeBase finds the common ancestor (merge-base) between two branches.
 // Returns the hash of the merge-base commit.
-func GetMergeBase(branch1, branch2 string) (*plumbing.Hash, error) {
-	repo, err := openRepository()
+func GetMergeBase(ctx context.Context, branch1, branch2 string) (*plumbing.Hash, error) {
+	repo, err := openRepository(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open git repository: %w", err)
 	}
@@ -219,8 +218,7 @@ func GetMergeBase(branch1, branch2 string) (*plumbing.Hash, error) {
 // This includes staged changes, unstaged changes, and untracked files.
 // Uses git CLI instead of go-git because go-git doesn't respect global gitignore
 // (core.excludesfile) which can cause false positives for globally ignored files.
-func HasUncommittedChanges() (bool, error) {
-	ctx := context.Background()
+func HasUncommittedChanges(ctx context.Context) (bool, error) {
 	cmd := exec.CommandContext(ctx, "git", "status", "--porcelain")
 	output, err := cmd.Output()
 	if err != nil {
@@ -249,8 +247,8 @@ func findNewUntrackedFiles(current, preExisting []string) []string {
 
 // BranchExistsOnRemote checks if a branch exists on the origin remote.
 // Returns true if the branch is tracked on origin, false otherwise.
-func BranchExistsOnRemote(branchName string) (bool, error) {
-	repo, err := openRepository()
+func BranchExistsOnRemote(ctx context.Context, branchName string) (bool, error) {
+	repo, err := openRepository(ctx)
 	if err != nil {
 		return false, fmt.Errorf("failed to open git repository: %w", err)
 	}
@@ -268,8 +266,8 @@ func BranchExistsOnRemote(branchName string) (bool, error) {
 }
 
 // BranchExistsLocally checks if a local branch exists.
-func BranchExistsLocally(branchName string) (bool, error) {
-	repo, err := openRepository()
+func BranchExistsLocally(ctx context.Context, branchName string) (bool, error) {
+	repo, err := openRepository(ctx)
 	if err != nil {
 		return false, fmt.Errorf("failed to open git repository: %w", err)
 	}
@@ -290,8 +288,10 @@ func BranchExistsLocally(branchName string) (bool, error) {
 // deletes untracked files (see https://github.com/go-git/go-git/issues/970).
 // Should be switched back to go-git once we upgrade to go-git v6
 // Returns an error if the ref doesn't exist or checkout fails.
-func CheckoutBranch(ref string) error {
-	ctx := context.Background()
+func CheckoutBranch(ctx context.Context, ref string) error {
+	if strings.HasPrefix(ref, "-") {
+		return fmt.Errorf("checkout failed: invalid ref %q", ref)
+	}
 	cmd := exec.CommandContext(ctx, "git", "checkout", ref)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("checkout failed: %s: %w", strings.TrimSpace(string(output)), err)
@@ -301,8 +301,7 @@ func CheckoutBranch(ref string) error {
 
 // ValidateBranchName checks if a branch name is valid using git check-ref-format.
 // Returns an error if the name is invalid or contains unsafe characters.
-func ValidateBranchName(branchName string) error {
-	ctx := context.Background()
+func ValidateBranchName(ctx context.Context, branchName string) error {
 	cmd := exec.CommandContext(ctx, "git", "check-ref-format", "--branch", branchName)
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("invalid branch name %q", branchName)
@@ -313,18 +312,18 @@ func ValidateBranchName(branchName string) error {
 // FetchAndCheckoutRemoteBranch fetches a branch from origin and creates a local tracking branch.
 // Uses git CLI instead of go-git for fetch because go-git doesn't use credential helpers,
 // which breaks HTTPS URLs that require authentication.
-func FetchAndCheckoutRemoteBranch(branchName string) error {
+func FetchAndCheckoutRemoteBranch(ctx context.Context, branchName string) error {
 	// Validate branch name before using in shell command (branchName comes from user CLI input)
-	if err := ValidateBranchName(branchName); err != nil {
+	if err := ValidateBranchName(ctx, branchName); err != nil {
 		return err
 	}
 
 	// Use git CLI for fetch (go-git's fetch can be tricky with auth)
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 
 	refSpec := fmt.Sprintf("+refs/heads/%s:refs/remotes/origin/%s", branchName, branchName)
-	//nolint:gosec // G204: branchName validated above via git check-ref-format
+
 	fetchCmd := exec.CommandContext(ctx, "git", "fetch", "origin", refSpec)
 	if output, err := fetchCmd.CombinedOutput(); err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
@@ -333,7 +332,7 @@ func FetchAndCheckoutRemoteBranch(branchName string) error {
 		return fmt.Errorf("failed to fetch branch from origin: %s: %w", strings.TrimSpace(string(output)), err)
 	}
 
-	repo, err := openRepository()
+	repo, err := openRepository(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to open repository: %w", err)
 	}
@@ -352,22 +351,22 @@ func FetchAndCheckoutRemoteBranch(branchName string) error {
 	}
 
 	// Checkout the new local branch
-	return CheckoutBranch(branchName)
+	return CheckoutBranch(ctx, branchName)
 }
 
 // FetchMetadataBranch fetches the entire/checkpoints/v1 branch from origin and creates/updates the local branch.
 // This is used when the metadata branch exists on remote but not locally.
 // Uses git CLI instead of go-git for fetch because go-git doesn't use credential helpers,
 // which breaks HTTPS URLs that require authentication.
-func FetchMetadataBranch() error {
+func FetchMetadataBranch(ctx context.Context) error {
 	branchName := paths.MetadataBranchName
 
 	// Use git CLI for fetch (go-git's fetch can be tricky with auth)
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 
 	refSpec := fmt.Sprintf("+refs/heads/%s:refs/remotes/origin/%s", branchName, branchName)
-	//nolint:gosec // G204: branchName is a constant from paths package
+
 	fetchCmd := exec.CommandContext(ctx, "git", "fetch", "origin", refSpec)
 	if output, err := fetchCmd.CombinedOutput(); err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
@@ -376,7 +375,7 @@ func FetchMetadataBranch() error {
 		return fmt.Errorf("failed to fetch %s from origin: %s: %w", branchName, strings.TrimSpace(string(output)), err)
 	}
 
-	repo, err := openRepository()
+	repo, err := openRepository(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to open repository: %w", err)
 	}

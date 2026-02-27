@@ -5,6 +5,7 @@ package settings
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -14,10 +15,6 @@ import (
 	"github.com/entireio/cli/cmd/entire/cli/paths"
 )
 
-// DefaultStrategyName is the default strategy when none is configured.
-// This is duplicated here to avoid importing the strategy package (which would create a cycle).
-const DefaultStrategyName = "manual-commit"
-
 const (
 	// EntireSettingsFile is the path to the Entire settings file
 	EntireSettingsFile = ".entire/settings.json"
@@ -25,10 +22,16 @@ const (
 	EntireSettingsLocalFile = ".entire/settings.local.json"
 )
 
+// Commit linking mode constants.
+const (
+	// CommitLinkingAlways auto-links commits to sessions without prompting.
+	CommitLinkingAlways = "always"
+	// CommitLinkingPrompt prompts the user on each commit (default for existing users).
+	CommitLinkingPrompt = "prompt"
+)
+
 // EntireSettings represents the .entire/settings.json configuration
 type EntireSettings struct {
-	// Strategy is the name of the git strategy to use
-	Strategy string `json:"strategy"`
 
 	// Enabled indicates whether Entire is active. When false, CLI commands
 	// show a disabled message and hooks exit silently. Defaults to true.
@@ -49,19 +52,38 @@ type EntireSettings struct {
 	// Telemetry controls anonymous usage analytics.
 	// nil = not asked yet (show prompt), true = opted in, false = opted out
 	Telemetry *bool `json:"telemetry,omitempty"`
+
+	// CommitLinking controls how commits are linked to agent sessions.
+	// "always" = auto-link without prompting, "prompt" = ask on each commit.
+	// Defaults to "prompt" (preserves existing user behavior).
+	CommitLinking string `json:"commit_linking,omitempty"`
+
+	// Deprecated: no longer used. Exists to tolerate old settings files
+	// that still contain "strategy": "auto-commit" or similar.
+	Strategy string `json:"strategy,omitempty"`
+}
+
+// GetCommitLinking returns the effective commit linking mode.
+// Returns the explicit value if set, otherwise defaults to "prompt"
+// to preserve existing user behavior.
+func (s *EntireSettings) GetCommitLinking() string {
+	if s.CommitLinking != "" {
+		return s.CommitLinking
+	}
+	return CommitLinkingPrompt
 }
 
 // Load loads the Entire settings from .entire/settings.json,
 // then applies any overrides from .entire/settings.local.json if it exists.
 // Returns default settings if neither file exists.
 // Works correctly from any subdirectory within the repository.
-func Load() (*EntireSettings, error) {
+func Load(ctx context.Context) (*EntireSettings, error) {
 	// Get absolute paths for settings files
-	settingsFileAbs, err := paths.AbsPath(EntireSettingsFile)
+	settingsFileAbs, err := paths.AbsPath(ctx, EntireSettingsFile)
 	if err != nil {
 		settingsFileAbs = EntireSettingsFile // Fallback to relative
 	}
-	localSettingsFileAbs, err := paths.AbsPath(EntireSettingsLocalFile)
+	localSettingsFileAbs, err := paths.AbsPath(ctx, EntireSettingsLocalFile)
 	if err != nil {
 		localSettingsFileAbs = EntireSettingsLocalFile // Fallback to relative
 	}
@@ -85,8 +107,6 @@ func Load() (*EntireSettings, error) {
 		}
 	}
 
-	applyDefaults(settings)
-
 	return settings, nil
 }
 
@@ -101,8 +121,7 @@ func LoadFromFile(filePath string) (*EntireSettings, error) {
 // Returns default settings if the file doesn't exist.
 func loadFromFile(filePath string) (*EntireSettings, error) {
 	settings := &EntireSettings{
-		Strategy: DefaultStrategyName,
-		Enabled:  true, // Default to enabled
+		Enabled: true, // Default to enabled
 	}
 
 	data, err := os.ReadFile(filePath) //nolint:gosec // path is from caller
@@ -118,7 +137,11 @@ func loadFromFile(filePath string) (*EntireSettings, error) {
 	if err := dec.Decode(settings); err != nil {
 		return nil, fmt.Errorf("parsing settings file: %w", err)
 	}
-	applyDefaults(settings)
+
+	// Validate commit_linking if set
+	if settings.CommitLinking != "" && settings.CommitLinking != CommitLinkingAlways && settings.CommitLinking != CommitLinkingPrompt {
+		return nil, fmt.Errorf("invalid commit_linking value %q: must be %q or %q", settings.CommitLinking, CommitLinkingAlways, CommitLinkingPrompt)
+	}
 
 	return settings, nil
 }
@@ -138,17 +161,6 @@ func mergeJSON(settings *EntireSettings, data []byte) error {
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return fmt.Errorf("parsing JSON: %w", err)
-	}
-
-	// Override strategy if present and non-empty
-	if strategyRaw, ok := raw["strategy"]; ok {
-		var s string
-		if err := json.Unmarshal(strategyRaw, &s); err != nil {
-			return fmt.Errorf("parsing strategy field: %w", err)
-		}
-		if s != "" {
-			settings.Strategy = s
-		}
 	}
 
 	// Override enabled if present
@@ -204,19 +216,55 @@ func mergeJSON(settings *EntireSettings, data []byte) error {
 		settings.Telemetry = &t
 	}
 
+	// Override commit_linking if present and non-empty
+	if commitLinkingRaw, ok := raw["commit_linking"]; ok {
+		var cl string
+		if err := json.Unmarshal(commitLinkingRaw, &cl); err != nil {
+			return fmt.Errorf("parsing commit_linking field: %w", err)
+		}
+		if cl != "" {
+			switch cl {
+			case CommitLinkingAlways, CommitLinkingPrompt:
+				settings.CommitLinking = cl
+			default:
+				return fmt.Errorf("invalid commit_linking value %q: must be %q or %q", cl, CommitLinkingAlways, CommitLinkingPrompt)
+			}
+		}
+	}
+
 	return nil
 }
 
-func applyDefaults(settings *EntireSettings) {
-	if settings.Strategy == "" {
-		settings.Strategy = DefaultStrategyName
+// IsSetUp returns true if Entire has been set up in the current repository.
+// This checks if .entire/settings.json exists.
+// Use this to avoid creating files/directories in repos where Entire was never enabled.
+func IsSetUp(ctx context.Context) bool {
+	settingsFileAbs, err := paths.AbsPath(ctx, EntireSettingsFile)
+	if err != nil {
+		return false
 	}
+	_, err = os.Stat(settingsFileAbs)
+	return err == nil
+}
+
+// IsSetUpAndEnabled returns true if Entire is both set up and enabled.
+// This checks if .entire/settings.json exists AND has enabled: true.
+// Use this for hooks that should be no-ops when Entire is not active.
+func IsSetUpAndEnabled(ctx context.Context) bool {
+	if !IsSetUp(ctx) {
+		return false
+	}
+	s, err := Load(ctx)
+	if err != nil {
+		return false
+	}
+	return s.Enabled
 }
 
 // IsSummarizeEnabled checks if auto-summarize is enabled in settings.
 // Returns false by default if settings cannot be loaded or the key is missing.
-func IsSummarizeEnabled() bool {
-	settings, err := Load()
+func IsSummarizeEnabled(ctx context.Context) bool {
+	settings, err := Load(ctx)
 	if err != nil {
 		return false
 	}
@@ -256,19 +304,19 @@ func (s *EntireSettings) IsPushSessionsDisabled() bool {
 }
 
 // Save saves the settings to .entire/settings.json.
-func Save(settings *EntireSettings) error {
-	return saveToFile(settings, EntireSettingsFile)
+func Save(ctx context.Context, settings *EntireSettings) error {
+	return saveToFile(ctx, settings, EntireSettingsFile)
 }
 
 // SaveLocal saves the settings to .entire/settings.local.json.
-func SaveLocal(settings *EntireSettings) error {
-	return saveToFile(settings, EntireSettingsLocalFile)
+func SaveLocal(ctx context.Context, settings *EntireSettings) error {
+	return saveToFile(ctx, settings, EntireSettingsLocalFile)
 }
 
 // saveToFile saves settings to the specified file path.
-func saveToFile(settings *EntireSettings, filePath string) error {
+func saveToFile(ctx context.Context, settings *EntireSettings, filePath string) error {
 	// Get absolute path for the file
-	filePathAbs, err := paths.AbsPath(filePath)
+	filePathAbs, err := paths.AbsPath(ctx, filePath)
 	if err != nil {
 		filePathAbs = filePath // Fallback to relative
 	}

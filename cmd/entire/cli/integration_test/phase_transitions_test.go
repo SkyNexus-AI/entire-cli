@@ -7,7 +7,6 @@ import (
 
 	"github.com/entireio/cli/cmd/entire/cli/paths"
 	"github.com/entireio/cli/cmd/entire/cli/session"
-	"github.com/entireio/cli/cmd/entire/cli/strategy"
 )
 
 // TestShadow_CommitBeforeStop tests the "commit while agent is still working" flow.
@@ -23,7 +22,7 @@ import (
 func TestShadow_CommitBeforeStop(t *testing.T) {
 	t.Parallel()
 
-	env := NewFeatureBranchEnv(t, strategy.StrategyNameManualCommit)
+	env := NewFeatureBranchEnv(t)
 
 	// ========================================
 	// Phase 1: Start session and create initial checkpoint
@@ -203,7 +202,7 @@ func TestShadow_CommitBeforeStop(t *testing.T) {
 func TestShadow_AmendPreservesTrailer(t *testing.T) {
 	t.Parallel()
 
-	env := NewFeatureBranchEnv(t, strategy.StrategyNameManualCommit)
+	env := NewFeatureBranchEnv(t)
 
 	// ========================================
 	// Phase 1: Full workflow - create checkpoint and commit
