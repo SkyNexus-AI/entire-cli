@@ -780,6 +780,11 @@ func (s *ManualCommitStrategy) PostCommit(ctx context.Context) error { //nolint:
 	committedFileSet := filesChangedInCommit(commit, headTree, parentTree)
 
 	for _, state := range sessions {
+		// Skip fully-condensed ended sessions — no work remains.
+		// These sessions only persist for LastCheckpointID (amend trailer reuse).
+		if state.FullyCondensed {
+			continue
+		}
 		s.postCommitProcessSession(ctx, repo, state, &transitionCtx, checkpointID,
 			head, commit, newHead, headTree, parentTree, committedFileSet,
 			shadowBranchesToDelete, uncondensedActiveOnBranch)
@@ -945,6 +950,13 @@ func (s *ManualCommitStrategy) postCommitProcessSession(
 		if len(remainingFiles) > 0 {
 			s.carryForwardToNewShadowBranch(ctx, repo, state, remainingFiles)
 		}
+	}
+
+	// Mark ENDED sessions as fully condensed when no carry-forward remains.
+	// PostCommit will skip these sessions entirely on future commits.
+	// They persist only for LastCheckpointID (amend trailer restoration).
+	if handler.condensed && state.Phase == session.PhaseEnded && len(state.FilesTouched) == 0 {
+		state.FullyCondensed = true
 	}
 
 	// Save the updated state
