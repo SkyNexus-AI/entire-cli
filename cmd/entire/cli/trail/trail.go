@@ -61,6 +61,15 @@ func (id ID) Path() string {
 	return string(id[:2]) + "/" + string(id[2:])
 }
 
+// ShardParts returns the shard prefix and suffix separately.
+// Example: "a3b2c4d5e6f7" -> ("a3", "b2c4d5e6f7")
+func (id ID) ShardParts() (shard, suffix string) {
+	if len(id) < 3 {
+		return string(id), ""
+	}
+	return string(id[:2]), string(id[2:])
+}
+
 // Status represents the lifecycle status of a trail.
 type Status string
 

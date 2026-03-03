@@ -331,3 +331,149 @@ func TestStore_ReadNonExistent(t *testing.T) {
 		t.Error("Read() should fail for non-existent trail")
 	}
 }
+
+func TestStore_ReadInvalidID(t *testing.T) {
+	t.Parallel()
+	repo := initTestRepo(t)
+	store := NewStore(repo)
+
+	// Invalid format: too short
+	_, _, _, err := store.Read(ID("abc"))
+	if err == nil {
+		t.Error("Read() should fail for invalid trail ID")
+	}
+
+	// Path traversal attempt
+	_, _, _, err = store.Read(ID("../../etc/pass"))
+	if err == nil {
+		t.Error("Read() should fail for path traversal ID")
+	}
+}
+
+func TestStore_DeleteInvalidID(t *testing.T) {
+	t.Parallel()
+	repo := initTestRepo(t)
+	store := NewStore(repo)
+
+	// Invalid format: uppercase hex
+	err := store.Delete(ID("ABCDEF123456"))
+	if err == nil {
+		t.Error("Delete() should fail for invalid trail ID")
+	}
+
+	// Path traversal attempt
+	err = store.Delete(ID("../../../etc"))
+	if err == nil {
+		t.Error("Delete() should fail for path traversal ID")
+	}
+}
+
+func TestStore_AddCheckpointPreservesOtherFields(t *testing.T) {
+	t.Parallel()
+	repo := initTestRepo(t)
+	store := NewStore(repo)
+
+	trailID, err := GenerateID()
+	if err != nil {
+		t.Fatalf("GenerateID() error = %v", err)
+	}
+
+	now := time.Now().Truncate(time.Second)
+	metadata := &Metadata{
+		TrailID:   trailID,
+		Branch:    "feature/preserve",
+		Base:      "main",
+		Title:     "Preservation test",
+		Body:      "Verify AddCheckpoint doesn't corrupt other fields",
+		Status:    StatusInProgress,
+		Author:    "tester",
+		Assignees: []string{"alice"},
+		Labels:    []string{"important"},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	discussion := &Discussion{Comments: []Comment{
+		{ID: "c1", Author: "bob", Body: "looks good", CreatedAt: now},
+	}}
+
+	if err := store.Write(metadata, discussion, nil); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+
+	// Add a checkpoint
+	firstSummary := "first checkpoint"
+	cpRef := CheckpointRef{
+		CheckpointID: "aabbccddeeff",
+		CommitSHA:    "deadbeef1234",
+		CreatedAt:    now,
+		Summary:      &firstSummary,
+	}
+	if err := store.AddCheckpoint(trailID, cpRef); err != nil {
+		t.Fatalf("AddCheckpoint() error = %v", err)
+	}
+
+	// Read back and verify metadata + discussion are unchanged
+	gotMeta, gotDisc, gotCPs, err := store.Read(trailID)
+	if err != nil {
+		t.Fatalf("Read() error = %v", err)
+	}
+
+	// Metadata unchanged
+	if gotMeta.Title != "Preservation test" {
+		t.Errorf("metadata title changed: got %q, want %q", gotMeta.Title, "Preservation test")
+	}
+	if gotMeta.Body != "Verify AddCheckpoint doesn't corrupt other fields" {
+		t.Errorf("metadata body changed: got %q", gotMeta.Body)
+	}
+	if gotMeta.Status != StatusInProgress {
+		t.Errorf("metadata status changed: got %q, want %q", gotMeta.Status, StatusInProgress)
+	}
+	if len(gotMeta.Assignees) != 1 || gotMeta.Assignees[0] != "alice" {
+		t.Errorf("metadata assignees changed: got %v", gotMeta.Assignees)
+	}
+	if len(gotMeta.Labels) != 1 || gotMeta.Labels[0] != "important" {
+		t.Errorf("metadata labels changed: got %v", gotMeta.Labels)
+	}
+
+	// Discussion unchanged
+	if len(gotDisc.Comments) != 1 {
+		t.Fatalf("discussion comments count = %d, want 1", len(gotDisc.Comments))
+	}
+	if gotDisc.Comments[0].ID != "c1" || gotDisc.Comments[0].Body != "looks good" {
+		t.Errorf("discussion comment changed: got %+v", gotDisc.Comments[0])
+	}
+
+	// Checkpoint added correctly
+	if len(gotCPs.Checkpoints) != 1 {
+		t.Fatalf("checkpoints count = %d, want 1", len(gotCPs.Checkpoints))
+	}
+	if gotCPs.Checkpoints[0].CheckpointID != "aabbccddeeff" {
+		t.Errorf("checkpoint ID = %q, want %q", gotCPs.Checkpoints[0].CheckpointID, "aabbccddeeff")
+	}
+
+	// Add a second checkpoint — should prepend
+	secondSummary := "second checkpoint"
+	cpRef2 := CheckpointRef{
+		CheckpointID: "112233445566",
+		CommitSHA:    "cafebabe5678",
+		CreatedAt:    now,
+		Summary:      &secondSummary,
+	}
+	if err := store.AddCheckpoint(trailID, cpRef2); err != nil {
+		t.Fatalf("AddCheckpoint() second call error = %v", err)
+	}
+
+	_, _, gotCPs2, err := store.Read(trailID)
+	if err != nil {
+		t.Fatalf("Read() error = %v", err)
+	}
+	if len(gotCPs2.Checkpoints) != 2 {
+		t.Fatalf("checkpoints count = %d, want 2", len(gotCPs2.Checkpoints))
+	}
+	if gotCPs2.Checkpoints[0].CheckpointID != "112233445566" {
+		t.Errorf("newest checkpoint should be first, got %q", gotCPs2.Checkpoints[0].CheckpointID)
+	}
+	if gotCPs2.Checkpoints[1].CheckpointID != "aabbccddeeff" {
+		t.Errorf("older checkpoint should be second, got %q", gotCPs2.Checkpoints[1].CheckpointID)
+	}
+}

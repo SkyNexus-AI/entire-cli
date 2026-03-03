@@ -50,7 +50,7 @@ func (s *Store) EnsureBranch() error {
 	}
 
 	authorName, authorEmail := checkpoint.GetGitAuthorFromRepo(s.repo)
-	commitHash, err := s.createCommit(emptyTreeHash, plumbing.ZeroHash, "Initialize trails branch", authorName, authorEmail)
+	commitHash, err := checkpoint.CreateCommit(s.repo, emptyTreeHash, plumbing.ZeroHash, "Initialize trails branch", authorName, authorEmail)
 	if err != nil {
 		return fmt.Errorf("failed to create initial commit: %w", err)
 	}
@@ -73,90 +73,78 @@ func (s *Store) Write(metadata *Metadata, discussion *Discussion, checkpoints *C
 		return fmt.Errorf("failed to ensure trails branch: %w", err)
 	}
 
-	// Get current branch tree
-	ref, entries, err := s.getBranchEntries()
+	commitHash, rootTreeHash, err := s.getBranchRef()
 	if err != nil {
-		return fmt.Errorf("failed to get branch entries: %w", err)
+		return fmt.Errorf("failed to get branch ref: %w", err)
 	}
 
-	// Build sharded path
-	basePath := metadata.TrailID.Path() + "/"
-
-	// Create metadata blob
-	metadataJSON, err := json.MarshalIndent(metadata, "", "  ")
+	// Build blob entries for the trail's 3 files
+	trailEntries, err := s.buildTrailEntries(metadata, discussion, checkpoints)
 	if err != nil {
-		return fmt.Errorf("failed to marshal metadata: %w", err)
-	}
-	metadataBlob, err := checkpoint.CreateBlobFromContent(s.repo, metadataJSON)
-	if err != nil {
-		return fmt.Errorf("failed to create metadata blob: %w", err)
-	}
-	entries[basePath+metadataFile] = object.TreeEntry{
-		Name: basePath + metadataFile,
-		Mode: filemode.Regular,
-		Hash: metadataBlob,
+		return err
 	}
 
-	// Create discussion blob
+	// Splice into tree at [shard, suffix] — preserves sibling trails automatically
+	shard, suffix := metadata.TrailID.ShardParts()
+	newTreeHash, err := checkpoint.UpdateSubtree(
+		s.repo, rootTreeHash,
+		[]string{shard, suffix},
+		trailEntries,
+		checkpoint.UpdateSubtreeOptions{MergeMode: checkpoint.ReplaceAll},
+	)
+	if err != nil {
+		return fmt.Errorf("failed to update subtree: %w", err)
+	}
+
+	commitMsg := fmt.Sprintf("Trail: %s (%s)", metadata.Title, metadata.TrailID)
+	return s.commitAndUpdateRef(newTreeHash, commitHash, commitMsg)
+}
+
+// buildTrailEntries creates blob objects for a trail's 3 files and returns them as tree entries.
+func (s *Store) buildTrailEntries(metadata *Metadata, discussion *Discussion, checkpoints *Checkpoints) ([]object.TreeEntry, error) {
 	if discussion == nil {
 		discussion = &Discussion{Comments: []Comment{}}
 	}
-	discussionJSON, err := json.MarshalIndent(discussion, "", "  ")
-	if err != nil {
-		return fmt.Errorf("failed to marshal discussion: %w", err)
-	}
-	discussionBlob, err := checkpoint.CreateBlobFromContent(s.repo, discussionJSON)
-	if err != nil {
-		return fmt.Errorf("failed to create discussion blob: %w", err)
-	}
-	entries[basePath+discussionFile] = object.TreeEntry{
-		Name: basePath + discussionFile,
-		Mode: filemode.Regular,
-		Hash: discussionBlob,
-	}
-
-	// Create checkpoints blob
 	if checkpoints == nil {
 		checkpoints = &Checkpoints{Checkpoints: []CheckpointRef{}}
 	}
-	checkpointsJSON, err := json.MarshalIndent(checkpoints, "", "  ")
-	if err != nil {
-		return fmt.Errorf("failed to marshal checkpoints: %w", err)
+
+	type fileSpec struct {
+		name string
+		data any
 	}
-	checkpointsBlob, err := checkpoint.CreateBlobFromContent(s.repo, checkpointsJSON)
-	if err != nil {
-		return fmt.Errorf("failed to create checkpoints blob: %w", err)
-	}
-	entries[basePath+checkpointsFile] = object.TreeEntry{
-		Name: basePath + checkpointsFile,
-		Mode: filemode.Regular,
-		Hash: checkpointsBlob,
+	files := []fileSpec{
+		{metadataFile, metadata},
+		{discussionFile, discussion},
+		{checkpointsFile, checkpoints},
 	}
 
-	// Build tree and commit
-	newTreeHash, err := checkpoint.BuildTreeFromEntries(s.repo, entries)
-	if err != nil {
-		return fmt.Errorf("failed to build tree: %w", err)
+	entries := make([]object.TreeEntry, 0, len(files))
+	for _, f := range files {
+		jsonBytes, err := json.MarshalIndent(f.data, "", "  ")
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal %s: %w", f.name, err)
+		}
+		blobHash, err := checkpoint.CreateBlobFromContent(s.repo, jsonBytes)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create %s blob: %w", f.name, err)
+		}
+		entries = append(entries, object.TreeEntry{
+			Name: f.name,
+			Mode: filemode.Regular,
+			Hash: blobHash,
+		})
 	}
 
-	authorName, authorEmail := checkpoint.GetGitAuthorFromRepo(s.repo)
-	commitMsg := fmt.Sprintf("Trail: %s (%s)", metadata.Title, metadata.TrailID)
-	commitHash, err := s.createCommit(newTreeHash, ref.Hash(), commitMsg, authorName, authorEmail)
-	if err != nil {
-		return fmt.Errorf("failed to create commit: %w", err)
-	}
-
-	// Update branch ref
-	newRef := plumbing.NewHashReference(plumbing.NewBranchReferenceName(paths.TrailsBranchName), commitHash)
-	if err := s.repo.Storer.SetReference(newRef); err != nil {
-		return fmt.Errorf("failed to update branch reference: %w", err)
-	}
-
-	return nil
+	return entries, nil
 }
 
 // Read reads a trail by its ID from the entire/trails/v1 branch.
 func (s *Store) Read(trailID ID) (*Metadata, *Discussion, *Checkpoints, error) {
+	if err := ValidateID(string(trailID)); err != nil {
+		return nil, nil, nil, err
+	}
+
 	tree, err := s.getBranchTree()
 	if err != nil {
 		return nil, nil, nil, err
@@ -278,6 +266,7 @@ func (s *Store) List() ([]*Metadata, error) {
 // Update updates an existing trail's metadata. It reads the current metadata,
 // applies the provided update function, and writes it back.
 func (s *Store) Update(trailID ID, updateFn func(*Metadata)) error {
+	// ValidateID is called by Read, no need to duplicate here
 	metadata, discussion, checkpoints, err := s.Read(trailID)
 	if err != nil {
 		return fmt.Errorf("failed to read trail for update: %w", err)
@@ -290,55 +279,163 @@ func (s *Store) Update(trailID ID, updateFn func(*Metadata)) error {
 }
 
 // AddCheckpoint prepends a checkpoint reference to a trail's checkpoints list (newest first).
+// Only reads and writes the checkpoints.json file — metadata and discussion are untouched.
 func (s *Store) AddCheckpoint(trailID ID, ref CheckpointRef) error {
-	metadata, discussion, checkpoints, err := s.Read(trailID)
+	if err := ValidateID(string(trailID)); err != nil {
+		return err
+	}
+
+	if err := s.EnsureBranch(); err != nil {
+		return fmt.Errorf("failed to ensure trails branch: %w", err)
+	}
+
+	commitHash, rootTreeHash, err := s.getBranchRef()
 	if err != nil {
-		return fmt.Errorf("failed to read trail for checkpoint update: %w", err)
+		return fmt.Errorf("failed to get branch ref: %w", err)
 	}
 
-	if checkpoints == nil {
-		checkpoints = &Checkpoints{Checkpoints: []CheckpointRef{}}
+	// Navigate to the trail's subtree and read only checkpoints.json
+	shard, suffix := trailID.ShardParts()
+	trailTree, err := s.navigateToTrailTree(rootTreeHash, shard, suffix)
+	if err != nil {
+		return fmt.Errorf("failed to read checkpoints for trail %s: %w", trailID, err)
 	}
 
-	// Prepend new ref (newest first) without always allocating a new slice.
-	// Grow the slice by one, shift existing elements right, and insert at index 0.
+	checkpoints, err := s.readCheckpointsFromTrailTree(trailTree)
+	if err != nil {
+		return fmt.Errorf("failed to read checkpoints for trail %s: %w", trailID, err)
+	}
+
+	// Prepend new ref (newest first)
 	checkpoints.Checkpoints = append(checkpoints.Checkpoints, CheckpointRef{})
 	copy(checkpoints.Checkpoints[1:], checkpoints.Checkpoints[:len(checkpoints.Checkpoints)-1])
 	checkpoints.Checkpoints[0] = ref
 
-	return s.Write(metadata, discussion, checkpoints)
+	// Create new blob and splice back — MergeKeepExisting preserves metadata.json and discussion.json
+	checkpointsJSON, err := json.MarshalIndent(checkpoints, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal checkpoints: %w", err)
+	}
+	blobHash, err := checkpoint.CreateBlobFromContent(s.repo, checkpointsJSON)
+	if err != nil {
+		return fmt.Errorf("failed to create checkpoints blob: %w", err)
+	}
+
+	newTreeHash, err := checkpoint.UpdateSubtree(
+		s.repo, rootTreeHash,
+		[]string{shard, suffix},
+		[]object.TreeEntry{{Name: checkpointsFile, Mode: filemode.Regular, Hash: blobHash}},
+		checkpoint.UpdateSubtreeOptions{MergeMode: checkpoint.MergeKeepExisting},
+	)
+	if err != nil {
+		return fmt.Errorf("failed to update subtree: %w", err)
+	}
+
+	commitMsg := fmt.Sprintf("Add checkpoint to trail: %s", trailID)
+	return s.commitAndUpdateRef(newTreeHash, commitHash, commitMsg)
 }
 
 // Delete removes a trail from the entire/trails/v1 branch.
 func (s *Store) Delete(trailID ID) error {
-	ref, entries, err := s.getBranchEntries()
+	if err := ValidateID(string(trailID)); err != nil {
+		return err
+	}
+
+	if err := s.EnsureBranch(); err != nil {
+		return fmt.Errorf("failed to ensure trails branch: %w", err)
+	}
+
+	commitHash, rootTreeHash, err := s.getBranchRef()
 	if err != nil {
-		return fmt.Errorf("failed to get branch entries: %w", err)
+		return fmt.Errorf("failed to get branch ref: %w", err)
 	}
 
-	basePath := trailID.Path() + "/"
-
-	// Remove entries for this trail
-	found := false
-	for path := range entries {
-		if strings.HasPrefix(path, basePath) {
-			delete(entries, path)
-			found = true
-		}
-	}
-	if !found {
-		return fmt.Errorf("trail %s not found", trailID)
+	// Verify the trail exists by navigating the tree at O(depth)
+	shard, suffix := trailID.ShardParts()
+	if _, err := s.navigateToTrailTree(rootTreeHash, shard, suffix); err != nil {
+		return err
 	}
 
-	// Build tree and commit
-	newTreeHash, err := checkpoint.BuildTreeFromEntries(s.repo, entries)
+	// Delete the trail's subtree by removing it from the shard directory
+	newTreeHash, err := checkpoint.UpdateSubtree(
+		s.repo, rootTreeHash,
+		[]string{shard},
+		nil,
+		checkpoint.UpdateSubtreeOptions{
+			MergeMode:   checkpoint.MergeKeepExisting,
+			DeleteNames: []string{suffix},
+		},
+	)
 	if err != nil {
-		return fmt.Errorf("failed to build tree: %w", err)
+		return fmt.Errorf("failed to update subtree: %w", err)
 	}
 
-	authorName, authorEmail := checkpoint.GetGitAuthorFromRepo(s.repo)
 	commitMsg := fmt.Sprintf("Delete trail: %s", trailID)
-	commitHash, err := s.createCommit(newTreeHash, ref.Hash(), commitMsg, authorName, authorEmail)
+	return s.commitAndUpdateRef(newTreeHash, commitHash, commitMsg)
+}
+
+// navigateToTrailTree walks rootTree → shard → suffix and returns the trail's subtree.
+func (s *Store) navigateToTrailTree(rootTreeHash plumbing.Hash, shard, suffix string) (*object.Tree, error) {
+	rootTree, err := s.repo.TreeObject(rootTreeHash)
+	if err != nil {
+		return nil, fmt.Errorf("trail %s/%s not found: %w", shard, suffix, err)
+	}
+
+	shardEntry, err := rootTree.FindEntry(shard)
+	if err != nil {
+		return nil, fmt.Errorf("trail %s/%s not found: %w", shard, suffix, err)
+	}
+
+	shardTree, err := s.repo.TreeObject(shardEntry.Hash)
+	if err != nil {
+		return nil, fmt.Errorf("trail %s/%s not found: %w", shard, suffix, err)
+	}
+
+	trailEntry, err := shardTree.FindEntry(suffix)
+	if err != nil {
+		return nil, fmt.Errorf("trail %s/%s not found: %w", shard, suffix, err)
+	}
+
+	trailTree, err := s.repo.TreeObject(trailEntry.Hash)
+	if err != nil {
+		return nil, fmt.Errorf("trail %s/%s not found: %w", shard, suffix, err)
+	}
+
+	return trailTree, nil
+}
+
+// readCheckpointsFromTrailTree reads checkpoints.json from a trail's subtree.
+// Returns empty checkpoints if the file doesn't exist yet.
+func (s *Store) readCheckpointsFromTrailTree(trailTree *object.Tree) (*Checkpoints, error) {
+	cpEntry, err := trailTree.FindEntry(checkpointsFile)
+	if err != nil {
+		// No checkpoints file yet — return empty
+		return &Checkpoints{Checkpoints: []CheckpointRef{}}, nil
+	}
+
+	blob, err := s.repo.BlobObject(cpEntry.Hash)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read checkpoints blob: %w", err)
+	}
+
+	reader, err := blob.Reader()
+	if err != nil {
+		return nil, fmt.Errorf("failed to open checkpoints reader: %w", err)
+	}
+	defer reader.Close()
+
+	var checkpoints Checkpoints
+	if err := json.NewDecoder(reader).Decode(&checkpoints); err != nil {
+		return nil, fmt.Errorf("failed to decode checkpoints: %w", err)
+	}
+
+	return &checkpoints, nil
+}
+
+// commitAndUpdateRef creates a commit and updates the trails branch reference.
+func (s *Store) commitAndUpdateRef(treeHash, parentHash plumbing.Hash, message string) error {
+	authorName, authorEmail := checkpoint.GetGitAuthorFromRepo(s.repo)
+	commitHash, err := checkpoint.CreateCommit(s.repo, treeHash, parentHash, message, authorName, authorEmail)
 	if err != nil {
 		return fmt.Errorf("failed to create commit: %w", err)
 	}
@@ -347,91 +444,42 @@ func (s *Store) Delete(trailID ID) error {
 	if err := s.repo.Storer.SetReference(newRef); err != nil {
 		return fmt.Errorf("failed to update branch reference: %w", err)
 	}
-
 	return nil
 }
 
-// getBranchTree returns the tree for the entire/trails/v1 branch HEAD.
-func (s *Store) getBranchTree() (*object.Tree, error) {
+// getBranchRef returns the commit hash and root tree hash for the entire/trails/v1 branch HEAD
+// without flattening the tree. Falls back to remote tracking branch if local is missing.
+func (s *Store) getBranchRef() (commitHash, rootTreeHash plumbing.Hash, err error) {
 	refName := plumbing.NewBranchReferenceName(paths.TrailsBranchName)
-	ref, err := s.repo.Reference(refName, true)
-	if err != nil {
+	ref, refErr := s.repo.Reference(refName, true)
+	if refErr != nil {
 		// Try remote tracking branch
 		remoteRefName := plumbing.NewRemoteReferenceName("origin", paths.TrailsBranchName)
-		ref, err = s.repo.Reference(remoteRefName, true)
-		if err != nil {
-			return nil, fmt.Errorf("trails branch not found: %w", err)
+		ref, refErr = s.repo.Reference(remoteRefName, true)
+		if refErr != nil {
+			return plumbing.ZeroHash, plumbing.ZeroHash, fmt.Errorf("trails branch not found: %w", refErr)
 		}
 	}
 
 	commit, err := s.repo.CommitObject(ref.Hash())
 	if err != nil {
-		return nil, fmt.Errorf("failed to get commit: %w", err)
+		return plumbing.ZeroHash, plumbing.ZeroHash, fmt.Errorf("failed to get commit: %w", err)
 	}
 
-	tree, err := commit.Tree()
+	return ref.Hash(), commit.TreeHash, nil
+}
+
+// getBranchTree returns the tree for the entire/trails/v1 branch HEAD.
+func (s *Store) getBranchTree() (*object.Tree, error) {
+	_, rootTreeHash, err := s.getBranchRef()
+	if err != nil {
+		return nil, err
+	}
+
+	tree, err := s.repo.TreeObject(rootTreeHash)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get tree: %w", err)
 	}
 
 	return tree, nil
-}
-
-// getBranchEntries returns the current branch reference and a flat map of all tree entries.
-func (s *Store) getBranchEntries() (*plumbing.Reference, map[string]object.TreeEntry, error) {
-	refName := plumbing.NewBranchReferenceName(paths.TrailsBranchName)
-	ref, err := s.repo.Reference(refName, true)
-	if err != nil {
-		return nil, nil, fmt.Errorf("trails branch not found: %w", err)
-	}
-
-	commit, err := s.repo.CommitObject(ref.Hash())
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to get commit: %w", err)
-	}
-
-	tree, err := commit.Tree()
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to get tree: %w", err)
-	}
-
-	entries := make(map[string]object.TreeEntry)
-	if err := checkpoint.FlattenTree(s.repo, tree, "", entries); err != nil {
-		return nil, nil, fmt.Errorf("failed to flatten tree: %w", err)
-	}
-
-	return ref, entries, nil
-}
-
-// createCommit creates a commit on the trails branch.
-func (s *Store) createCommit(treeHash, parentHash plumbing.Hash, message, authorName, authorEmail string) (plumbing.Hash, error) {
-	now := time.Now()
-	sig := object.Signature{
-		Name:  authorName,
-		Email: authorEmail,
-		When:  now,
-	}
-
-	commit := &object.Commit{
-		TreeHash:  treeHash,
-		Author:    sig,
-		Committer: sig,
-		Message:   message,
-	}
-
-	if parentHash != plumbing.ZeroHash {
-		commit.ParentHashes = []plumbing.Hash{parentHash}
-	}
-
-	obj := s.repo.Storer.NewEncodedObject()
-	if err := commit.Encode(obj); err != nil {
-		return plumbing.ZeroHash, fmt.Errorf("failed to encode commit: %w", err)
-	}
-
-	hash, err := s.repo.Storer.SetEncodedObject(obj)
-	if err != nil {
-		return plumbing.ZeroHash, fmt.Errorf("failed to store commit: %w", err)
-	}
-
-	return hash, nil
 }
