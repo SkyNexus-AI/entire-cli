@@ -1071,6 +1071,7 @@ func TestEnsureMetadataBranch(t *testing.T) {
 	})
 
 	t.Run("updates empty orphan from remote", func(t *testing.T) {
+		t.Parallel()
 		bareDir := initBareWithMetadataBranch(t)
 		cloneDir := filepath.Join(t.TempDir(), "clone")
 		cmd := exec.CommandContext(context.Background(), "git", "clone", bareDir, cloneDir)
