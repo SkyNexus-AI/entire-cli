@@ -144,9 +144,6 @@ type TranscriptAnalyzer interface {
 	//   - currentPosition: the current position (line count or message count)
 	//   - error: any error encountered during reading
 	ExtractModifiedFilesFromOffset(path string, startOffset int) (files []string, currentPosition int, err error)
-
-	// ExtractPrompts extracts user prompts from the transcript starting at the given offset.
-	ExtractPrompts(sessionRef string, fromOffset int) ([]string, error)
 }
 
 // TranscriptPreparer is called before ReadTranscript to handle agent-specific

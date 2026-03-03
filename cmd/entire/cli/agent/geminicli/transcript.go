@@ -151,32 +151,6 @@ func ExtractModifiedFilesFromTranscript(transcript *GeminiTranscript) []string {
 	return files
 }
 
-// ExtractLastUserPrompt extracts the last user message from transcript data
-func ExtractLastUserPrompt(data []byte) (string, error) {
-	transcript, err := ParseTranscript(data)
-	if err != nil {
-		return "", err
-	}
-
-	return ExtractLastUserPromptFromTranscript(transcript), nil
-}
-
-// ExtractLastUserPromptFromTranscript extracts the last user prompt from a parsed transcript
-func ExtractLastUserPromptFromTranscript(transcript *GeminiTranscript) string {
-	for i := len(transcript.Messages) - 1; i >= 0; i-- {
-		msg := transcript.Messages[i]
-		if msg.Type != MessageTypeUser {
-			continue
-		}
-
-		// Content is now a string field
-		if msg.Content != "" {
-			return msg.Content
-		}
-	}
-	return ""
-}
-
 // ExtractAllUserPrompts extracts all user messages from transcript data
 func ExtractAllUserPrompts(data []byte) ([]string, error) {
 	transcript, err := ParseTranscript(data)

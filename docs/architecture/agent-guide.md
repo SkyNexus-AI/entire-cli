@@ -46,7 +46,7 @@ Every agent must implement all 19 methods on the `Agent` interface:
 |-----------|---------|-------------------|
 | `HookSupport` | `InstallHooks`, `UninstallHooks`, `AreHooksInstalled`, `GetSupportedHooks` | Agent uses a config file for hook registration (e.g., `settings.json`) |
 | `HookHandler` | `GetHookNames` | **Required for CLI hook registration** — `entire hooks <agent> <verb>` subcommands are only created for agents implementing this interface. Typically delegates to `HookNames()`. |
-| `TranscriptAnalyzer` | `GetTranscriptPosition`, `ExtractModifiedFilesFromOffset`, `ExtractPrompts`, `ExtractSummary` | You want richer checkpoints with transcript-derived file lists and prompts |
+| `TranscriptAnalyzer` | `GetTranscriptPosition`, `ExtractModifiedFilesFromOffset` | You want richer checkpoints with transcript-derived file lists |
 | `TranscriptPreparer` | `PrepareTranscript` | Agent writes transcripts asynchronously and needs a flush/sync step |
 | `TokenCalculator` | `CalculateTokenUsage` | Agent's transcript contains token usage data |
 | `SubagentAwareExtractor` | `ExtractAllModifiedFiles`, `CalculateTotalTokenUsage` | Agent spawns subagents (like Claude Code's Task tool) |
@@ -459,8 +459,6 @@ The framework dispatcher (`DispatchLifecycleEvent` in `lifecycle.go`) handles ea
 **Methods:**
 - `GetTranscriptPosition(path) (int, error)` - Return current position. For JSONL: line count. For JSON with messages array: message count.
 - `ExtractModifiedFilesFromOffset(path, startOffset) (files, currentPosition, error)` - Parse transcript from offset and return files touched by write/edit tools.
-- `ExtractPrompts(sessionRef, fromOffset) ([]string, error)` - Extract user prompt strings.
-- `ExtractSummary(sessionRef) (string, error)` - Extract last assistant response as summary.
 
 ### `TranscriptPreparer`
 

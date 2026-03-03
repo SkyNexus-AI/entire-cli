@@ -461,36 +461,6 @@ func TestExtractModifiedFilesFromOffset_CamelCaseFilePath(t *testing.T) {
 	}
 }
 
-func TestExtractPrompts(t *testing.T) {
-	t.Parallel()
-	ag := &OpenCodeAgent{}
-	path := writeTestTranscript(t, testExportJSON)
-
-	// From offset 0 — both prompts
-	prompts, err := ag.ExtractPrompts(path, 0)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(prompts) != 2 {
-		t.Fatalf("expected 2 prompts, got %d: %v", len(prompts), prompts)
-	}
-	if prompts[0] != "Fix the bug in main.go" {
-		t.Errorf("expected first prompt 'Fix the bug in main.go', got %q", prompts[0])
-	}
-
-	// From offset 2 — only second prompt
-	prompts, err = ag.ExtractPrompts(path, 2)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(prompts) != 1 {
-		t.Fatalf("expected 1 prompt from offset 2, got %d", len(prompts))
-	}
-	if prompts[0] != "Also fix util.go" {
-		t.Errorf("expected 'Also fix util.go', got %q", prompts[0])
-	}
-}
-
 func TestCalculateTokenUsage(t *testing.T) {
 	t.Parallel()
 	ag := &OpenCodeAgent{}

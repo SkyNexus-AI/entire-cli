@@ -12,8 +12,6 @@ import (
 
 	"github.com/entireio/cli/cmd/entire/cli/agent"
 	"github.com/entireio/cli/cmd/entire/cli/logging"
-	"github.com/entireio/cli/cmd/entire/cli/textutil"
-	"github.com/entireio/cli/cmd/entire/cli/transcript"
 )
 
 // Compile-time interface assertions for new interfaces.
@@ -82,26 +80,6 @@ func (c *ClaudeCodeAgent) ReadTranscript(sessionRef string) ([]byte, error) {
 		return nil, fmt.Errorf("failed to read transcript: %w", err)
 	}
 	return data, nil
-}
-
-// ExtractPrompts extracts user prompts from the transcript starting at the given line offset.
-func (c *ClaudeCodeAgent) ExtractPrompts(sessionRef string, fromOffset int) ([]string, error) {
-	lines, err := transcript.ParseFromFileAtLine(sessionRef, fromOffset)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse transcript: %w", err)
-	}
-
-	var prompts []string
-	for i := range lines {
-		if lines[i].Type != transcript.TypeUser {
-			continue
-		}
-		content := transcript.ExtractUserContent(lines[i].Message)
-		if content != "" {
-			prompts = append(prompts, textutil.StripIDEContextTags(content))
-		}
-	}
-	return prompts, nil
 }
 
 // PrepareTranscript waits for Claude Code's async transcript flush to complete.

@@ -67,28 +67,6 @@ func (g *GeminiCLIAgent) ReadTranscript(sessionRef string) ([]byte, error) {
 	return data, nil
 }
 
-// ExtractPrompts extracts user prompts from the transcript starting at the given message offset.
-func (g *GeminiCLIAgent) ExtractPrompts(sessionRef string, fromOffset int) ([]string, error) {
-	data, err := os.ReadFile(sessionRef) //nolint:gosec // Path comes from agent hook input
-	if err != nil {
-		return nil, fmt.Errorf("failed to read transcript: %w", err)
-	}
-
-	t, parseErr := ParseTranscript(data)
-	if parseErr != nil {
-		return nil, fmt.Errorf("failed to parse transcript: %w", parseErr)
-	}
-
-	var prompts []string
-	for i := fromOffset; i < len(t.Messages); i++ {
-		msg := t.Messages[i]
-		if msg.Type == MessageTypeUser && msg.Content != "" {
-			prompts = append(prompts, msg.Content)
-		}
-	}
-	return prompts, nil
-}
-
 // CalculateTokenUsage computes token usage from the transcript starting at the given message offset.
 func (g *GeminiCLIAgent) CalculateTokenUsage(transcriptData []byte, fromOffset int) (*agent.TokenUsage, error) {
 	var transcript struct {
