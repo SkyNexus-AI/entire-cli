@@ -17,12 +17,20 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestResumeFromFeatureBranch: agent creates a file and user commits,
-// then user switches to a temp branch and resumes back to the original branch.
-// Verifies the session is restored and the branch is correct after resume.
+// TestResumeFromFeatureBranch: agent creates a file on a feature branch and
+// user commits, then switches back to main and runs `entire resume feature`.
+// Verifies the branch is switched and the session is restored.
 func TestResumeFromFeatureBranch(t *testing.T) {
 	testutil.ForEachAgent(t, 3*time.Minute, func(t *testing.T, s *testutil.RepoState, ctx context.Context) {
 		mainBranch := testutil.GitOutput(t, s.Dir, "branch", "--show-current")
+
+		// Commit files from `entire enable` so main has a clean working tree
+		// for branch switching (mirrors a real repo where .gitignore is tracked).
+		s.Git(t, "add", ".")
+		s.Git(t, "commit", "-m", "Enable entire")
+
+		// Do agent work on a feature branch.
+		s.Git(t, "checkout", "-b", "feature")
 
 		_, err := s.RunPrompt(t, ctx,
 			"create a file at docs/hello.md with a paragraph about greetings. Do not ask for confirmation, just make the change.")
@@ -34,15 +42,14 @@ func TestResumeFromFeatureBranch(t *testing.T) {
 		s.Git(t, "commit", "-m", "Add hello doc")
 		testutil.WaitForCheckpoint(t, s, 15*time.Second)
 
-		// Switch away from the branch.
-		s.Git(t, "checkout", "-b", "temp-branch")
+		// Switch back to main and resume the feature branch.
+		s.Git(t, "checkout", mainBranch)
 
-		// Resume back to the original branch.
-		out, err := entire.Resume(s.Dir, mainBranch)
+		out, err := entire.Resume(s.Dir, "feature")
 		require.NoError(t, err, "entire resume failed: %s", out)
 
 		current := testutil.GitOutput(t, s.Dir, "branch", "--show-current")
-		assert.Equal(t, mainBranch, current, "should be back on %s after resume", mainBranch)
+		assert.Equal(t, "feature", current, "should be on feature branch after resume")
 		assert.Contains(t, out, "To continue", "resume output should show resume instructions")
 	})
 }
@@ -147,13 +154,18 @@ func TestResumeSquashMergeMultipleCheckpoints(t *testing.T) {
 	})
 }
 
-// TestResumeNoCheckpointOnBranch: resume on a branch that has only human
-// commits. Should exit cleanly with an informational message, not an error.
+// TestResumeNoCheckpointOnBranch: resume on a feature branch that has only
+// human commits (no agent interaction). Should switch to the branch and exit
+// cleanly with an informational message, not an error.
 func TestResumeNoCheckpointOnBranch(t *testing.T) {
 	testutil.ForEachAgent(t, 1*time.Minute, func(t *testing.T, s *testutil.RepoState, ctx context.Context) {
 		mainBranch := testutil.GitOutput(t, s.Dir, "branch", "--show-current")
 
-		// Create a branch with only human commits.
+		// Commit files from `entire enable` so main has a clean working tree.
+		s.Git(t, "add", ".")
+		s.Git(t, "commit", "-m", "Enable entire")
+
+		// Create a feature branch with only human commits.
 		s.Git(t, "checkout", "-b", "no-checkpoint")
 		require.NoError(t, os.MkdirAll(filepath.Join(s.Dir, "docs"), 0o755))
 		require.NoError(t, os.WriteFile(
@@ -163,7 +175,7 @@ func TestResumeNoCheckpointOnBranch(t *testing.T) {
 		s.Git(t, "add", ".")
 		s.Git(t, "commit", "-m", "Human-only commit")
 
-		// Switch back and try to resume the no-checkpoint branch.
+		// Switch back to main and try to resume the feature branch.
 		s.Git(t, "checkout", mainBranch)
 
 		out, err := entire.Resume(s.Dir, "no-checkpoint")
@@ -174,12 +186,20 @@ func TestResumeNoCheckpointOnBranch(t *testing.T) {
 	})
 }
 
-// TestResumeOlderCheckpointWithNewerCommits: agent creates a file and user
-// commits (checkpoint created), then user adds a human-only commit on top.
-// `entire resume --force` should still find and restore the older checkpoint.
+// TestResumeOlderCheckpointWithNewerCommits: agent creates a file on a feature
+// branch and user commits (checkpoint created), then user adds a human-only
+// commit on top. `entire resume --force` should still find and restore the
+// older checkpoint despite the newer commits without checkpoints.
 func TestResumeOlderCheckpointWithNewerCommits(t *testing.T) {
 	testutil.ForEachAgent(t, 3*time.Minute, func(t *testing.T, s *testutil.RepoState, ctx context.Context) {
 		mainBranch := testutil.GitOutput(t, s.Dir, "branch", "--show-current")
+
+		// Commit files from `entire enable` so main has a clean working tree.
+		s.Git(t, "add", ".")
+		s.Git(t, "commit", "-m", "Enable entire")
+
+		// Do agent work on a feature branch.
+		s.Git(t, "checkout", "-b", "feature")
 
 		_, err := s.RunPrompt(t, ctx,
 			"create a file at docs/hello.md with a paragraph about greetings. Do not ask for confirmation, just make the change.")
@@ -200,15 +220,15 @@ func TestResumeOlderCheckpointWithNewerCommits(t *testing.T) {
 		s.Git(t, "add", ".")
 		s.Git(t, "commit", "-m", "Human-only follow-up")
 
-		// Switch away and resume (--force is always passed by entire.Resume,
-		// which bypasses the "older checkpoint" confirmation prompt).
-		s.Git(t, "checkout", "-b", "temp-branch")
+		// Switch back to main and resume (--force is always passed by
+		// entire.Resume, which bypasses the "older checkpoint" confirmation).
+		s.Git(t, "checkout", mainBranch)
 
-		out, err := entire.Resume(s.Dir, mainBranch)
+		out, err := entire.Resume(s.Dir, "feature")
 		require.NoError(t, err, "entire resume failed: %s", out)
 
 		current := testutil.GitOutput(t, s.Dir, "branch", "--show-current")
-		assert.Equal(t, mainBranch, current, "should be on %s after resume", mainBranch)
+		assert.Equal(t, "feature", current, "should be on feature branch after resume")
 		assert.Contains(t, out, "To continue", "should restore the older checkpoint session")
 	})
 }
