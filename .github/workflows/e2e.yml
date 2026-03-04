@@ -2,6 +2,18 @@ name: E2E Tests
 
 on:
   workflow_dispatch:
+    inputs:
+      agent:
+        description: 'Run a single agent (leave empty for all)'
+        required: false
+        type: choice
+        options:
+          - ''
+          - claude-code
+          - opencode
+          - gemini-cli
+          - factoryai-droid
+          - cursor-cli
   push:
     branches:
       - main
@@ -19,6 +31,7 @@ jobs:
   e2e-tests:
     runs-on: ubuntu-latest
     timeout-minutes: 40
+    if: ${{ github.event_name != 'workflow_dispatch' || !github.event.inputs.agent || github.event.inputs.agent == matrix.agent }}
     strategy:
       fail-fast: false
       matrix:
