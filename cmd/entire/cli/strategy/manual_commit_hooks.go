@@ -1412,8 +1412,9 @@ func (s *ManualCommitStrategy) resolveFilesTouched(ctx context.Context, state *S
 // All call sites that need "has the agent done new work?" should use this.
 //
 // Returns false if: no transcript path, unknown agent type, agent doesn't implement
-// TranscriptAnalyzer, or GetTranscriptPosition fails. Fail-open: callers treat false
-// as "no new work detected" which is the safe default (skips condensation).
+// TranscriptAnalyzer, or GetTranscriptPosition fails. This is intentional fail-safe
+// behavior: callers treat false as "no new work detected", which conservatively
+// skips condensation on errors.
 func (s *ManualCommitStrategy) hasNewTranscriptWork(ctx context.Context, state *SessionState) bool {
 	logCtx := logging.WithComponent(ctx, "checkpoint")
 
