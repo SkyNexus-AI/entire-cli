@@ -459,7 +459,7 @@ func TestResolveLatestCheckpoint(t *testing.T) {
 	// Pass checkpoint IDs in reverse chronological order (newest first),
 	// simulating git CLI squash merge trailer order.
 	reverseOrderIDs := []id.CheckpointID{cpID3, cpID2, cpID1}
-	latest, err := resolveLatestCheckpoint(repo, reverseOrderIDs)
+	latest, tree, err := resolveLatestCheckpoint(context.Background(), repo, reverseOrderIDs)
 	if err != nil {
 		t.Fatalf("resolveLatestCheckpoint() error = %v", err)
 	}
@@ -469,9 +469,14 @@ func TestResolveLatestCheckpoint(t *testing.T) {
 		t.Errorf("resolveLatestCheckpoint() = %s, want newest %s", latest, cpID3)
 	}
 
+	// Should return a non-nil tree for reuse
+	if tree == nil {
+		t.Error("resolveLatestCheckpoint() returned nil tree")
+	}
+
 	// Also verify with chronological order
 	chronologicalIDs := []id.CheckpointID{cpID1, cpID2, cpID3}
-	latest2, err := resolveLatestCheckpoint(repo, chronologicalIDs)
+	latest2, _, err := resolveLatestCheckpoint(context.Background(), repo, chronologicalIDs)
 	if err != nil {
 		t.Fatalf("resolveLatestCheckpoint() error = %v", err)
 	}

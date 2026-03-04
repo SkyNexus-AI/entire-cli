@@ -1167,6 +1167,9 @@ func TestResume_SquashMergeMultipleCheckpoints(t *testing.T) {
 	}
 
 	// Should only resume the latest session (session2), not session1
+	if strings.Contains(output, session1.ID) {
+		t.Errorf("session1 ID %s should NOT appear in output (older checkpoint was skipped), got: %s", session1.ID, output)
+	}
 	if !strings.Contains(output, session2.ID) {
 		t.Errorf("expected session2 ID %s in output, got: %s", session2.ID, output)
 	}

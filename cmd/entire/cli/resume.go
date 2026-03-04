@@ -155,24 +155,33 @@ func resumeFromCurrentBranch(ctx context.Context, branchName string, force bool)
 
 	checkpointID := result.checkpointIDs[0]
 
-	// Multiple checkpoints (squash merge): resolve latest and resume from it
+	// Multiple checkpoints (squash merge): resolve latest by CreatedAt timestamp.
+	// resolveLatestCheckpoint also returns the metadata tree so we can reuse it
+	// for the ReadCheckpointMetadata call below without a redundant lookup.
+	var metadataTree *object.Tree
 	if len(result.checkpointIDs) > 1 {
-		latest, err := resolveLatestCheckpoint(repo, result.checkpointIDs)
+		latest, tree, err := resolveLatestCheckpoint(ctx, repo, result.checkpointIDs)
 		if err != nil {
-			// Fallback: use last trailer
-			latest = result.checkpointIDs[len(result.checkpointIDs)-1]
+			// No metadata available — nothing to resume from
+			fmt.Fprintf(os.Stderr, "Found %d checkpoints on the latest commit but metadata is not available\n",
+				len(result.checkpointIDs))
+			return checkRemoteMetadata(ctx, repo, result.checkpointIDs[0])
 		}
 		skipped := len(result.checkpointIDs) - 1
 		fmt.Fprintf(os.Stderr, "Found %d checkpoints on the latest commit in this branch, resuming from the latest (%d older checkpoints skipped)\n",
 			len(result.checkpointIDs), skipped)
 		checkpointID = latest
+		metadataTree = tree
 	}
 
-	// Get metadata branch tree for lookups
-	metadataTree, err := strategy.GetMetadataBranchTree(repo)
-	if err != nil {
-		// No local metadata branch, check if remote has it
-		return checkRemoteMetadata(ctx, repo, checkpointID)
+	// Get metadata branch tree for lookups (reuse from resolveLatestCheckpoint if available)
+	if metadataTree == nil {
+		var err error
+		metadataTree, err = strategy.GetMetadataBranchTree(repo)
+		if err != nil {
+			// No local metadata branch, check if remote has it
+			return checkRemoteMetadata(ctx, repo, checkpointID)
+		}
 	}
 
 	// Look up metadata from sharded path
@@ -186,30 +195,31 @@ func resumeFromCurrentBranch(ctx context.Context, branchName string, force bool)
 }
 
 // resolveLatestCheckpoint reads metadata for each checkpoint ID and returns
-// the one with the latest CreatedAt. It tries the local metadata branch first,
-// then fetches from remote, then falls back to the remote tree directly.
-func resolveLatestCheckpoint(repo *git.Repository, checkpointIDs []id.CheckpointID) (id.CheckpointID, error) {
-	metadataTree, err := getMetadataTree(repo)
+// the one with the latest CreatedAt, along with the metadata tree for reuse.
+// It tries the local metadata branch first, then fetches from remote, then
+// falls back to the remote tree directly.
+func resolveLatestCheckpoint(ctx context.Context, repo *git.Repository, checkpointIDs []id.CheckpointID) (id.CheckpointID, *object.Tree, error) {
+	metadataTree, err := getMetadataTree(ctx, repo)
 	if err != nil {
-		return id.EmptyCheckpointID, err
+		return id.EmptyCheckpointID, nil, err
 	}
 	sorted := collectCheckpointsByAge(metadataTree, checkpointIDs)
 	if len(sorted) == 0 {
-		return id.EmptyCheckpointID, errors.New("no checkpoint metadata found")
+		return id.EmptyCheckpointID, nil, errors.New("no checkpoint metadata found")
 	}
-	return sorted[len(sorted)-1].CheckpointID, nil
+	return sorted[len(sorted)-1].CheckpointID, metadataTree, nil
 }
 
 // getMetadataTree returns the metadata branch tree, trying local first,
 // then fetching from remote, then falling back to the remote tree directly.
-func getMetadataTree(repo *git.Repository) (*object.Tree, error) {
+func getMetadataTree(ctx context.Context, repo *git.Repository) (*object.Tree, error) {
 	metadataTree, err := strategy.GetMetadataBranchTree(repo)
 	if err == nil {
 		return metadataTree, nil
 	}
 
 	// Try fetching from remote
-	if fetchErr := FetchMetadataBranch(context.Background()); fetchErr == nil {
+	if fetchErr := FetchMetadataBranch(ctx); fetchErr == nil {
 		metadataTree, err = strategy.GetMetadataBranchTree(repo)
 		if err == nil {
 			return metadataTree, nil
