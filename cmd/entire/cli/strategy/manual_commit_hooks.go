@@ -26,6 +26,7 @@ import (
 	"github.com/entireio/cli/cmd/entire/cli/stringutil"
 	"github.com/entireio/cli/cmd/entire/cli/trail"
 	"github.com/entireio/cli/cmd/entire/cli/trailers"
+	"github.com/entireio/cli/perf"
 	"github.com/entireio/cli/redact"
 
 	"github.com/go-git/go-git/v5"
@@ -326,13 +327,18 @@ func (s *ManualCommitStrategy) PrepareCommitMsg(ctx context.Context, commitMsgFi
 		return s.handleAmendCommitMsg(ctx, commitMsgFile)
 	}
 
+	_, openRepoSpan := perf.Start(ctx, "open_repository")
 	repo, err := OpenRepository(ctx)
 	if err != nil {
+		openRepoSpan.End()
 		return nil //nolint:nilerr // Hook must be silent on failure
 	}
+	openRepoSpan.End()
 
+	_, findSessionsSpan := perf.Start(ctx, "find_sessions_for_worktree")
 	worktreePath, err := paths.WorktreeRoot(ctx)
 	if err != nil {
+		findSessionsSpan.End()
 		return nil //nolint:nilerr // Hook must be silent on failure
 	}
 
@@ -341,6 +347,7 @@ func (s *ManualCommitStrategy) PrepareCommitMsg(ctx context.Context, commitMsgFi
 	// intermediate commits without entering new prompts, causing HEAD to diverge
 	sessions, err := s.findSessionsForWorktree(ctx, worktreePath)
 	if err != nil || len(sessions) == 0 {
+		findSessionsSpan.End()
 		// No active sessions or error listing - silently skip (hooks must be resilient)
 		logging.Debug(logCtx, "prepare-commit-msg: no active sessions",
 			slog.String("strategy", "manual-commit"),
@@ -348,6 +355,7 @@ func (s *ManualCommitStrategy) PrepareCommitMsg(ctx context.Context, commitMsgFi
 		)
 		return nil //nolint:nilerr // Intentional: hooks must be silent on failure
 	}
+	findSessionsSpan.End()
 
 	// Fast path: when an agent is committing (ACTIVE session + no TTY), skip
 	// content detection and interactive prompts. The agent can't respond to TTY
@@ -363,7 +371,9 @@ func (s *ManualCommitStrategy) PrepareCommitMsg(ctx context.Context, commitMsgFi
 	}
 
 	// Check if any session has new content to condense
+	_, filterSessionsSpan := perf.Start(ctx, "filter_sessions_with_content")
 	sessionsWithContent := s.filterSessionsWithNewContent(ctx, repo, sessions)
+	filterSessionsSpan.End()
 
 	if len(sessionsWithContent) == 0 {
 		// No new content — no trailer needed
@@ -376,8 +386,10 @@ func (s *ManualCommitStrategy) PrepareCommitMsg(ctx context.Context, commitMsgFi
 	}
 
 	// Read current commit message
+	_, readCommitMessageSpan := perf.Start(ctx, "read_commit_message")
 	content, err := os.ReadFile(commitMsgFile) //nolint:gosec // commitMsgFile is provided by git hook
 	if err != nil {
+		readCommitMessageSpan.End()
 		return nil //nolint:nilerr // Hook must be silent on failure
 	}
 
@@ -385,6 +397,7 @@ func (s *ManualCommitStrategy) PrepareCommitMsg(ctx context.Context, commitMsgFi
 
 	// Check if trailer already exists (ParseCheckpoint validates format, so found==true means valid)
 	if existingCpID, found := trailers.ParseCheckpoint(message); found {
+		readCommitMessageSpan.End()
 		// Trailer already exists (e.g., amend) - keep it
 		logging.Debug(logCtx, "prepare-commit-msg: trailer already exists",
 			slog.String("strategy", "manual-commit"),
@@ -393,10 +406,13 @@ func (s *ManualCommitStrategy) PrepareCommitMsg(ctx context.Context, commitMsgFi
 		)
 		return nil
 	}
+	readCommitMessageSpan.End()
 
-	// Generate a fresh checkpoint ID
+	// Generate a fresh checkpoint ID and resolve session metadata
+	_, resolveMetadataSpan := perf.Start(ctx, "resolve_session_metadata")
 	checkpointID, err := id.Generate()
 	if err != nil {
+		resolveMetadataSpan.End()
 		return fmt.Errorf("failed to generate checkpoint ID: %w", err)
 	}
 
@@ -419,8 +435,11 @@ func (s *ManualCommitStrategy) PrepareCommitMsg(ctx context.Context, commitMsgFi
 	if stngs, loadErr := settings.Load(ctx); loadErr == nil {
 		commitLinking = stngs.GetCommitLinking()
 	}
+	resolveMetadataSpan.End()
 
 	// Add trailer differently based on commit source
+	// NOTE: TTY confirmation (askConfirmTTY) is intentionally NOT wrapped in a span
+	// because it blocks on user input and would skew timing.
 	switch source {
 	case "message":
 		// Using -m or -F: behavior depends on TTY availability and commit_linking setting
@@ -469,9 +488,12 @@ func (s *ManualCommitStrategy) PrepareCommitMsg(ctx context.Context, commitMsgFi
 	)
 
 	// Write updated message back
+	_, writeCommitMessageSpan := perf.Start(ctx, "write_commit_message")
 	if err := os.WriteFile(commitMsgFile, []byte(message), 0o600); err != nil {
+		writeCommitMessageSpan.End()
 		return nil //nolint:nilerr // Hook must be silent on failure
 	}
+	writeCommitMessageSpan.End()
 
 	return nil
 }
