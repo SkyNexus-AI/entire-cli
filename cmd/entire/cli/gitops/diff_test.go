@@ -263,6 +263,39 @@ func TestDiffTreeFiles_SubdirectoryFiles(t *testing.T) {
 	}
 }
 
+func TestDiffTreeFiles_Rename(t *testing.T) {
+	dir := initTestRepo(t)
+
+	writeFile(t, dir, "original.go", "package original\n")
+	gitAdd(t, dir, "original.go")
+	gitCommit(t, dir, "initial")
+	commit1 := commitHash(t, dir)
+
+	// Rename via git mv
+	cmd := exec.CommandContext(context.Background(), "git", "mv", "original.go", "renamed.go")
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git mv failed: %v\n%s", err, out)
+	}
+	gitCommit(t, dir, "rename file")
+	commit2 := commitHash(t, dir)
+
+	t.Chdir(dir)
+
+	result, err := DiffTreeFiles(context.Background(), commit1, commit2)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Both old and new names should appear
+	if _, ok := result["original.go"]; !ok {
+		t.Error("expected original.go in result")
+	}
+	if _, ok := result["renamed.go"]; !ok {
+		t.Error("expected renamed.go in result")
+	}
+}
+
 func TestParseDiffTreeOutput(t *testing.T) {
 	t.Parallel()
 
@@ -292,6 +325,48 @@ func TestParseDiffTreeOutput(t *testing.T) {
 		}
 		sort.Strings(result)
 		expected := []string{"file1.go", "file2.go", "file3.go"}
+		for i, f := range expected {
+			if result[i] != f {
+				t.Errorf("result[%d] = %s, want %s", i, result[i], f)
+			}
+		}
+	})
+
+	t.Run("rename", func(t *testing.T) {
+		t.Parallel()
+		data := []byte(":100644 100644 abc1234 def5678 R100\x00old.go\x00new.go\x00")
+		result := parseDiffTreeOutput(data)
+		if len(result) != 2 {
+			t.Fatalf("expected 2 files (old + new), got %d: %v", len(result), result)
+		}
+		sort.Strings(result)
+		if result[0] != "new.go" || result[1] != "old.go" {
+			t.Errorf("expected [new.go, old.go], got %v", result)
+		}
+	})
+
+	t.Run("copy", func(t *testing.T) {
+		t.Parallel()
+		data := []byte(":100644 100644 abc1234 abc1234 C100\x00src.go\x00dst.go\x00")
+		result := parseDiffTreeOutput(data)
+		if len(result) != 2 {
+			t.Fatalf("expected 2 files (src + dst), got %d: %v", len(result), result)
+		}
+		sort.Strings(result)
+		if result[0] != "dst.go" || result[1] != "src.go" {
+			t.Errorf("expected [dst.go, src.go], got %v", result)
+		}
+	})
+
+	t.Run("rename mixed with modify", func(t *testing.T) {
+		t.Parallel()
+		data := []byte(":100644 100644 abc1234 def5678 R100\x00old.go\x00new.go\x00:100644 100644 abc1234 def5678 M\x00other.go\x00")
+		result := parseDiffTreeOutput(data)
+		if len(result) != 3 {
+			t.Fatalf("expected 3 files, got %d: %v", len(result), result)
+		}
+		sort.Strings(result)
+		expected := []string{"new.go", "old.go", "other.go"}
 		for i, f := range expected {
 			if result[i] != f {
 				t.Errorf("result[%d] = %s, want %s", i, result[i], f)

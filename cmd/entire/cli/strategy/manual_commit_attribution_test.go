@@ -773,48 +773,43 @@ func TestCalculateAttributionWithAccumulated_UserEditsNonAgentFile(t *testing.T)
 	}
 }
 
-// TestGetAllChangedFilesBetweenTreesSlow tests the go-git tree walk fallback
-// used by CondenseSessionByID (doctor command) when commit hashes are unavailable.
-func TestGetAllChangedFilesBetweenTreesSlow(t *testing.T) {
-	t.Parallel()
-
+// newTestTreeBuilder creates an independent in-memory storage and returns a
+// createTree helper that is safe to use from a single goroutine.
+//
+//nolint:errcheck // Test helper - errors would cause test failures anyway
+func newTestTreeBuilder() func(files map[string]string) *object.Tree {
 	storer := memory.NewStorage()
-
-	// Helper to create a blob and return its hash
-	//nolint:errcheck // Test helper - errors would cause test failures anyway
-	createBlob := func(content string) plumbing.Hash {
-		blob := storer.NewEncodedObject()
-		blob.SetType(plumbing.BlobObject)
-		writer, _ := blob.Writer()
-		_, _ = writer.Write([]byte(content))
-		_ = writer.Close()
-		hash, _ := storer.SetEncodedObject(blob)
-		return hash
-	}
-
-	// Helper to create a tree from file entries
-	//nolint:errcheck // Test helper - errors would cause test failures anyway
-	createTree := func(files map[string]string) *object.Tree {
+	return func(files map[string]string) *object.Tree {
 		var entries []object.TreeEntry
 		for name, content := range files {
+			blob := storer.NewEncodedObject()
+			blob.SetType(plumbing.BlobObject)
+			writer, _ := blob.Writer()
+			_, _ = writer.Write([]byte(content))
+			_ = writer.Close()
+			hash, _ := storer.SetEncodedObject(blob)
 			entries = append(entries, object.TreeEntry{
 				Name: name,
 				Mode: 0o100644,
-				Hash: createBlob(content),
+				Hash: hash,
 			})
 		}
 		sort.Slice(entries, func(i, j int) bool {
 			return entries[i].Name < entries[j].Name
 		})
-
 		tree := &object.Tree{Entries: entries}
 		treeObj := storer.NewEncodedObject()
 		_ = tree.Encode(treeObj)
-		hash, _ := storer.SetEncodedObject(treeObj)
-
-		decodedTree, _ := object.GetTree(storer, hash)
+		treeHash, _ := storer.SetEncodedObject(treeObj)
+		decodedTree, _ := object.GetTree(storer, treeHash)
 		return decodedTree
 	}
+}
+
+// TestGetAllChangedFilesBetweenTreesSlow tests the go-git tree walk fallback
+// used by CondenseSessionByID (doctor command) when commit hashes are unavailable.
+func TestGetAllChangedFilesBetweenTreesSlow(t *testing.T) {
+	t.Parallel()
 
 	t.Run("both trees nil", func(t *testing.T) {
 		t.Parallel()
@@ -829,6 +824,7 @@ func TestGetAllChangedFilesBetweenTreesSlow(t *testing.T) {
 
 	t.Run("tree1 nil (all files added)", func(t *testing.T) {
 		t.Parallel()
+		createTree := newTestTreeBuilder()
 		tree2 := createTree(map[string]string{
 			testFile1:  "content1",
 			"file2.go": "content2",
@@ -850,6 +846,7 @@ func TestGetAllChangedFilesBetweenTreesSlow(t *testing.T) {
 
 	t.Run("tree2 nil (all files deleted)", func(t *testing.T) {
 		t.Parallel()
+		createTree := newTestTreeBuilder()
 		tree1 := createTree(map[string]string{
 			testFile1: "content1",
 		})
@@ -866,6 +863,7 @@ func TestGetAllChangedFilesBetweenTreesSlow(t *testing.T) {
 
 	t.Run("identical trees (no changes)", func(t *testing.T) {
 		t.Parallel()
+		createTree := newTestTreeBuilder()
 		tree1 := createTree(map[string]string{
 			testFile1:  "same content",
 			"file2.go": "also same",
@@ -887,6 +885,7 @@ func TestGetAllChangedFilesBetweenTreesSlow(t *testing.T) {
 
 	t.Run("one file modified", func(t *testing.T) {
 		t.Parallel()
+		createTree := newTestTreeBuilder()
 		tree1 := createTree(map[string]string{
 			testFile1:      "original",
 			"unchanged.go": "stays same",
@@ -908,6 +907,7 @@ func TestGetAllChangedFilesBetweenTreesSlow(t *testing.T) {
 
 	t.Run("file added and deleted", func(t *testing.T) {
 		t.Parallel()
+		createTree := newTestTreeBuilder()
 		tree1 := createTree(map[string]string{
 			"deleted.go": "will be removed",
 			"stays.go":   "unchanged",

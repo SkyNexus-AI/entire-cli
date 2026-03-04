@@ -2136,6 +2136,10 @@ func filesChangedInCommit(ctx context.Context, commit *object.Commit) map[string
 	}
 	result, err := gitops.DiffTreeFiles(ctx, parentHash, commit.Hash.String())
 	if err != nil {
+		logging.Warn(ctx, "post-commit: failed to detect files changed in commit, attribution may be inaccurate",
+			slog.String("commit", commit.Hash.String()),
+			slog.String("error", err.Error()),
+		)
 		return make(map[string]struct{})
 	}
 	return result

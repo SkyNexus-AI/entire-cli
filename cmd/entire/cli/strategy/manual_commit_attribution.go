@@ -2,12 +2,14 @@ package strategy
 
 import (
 	"context"
+	"log/slog"
 	"slices"
 	"strings"
 	"time"
 
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint"
 	"github.com/entireio/cli/cmd/entire/cli/gitops"
+	"github.com/entireio/cli/cmd/entire/cli/logging"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/sergi/go-diff/diffmatchpatch"
 )
@@ -243,6 +245,10 @@ func CalculateAttributionWithAccumulated(
 	// These files are not in the shadow tree, so base→head captures ALL their user edits
 	allChangedFiles, err := getAllChangedFiles(ctx, baseTree, headTree, attributionBaseCommit, headCommitHash)
 	if err != nil {
+		logging.Warn(logging.WithComponent(ctx, "attribution"),
+			"attribution: failed to enumerate changed files",
+			slog.String("error", err.Error()),
+		)
 		return nil
 	}
 	var allUserEditsToNonAgentFiles int
