@@ -438,119 +438,9 @@ func createCheckpointOnMetadataBranchFull(t *testing.T, repo *git.Repository, se
 	return checkpointID
 }
 
-func TestDeduplicateSessions(t *testing.T) {
-	t.Parallel()
-
-	t0 := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
-	t1 := t0.Add(1 * time.Hour)
-	t2 := t0.Add(2 * time.Hour)
-
-	t.Run("no duplicates keeps all", func(t *testing.T) {
-		t.Parallel()
-		existing := []strategy.RestoredSession{
-			{SessionID: "s1", CreatedAt: t0},
-		}
-		incoming := []strategy.RestoredSession{
-			{SessionID: "s2", CreatedAt: t1},
-		}
-		got := deduplicateSessions(existing, incoming)
-		if len(got) != 2 {
-			t.Fatalf("got %d sessions, want 2", len(got))
-		}
-		if got[0].SessionID != "s1" || got[1].SessionID != "s2" {
-			t.Errorf("got [%s, %s], want [s1, s2]", got[0].SessionID, got[1].SessionID)
-		}
-	})
-
-	t.Run("duplicate keeps newer", func(t *testing.T) {
-		t.Parallel()
-		existing := []strategy.RestoredSession{
-			{SessionID: "s1", Prompt: "old", CreatedAt: t0},
-		}
-		incoming := []strategy.RestoredSession{
-			{SessionID: "s1", Prompt: "new", CreatedAt: t1},
-		}
-		got := deduplicateSessions(existing, incoming)
-		if len(got) != 1 {
-			t.Fatalf("got %d sessions, want 1", len(got))
-		}
-		if got[0].Prompt != "new" {
-			t.Errorf("got prompt %q, want %q", got[0].Prompt, "new")
-		}
-	})
-
-	t.Run("duplicate keeps existing when newer", func(t *testing.T) {
-		t.Parallel()
-		existing := []strategy.RestoredSession{
-			{SessionID: "s1", Prompt: "newer", CreatedAt: t1},
-		}
-		incoming := []strategy.RestoredSession{
-			{SessionID: "s1", Prompt: "older", CreatedAt: t0},
-		}
-		got := deduplicateSessions(existing, incoming)
-		if len(got) != 1 {
-			t.Fatalf("got %d sessions, want 1", len(got))
-		}
-		if got[0].Prompt != "newer" {
-			t.Errorf("got prompt %q, want %q", got[0].Prompt, "newer")
-		}
-	})
-
-	t.Run("three occurrences keeps latest", func(t *testing.T) {
-		t.Parallel()
-		// This is the case the bug affected: after replacing once, the seen map
-		// must reflect the updated CreatedAt so the third occurrence compares correctly.
-		batch1 := []strategy.RestoredSession{
-			{SessionID: "s1", Prompt: "oldest", CreatedAt: t0},
-		}
-		batch2 := []strategy.RestoredSession{
-			{SessionID: "s1", Prompt: "newest", CreatedAt: t2},
-		}
-		batch3 := []strategy.RestoredSession{
-			{SessionID: "s1", Prompt: "middle", CreatedAt: t1},
-		}
-		result := deduplicateSessions(nil, batch1)
-		result = deduplicateSessions(result, batch2)
-		result = deduplicateSessions(result, batch3)
-		if len(result) != 1 {
-			t.Fatalf("got %d sessions, want 1", len(result))
-		}
-		if result[0].Prompt != "newest" {
-			t.Errorf("got prompt %q, want %q", result[0].Prompt, "newest")
-		}
-	})
-
-	t.Run("mixed unique and duplicate", func(t *testing.T) {
-		t.Parallel()
-		existing := []strategy.RestoredSession{
-			{SessionID: "s1", Prompt: "s1-old", CreatedAt: t0},
-			{SessionID: "s2", Prompt: "s2-only", CreatedAt: t0},
-		}
-		incoming := []strategy.RestoredSession{
-			{SessionID: "s1", Prompt: "s1-new", CreatedAt: t1},
-			{SessionID: "s3", Prompt: "s3-only", CreatedAt: t1},
-		}
-		got := deduplicateSessions(existing, incoming)
-		if len(got) != 3 {
-			t.Fatalf("got %d sessions, want 3", len(got))
-		}
-		if got[0].Prompt != "s1-new" {
-			t.Errorf("s1: got prompt %q, want %q", got[0].Prompt, "s1-new")
-		}
-		if got[1].SessionID != "s2" {
-			t.Errorf("got[1].SessionID = %q, want %q", got[1].SessionID, "s2")
-		}
-		if got[2].SessionID != "s3" {
-			t.Errorf("got[2].SessionID = %q, want %q", got[2].SessionID, "s3")
-		}
-	})
-}
-
-// TestResumeMultipleCheckpoints_SortsByCreatedAt verifies that resumeMultipleCheckpoints
-// sorts checkpoints by CreatedAt ascending before restoring, so that the newest checkpoint
-// writes last and wins on disk. This fixes the git CLI squash merge bug where trailers
-// appear in reverse chronological order (newest first).
-func TestResumeMultipleCheckpoints_SortsByCreatedAt(t *testing.T) {
+// TestResolveLatestCheckpoint verifies that resolveLatestCheckpoint returns the
+// checkpoint with the newest CreatedAt, regardless of trailer order.
+func TestResolveLatestCheckpoint(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Chdir(tmpDir)
 
@@ -566,38 +456,27 @@ func TestResumeMultipleCheckpoints_SortsByCreatedAt(t *testing.T) {
 	cpID2 := createCheckpointOnMetadataBranchFull(t, repo, "session-middle", id.MustCheckpointID("ccc333ddd444"), t2)
 	cpID3 := createCheckpointOnMetadataBranchFull(t, repo, "session-newest", id.MustCheckpointID("eee555fff666"), t3)
 
-	metadataTree, err := strategy.GetMetadataBranchTree(repo)
-	if err != nil {
-		t.Fatalf("Failed to get metadata branch tree: %v", err)
-	}
-
 	// Pass checkpoint IDs in reverse chronological order (newest first),
 	// simulating git CLI squash merge trailer order.
 	reverseOrderIDs := []id.CheckpointID{cpID3, cpID2, cpID1}
-	checkpoints := collectCheckpointsByAge(metadataTree, reverseOrderIDs)
-
-	// Verify: after sorting, oldest is first, newest is last
-	if len(checkpoints) != 3 {
-		t.Fatalf("got %d checkpoints, want 3", len(checkpoints))
-	}
-	if checkpoints[0].CheckpointID.String() != cpID1.String() {
-		t.Errorf("checkpoints[0] = %s (want oldest %s)", checkpoints[0].CheckpointID, cpID1)
-	}
-	if checkpoints[1].CheckpointID.String() != cpID2.String() {
-		t.Errorf("checkpoints[1] = %s (want middle %s)", checkpoints[1].CheckpointID, cpID2)
-	}
-	if checkpoints[2].CheckpointID.String() != cpID3.String() {
-		t.Errorf("checkpoints[2] = %s (want newest %s)", checkpoints[2].CheckpointID, cpID3)
+	latest, err := resolveLatestCheckpoint(repo, reverseOrderIDs)
+	if err != nil {
+		t.Fatalf("resolveLatestCheckpoint() error = %v", err)
 	}
 
-	// Verify timestamps are actually ascending
-	if !checkpoints[0].CreatedAt.Before(checkpoints[1].CreatedAt) {
-		t.Errorf("checkpoints[0].CreatedAt (%v) should be before checkpoints[1].CreatedAt (%v)",
-			checkpoints[0].CreatedAt, checkpoints[1].CreatedAt)
+	// Should return the newest checkpoint regardless of input order
+	if latest.String() != cpID3.String() {
+		t.Errorf("resolveLatestCheckpoint() = %s, want newest %s", latest, cpID3)
 	}
-	if !checkpoints[1].CreatedAt.Before(checkpoints[2].CreatedAt) {
-		t.Errorf("checkpoints[1].CreatedAt (%v) should be before checkpoints[2].CreatedAt (%v)",
-			checkpoints[1].CreatedAt, checkpoints[2].CreatedAt)
+
+	// Also verify with chronological order
+	chronologicalIDs := []id.CheckpointID{cpID1, cpID2, cpID3}
+	latest2, err := resolveLatestCheckpoint(repo, chronologicalIDs)
+	if err != nil {
+		t.Fatalf("resolveLatestCheckpoint() error = %v", err)
+	}
+	if latest2.String() != cpID3.String() {
+		t.Errorf("resolveLatestCheckpoint() = %s, want newest %s", latest2, cpID3)
 	}
 }
 

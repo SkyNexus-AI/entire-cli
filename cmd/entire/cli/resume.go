@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"time"
 
 	"github.com/entireio/cli/cmd/entire/cli/agent"
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint"
@@ -154,13 +153,20 @@ func resumeFromCurrentBranch(ctx context.Context, branchName string, force bool)
 		}
 	}
 
-	// Multiple checkpoints (squash merge): restore all sessions
-	if len(result.checkpointIDs) > 1 {
-		return resumeMultipleCheckpoints(ctx, repo, result.checkpointIDs, force)
-	}
-
-	// Single checkpoint: existing behavior (unchanged)
 	checkpointID := result.checkpointIDs[0]
+
+	// Multiple checkpoints (squash merge): resolve latest and resume from it
+	if len(result.checkpointIDs) > 1 {
+		latest, err := resolveLatestCheckpoint(repo, result.checkpointIDs)
+		if err != nil {
+			// Fallback: use last trailer
+			latest = result.checkpointIDs[len(result.checkpointIDs)-1]
+		}
+		skipped := len(result.checkpointIDs) - 1
+		fmt.Fprintf(os.Stderr, "Found %d checkpoints on the latest commit in this branch, resuming from the latest (%d older checkpoints skipped)\n",
+			len(result.checkpointIDs), skipped)
+		checkpointID = latest
+	}
 
 	// Get metadata branch tree for lookups
 	metadataTree, err := strategy.GetMetadataBranchTree(repo)
@@ -179,79 +185,43 @@ func resumeFromCurrentBranch(ctx context.Context, branchName string, force bool)
 	return resumeSession(ctx, metadata.SessionID, checkpointID, force)
 }
 
-// resumeMultipleCheckpoints restores sessions from multiple checkpoint IDs.
-// This handles squash merge commits where multiple Entire-Checkpoint trailers
-// are present in a single commit message. Each checkpoint is looked up independently
-// and missing metadata is skipped (best-effort).
-func resumeMultipleCheckpoints(ctx context.Context, repo *git.Repository, checkpointIDs []id.CheckpointID, force bool) error {
-	logCtx := logging.WithComponent(ctx, "resume")
-
-	// Get metadata branch tree (try local first, then remote)
-	metadataTree, err := strategy.GetMetadataBranchTree(repo)
+// resolveLatestCheckpoint reads metadata for each checkpoint ID and returns
+// the one with the latest CreatedAt. It tries the local metadata branch first,
+// then fetches from remote, then falls back to the remote tree directly.
+func resolveLatestCheckpoint(repo *git.Repository, checkpointIDs []id.CheckpointID) (id.CheckpointID, error) {
+	metadataTree, err := getMetadataTree(repo)
 	if err != nil {
-		// Try fetching from remote
-		logging.Debug(logCtx, "metadata branch not available locally, trying remote")
-		if fetchErr := FetchMetadataBranch(ctx); fetchErr != nil {
-			// If fetch also fails, try remote tree directly
-			remoteTree, remoteErr := strategy.GetRemoteMetadataBranchTree(repo)
-			if remoteErr != nil {
-				fmt.Fprintf(os.Stderr, "Checkpoint metadata not available locally or on remote\n")
-				return nil //nolint:nilerr // Informational message, not a fatal error
-			}
-			metadataTree = remoteTree
-		} else {
-			metadataTree, err = strategy.GetMetadataBranchTree(repo)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Checkpoint metadata not available after fetch\n")
-				return nil //nolint:nilerr // Informational message, not a fatal error
-			}
+		return id.EmptyCheckpointID, err
+	}
+	sorted := collectCheckpointsByAge(metadataTree, checkpointIDs)
+	if len(sorted) == 0 {
+		return id.EmptyCheckpointID, errors.New("no checkpoint metadata found")
+	}
+	return sorted[len(sorted)-1].CheckpointID, nil
+}
+
+// getMetadataTree returns the metadata branch tree, trying local first,
+// then fetching from remote, then falling back to the remote tree directly.
+func getMetadataTree(repo *git.Repository) (*object.Tree, error) {
+	metadataTree, err := strategy.GetMetadataBranchTree(repo)
+	if err == nil {
+		return metadataTree, nil
+	}
+
+	// Try fetching from remote
+	if fetchErr := FetchMetadataBranch(context.Background()); fetchErr == nil {
+		metadataTree, err = strategy.GetMetadataBranchTree(repo)
+		if err == nil {
+			return metadataTree, nil
 		}
 	}
 
-	// Read metadata for all checkpoints and sort by CreatedAt ascending
-	// (oldest first → newest writes last and wins on disk)
-	checkpoints := collectCheckpointsByAge(metadataTree, checkpointIDs)
-
-	// Iterate sorted checkpoints and restore
-	strat := GetStrategy(ctx)
-	var allSessions []strategy.RestoredSession
-
-	for _, cp := range checkpoints {
-		point := strategy.RewindPoint{
-			IsLogsOnly:   true,
-			CheckpointID: cp.CheckpointID,
-			Agent:        cp.Agent,
-		}
-
-		sessions, restoreErr := strat.RestoreLogsOnly(ctx, point, force)
-		if restoreErr != nil {
-			logging.Debug(logCtx, "skipping checkpoint: restore failed",
-				slog.String("checkpoint_id", cp.CheckpointID.String()),
-				slog.String("error", restoreErr.Error()),
-			)
-			continue
-		}
-		if len(sessions) == 0 {
-			logging.Debug(logCtx, "skipping checkpoint: no sessions restored",
-				slog.String("checkpoint_id", cp.CheckpointID.String()),
-			)
-			continue
-		}
-
-		allSessions = deduplicateSessions(allSessions, sessions)
+	// Try remote tree directly
+	remoteTree, remoteErr := strategy.GetRemoteMetadataBranchTree(repo)
+	if remoteErr != nil {
+		return nil, fmt.Errorf("metadata branch not available: %w", remoteErr)
 	}
-
-	if len(allSessions) == 0 {
-		fmt.Fprintf(os.Stderr, "No session metadata found for checkpoints in this commit\n")
-		return nil
-	}
-
-	logging.Debug(logCtx, "resume multiple checkpoints completed",
-		slog.Int("checkpoint_count", len(checkpointIDs)),
-		slog.Int("session_count", len(allSessions)),
-	)
-
-	return displayRestoredSessions(allSessions)
+	return remoteTree, nil
 }
 
 // collectCheckpointsByAge reads metadata for each checkpoint ID from the tree,
@@ -271,36 +241,6 @@ func collectCheckpointsByAge(tree *object.Tree, checkpointIDs []id.CheckpointID)
 		return checkpoints[i].CreatedAt.Before(checkpoints[j].CreatedAt)
 	})
 	return checkpoints
-}
-
-// deduplicateSessions merges new sessions into existing, keeping the one with the latest
-// CreatedAt when a SessionID appears more than once. This handles squash merges where the
-// same session may be referenced by multiple checkpoints.
-func deduplicateSessions(existing, incoming []strategy.RestoredSession) []strategy.RestoredSession {
-	type entry struct {
-		index     int
-		createdAt time.Time
-	}
-
-	seen := make(map[string]entry, len(existing))
-	for i, s := range existing {
-		seen[s.SessionID] = entry{index: i, createdAt: s.CreatedAt}
-	}
-
-	for _, sess := range incoming {
-		if prev, exists := seen[sess.SessionID]; exists {
-			// Keep the one with the later CreatedAt (more complete transcript)
-			if sess.CreatedAt.After(prev.createdAt) {
-				existing[prev.index] = sess
-				seen[sess.SessionID] = entry{index: prev.index, createdAt: sess.CreatedAt}
-			}
-		} else {
-			seen[sess.SessionID] = entry{index: len(existing), createdAt: sess.CreatedAt}
-			existing = append(existing, sess)
-		}
-	}
-
-	return existing
 }
 
 // branchCheckpointsResult contains the result of searching for checkpoints on a branch.
@@ -560,7 +500,6 @@ func resumeSession(ctx context.Context, sessionID string, checkpointID id.Checkp
 }
 
 // displayRestoredSessions sorts sessions by CreatedAt and prints resume commands.
-// Used by both resumeSession (single checkpoint) and resumeMultipleCheckpoints (squash merge).
 func displayRestoredSessions(sessions []strategy.RestoredSession) error {
 	sort.SliceStable(sessions, func(i, j int) bool {
 		return sessions[i].CreatedAt.Before(sessions[j].CreatedAt)
