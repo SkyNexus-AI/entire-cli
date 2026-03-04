@@ -141,7 +141,12 @@ func handleLifecycleModelUpdate(ctx context.Context, ag agent.Agent, event *agen
 	}
 
 	// Prefer writing directly to session state when it exists
-	if state, err := strategy.LoadSessionState(ctx, event.SessionID); err == nil && state != nil {
+	state, loadErr := strategy.LoadSessionState(ctx, event.SessionID)
+	if loadErr != nil {
+		logging.Debug(logCtx, "could not load session state for model update, using hint file",
+			slog.String("error", loadErr.Error()))
+	}
+	if loadErr == nil && state != nil {
 		state.ModelName = event.Model
 		if saveErr := strategy.SaveSessionState(ctx, state); saveErr != nil {
 			logging.Warn(logCtx, "failed to update session state with model",
@@ -150,7 +155,7 @@ func handleLifecycleModelUpdate(ctx context.Context, ag agent.Agent, event *agen
 		return nil
 	}
 
-	// State doesn't exist yet — use hint file (see StoreModelHint doc)
+	// State doesn't exist yet (or failed to load) — use hint file (see StoreModelHint doc)
 	if err := strategy.StoreModelHint(ctx, event.SessionID, event.Model); err != nil {
 		logging.Warn(logCtx, "failed to store model hint",
 			slog.String("error", err.Error()))

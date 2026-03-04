@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/entireio/cli/cmd/entire/cli/jsonutil"
 	"github.com/entireio/cli/cmd/entire/cli/logging"
@@ -247,14 +248,23 @@ func LoadModelHint(ctx context.Context, sessionID string) string {
 
 	stateDir, err := getSessionStateDir(ctx)
 	if err != nil {
+		logging.Warn(logging.WithComponent(ctx, "session"), "failed to resolve state dir for model hint",
+			slog.String("session_id", sessionID),
+			slog.Any("error", err))
 		return ""
 	}
 
-	data, err := os.ReadFile(filepath.Join(stateDir, sessionID+".model")) //nolint:gosec // sessionID is validated above
+	hintPath := filepath.Join(stateDir, sessionID+".model")
+	data, err := os.ReadFile(hintPath) //nolint:gosec // sessionID is validated above
 	if err != nil {
+		if !os.IsNotExist(err) {
+			logging.Warn(logging.WithComponent(ctx, "session"), "failed to read model hint file",
+				slog.String("path", hintPath),
+				slog.Any("error", err))
+		}
 		return ""
 	}
-	return string(data)
+	return strings.TrimSpace(string(data))
 }
 
 // ClearSessionState removes the session state file for the given session ID.

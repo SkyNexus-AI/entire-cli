@@ -86,7 +86,8 @@ type Event struct {
 	Prompt string
 
 	// Model is the LLM model identifier (e.g., "claude-sonnet-4-20250514").
-	// Populated on TurnStart events when the agent provides model info.
+	// Populated on SessionStart (Claude Code), ModelUpdate (Gemini CLI BeforeModel),
+	// and TurnStart/TurnEnd events when the agent provides model info.
 	Model string
 
 	// Timestamp is when the event occurred.
