@@ -76,6 +76,10 @@ const (
 	defaultDroidModel           = "custom:" + droidCustomModelBaseID
 )
 
+// DroidCustomModelBaseID returns the base model ID used for BYOK configuration.
+// This is needed by repo setup to write the customModel field in settings.json.
+func DroidCustomModelBaseID() string { return droidCustomModelBaseID }
+
 func (d *Droid) Bootstrap() error {
 	apiKey := os.Getenv("ANTHROPIC_API_KEY")
 	if apiKey == "" {
@@ -182,7 +186,7 @@ func (d *Droid) StartSession(ctx context.Context, dir string) (Session, error) {
 	name := fmt.Sprintf("droid-test-%d", time.Now().UnixNano())
 	// Unset CI and GITHUB_ACTIONS so Droid doesn't enter single-turn/headless
 	// mode — it checks these vars and skips interactive input after the first turn.
-	s, err := NewTmuxSession(name, dir, []string{"CI", "GITHUB_ACTIONS", "ENTIRE_TEST_TTY"}, d.Binary(), "--model", defaultDroidModel, "--skip-permissions-unsafe")
+	s, err := NewTmuxSession(name, dir, []string{"CI", "GITHUB_ACTIONS", "ENTIRE_TEST_TTY"}, d.Binary())
 	if err != nil {
 		return nil, err
 	}
