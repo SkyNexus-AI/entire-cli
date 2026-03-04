@@ -16,6 +16,10 @@ import (
 	"github.com/entireio/cli/cmd/entire/cli/paths"
 )
 
+// defaultRunTimeout is the maximum time an external binary call may take when
+// the caller provides a context without a deadline.
+var defaultRunTimeout = 30 * time.Second //nolint:gochecknoglobals // overridable for testing
+
 // Agent implements agent.Agent by delegating to an external binary.
 // Each method invokes a subcommand on the binary and parses the JSON response.
 type Agent struct {
@@ -394,7 +398,17 @@ func (e *Agent) CalculateTotalTokenUsage(transcriptData []byte, fromOffset int, 
 // If stdin is non-nil it is piped to the process. On non-zero exit, stderr is
 // included in the returned error.
 func (e *Agent) run(ctx context.Context, stdin []byte, args ...string) ([]byte, error) {
+	// Apply a default timeout when the caller hasn't set a deadline, so a hung
+	// external binary can't block the CLI (or git hooks) indefinitely.
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, defaultRunTimeout)
+		defer cancel()
+	}
 	cmd := exec.CommandContext(ctx, e.binaryPath, args...)
+	// Ensure I/O goroutines are released shortly after the process is killed,
+	// so cmd.Run() doesn't block waiting for pipe reads.
+	cmd.WaitDelay = 3 * time.Second
 
 	// Set environment: repo root + protocol version
 	cmd.Env = append(cmd.Environ(),

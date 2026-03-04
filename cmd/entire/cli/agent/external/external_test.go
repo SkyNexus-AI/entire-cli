@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+	"time"
 
 	"github.com/entireio/cli/cmd/entire/cli/agent"
 )
@@ -118,6 +119,86 @@ const validInfoJSON = `{
     "subagent_aware_extractor": false
   }
 }`
+
+func TestRun_AppliesTimeoutWhenNoDeadline(t *testing.T) {
+	// Not parallel: mutates package-level defaultRunTimeout.
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh not available")
+	}
+
+	script := `#!/bin/sh
+case "$1" in
+  info)
+    echo '` + validInfoJSON + `'
+    ;;
+  slow)
+    exec sleep 60
+    ;;
+esac
+`
+	binPath := testBinaryDir(t, script)
+	ea, err := New(binPath)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	// Temporarily override the default timeout to keep the test fast.
+	orig := defaultRunTimeout
+	defaultRunTimeout = 1 * time.Second
+	t.Cleanup(func() { defaultRunTimeout = orig })
+
+	start := time.Now()
+	_, err = ea.run(context.Background(), nil, "slow")
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected timeout error, got nil")
+	}
+	// Should be killed around 1s, not 60s.
+	if elapsed >= 5*time.Second {
+		t.Errorf("run() took %v; default timeout was not applied", elapsed)
+	}
+}
+
+func TestRun_RespectsExistingDeadline(t *testing.T) {
+	t.Parallel()
+
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh not available")
+	}
+
+	script := `#!/bin/sh
+case "$1" in
+  info)
+    echo '` + validInfoJSON + `'
+    ;;
+  slow)
+    exec sleep 60
+    ;;
+esac
+`
+	binPath := testBinaryDir(t, script)
+	ea, err := New(binPath)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	// Provide a context with a short deadline. run() should respect it
+	// and NOT override with its own (longer) timeout.
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+
+	start := time.Now()
+	_, err = ea.run(ctx, nil, "slow")
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected timeout error, got nil")
+	}
+	if elapsed >= 5*time.Second {
+		t.Errorf("run() took %v; caller's deadline was not respected", elapsed)
+	}
+}
 
 func TestNew_Valid(t *testing.T) {
 	t.Parallel()
