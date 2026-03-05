@@ -1431,7 +1431,7 @@ func (s *ManualCommitStrategy) hasNewTranscriptWork(ctx context.Context, state *
 	// Only wait for flush when the session is active — for idle/ended sessions the
 	// transcript is already fully flushed (the Stop hook completed the flush).
 	if state.Phase.IsActive() {
-		if preparer, ok := ag.(agent.TranscriptPreparer); ok {
+		if preparer, ok := agent.AsTranscriptPreparer(ag); ok {
 			if prepErr := preparer.PrepareTranscript(ctx, state.TranscriptPath); prepErr != nil {
 				logging.Debug(logCtx, "prepare transcript failed",
 					slog.String("session_id", state.SessionID),
@@ -1442,8 +1442,7 @@ func (s *ManualCommitStrategy) hasNewTranscriptWork(ctx context.Context, state *
 			}
 		}
 	}
-
-	analyzer, ok := ag.(agent.TranscriptAnalyzer)
+	analyzer, ok := agent.AsTranscriptAnalyzer(ag)
 	if !ok {
 		return false
 	}
@@ -1488,7 +1487,7 @@ func (s *ManualCommitStrategy) extractModifiedFilesFromLiveTranscript(ctx contex
 		return nil
 	}
 
-	analyzer, ok := ag.(agent.TranscriptAnalyzer)
+	analyzer, ok := agent.AsTranscriptAnalyzer(ag)
 	if !ok {
 		return nil
 	}
