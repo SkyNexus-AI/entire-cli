@@ -64,11 +64,10 @@ func (s *Span) End() {
 		return
 	}
 
-	// Build log attributes: component, op, duration_ms, error flag, then child step durations.
-	// The "component" key is intentionally set to "perf" for easy filtering,
-	// even if the context already has a component set via logging.WithComponent().
-	attrs := make([]any, 0, 4+2*len(s.children)+len(s.attrs))
-	attrs = append(attrs, slog.String("component", "perf"))
+	// Build log attributes: op, duration_ms, error flag, then child step durations.
+	// Component is set via context so it appears exactly once in the log line.
+	logCtx := logging.WithComponent(s.ctx, "perf")
+	attrs := make([]any, 0, 3+2*len(s.children)+len(s.attrs))
 	attrs = append(attrs, slog.String("op", s.name))
 	attrs = append(attrs, slog.Int64("duration_ms", s.duration.Milliseconds()))
 	if s.err != nil {
@@ -95,5 +94,5 @@ func (s *Span) End() {
 		attrs = append(attrs, a)
 	}
 
-	logging.Debug(s.ctx, "perf", attrs...)
+	logging.Debug(logCtx, "perf", attrs...)
 }
