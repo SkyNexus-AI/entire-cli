@@ -1,7 +1,10 @@
 package cli
 
 import (
+	"bufio"
 	"encoding/json"
+	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -112,4 +115,45 @@ func parsePerfEntry(line string) *perfEntry {
 	entry.Steps = steps
 
 	return entry
+}
+
+// collectPerfEntries reads a JSONL log file and returns the last N perf entries,
+// ordered newest first. If hookFilter is non-empty, only entries with a matching
+// Op field are included.
+func collectPerfEntries(logFile string, last int, hookFilter string) ([]perfEntry, error) {
+	f, err := os.Open(logFile) //nolint:gosec // logFile is a CLI-resolved path, not user-supplied input
+	if err != nil {
+		return nil, fmt.Errorf("opening perf log: %w", err)
+	}
+	defer f.Close()
+
+	var entries []perfEntry
+
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		entry := parsePerfEntry(scanner.Text())
+		if entry == nil {
+			continue
+		}
+		if hookFilter != "" && entry.Op != hookFilter {
+			continue
+		}
+		entries = append(entries, *entry)
+	}
+
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("reading perf log: %w", err)
+	}
+
+	// Take the last N entries
+	if len(entries) > last {
+		entries = entries[len(entries)-last:]
+	}
+
+	// Reverse so newest entries are first
+	for i, j := 0, len(entries)-1; i < j; i, j = i+1, j-1 {
+		entries[i], entries[j] = entries[j], entries[i]
+	}
+
+	return entries, nil
 }
