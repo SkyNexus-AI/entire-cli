@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"strings"
@@ -156,4 +157,54 @@ func collectPerfEntries(logFile string, last int, hookFilter string) ([]perfEntr
 	}
 
 	return entries, nil
+}
+
+// renderPerfEntries writes a formatted table of perf entries to w.
+// If entries is empty, it prints a help message about enabling perf traces.
+func renderPerfEntries(w io.Writer, entries []perfEntry) {
+	if len(entries) == 0 {
+		fmt.Fprintln(w, "No perf entries found.")
+		fmt.Fprintln(w, `Perf traces are logged at DEBUG level. Make sure ENTIRE_LOG_LEVEL=DEBUG is set`)
+		fmt.Fprintln(w, `in your shell profile, or set log_level to "DEBUG" in .entire/settings.json.`)
+		return
+	}
+
+	for i, entry := range entries {
+		if i > 0 {
+			fmt.Fprintln(w)
+		}
+
+		// Header line: op  duration  [timestamp]
+		header := fmt.Sprintf("%s  %dms", entry.Op, entry.DurationMs)
+		if !entry.Time.IsZero() {
+			header += "  " + entry.Time.Format(time.RFC3339)
+		}
+		fmt.Fprintln(w, header)
+		fmt.Fprintln(w)
+
+		if len(entry.Steps) == 0 {
+			continue
+		}
+
+		// Compute max step name width (at least len("STEP"))
+		nameWidth := len("STEP")
+		for _, s := range entry.Steps {
+			if len(s.Name) > nameWidth {
+				nameWidth = len(s.Name)
+			}
+		}
+
+		// Column header
+		fmt.Fprintf(w, "  %-*s  %8s\n", nameWidth, "STEP", "DURATION")
+
+		// Step rows
+		for _, s := range entry.Steps {
+			dur := fmt.Sprintf("%dms", s.DurationMs)
+			line := fmt.Sprintf("  %-*s  %8s", nameWidth, s.Name, dur)
+			if s.Error {
+				line += "  x"
+			}
+			fmt.Fprintln(w, line)
+		}
+	}
 }

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -163,4 +164,89 @@ func TestCollectPerfEntries(t *testing.T) {
 			t.Fatal("expected error for missing file, got nil")
 		}
 	})
+}
+
+func TestRenderPerfEntries(t *testing.T) {
+	t.Parallel()
+
+	entries := []perfEntry{
+		{
+			Op:         "post-commit",
+			DurationMs: 250,
+			Time:       time.Date(2026, 1, 15, 10, 30, 0, 0, time.UTC),
+			Steps: []perfStep{
+				{Name: "load_session", DurationMs: 50, Error: false},
+				{Name: "save_checkpoint", DurationMs: 80, Error: true},
+				{Name: "condense", DurationMs: 120, Error: false},
+			},
+		},
+	}
+
+	var buf bytes.Buffer
+	renderPerfEntries(&buf, entries)
+	out := buf.String()
+
+	// Verify header contains op name, total duration, and timestamp
+	if !strings.Contains(out, "post-commit") {
+		t.Errorf("output missing op name 'post-commit':\n%s", out)
+	}
+	if !strings.Contains(out, "250ms") {
+		t.Errorf("output missing total duration '250ms':\n%s", out)
+	}
+	if !strings.Contains(out, "2026-01-15T10:30:00Z") {
+		t.Errorf("output missing RFC3339 timestamp:\n%s", out)
+	}
+
+	// Verify step names and durations appear
+	if !strings.Contains(out, "load_session") {
+		t.Errorf("output missing step name 'load_session':\n%s", out)
+	}
+	if !strings.Contains(out, "50ms") {
+		t.Errorf("output missing step duration '50ms':\n%s", out)
+	}
+	if !strings.Contains(out, "save_checkpoint") {
+		t.Errorf("output missing step name 'save_checkpoint':\n%s", out)
+	}
+	if !strings.Contains(out, "80ms") {
+		t.Errorf("output missing step duration '80ms':\n%s", out)
+	}
+	if !strings.Contains(out, "condense") {
+		t.Errorf("output missing step name 'condense':\n%s", out)
+	}
+	if !strings.Contains(out, "120ms") {
+		t.Errorf("output missing step duration '120ms':\n%s", out)
+	}
+
+	// Verify column header
+	if !strings.Contains(out, "STEP") {
+		t.Errorf("output missing column header 'STEP':\n%s", out)
+	}
+	if !strings.Contains(out, "DURATION") {
+		t.Errorf("output missing column header 'DURATION':\n%s", out)
+	}
+
+	// Verify error marker on the errored step line
+	lines := strings.Split(out, "\n")
+	foundErrorMarker := false
+	for _, line := range lines {
+		if strings.Contains(line, "save_checkpoint") && strings.Contains(line, "x") {
+			foundErrorMarker = true
+			break
+		}
+	}
+	if !foundErrorMarker {
+		t.Errorf("output missing error marker 'x' on save_checkpoint line:\n%s", out)
+	}
+}
+
+func TestRenderPerfEntries_Empty(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	renderPerfEntries(&buf, nil)
+	out := buf.String()
+
+	if !strings.Contains(out, "No perf entries found.") {
+		t.Errorf("expected 'No perf entries found.' message, got:\n%s", out)
+	}
 }
