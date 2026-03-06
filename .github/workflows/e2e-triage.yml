@@ -50,27 +50,27 @@ jobs:
           chmod +x scripts/download-e2e-artifacts.sh
           scripts/download-e2e-artifacts.sh "$WORKFLOW_RUN_ID"
 
-      - name: Notify Slack - triage started
-        if: ${{ env.SLACK_WEBHOOK_URL != '' }}
-        uses: slackapi/slack-github-action@91efab103c0de0a537f72a35f6b8cda0ee76bf0a
-        env:
-          RUN_URL: ${{ github.event.workflow_run.html_url || format('https://github.com/{0}/actions/runs/{1}', github.repository, inputs.run_id) }}
-          RUN_ID: ${{ github.event.workflow_run.id || inputs.run_id }}
-        with:
-          webhook: ${{ env.SLACK_WEBHOOK_URL }}
-          webhook-type: incoming-webhook
-          payload: |
-            {
-              "blocks": [
-                {
-                  "type": "section",
-                  "text": {
-                    "type": "mrkdwn",
-                    "text": ":mag: *Claude is triaging E2E failures* from <${{ env.RUN_URL }}|run #${{ env.RUN_ID }}>..."
-                  }
-                }
-              ]
-            }
+      # - name: Notify Slack - triage started
+      #   if: ${{ env.SLACK_WEBHOOK_URL != '' }}
+      #   uses: slackapi/slack-github-action@91efab103c0de0a537f72a35f6b8cda0ee76bf0a
+      #   env:
+      #     RUN_URL: ${{ github.event.workflow_run.html_url || format('https://github.com/{0}/actions/runs/{1}', github.repository, inputs.run_id) }}
+      #     RUN_ID: ${{ github.event.workflow_run.id || inputs.run_id }}
+      #   with:
+      #     webhook: ${{ env.SLACK_WEBHOOK_URL }}
+      #     webhook-type: incoming-webhook
+      #     payload: |
+      #       {
+      #         "blocks": [
+      #           {
+      #             "type": "section",
+      #             "text": {
+      #               "type": "mrkdwn",
+      #               "text": ":mag: *Claude is triaging E2E failures* from <${{ env.RUN_URL }}|run #${{ env.RUN_ID }}>..."
+      #             }
+      #           }
+      #         ]
+      #       }
 
       - name: Run triage
         env:
@@ -80,19 +80,20 @@ jobs:
           WORKFLOW_RUN_URL: ${{ github.event.workflow_run.html_url || format('https://github.com/{0}/actions/runs/{1}', github.repository, inputs.run_id) }}
         run: |
           ARTIFACT_DIR="e2e/artifacts/ci-${WORKFLOW_RUN_ID}"
-          claude -p \
+          cat <<PROMPT | claude -p \
             --model claude-opus-4-6 \
-            --allowedTools "Bash(mise run *),Bash(gh *),Bash(git *),Read,Write,Edit,Glob,Grep" \
-            "You are triaging E2E test failures from CI run ${WORKFLOW_RUN_ID}.
-             Follow the /e2e-triage skill instructions in .claude/skills/e2e-triage/SKILL.md.
-             You are in CI mode (WORKFLOW_RUN_ID is set). Use the CI mode steps.
-             Artifact directory: ${ARTIFACT_DIR}
-             CI run URL: ${WORKFLOW_RUN_URL}
-             Re-run failing tests using the e2e-isolated.yml workflow via gh workflow run.
-             Do NOT ask questions — act autonomously.
-             For flaky fixes: create a PR.
-             For real bugs: create or comment on GitHub issues.
-             Print a summary table at the end."
+            --allowedTools "Read,Glob,Grep,Write,Edit,Bash(mise run test:e2e*),Bash(mise run fmt*),Bash(mise run lint*),Bash(gh workflow run *),Bash(gh run list *),Bash(gh run view *),Bash(gh run download *),Bash(gh pr create *),Bash(gh issue list *),Bash(gh issue create *),Bash(gh issue comment *),Bash(git checkout *),Bash(git add *),Bash(git commit *),Bash(git push *),Bash(git diff *),Bash(git log *),Bash(git status*)"
+          You are triaging E2E test failures from CI run ${WORKFLOW_RUN_ID}.
+          Follow the /e2e-triage skill instructions in .claude/skills/e2e-triage/SKILL.md.
+          You are in CI mode (WORKFLOW_RUN_ID is set). Use the CI mode steps.
+          Artifact directory: ${ARTIFACT_DIR}
+          CI run URL: ${WORKFLOW_RUN_URL}
+          Re-run failing tests using the e2e-isolated.yml workflow via gh workflow run.
+          Do NOT ask questions — act autonomously.
+          For flaky fixes: create a PR.
+          For real bugs: create or comment on GitHub issues.
+          Print a summary table at the end.
+          PROMPT
 
       - name: Build Slack summary
         if: ${{ always() && env.SLACK_WEBHOOK_URL != '' }}
@@ -121,10 +122,10 @@ jobs:
             '{blocks: [{type: "section", text: {type: "mrkdwn", text: $text}}]}' \
             > slack-payload.json
 
-      - name: Notify Slack - triage complete
-        if: ${{ always() && env.SLACK_WEBHOOK_URL != '' }}
-        uses: slackapi/slack-github-action@91efab103c0de0a537f72a35f6b8cda0ee76bf0a
-        with:
-          webhook: ${{ env.SLACK_WEBHOOK_URL }}
-          webhook-type: incoming-webhook
-          payload-file-path: slack-payload.json
+      # - name: Notify Slack - triage complete
+      #   if: ${{ always() && env.SLACK_WEBHOOK_URL != '' }}
+      #   uses: slackapi/slack-github-action@91efab103c0de0a537f72a35f6b8cda0ee76bf0a
+      #   with:
+      #     webhook: ${{ env.SLACK_WEBHOOK_URL }}
+      #     webhook-type: incoming-webhook
+      #     payload-file-path: slack-payload.json
