@@ -78,8 +78,7 @@ func (s *Span) End() {
 	for _, child := range s.children {
 		// Auto-end children that were not explicitly ended
 		if !child.ended {
-			child.ended = true
-			child.duration = time.Since(child.start)
+			child.End()
 		}
 		key := fmt.Sprintf("steps.%s_ms", child.name)
 		attrs = append(attrs, slog.Int64(key, child.duration.Milliseconds()))
