@@ -79,6 +79,15 @@ func (a *CursorCLI) Bootstrap() error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("mkdir %s: %w", dir, err)
 	}
+
+	// Pre-seed cli-config.json so Cursor doesn't need to create it via
+	// atomic temp-file rename, which races under parallel tests.
+	configFile := filepath.Join(dir, "cli-config.json")
+	if _, err := os.Stat(configFile); errors.Is(err, os.ErrNotExist) {
+		if err := os.WriteFile(configFile, []byte("{}"), 0o644); err != nil {
+			return fmt.Errorf("write %s: %w", configFile, err)
+		}
+	}
 	return nil
 }
 
