@@ -81,5 +81,5 @@ homebrew_casks:
 announce:
   discord:
     enabled: '{{ and (isEnvSet "DISCORD_WEBHOOK_ID") (isEnvSet "DISCORD_WEBHOOK_TOKEN") }}'
-    message_template: "Beep, boop. **Entire CLI {{ .Tag }}** is out!\n\n{{ .ReleaseURL }}"
+    message_template: "Beep, boop. **Entire CLI {{ .Tag }}** is out!\n\n{{ .ReleaseURL }}\n\nSee https://docs.entire.io/cli/installation for help installing and updating."
     author: "Entire"
