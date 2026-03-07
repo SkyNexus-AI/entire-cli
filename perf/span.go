@@ -157,7 +157,9 @@ func (l *LoopSpan) Iteration(ctx context.Context) (context.Context, *Span) {
 	return Start(ctx, l.span.name)
 }
 
-// End completes the loop span and auto-ends any unended iteration spans.
+// End completes the loop span by ending the underlying span.
+// Note: this does not itself iterate over and end unended iteration spans;
+// any automatic cleanup of child spans occurs when the root span is ended.
 func (l *LoopSpan) End() {
 	l.span.End()
 }
