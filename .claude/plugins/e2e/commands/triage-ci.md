@@ -1,5 +1,5 @@
 ---
-description: "Run failing E2E tests locally, classify flaky vs real-bug, present findings report"
+description: "Triage E2E failures via local reruns or CI artifacts, classify flaky vs real-bug, present findings report"
 ---
 
 # Triage CI Command

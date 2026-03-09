@@ -66,10 +66,10 @@ Cross-reference console.log (what happened) with the test (what should have happ
 |---------|-------------------|
 | Checkpoint not created / timeout | Check `entire-logs/entire.log` for hook invocations, phase transitions, errors |
 | Wrong checkpoint content | Check `git-tree.txt` for checkpoint branch files, `checkpoint-metadata/` for session info |
-| Hooks didn't fire | Check `entire.log` for missing hook entries (session-start, user-prompt-submit, stop, post-commit) |
-| Stash/unstash problems | Check `entire.log` for stash-related log lines, `git-log.txt` for commit ordering |
+| Hooks didn't fire | Check `entire-logs/entire.log` for missing hook entries (session-start, user-prompt-submit, stop, post-commit) |
+| Stash/unstash problems | Check `entire-logs/entire.log` for stash-related log lines, `git-log.txt` for commit ordering |
 | Attribution issues | Check `checkpoint-metadata/` for `files_touched`, session metadata for attribution data |
-| Strategy mismatch | Check `entire.log` for `strategy` field, verify auto-commit vs manual-commit behavior |
+| Strategy mismatch | Check `entire-logs/entire.log` for `strategy` field, verify auto-commit vs manual-commit behavior |
 
 ### 5. Deep dive files
 
