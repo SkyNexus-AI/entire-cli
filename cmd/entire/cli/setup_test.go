@@ -59,7 +59,7 @@ func TestRunEnable(t *testing.T) {
 	writeSettings(t, testSettingsDisabled)
 
 	var stdout bytes.Buffer
-	if err := runEnable(context.Background(), &stdout); err != nil {
+	if err := runEnable(context.Background(), &stdout, false); err != nil {
 		t.Fatalf("runEnable() error = %v", err)
 	}
 
@@ -81,7 +81,7 @@ func TestRunEnable_AlreadyEnabled(t *testing.T) {
 	writeSettings(t, testSettingsEnabled)
 
 	var stdout bytes.Buffer
-	if err := runEnable(context.Background(), &stdout); err != nil {
+	if err := runEnable(context.Background(), &stdout, false); err != nil {
 		t.Fatalf("runEnable() error = %v", err)
 	}
 

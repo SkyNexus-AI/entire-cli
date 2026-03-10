@@ -15,8 +15,8 @@ import (
 const gettingStarted = `
 
 Getting Started:
-  To get started with Entire CLI, run 'entire enable' to configure
-  your project's environment. For more information, visit:
+  To get started with Entire CLI, run 'entire configure' to configure
+  your repository. For more information, visit:
   https://docs.entire.io/introduction
 
 `

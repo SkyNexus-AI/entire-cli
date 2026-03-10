@@ -43,7 +43,7 @@ type EnableOptions struct {
 }
 
 // runSetupFlow runs the first-time setup flow (agent selection + hooks + settings).
-// Shared by root command (no args), `entire setup`, and `entire enable` on fresh repos.
+// Shared by root command (no args), `entire configure`, and `entire enable` on fresh repos.
 func runSetupFlow(ctx context.Context, w io.Writer) error {
 	// Discover external agent plugins so they appear in agent selection.
 	external.DiscoverAndRegister(ctx)
@@ -91,7 +91,7 @@ func runAddAgents(ctx context.Context, w io.Writer, opts EnableOptions) error {
 	// Check if we can prompt interactively
 	if !canPromptInteractively() {
 		fmt.Fprintln(w, "Cannot show agent selection in non-interactive mode.")
-		fmt.Fprintln(w, "Use: entire setup --agent <name>")
+		fmt.Fprintln(w, "Use: entire configure --agent <name>")
 		return nil
 	}
 
@@ -147,8 +147,8 @@ func runAddAgents(ctx context.Context, w io.Writer, opts EnableOptions) error {
 	form := NewAccessibleForm(
 		huh.NewGroup(
 			huh.NewMultiSelect[string]().
-				Title("Which agents are you using?").
-				Description("Use space to select, enter to confirm. Already-enabled agents cannot be removed.").
+				Title("Enable more agents").
+				Description("Use space to select, enter to confirm.").
 				Options(options...).
 				Validate(func(selected []string) error {
 					if len(selected) == 0 {
@@ -216,17 +216,16 @@ func newSetupCmd() *cobra.Command {
 	var agentName string
 
 	cmd := &cobra.Command{
-		Use:   "setup",
-		Short: "Set up Entire in current project",
-		Long: `Set up Entire with session tracking for your AI agent workflows.
+		Use:   "configure",
+		Short: "Configure Entire in current repository",
+		Long: `Configure Entire with session tracking for your AI agent workflows.
 
 On first run, this configures Entire and installs agent hooks.
-On subsequent runs, it lets you add more agents to your setup.`,
-		Aliases: []string{"init"},
+On subsequent runs, it lets you add more agents to your configuration.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
 			if _, err := paths.WorktreeRoot(ctx); err != nil {
-				fmt.Fprintln(cmd.ErrOrStderr(), "Not a git repository. Please run 'entire setup' from within a git repository.")
+				fmt.Fprintln(cmd.ErrOrStderr(), "Not a git repository. Please run 'entire configure' from within a git repository.")
 				return NewSilentError(errors.New("not a git repository"))
 			}
 
@@ -285,11 +284,11 @@ func newEnableCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "enable",
-		Short: "Enable Entire in current project",
+		Short: "Enable Entire in current repository",
 		Long: `Enable Entire with session tracking for your AI agent workflows.
 
-If Entire is not yet set up, this runs the full setup flow.
-If Entire is already set up but disabled, this re-enables it.`,
+If Entire is not yet configured, this runs the full configuration flow.
+If Entire is already configured but disabled, this re-enables it.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
 			// Check if we're in a git repository first - this is a prerequisite error,
@@ -326,10 +325,12 @@ If Entire is already set up but disabled, this re-enables it.`,
 			if settings.IsSetUpAny(ctx) {
 				enabled, err := IsEnabled(ctx)
 				if err == nil && enabled {
-					fmt.Fprintln(cmd.OutOrStdout(), "Entire is already enabled. Use `entire setup` to add more agents.")
+					w := cmd.OutOrStdout()
+					fmt.Fprintln(w, "Entire is already enabled.")
+					printEnabledStatus(ctx, w)
 					return nil
 				}
-				return runEnable(ctx, cmd.OutOrStdout())
+				return runEnable(ctx, cmd.OutOrStdout(), opts.UseProjectSettings)
 			}
 
 			// Fresh repo — run full setup flow
@@ -373,8 +374,8 @@ func newDisableCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "disable",
-		Short: "Disable Entire in current project",
-		Long: `Disable Entire integrations in the current project.
+		Short: "Disable Entire in current repository",
+		Long: `Disable Entire integrations in the current repository.
 
 By default, this command will disable Entire. Hooks will exit silently and commands will
 show a disabled message.
@@ -501,19 +502,44 @@ func runEnableInteractive(ctx context.Context, w io.Writer, agents []agent.Agent
 	return nil
 }
 
-// runEnable is a simple enable that just sets the enabled flag (for programmatic use).
-func runEnable(ctx context.Context, w io.Writer) error {
-	settings, err := LoadEntireSettings(ctx)
+// printEnabledStatus prints agents and a hint about `entire configure`.
+func printEnabledStatus(ctx context.Context, w io.Writer) {
+	installedNames := GetAgentsWithHooksInstalled(ctx)
+	if len(installedNames) > 0 {
+		displayNames := make([]string, 0, len(installedNames))
+		for _, name := range installedNames {
+			if ag, agErr := agent.Get(name); agErr == nil {
+				displayNames = append(displayNames, string(ag.Type()))
+			}
+		}
+		fmt.Fprintf(w, "Agents: %s\n", strings.Join(displayNames, ", "))
+	}
+	fmt.Fprintln(w, "\nTo add more agents, run `entire configure`.")
+}
+
+// runEnable is a simple enable that sets the enabled flag.
+// It writes to settings.local.json by default (matching runDisable),
+// so that re-enabling after disable overrides the local disable.
+func runEnable(ctx context.Context, w io.Writer, useProjectSettings bool) error {
+	s, err := LoadEntireSettings(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to load settings: %w", err)
 	}
 
-	settings.Enabled = true
-	if err := SaveEntireSettings(ctx, settings); err != nil {
-		return fmt.Errorf("failed to save settings: %w", err)
+	s.Enabled = true
+
+	if useProjectSettings {
+		if err := SaveEntireSettings(ctx, s); err != nil {
+			return fmt.Errorf("failed to save settings: %w", err)
+		}
+	} else {
+		if err := SaveEntireSettingsLocal(ctx, s); err != nil {
+			return fmt.Errorf("failed to save local settings: %w", err)
+		}
 	}
 
 	fmt.Fprintln(w, "Entire is now enabled.")
+	printEnabledStatus(ctx, w)
 	return nil
 }
 
