@@ -1014,11 +1014,12 @@ func initBareWithMetadataBranch(t *testing.T) string {
 	run(workDir, "clone", bareDir, ".")
 	run(workDir, "config", "user.email", "test@test.com")
 	run(workDir, "config", "user.name", "Test User")
+	run(workDir, "config", "commit.gpgsign", "false")
 	if err := os.WriteFile(filepath.Join(workDir, "README.md"), []byte("# Test"), 0o644); err != nil {
 		t.Fatalf("failed to write file: %v", err)
 	}
 	run(workDir, "add", ".")
-	run(workDir, "commit", "--no-gpg-sign", "-m", "init")
+	run(workDir, "commit", "-m", "init")
 	run(workDir, "push", "origin", "main")
 
 	// Create orphan entire/checkpoints/v1 with data
@@ -1028,7 +1029,7 @@ func initBareWithMetadataBranch(t *testing.T) string {
 		t.Fatalf("failed to write file: %v", err)
 	}
 	run(workDir, "add", ".")
-	run(workDir, "commit", "--no-gpg-sign", "-m", "Checkpoint: test123")
+	run(workDir, "commit", "-m", "Checkpoint: test123")
 	run(workDir, "push", "origin", paths.MetadataBranchName)
 
 	return bareDir
