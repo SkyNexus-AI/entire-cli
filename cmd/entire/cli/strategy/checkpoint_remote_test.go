@@ -497,6 +497,40 @@ func TestResolvePushSettings_ForkDetection(t *testing.T) {
 }
 
 // Not parallel: uses t.Chdir()
+func TestResolvePushSettings_CheckpointURLDoesNotAffectRemoteField(t *testing.T) {
+	ctx := context.Background()
+
+	localDir := t.TempDir()
+	testutil.InitRepo(t, localDir)
+	testutil.WriteFile(t, localDir, "f.txt", "init")
+	testutil.GitAdd(t, localDir, "f.txt")
+	testutil.GitCommit(t, localDir, "init")
+
+	// Add origin with HTTPS URL
+	cmd := exec.CommandContext(ctx, "git", "remote", "add", "origin", "https://github.com/org/main-repo.git")
+	cmd.Dir = localDir
+	cmd.Env = testutil.GitIsolatedEnv()
+	require.NoError(t, cmd.Run())
+
+	entireDir := filepath.Join(localDir, ".entire")
+	require.NoError(t, os.MkdirAll(entireDir, 0o755))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(entireDir, "settings.json"),
+		[]byte(`{"enabled": true, "strategy_options": {"checkpoint_remote": {"provider": "github", "repo": "org/checkpoints"}}}`),
+		0o644,
+	))
+
+	t.Chdir(localDir)
+
+	ps := resolvePushSettings(ctx, "origin")
+
+	// pushTarget() returns the checkpoint URL for checkpoint branches
+	assert.Equal(t, "https://github.com/org/checkpoints.git", ps.pushTarget())
+	// remote field is unchanged — trails should use this
+	assert.Equal(t, "origin", ps.remote)
+}
+
+// Not parallel: uses t.Chdir()
 func TestResolvePushSettings_LegacyStringConfigIgnored(t *testing.T) {
 	tmpDir := t.TempDir()
 	testutil.InitRepo(t, tmpDir)
