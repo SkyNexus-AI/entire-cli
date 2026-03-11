@@ -185,38 +185,31 @@ func ListCheckpoints(ctx context.Context) ([]CheckpointInfo, error) {
 			}
 
 			// Get details from metadata file (CheckpointSummary format)
-			if metadataFile, fileErr := checkpointTree.File(paths.MetadataFileName); fileErr == nil {
-				if content, contentErr := metadataFile.Contents(); contentErr == nil {
-					var summary checkpoint.CheckpointSummary
-					if json.Unmarshal([]byte(content), &summary) == nil && len(summary.Sessions) > 0 {
-						info.CheckpointsCount = summary.CheckpointsCount
-						info.FilesTouched = summary.FilesTouched
-						info.SessionCount = len(summary.Sessions)
+			if summary, ok := decodeSummaryLiteFromTree(checkpointTree); ok {
+				info.CheckpointsCount = summary.CheckpointsCount
+				info.FilesTouched = summary.FilesTouched
+				info.SessionCount = len(summary.Sessions)
 
-						// Read session-level metadata for Agent, SessionID, CreatedAt, SessionIDs
-						for i, sessionPaths := range summary.Sessions {
-							if sessionPaths.Metadata != "" {
-								// SessionFilePaths now contains absolute paths with leading "/"
-								// Strip the leading "/" for tree.File() which expects paths without leading slash
-								sessionMetadataPath := strings.TrimPrefix(sessionPaths.Metadata, "/")
-								if sessionFile, sErr := tree.File(sessionMetadataPath); sErr == nil {
-									if sessionContent, scErr := sessionFile.Contents(); scErr == nil {
-										var sessionMetadata checkpoint.CommittedMetadata
-										if json.Unmarshal([]byte(sessionContent), &sessionMetadata) == nil {
-											info.SessionIDs = append(info.SessionIDs, sessionMetadata.SessionID)
-											// Use first session's metadata for Agent, SessionID, CreatedAt
-											if i == 0 {
-												info.Agent = sessionMetadata.Agent
-												info.SessionID = sessionMetadata.SessionID
-												info.CreatedAt = sessionMetadata.CreatedAt
-												info.IsTask = sessionMetadata.IsTask
-												info.ToolUseID = sessionMetadata.ToolUseID
-											}
-										}
-									}
-								}
-							}
-						}
+				// Read session-level metadata for Agent, SessionID, CreatedAt, SessionIDs
+				for i, sessionPaths := range summary.Sessions {
+					if sessionPaths.Metadata == "" {
+						continue
+					}
+					// SessionFilePaths contains absolute paths with leading "/"
+					// Strip the leading "/" for tree.File() which expects paths without leading slash
+					sessionMetadataPath := strings.TrimPrefix(sessionPaths.Metadata, "/")
+					sessionMeta, sErr := decodeSessionMetadataLite(tree, sessionMetadataPath)
+					if sErr != nil {
+						continue
+					}
+					info.SessionIDs = append(info.SessionIDs, sessionMeta.SessionID)
+					// Use first session's metadata for Agent, SessionID, CreatedAt
+					if i == 0 {
+						info.Agent = sessionMeta.Agent
+						info.SessionID = sessionMeta.SessionID
+						info.CreatedAt = sessionMeta.CreatedAt
+						info.IsTask = sessionMeta.IsTask
+						info.ToolUseID = sessionMeta.ToolUseID
 					}
 				}
 			}
@@ -402,10 +395,74 @@ func isEmptyMetadataBranch(repo *git.Repository, ref *plumbing.Reference) (bool,
 	return len(tree.Entries) == 0, nil
 }
 
-// readCheckpointMetadata reads metadata.json from a checkpoint path on entire/checkpoints/v1.
+// sessionMetadataLite contains only the fields needed from session-level metadata.json.
+// Using a minimal struct avoids allocating large nested objects (Summary, InitialAttribution,
+// TokenUsage, etc.) that CommittedMetadata carries but callers never need here.
+type sessionMetadataLite struct {
+	SessionID string          `json:"session_id"`
+	Agent     types.AgentType `json:"agent,omitempty"`
+	CreatedAt time.Time       `json:"created_at"`
+	IsTask    bool            `json:"is_task,omitempty"`
+	ToolUseID string          `json:"tool_use_id,omitempty"`
+}
+
+// checkpointSummaryLite contains only the fields needed from the root metadata.json.
+// Avoids allocating TokenUsage and other heavy fields from CheckpointSummary.
+type checkpointSummaryLite struct {
+	CheckpointID     id.CheckpointID               `json:"checkpoint_id"`
+	CheckpointsCount int                           `json:"checkpoints_count"`
+	FilesTouched     []string                      `json:"files_touched"`
+	Sessions         []checkpoint.SessionFilePaths `json:"sessions"`
+}
+
+// decodeSessionMetadataLite reads a session metadata.json from the tree using a streaming
+// json.Decoder and a minimal struct to avoid allocating large unused fields.
+func decodeSessionMetadataLite(tree *object.Tree, metadataPath string) (*sessionMetadataLite, error) {
+	file, err := tree.File(metadataPath)
+	if err != nil {
+		return nil, fmt.Errorf("session metadata file %s: %w", metadataPath, err)
+	}
+	reader, err := file.Reader()
+	if err != nil {
+		return nil, fmt.Errorf("session metadata reader %s: %w", metadataPath, err)
+	}
+	defer reader.Close()
+
+	var meta sessionMetadataLite
+	if err := json.NewDecoder(reader).Decode(&meta); err != nil {
+		return nil, fmt.Errorf("decode session metadata %s: %w", metadataPath, err)
+	}
+	return &meta, nil
+}
+
+// decodeSummaryLiteFromTree reads and decodes metadata.json from a checkpoint tree
+// using a streaming decoder and minimal struct. Returns the decoded summary and true
+// if successful with at least one session, or zero value and false otherwise.
+func decodeSummaryLiteFromTree(checkpointTree *object.Tree) (checkpointSummaryLite, bool) {
+	metadataFile, fileErr := checkpointTree.File(paths.MetadataFileName)
+	if fileErr != nil {
+		return checkpointSummaryLite{}, false
+	}
+	reader, readerErr := metadataFile.Reader()
+	if readerErr != nil {
+		return checkpointSummaryLite{}, false
+	}
+	defer reader.Close()
+
+	var summary checkpointSummaryLite
+	if err := json.NewDecoder(reader).Decode(&summary); err != nil || len(summary.Sessions) == 0 {
+		return checkpointSummaryLite{}, false
+	}
+	return summary, true
+}
+
+// ReadCheckpointMetadata reads metadata.json from a checkpoint path on entire/checkpoints/v1.
 // With the new format, root metadata.json is a CheckpointSummary with Agents array.
 // This function reads the summary and extracts relevant fields into CheckpointInfo,
 // also reading session-level metadata for IsTask/ToolUseID fields.
+//
+// Uses streaming json.Decoder and minimal structs to avoid loading large nested
+// objects (Summary, InitialAttribution, TokenUsage) into memory.
 func ReadCheckpointMetadata(tree *object.Tree, checkpointPath string) (*CheckpointInfo, error) {
 	metadataPath := checkpointPath + "/metadata.json"
 	file, err := tree.File(metadataPath)
@@ -413,14 +470,15 @@ func ReadCheckpointMetadata(tree *object.Tree, checkpointPath string) (*Checkpoi
 		return nil, fmt.Errorf("failed to find metadata at %s: %w", metadataPath, err)
 	}
 
-	content, err := file.Contents()
+	reader, err := file.Reader()
 	if err != nil {
 		return nil, fmt.Errorf("failed to read metadata: %w", err)
 	}
+	defer reader.Close()
 
-	// Try to parse as CheckpointSummary first (new format)
-	var summary checkpoint.CheckpointSummary
-	if err := json.Unmarshal([]byte(content), &summary); err == nil {
+	// Try to parse as CheckpointSummary first (new format) using lite struct
+	var summary checkpointSummaryLite
+	if err := json.NewDecoder(reader).Decode(&summary); err == nil {
 		// If we have sessions array, this is the new format
 		if len(summary.Sessions) > 0 {
 			info := &CheckpointInfo{
@@ -433,26 +491,24 @@ func ReadCheckpointMetadata(tree *object.Tree, checkpointPath string) (*Checkpoi
 			// Read all sessions' metadata to populate SessionIDs and get other fields from first session
 			var sessionIDs []string
 			for i, sessionPaths := range summary.Sessions {
-				if sessionPaths.Metadata != "" {
-					// SessionFilePaths now contains absolute paths with leading "/"
-					// Strip the leading "/" for tree.File() which expects paths without leading slash
-					sessionMetadataPath := strings.TrimPrefix(sessionPaths.Metadata, "/")
-					if sessionFile, err := tree.File(sessionMetadataPath); err == nil {
-						if sessionContent, err := sessionFile.Contents(); err == nil {
-							var sessionMetadata checkpoint.CommittedMetadata
-							if json.Unmarshal([]byte(sessionContent), &sessionMetadata) == nil {
-								sessionIDs = append(sessionIDs, sessionMetadata.SessionID)
-								// Use first session for Agent, SessionID, CreatedAt, IsTask, ToolUseID
-								if i == 0 {
-									info.Agent = sessionMetadata.Agent
-									info.SessionID = sessionMetadata.SessionID
-									info.CreatedAt = sessionMetadata.CreatedAt
-									info.IsTask = sessionMetadata.IsTask
-									info.ToolUseID = sessionMetadata.ToolUseID
-								}
-							}
-						}
-					}
+				if sessionPaths.Metadata == "" {
+					continue
+				}
+				// SessionFilePaths contains absolute paths with leading "/"
+				// Strip the leading "/" for tree.File() which expects paths without leading slash
+				sessionMetadataPath := strings.TrimPrefix(sessionPaths.Metadata, "/")
+				sessionMeta, sErr := decodeSessionMetadataLite(tree, sessionMetadataPath)
+				if sErr != nil {
+					continue
+				}
+				sessionIDs = append(sessionIDs, sessionMeta.SessionID)
+				// Use first session for Agent, SessionID, CreatedAt, IsTask, ToolUseID
+				if i == 0 {
+					info.Agent = sessionMeta.Agent
+					info.SessionID = sessionMeta.SessionID
+					info.CreatedAt = sessionMeta.CreatedAt
+					info.IsTask = sessionMeta.IsTask
+					info.ToolUseID = sessionMeta.ToolUseID
 				}
 			}
 			info.SessionIDs = sessionIDs
@@ -461,9 +517,16 @@ func ReadCheckpointMetadata(tree *object.Tree, checkpointPath string) (*Checkpoi
 		}
 	}
 
-	// Fall back to parsing as CheckpointInfo (old format or direct info)
+	// Fall back to parsing as CheckpointInfo (old format or direct info).
+	// Re-read the file since the decoder consumed the reader.
+	fallbackReader, err := file.Reader()
+	if err != nil {
+		return nil, fmt.Errorf("failed to re-read metadata: %w", err)
+	}
+	defer fallbackReader.Close()
+
 	var metadata CheckpointInfo
-	if err := json.Unmarshal([]byte(content), &metadata); err != nil {
+	if err := json.NewDecoder(fallbackReader).Decode(&metadata); err != nil {
 		return nil, fmt.Errorf("failed to parse metadata: %w", err)
 	}
 
