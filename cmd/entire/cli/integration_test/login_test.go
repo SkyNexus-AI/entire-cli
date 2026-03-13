@@ -33,25 +33,27 @@ func TestLogin_SavesTokenAfterApproval(t *testing.T) {
 	serverState := &state{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/cli/auth/start":
+		case r.Method == http.MethodPost && r.URL.Path == "/oauth/device/code":
 			writeJSON(t, w, http.StatusOK, map[string]any{
-				"deviceCode": "device-123",
-				"userCode":   "ABCD-EFGH",
-				"browserUrl": serverURLWithPath(r, "/approve?code=ABCD-EFGH"),
-				"expiresIn":  10,
+				"device_code":               "device-123",
+				"user_code":                 "ABCD-EFGH",
+				"verification_uri":          serverURLWithPath(r, "/approve"),
+				"verification_uri_complete": serverURLWithPath(r, "/approve?code=ABCD-EFGH"),
+				"expires_in":                10,
+				"interval":                  1,
 			})
-		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/cli/auth/poll":
+		case r.Method == http.MethodPost && r.URL.Path == "/oauth/token":
 			serverState.Lock()
 			serverState.polls++
 			approved := serverState.approved
 			serverState.Unlock()
 
 			if !approved {
-				writeJSON(t, w, http.StatusOK, map[string]any{"status": "pending"})
+				writeJSON(t, w, http.StatusBadRequest, map[string]any{"error": "authorization_pending"})
 				return
 			}
 
-			writeJSON(t, w, http.StatusOK, map[string]any{"status": "complete", "token": "local-token"})
+			writeJSON(t, w, http.StatusOK, map[string]any{"access_token": "local-token", "token_type": "Bearer", "expires_in": 3600, "scope": "cli"})
 		case r.Method == http.MethodPost && r.URL.Path == "/approve":
 			serverState.Lock()
 			serverState.approved = true
@@ -122,15 +124,17 @@ func TestLogin_ExpiredFlow(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/cli/auth/start":
+		case r.Method == http.MethodPost && r.URL.Path == "/oauth/device/code":
 			writeJSON(t, w, http.StatusOK, map[string]any{
-				"deviceCode": "device-expired",
-				"userCode":   "WXYZ-0000",
-				"browserUrl": serverURLWithPath(r, "/approve?code=WXYZ-0000"),
-				"expiresIn":  10,
+				"device_code":               "device-expired",
+				"user_code":                 "WXYZ-0000",
+				"verification_uri":          serverURLWithPath(r, "/approve"),
+				"verification_uri_complete": serverURLWithPath(r, "/approve?code=WXYZ-0000"),
+				"expires_in":                10,
+				"interval":                  1,
 			})
-		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/cli/auth/poll":
-			writeJSON(t, w, http.StatusGone, map[string]any{"status": "expired"})
+		case r.Method == http.MethodPost && r.URL.Path == "/oauth/token":
+			writeJSON(t, w, http.StatusBadRequest, map[string]any{"error": "expired_token"})
 		default:
 			http.NotFound(w, r)
 		}
@@ -159,15 +163,17 @@ func TestLogin_DeniedFlow(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/cli/auth/start":
+		case r.Method == http.MethodPost && r.URL.Path == "/oauth/device/code":
 			writeJSON(t, w, http.StatusOK, map[string]any{
-				"deviceCode": "device-denied",
-				"userCode":   "QRST-9999",
-				"browserUrl": serverURLWithPath(r, "/approve?code=QRST-9999"),
-				"expiresIn":  10,
+				"device_code":               "device-denied",
+				"user_code":                 "QRST-9999",
+				"verification_uri":          serverURLWithPath(r, "/approve"),
+				"verification_uri_complete": serverURLWithPath(r, "/approve?code=QRST-9999"),
+				"expires_in":                10,
+				"interval":                  1,
 			})
-		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/cli/auth/poll":
-			writeJSON(t, w, http.StatusOK, map[string]any{"status": "denied", "error": "approval rejected"})
+		case r.Method == http.MethodPost && r.URL.Path == "/oauth/token":
+			writeJSON(t, w, http.StatusBadRequest, map[string]any{"error": "access_denied"})
 		default:
 			http.NotFound(w, r)
 		}
@@ -182,7 +188,7 @@ func TestLogin_DeniedFlow(t *testing.T) {
 		t.Fatalf("expected login to fail for denied flow\nOutput:\n%s", output)
 	}
 
-	if !strings.Contains(output, "device authorization denied: approval rejected") {
+	if !strings.Contains(output, "device authorization denied") {
 		t.Fatalf("expected denied message, got:\n%s", output)
 	}
 

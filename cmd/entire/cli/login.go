@@ -13,7 +13,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-const deviceAuthPollInterval = time.Second
+const fallbackDeviceAuthPollInterval = time.Second
 
 var browserOpener = openBrowser
 
@@ -42,12 +42,17 @@ func runLogin(ctx context.Context, outW, errW io.Writer, printBrowserURL bool) e
 	}
 
 	fmt.Fprintf(outW, "Device code: %s\n", start.UserCode)
-	fmt.Fprintf(outW, "Approval URL: %s\n", start.BrowserURL)
+	approvalURL := start.VerificationURIComplete
+	if approvalURL == "" {
+		approvalURL = start.VerificationURI
+	}
+
+	fmt.Fprintf(outW, "Approval URL: %s\n", approvalURL)
 
 	if printBrowserURL {
 		fmt.Fprintln(outW, "Open the approval URL in your browser to continue.")
 	} else {
-		if err := browserOpener(ctx, start.BrowserURL); err != nil {
+		if err := browserOpener(ctx, approvalURL); err != nil {
 			fmt.Fprintf(errW, "Warning: failed to open browser automatically: %v\n", err)
 			fmt.Fprintln(outW, "Open the approval URL in your browser to continue.")
 		} else {
@@ -57,7 +62,7 @@ func runLogin(ctx context.Context, outW, errW io.Writer, printBrowserURL bool) e
 
 	fmt.Fprintln(outW, "Waiting for approval...")
 
-	token, err := waitForApproval(ctx, client, start.DeviceCode, start.ExpiresIn)
+	token, err := waitForApproval(ctx, client, start.DeviceCode, start.ExpiresIn, start.Interval)
 	if err != nil {
 		return fmt.Errorf("complete login: %w", err)
 	}
@@ -75,8 +80,12 @@ func runLogin(ctx context.Context, outW, errW io.Writer, printBrowserURL bool) e
 	return nil
 }
 
-func waitForApproval(ctx context.Context, client *auth.Client, deviceCode string, expiresIn int) (string, error) {
+func waitForApproval(ctx context.Context, client *auth.Client, deviceCode string, expiresIn, interval int) (string, error) {
 	deadline := time.Now().Add(time.Duration(expiresIn) * time.Second)
+	pollInterval := time.Duration(interval) * time.Second
+	if pollInterval <= 0 {
+		pollInterval = fallbackDeviceAuthPollInterval
+	}
 
 	for {
 		if time.Now().After(deadline) {
@@ -88,29 +97,30 @@ func waitForApproval(ctx context.Context, client *auth.Client, deviceCode string
 			return "", fmt.Errorf("poll approval status: %w", err)
 		}
 
-		switch result.Status {
-		case "pending":
+		switch result.Error {
+		case "", "authorization_pending":
 			// continue below
-		case "complete":
-			if result.Token == "" {
+		case "slow_down":
+			pollInterval += time.Second
+		case "access_denied":
+			return "", errors.New("device authorization denied")
+		case "expired_token":
+			return "", errors.New("device authorization expired")
+		default:
+			return "", fmt.Errorf("device authorization failed: %s", result.Error)
+		}
+
+		if result.Error == "" {
+			if result.AccessToken == "" {
 				return "", errors.New("device authorization completed without a token")
 			}
-			return result.Token, nil
-		case "expired":
-			return "", errors.New("device authorization expired")
-		case "denied":
-			if result.Error != "" {
-				return "", fmt.Errorf("device authorization denied: %s", result.Error)
-			}
-			return "", errors.New("device authorization denied")
-		default:
-			return "", fmt.Errorf("unexpected device authorization status: %s", result.Status)
+			return result.AccessToken, nil
 		}
 
 		select {
 		case <-ctx.Done():
 			return "", fmt.Errorf("wait for approval: %w", ctx.Err())
-		case <-time.After(deviceAuthPollInterval):
+		case <-time.After(pollInterval):
 		}
 	}
 }

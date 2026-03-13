@@ -21,16 +21,20 @@ type Client struct {
 }
 
 type DeviceAuthStart struct {
-	DeviceCode string `json:"deviceCode"`
-	UserCode   string `json:"userCode"`
-	BrowserURL string `json:"browserUrl"`
-	ExpiresIn  int    `json:"expiresIn"`
+	DeviceCode              string `json:"device_code"`
+	UserCode                string `json:"user_code"`
+	VerificationURI         string `json:"verification_uri"`
+	VerificationURIComplete string `json:"verification_uri_complete"`
+	ExpiresIn               int    `json:"expires_in"`
+	Interval                int    `json:"interval"`
 }
 
 type DeviceAuthPoll struct {
-	Status string `json:"status"`
-	Token  string `json:"token,omitempty"`
-	Error  string `json:"error,omitempty"`
+	AccessToken string `json:"access_token,omitempty"`
+	TokenType   string `json:"token_type,omitempty"`
+	ExpiresIn   int    `json:"expires_in,omitempty"`
+	Scope       string `json:"scope,omitempty"`
+	Error       string `json:"error,omitempty"`
 }
 
 type errorResponse struct {
@@ -53,17 +57,22 @@ func (c *Client) BaseURL() string {
 }
 
 func (c *Client) StartDeviceAuth(ctx context.Context) (*DeviceAuthStart, error) {
-	endpoint, err := apiurl.ResolveURLFromBase(c.baseURL, "/api/v1/cli/auth/start")
+	endpoint, err := apiurl.ResolveURLFromBase(c.baseURL, "/oauth/device/code")
 	if err != nil {
 		return nil, fmt.Errorf("resolve device auth start URL: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, http.NoBody)
+	body := url.Values{}
+	body.Set("client_id", "entire-cli")
+	body.Set("scope", "cli")
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(body.Encode()))
 	if err != nil {
 		return nil, fmt.Errorf("create device auth start request: %w", err)
 	}
 
 	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("User-Agent", "entire-cli")
 
 	resp, err := c.httpClient.Do(req) //nolint:gosec // base URL is constrained to Entire API or explicit local dev override
@@ -85,17 +94,23 @@ func (c *Client) StartDeviceAuth(ctx context.Context) (*DeviceAuthStart, error) 
 }
 
 func (c *Client) PollDeviceAuth(ctx context.Context, deviceCode string) (*DeviceAuthPoll, error) {
-	endpoint, err := apiurl.ResolveURLFromBase(c.baseURL, "/api/v1/cli/auth/poll?device_code="+url.QueryEscape(deviceCode))
+	endpoint, err := apiurl.ResolveURLFromBase(c.baseURL, "/oauth/token")
 	if err != nil {
 		return nil, fmt.Errorf("resolve device auth poll URL: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	body := url.Values{}
+	body.Set("grant_type", "urn:ietf:params:oauth:grant-type:device_code")
+	body.Set("client_id", "entire-cli")
+	body.Set("device_code", deviceCode)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(body.Encode()))
 	if err != nil {
 		return nil, fmt.Errorf("create device auth poll request: %w", err)
 	}
 
 	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("User-Agent", "entire-cli")
 
 	resp, err := c.httpClient.Do(req) //nolint:gosec // base URL is constrained to Entire API or explicit local dev override
@@ -104,12 +119,12 @@ func (c *Client) PollDeviceAuth(ctx context.Context, deviceCode string) (*Device
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode == http.StatusGone {
-		return &DeviceAuthPoll{Status: "expired"}, nil
-	}
-
 	if resp.StatusCode != http.StatusOK {
-		return nil, readAPIError(resp, "poll device auth")
+		apiErr, err := readAPIErrorResponse(resp)
+		if err != nil {
+			return nil, fmt.Errorf("poll device auth: %w", err)
+		}
+		return &DeviceAuthPoll{Error: apiErr.Error}, nil
 	}
 
 	var result DeviceAuthPoll
@@ -120,23 +135,31 @@ func (c *Client) PollDeviceAuth(ctx context.Context, deviceCode string) (*Device
 	return &result, nil
 }
 
-func readAPIError(resp *http.Response, action string) error {
+func readAPIErrorResponse(resp *http.Response) (*errorResponse, error) {
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 	if err != nil {
-		return fmt.Errorf("%s: status %d", action, resp.StatusCode)
+		return nil, fmt.Errorf("status %d", resp.StatusCode)
 	}
 
 	var apiErr errorResponse
 	if err := json.Unmarshal(body, &apiErr); err == nil && strings.TrimSpace(apiErr.Error) != "" {
-		return fmt.Errorf("%s: %s", action, apiErr.Error)
+		return &apiErr, nil
 	}
 
 	text := strings.TrimSpace(string(body))
 	if text != "" {
-		return fmt.Errorf("%s: status %d: %s", action, resp.StatusCode, text)
+		return nil, fmt.Errorf("status %d: %s", resp.StatusCode, text)
 	}
 
-	return fmt.Errorf("%s: status %d", action, resp.StatusCode)
+	return nil, fmt.Errorf("status %d", resp.StatusCode)
+}
+
+func readAPIError(resp *http.Response, action string) error {
+	apiErr, err := readAPIErrorResponse(resp)
+	if err == nil {
+		return fmt.Errorf("%s: %s", action, apiErr.Error)
+	}
+	return fmt.Errorf("%s: %w", action, err)
 }
 
 func decodeJSON(r io.Reader, dest any) error {
