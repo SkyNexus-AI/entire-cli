@@ -12,6 +12,11 @@ jobs:
       - uses: actions/checkout@v6
         with:
           ref: ${{ github.event.pull_request.head.sha }}
+      - name: Setup Keyring
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gnome-keyring
+          echo 'somecredstorepass' | gnome-keyring-daemon --unlock
       - uses: jdx/mise-action@v3
       - name: Tests
         run: mise run test:ci
