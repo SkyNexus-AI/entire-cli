@@ -1,6 +1,9 @@
 package apiurl
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 func TestBaseURL_Default(t *testing.T) {
 	t.Setenv(BaseURLEnvVar, "")
@@ -26,6 +29,27 @@ func TestResolveURLFromBase_RejectsNonHTTPScheme(t *testing.T) {
 		if err == nil {
 			t.Errorf("ResolveURLFromBase(%q, ...) = nil error, want scheme error", scheme)
 		}
+	}
+}
+
+func TestRequireSecureURL_AllowsHTTPS(t *testing.T) {
+	t.Parallel()
+
+	if err := RequireSecureURL("https://entire.io"); err != nil {
+		t.Fatalf("RequireSecureURL(https) = %v, want nil", err)
+	}
+}
+
+func TestRequireSecureURL_RejectsHTTP(t *testing.T) {
+	t.Parallel()
+
+	err := RequireSecureURL("http://localhost:8787")
+	if err == nil {
+		t.Fatal("RequireSecureURL(http) = nil, want error")
+	}
+
+	if !errors.Is(err, ErrInsecureHTTP) {
+		t.Fatalf("RequireSecureURL(http) = %v, want ErrInsecureHTTP", err)
 	}
 }
 

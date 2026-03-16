@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"time"
 
+	apiurl "github.com/entireio/cli/cmd/entire/cli/api"
 	"github.com/entireio/cli/cmd/entire/cli/auth"
 	"github.com/spf13/cobra"
 )
@@ -32,17 +33,26 @@ type deviceAuthClient interface {
 
 func newLoginCmd() *cobra.Command {
 	var printBrowserURL bool
+	var insecureHTTPAuth bool
 
 	cmd := &cobra.Command{
 		Use:   "login",
 		Short: "Log in to Entire",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			client := auth.NewClient(nil)
+
+			if !insecureHTTPAuth {
+				if err := apiurl.RequireSecureURL(client.BaseURL()); err != nil {
+					return fmt.Errorf("base URL check: %w", err)
+				}
+			}
+
 			return runLogin(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), client, openBrowser, printBrowserURL)
 		},
 	}
 
 	cmd.Flags().BoolVar(&printBrowserURL, "print-browser-url", false, "Print the approval URL instead of opening a browser")
+	cmd.Flags().BoolVar(&insecureHTTPAuth, "insecure-http-auth", false, "Allow authentication over plain HTTP (insecure)")
 
 	return cmd
 }

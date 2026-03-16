@@ -1,11 +1,15 @@
 package apiurl
 
 import (
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
 	"strings"
 )
+
+// ErrInsecureHTTP is returned when the base URL uses HTTP without an explicit opt-in.
+var ErrInsecureHTTP = errors.New("refusing to use insecure http:// base URL for authentication (use --insecure-http-auth to override)")
 
 const (
 	// DefaultBaseURL is the production Entire API origin.
@@ -48,6 +52,21 @@ func ResolveURLFromBase(baseURL, path string) (string, error) {
 	}
 
 	return base.ResolveReference(rel).String(), nil
+}
+
+// RequireSecureURL returns ErrInsecureHTTP if the base URL uses the http scheme.
+// Call this before making authenticated requests unless --insecure-http-auth is set.
+func RequireSecureURL(baseURL string) error {
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		return fmt.Errorf("parse base URL: %w", err)
+	}
+
+	if u.Scheme == "http" {
+		return ErrInsecureHTTP
+	}
+
+	return nil
 }
 
 func normalizeBaseURL(raw string) string {
