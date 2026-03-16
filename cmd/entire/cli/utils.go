@@ -58,7 +58,7 @@ func copyFile(src, dst string) error {
 		return err
 	}
 
-	input, err := os.ReadFile(src) //nolint:gosec // src validated by callers from checkpoint storage
+	input, err := os.ReadFile(src)
 	if err != nil {
 		return err //nolint:wrapcheck // already present in codebase
 	}
@@ -72,8 +72,14 @@ func copyFile(src, dst string) error {
 // the user's home directory (for agent session dirs like ~/.claude/), or the
 // system temp directory (used during tests).
 func validateCopyDst(dst string) error {
-	home, _ := os.UserHomeDir()
-	repoRoot, _ := paths.WorktreeRoot(context.Background())
+	home, err := os.UserHomeDir()
+	if err != nil {
+		home = ""
+	}
+	repoRoot, err := paths.WorktreeRoot(context.Background())
+	if err != nil {
+		repoRoot = ""
+	}
 	tmpDir := os.TempDir()
 
 	allowed := make([]string, 0, 3)
