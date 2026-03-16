@@ -61,6 +61,13 @@ type Session interface {
 	Close() error
 }
 
+// ExternalAgent is an optional interface for agents discovered via the
+// external agent protocol (entire-agent-* binaries). SetupRepo uses this
+// to pre-configure external_agents in settings before running `entire enable`.
+type ExternalAgent interface {
+	IsExternalAgent() bool
+}
+
 var registry []Agent
 var gates = map[string]chan struct{}{}
 

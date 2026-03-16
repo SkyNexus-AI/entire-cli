@@ -8,7 +8,7 @@ on:
         required: true
         default: "gemini-cli"
         type: choice
-        options: [claude-code, opencode, gemini-cli, cursor-cli, factoryai-droid, copilot-cli]
+        options: [claude-code, opencode, gemini-cli, cursor-cli, factoryai-droid, copilot-cli, roger-roger]
       test:
         description: "Test name filter (regex)"
         required: true
@@ -41,10 +41,16 @@ jobs:
             cursor-cli)  curl https://cursor.com/install -fsS | bash ;;
             factoryai-droid) curl -fsSL https://app.factory.ai/cli | sh ;;
             copilot-cli)  npm install -g @github/copilot  ;;
+            roger-roger)
+              git clone --depth 1 -q https://github.com/entireio/roger-roger.git /tmp/roger-roger
+              (cd /tmp/roger-roger && go build -o /usr/local/bin/roger-roger ./cmd/roger-roger && go build -o /usr/local/bin/entire-agent-roger-roger ./cmd/entire-agent-roger-roger)
+              rm -rf /tmp/roger-roger
+              ;;
           esac
           echo "$HOME/.local/bin" >> $GITHUB_PATH
 
       - name: Bootstrap agent
+        if: inputs.agent != 'roger-roger'
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}

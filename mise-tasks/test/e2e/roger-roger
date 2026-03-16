@@ -1,0 +1,42 @@
+#!/bin/sh
+#MISE description="Run E2E tests with roger-roger external agent (no API calls)"
+#USAGE arg "[filter]" help="Test name filter (regex)" default=""
+
+set -eu
+
+export E2E_AGENT="roger-roger"
+
+# Build entire CLI
+mise run build
+export E2E_ENTIRE_BIN="$PWD/entire"
+
+# Build roger-roger binaries from GitHub
+ROGER_ROGER_REPO="${ROGER_ROGER_REPO:-https://github.com/entireio/roger-roger.git}"
+ROGER_ROGER_CLONE="$(mktemp -d)"
+trap 'rm -rf "$ROGER_ROGER_CLONE"' EXIT
+
+echo "cloning roger-roger from $ROGER_ROGER_REPO"
+git clone --depth 1 -q "$ROGER_ROGER_REPO" "$ROGER_ROGER_CLONE"
+echo "building roger-roger binaries"
+(cd "$ROGER_ROGER_CLONE" && go build -o "$OLDPWD/roger-roger" ./cmd/roger-roger && go build -o "$OLDPWD/entire-agent-roger-roger" ./cmd/entire-agent-roger-roger)
+export PATH="$PWD:$PATH"
+
+if [ -z "${E2E_ARTIFACT_DIR:-}" ]; then
+  E2E_ARTIFACT_DIR="$PWD/e2e/artifacts/roger-roger-$(date +%Y-%m-%dT%H-%M-%S)"
+fi
+export E2E_ARTIFACT_DIR
+mkdir -p "$E2E_ARTIFACT_DIR"
+echo "artifacts: $E2E_ARTIFACT_DIR"
+
+filter="${usage_filter:-}"
+
+gotestsum --format dots --jsonfile "$E2E_ARTIFACT_DIR/test-events.json" -- \
+  -tags=e2e -count=1 -timeout=10m \
+  ${filter:+-run "$filter"} \
+  ./e2e/tests/... || rc=$?
+
+go run ./e2e/cmd/testreport -color -o "$E2E_ARTIFACT_DIR/report.txt" "$E2E_ARTIFACT_DIR/test-events.json"
+echo ""
+cat "$E2E_ARTIFACT_DIR/entire-version.txt" 2>/dev/null
+echo "artifacts: $E2E_ARTIFACT_DIR"
+exit "${rc:-0}"
