@@ -120,6 +120,11 @@ func (s *ManualCommitStrategy) CondenseSession(ctx context.Context, repo *git.Re
 		hasShadowBranch = err == nil
 	}
 
+	// Re-resolve transcript path before any reads — handles agents that relocate
+	// transcripts mid-session (e.g., Cursor CLI flat → nested layout change).
+	// Errors are ignored; downstream readers handle missing transcripts gracefully.
+	resolveTranscriptPath(state) //nolint:errcheck,gosec // best-effort; downstream readers handle missing files
+
 	var sessionData *ExtractedSessionData
 	if hasShadowBranch {
 		var extractErr error
@@ -513,12 +518,13 @@ func (s *ManualCommitStrategy) extractSessionDataFromLiveTranscript(ctx context.
 
 	ag, _ := agent.GetByAgentType(state.AgentType) //nolint:errcheck // ag may be nil for unknown agent types; callers use type assertions so nil is safe
 
-	// Read the live transcript
-	if state.TranscriptPath == "" {
-		return nil, errors.New("no transcript path in session state")
+	// Resolve the transcript path (handles agents that relocate mid-session).
+	transcriptPath, resolveErr := resolveTranscriptPath(state)
+	if resolveErr != nil {
+		return nil, resolveErr
 	}
 
-	liveData, err := os.ReadFile(state.TranscriptPath)
+	liveData, err := os.ReadFile(transcriptPath) //nolint:gosec // path validated by resolveTranscriptPath
 	if err != nil {
 		return nil, fmt.Errorf("failed to read live transcript: %w", err)
 	}

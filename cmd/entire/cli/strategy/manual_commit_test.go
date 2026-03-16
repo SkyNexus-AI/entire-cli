@@ -2909,6 +2909,93 @@ func TestCondenseSession_PrefersLiveTranscript(t *testing.T) {
 	}
 }
 
+// TestCondenseSession_TranscriptRelocatedMidSession verifies that CondenseSession
+// succeeds when the agent relocates its transcript mid-session (e.g., Cursor CLI
+// switching from flat <dir>/<id>.jsonl to nested <dir>/<id>/<id>.jsonl layout).
+// This is a regression test for a Cursor CLI 2026.03.11 change that broke mid-turn
+// commits because the stored TranscriptPath became stale.
+func TestCondenseSession_TranscriptRelocatedMidSession(t *testing.T) {
+	dir := t.TempDir()
+	repo, err := git.PlainInit(dir, false)
+	if err != nil {
+		t.Fatalf("failed to init repo: %v", err)
+	}
+
+	wt, err := repo.Worktree()
+	if err != nil {
+		t.Fatalf("failed to get worktree: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "file.txt"), []byte("content"), 0o644); err != nil {
+		t.Fatalf("failed to write file: %v", err)
+	}
+	if _, err := wt.Add("file.txt"); err != nil {
+		t.Fatalf("failed to stage: %v", err)
+	}
+	_, err = wt.Commit("Initial commit", &git.CommitOptions{
+		Author: &object.Signature{Name: "Test", Email: "test@test.com", When: time.Now()},
+	})
+	if err != nil {
+		t.Fatalf("failed to commit: %v", err)
+	}
+
+	t.Chdir(dir)
+
+	s := &ManualCommitStrategy{}
+	sessionID := "87874108-eff2-47a0-b260-183961dd6cb0"
+
+	// Create the session state with a flat TranscriptPath (what before-submit-prompt reports)
+	agentTranscriptsDir := filepath.Join(dir, "agent-transcripts")
+	if err := os.MkdirAll(agentTranscriptsDir, 0o755); err != nil {
+		t.Fatalf("failed to create agent-transcripts dir: %v", err)
+	}
+	flatPath := filepath.Join(agentTranscriptsDir, sessionID+".jsonl")
+
+	// But the file actually lives at the nested path (Cursor relocated it)
+	nestedDir := filepath.Join(agentTranscriptsDir, sessionID)
+	if err := os.MkdirAll(nestedDir, 0o755); err != nil {
+		t.Fatalf("failed to create nested dir: %v", err)
+	}
+	nestedPath := filepath.Join(nestedDir, sessionID+".jsonl")
+	transcript := `{"type":"human","message":{"content":"create a file"}}
+{"type":"assistant","message":{"content":"done"}}
+`
+	if err := os.WriteFile(nestedPath, []byte(transcript), 0o644); err != nil {
+		t.Fatalf("failed to write transcript: %v", err)
+	}
+
+	// Create session state pointing to the FLAT (stale) path
+	head, err := repo.Head()
+	if err != nil {
+		t.Fatalf("failed to get HEAD: %v", err)
+	}
+	state := &SessionState{
+		SessionID:      sessionID,
+		BaseCommit:     head.Hash().String(),
+		WorktreePath:   dir,
+		AgentType:      agent.AgentTypeCursor,
+		TranscriptPath: flatPath, // stale: file was relocated to nested path
+	}
+	if err := s.saveSessionState(context.Background(), state); err != nil {
+		t.Fatalf("saveSessionState() error = %v", err)
+	}
+
+	// CondenseSession should succeed by re-resolving the transcript path
+	checkpointID := id.MustCheckpointID("c1d2e3f4a5b6")
+	result, err := s.CondenseSession(context.Background(), repo, checkpointID, state, nil)
+	if err != nil {
+		t.Fatalf("CondenseSession() error = %v, want nil (should re-resolve stale transcript path)", err)
+	}
+
+	if result.TotalTranscriptLines != 2 {
+		t.Errorf("TotalTranscriptLines = %d, want 2", result.TotalTranscriptLines)
+	}
+
+	// State should have been updated to the resolved path
+	if state.TranscriptPath != nestedPath {
+		t.Errorf("state.TranscriptPath = %q, want %q (should be updated after re-resolution)", state.TranscriptPath, nestedPath)
+	}
+}
+
 // TestCondenseSession_GeminiTranscript verifies that CondenseSession works correctly
 // with Gemini JSON format transcripts, including prompt extraction and format detection.
 func TestCondenseSession_GeminiTranscript(t *testing.T) {

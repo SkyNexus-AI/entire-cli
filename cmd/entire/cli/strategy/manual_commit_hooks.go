@@ -1486,6 +1486,15 @@ func (s *ManualCommitStrategy) hasNewTranscriptWork(ctx context.Context, state *
 		return false
 	}
 
+	// Re-resolve transcript path — handles agents that relocate transcripts mid-session.
+	if _, resolveErr := resolveTranscriptPath(state); resolveErr != nil {
+		logging.Debug(logCtx, "hasNewTranscriptWork: transcript path resolution failed",
+			slog.String("session_id", state.SessionID),
+			slog.Any("error", resolveErr),
+		)
+		return false
+	}
+
 	ag, err := agent.GetByAgentType(state.AgentType)
 	if err != nil {
 		return false
@@ -1543,6 +1552,15 @@ func (s *ManualCommitStrategy) extractModifiedFilesFromLiveTranscript(ctx contex
 	logCtx := logging.WithComponent(ctx, "checkpoint")
 
 	if state.TranscriptPath == "" || state.AgentType == "" {
+		return nil
+	}
+
+	// Re-resolve transcript path — handles agents that relocate transcripts mid-session.
+	if _, resolveErr := resolveTranscriptPath(state); resolveErr != nil {
+		logging.Debug(logCtx, "extractModifiedFilesFromLiveTranscript: transcript path resolution failed",
+			slog.String("session_id", state.SessionID),
+			slog.Any("error", resolveErr),
+		)
 		return nil
 	}
 
@@ -2160,7 +2178,8 @@ func (s *ManualCommitStrategy) finalizeAllTurnCheckpoints(ctx context.Context, s
 
 	errCount := 0
 
-	// Read full transcript from live transcript file
+	// Read full transcript from live transcript file, re-resolving the path if the
+	// agent relocated it mid-session (e.g., Cursor CLI flat → nested layout change).
 	if state.TranscriptPath == "" {
 		logging.Warn(logCtx, "finalize: no transcript path, skipping",
 			slog.String("session_id", state.SessionID),
@@ -2169,7 +2188,17 @@ func (s *ManualCommitStrategy) finalizeAllTurnCheckpoints(ctx context.Context, s
 		return 1 // Count as error - all checkpoints will be skipped
 	}
 
-	fullTranscript, err := os.ReadFile(state.TranscriptPath)
+	transcriptPath, resolveErr := resolveTranscriptPath(state)
+	if resolveErr != nil {
+		logging.Warn(logCtx, "finalize: transcript path resolution failed, skipping",
+			slog.String("session_id", state.SessionID),
+			slog.Any("error", resolveErr),
+		)
+		state.TurnCheckpointIDs = nil
+		return 1 // Count as error - all checkpoints will be skipped
+	}
+
+	fullTranscript, err := os.ReadFile(transcriptPath) //nolint:gosec // path validated by resolveTranscriptPath
 	if err != nil || len(fullTranscript) == 0 {
 		msg := "finalize: empty transcript, skipping"
 		if err != nil {
