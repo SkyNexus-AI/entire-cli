@@ -77,6 +77,14 @@ jobs:
           esac
           echo "$HOME/.local/bin" >> $GITHUB_PATH
 
+      - name: Verify roger-roger agent
+        if: matrix.agent == 'roger-roger'
+        run: |
+          set -euo pipefail
+          echo "Verifying roger-roger binaries on PATH..."
+          command -v roger-roger
+          command -v entire-agent-roger-roger
+
       - name: Bootstrap agent
         if: matrix.agent != 'roger-roger'
         env:
