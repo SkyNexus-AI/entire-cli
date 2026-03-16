@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/charmbracelet/huh"
 
+	"github.com/entireio/cli/cmd/entire/cli/osroot"
 	"github.com/entireio/cli/cmd/entire/cli/paths"
 )
 
@@ -43,10 +43,12 @@ func fileExists(path string) bool {
 	return err == nil
 }
 
-// copyFile copies a file from src to dst.
-// Both paths must be absolute after cleaning; dst must reside under either the
-// repo worktree root, the git common dir, or the user's home directory (for
-// agent session dirs such as ~/.claude/).
+// copyFile copies a file from src to dst using os.Root for traversal-resistant
+// writes (Go 1.24+). dst must be absolute and reside under either the repo
+// worktree root, the user's home directory (for agent session dirs such as
+// ~/.claude/), or the system temp directory (used during tests).
+// The kernel enforces that the write cannot escape the allowed directory,
+// eliminating TOCTOU races and symlink escapes.
 func copyFile(src, dst string) error {
 	src = filepath.Clean(src)
 	dst = filepath.Clean(dst)
@@ -54,64 +56,80 @@ func copyFile(src, dst string) error {
 	if !filepath.IsAbs(dst) {
 		return fmt.Errorf("copyFile: dst must be absolute, got %q", dst)
 	}
-	if err := validateCopyDst(dst); err != nil {
-		return err
-	}
 
 	input, err := os.ReadFile(src)
 	if err != nil {
 		return err //nolint:wrapcheck // already present in codebase
 	}
-	if err := os.WriteFile(dst, input, 0o600); err != nil { //nolint:gosec // dst validated above
+
+	root, relPath, err := openAllowedRoot(dst)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+
+	if err := osroot.WriteFile(root, relPath, input, 0o600); err != nil {
 		return fmt.Errorf("failed to write file: %w", err)
 	}
 	return nil
 }
 
-// validateCopyDst ensures dst is under an allowed directory: the repo worktree,
-// the user's home directory (for agent session dirs like ~/.claude/), or the
-// system temp directory (used during tests).
-func validateCopyDst(dst string) error {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		home = ""
-	}
-	repoRoot, err := paths.WorktreeRoot(context.Background())
-	if err != nil {
-		repoRoot = ""
-	}
-	tmpDir := os.TempDir()
+// openAllowedRoot finds the allowed root directory that contains dst and returns
+// an os.Root handle along with the relative path within that root.
+// Allowed directories: repo worktree root, user home, system temp dir.
+// dst is resolved through symlinks before matching to handle macOS /var → /private/var.
+func openAllowedRoot(dst string) (*os.Root, string, error) {
+	allowed := allowedRootDirs()
 
-	allowed := make([]string, 0, 3)
-	if repoRoot != "" {
-		allowed = append(allowed, repoRoot)
-	}
-	if home != "" {
-		allowed = append(allowed, home)
-	}
-	if tmpDir != "" {
-		// Resolve symlinks: on macOS os.TempDir() returns /var/folders/...
-		// but t.TempDir() resolves through /private/var/folders/...
-		if resolved, err := filepath.EvalSymlinks(tmpDir); err == nil {
-			allowed = append(allowed, resolved)
-		}
-		allowed = append(allowed, tmpDir)
-	}
-
-	// Also resolve dst symlinks for consistent comparison (on macOS, /var → /private/var)
+	// Resolve the directory portion of dst through symlinks so that e.g.
+	// /var/folders/... matches /private/var/folders/... on macOS.
+	// Only the parent directory is resolved; the final component may not exist yet.
 	resolvedDst := dst
 	if r, err := filepath.EvalSymlinks(filepath.Dir(dst)); err == nil {
 		resolvedDst = filepath.Join(r, filepath.Base(dst))
 	}
 
 	for _, dir := range allowed {
-		if strings.HasPrefix(dst, dir+string(filepath.Separator)) || dst == dir {
-			return nil
+		if !paths.IsSubpath(dir, resolvedDst) {
+			continue
 		}
-		if strings.HasPrefix(resolvedDst, dir+string(filepath.Separator)) || resolvedDst == dir {
-			return nil
+		rel, err := filepath.Rel(dir, resolvedDst)
+		if err != nil {
+			continue
 		}
+		root, err := os.OpenRoot(dir)
+		if err != nil {
+			return nil, "", fmt.Errorf("openAllowedRoot: failed to open root %q: %w", dir, err)
+		}
+		return root, rel, nil
 	}
 
-	return fmt.Errorf("copyFile: dst %q is outside allowed directories", dst)
+	return nil, "", fmt.Errorf("openAllowedRoot: dst %q is outside allowed directories", dst)
+}
+
+// allowedRootDirs returns the list of directories that copyFile may write to.
+// Directories are resolved through symlinks so they match resolved dst paths.
+func allowedRootDirs() []string {
+	allowed := make([]string, 0, 3)
+
+	if repoRoot, err := paths.WorktreeRoot(context.Background()); err == nil {
+		allowed = appendResolved(allowed, repoRoot)
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		allowed = appendResolved(allowed, home)
+	}
+	if tmpDir := os.TempDir(); tmpDir != "" {
+		allowed = appendResolved(allowed, tmpDir)
+	}
+
+	return allowed
+}
+
+// appendResolved appends dir to the list after resolving symlinks.
+// Falls back to the original path if symlink resolution fails.
+func appendResolved(dirs []string, dir string) []string {
+	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+		return append(dirs, resolved)
+	}
+	return append(dirs, dir)
 }

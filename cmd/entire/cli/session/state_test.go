@@ -342,6 +342,117 @@ func TestStateStore_List_DeletesStaleSession(t *testing.T) {
 	assert.NoError(t, err, "active session file should still exist")
 }
 
+func TestStateStore_Load_TraversalResistant(t *testing.T) {
+	t.Parallel()
+
+	// Create the state directory and a "secret" file outside it
+	stateDir := filepath.Join(t.TempDir(), "entire-sessions")
+	require.NoError(t, os.MkdirAll(stateDir, 0o750))
+
+	outsideDir := filepath.Dir(stateDir)
+	secretFile := filepath.Join(outsideDir, "secret.json")
+	require.NoError(t, os.WriteFile(secretFile, []byte(`{"session_id":"secret","base_commit":"abc"}`), 0o600))
+
+	store := NewStateStoreWithDir(stateDir)
+
+	// Attempt to load with a traversal path should fail validation
+	_, err := store.Load(context.Background(), "../secret")
+	assert.Error(t, err, "loading with path traversal should fail validation")
+}
+
+func TestStateStore_Save_UsesOsRoot(t *testing.T) {
+	t.Parallel()
+
+	stateDir := filepath.Join(t.TempDir(), "entire-sessions")
+	store := NewStateStoreWithDir(stateDir)
+	ctx := context.Background()
+
+	state := &State{
+		SessionID:  "test-osroot-save",
+		BaseCommit: "abc123",
+		StartedAt:  time.Now(),
+	}
+
+	require.NoError(t, store.Save(ctx, state))
+
+	// Verify the file was written
+	data, err := os.ReadFile(filepath.Join(stateDir, "test-osroot-save.json"))
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "test-osroot-save")
+}
+
+func TestStateStore_Load_NonexistentDir(t *testing.T) {
+	t.Parallel()
+
+	// When the state directory doesn't exist, Load should return (nil, nil)
+	store := NewStateStoreWithDir(filepath.Join(t.TempDir(), "nonexistent", "entire-sessions"))
+	state, err := store.Load(context.Background(), "some-session")
+	require.NoError(t, err)
+	assert.Nil(t, state)
+}
+
+func TestStateStore_Clear_NonexistentDir(t *testing.T) {
+	t.Parallel()
+
+	// When the state directory doesn't exist, Clear returns nil because
+	// filepath.Glob finds no matches and os.Root is never opened.
+	stateDir := filepath.Join(t.TempDir(), "nonexistent-sessions")
+	store := NewStateStoreWithDir(stateDir)
+	err := store.Clear(context.Background(), "some-session")
+	assert.NoError(t, err)
+}
+
+func TestStateStore_SaveLoadClear_SymlinkedDir(t *testing.T) {
+	t.Parallel()
+
+	// Simulate macOS-style symlinked temp paths: create the real dir,
+	// then point a symlink at it, and use the symlink path as stateDir.
+	realDir := filepath.Join(t.TempDir(), "real-sessions")
+	require.NoError(t, os.MkdirAll(realDir, 0o750))
+
+	linkParent := t.TempDir()
+	symlinkedDir := filepath.Join(linkParent, "linked-sessions")
+	require.NoError(t, os.Symlink(realDir, symlinkedDir))
+
+	store := NewStateStoreWithDir(symlinkedDir)
+	ctx := context.Background()
+
+	// Save through the symlinked path
+	state := &State{
+		SessionID:  "symlink-test",
+		BaseCommit: "abc123",
+		StartedAt:  time.Now(),
+	}
+	require.NoError(t, store.Save(ctx, state))
+
+	// Load should work through the symlink
+	loaded, err := store.Load(ctx, "symlink-test")
+	require.NoError(t, err)
+	require.NotNil(t, loaded)
+	assert.Equal(t, "symlink-test", loaded.SessionID)
+
+	// File should exist in the real directory
+	_, err = os.Stat(filepath.Join(realDir, "symlink-test.json"))
+	assert.NoError(t, err, "file should exist in the real directory behind the symlink")
+
+	// Clear should work through the symlink
+	require.NoError(t, store.Clear(ctx, "symlink-test"))
+	_, err = os.Stat(filepath.Join(realDir, "symlink-test.json"))
+	assert.True(t, os.IsNotExist(err), "file should be removed after Clear")
+}
+
+func TestStateStore_List_EmptyDir(t *testing.T) {
+	t.Parallel()
+
+	stateDir := filepath.Join(t.TempDir(), "entire-sessions")
+	require.NoError(t, os.MkdirAll(stateDir, 0o750))
+	store := NewStateStoreWithDir(stateDir)
+
+	states, err := store.List(context.Background())
+	require.NoError(t, err)
+	assert.Empty(t, states)
+}
+
 // initTestRepo creates a temp dir with a git repo and chdirs into it.
 // Cannot use t.Parallel() because of t.Chdir.
 func initTestRepo(t *testing.T) string {

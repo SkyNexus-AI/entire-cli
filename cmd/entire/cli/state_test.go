@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -12,6 +13,26 @@ import (
 	"github.com/go-git/go-git/v6/plumbing/object"
 	"github.com/stretchr/testify/require"
 )
+
+// prePromptStateFile returns the absolute path to the pre-prompt state file for a session.
+// Test-only helper; production code constructs the filename inline.
+func prePromptStateFile(ctx context.Context, sessionID string) string {
+	tmpDirAbs, err := paths.AbsPath(ctx, paths.EntireTmpDir)
+	if err != nil {
+		tmpDirAbs = paths.EntireTmpDir
+	}
+	return filepath.Join(tmpDirAbs, fmt.Sprintf("pre-prompt-%s.json", sessionID))
+}
+
+// preTaskStateFile returns the absolute path to the pre-task state file for a tool use.
+// Test-only helper; production code constructs the filename inline.
+func preTaskStateFile(ctx context.Context, toolUseID string) string {
+	tmpDirAbs, err := paths.AbsPath(ctx, paths.EntireTmpDir)
+	if err != nil {
+		tmpDirAbs = paths.EntireTmpDir
+	}
+	return filepath.Join(tmpDirAbs, fmt.Sprintf("pre-task-%s.json", toolUseID))
+}
 
 func TestPreTaskStateFile(t *testing.T) {
 	toolUseID := "toolu_abc123"

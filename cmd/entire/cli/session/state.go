@@ -17,6 +17,7 @@ import (
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint/id"
 	"github.com/entireio/cli/cmd/entire/cli/jsonutil"
 	"github.com/entireio/cli/cmd/entire/cli/logging"
+	"github.com/entireio/cli/cmd/entire/cli/osroot"
 	"github.com/entireio/cli/cmd/entire/cli/validation"
 )
 
@@ -284,9 +285,17 @@ func (s *StateStore) Load(ctx context.Context, sessionID string) (*State, error)
 		return nil, fmt.Errorf("invalid session ID: %w", err)
 	}
 
-	stateFile := s.stateFilePath(sessionID)
+	root, err := os.OpenRoot(s.stateDir)
+	if os.IsNotExist(err) {
+		return nil, nil //nolint:nilnil // nil,nil indicates session not found (expected case)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to open session state directory: %w", err)
+	}
+	defer root.Close()
 
-	data, err := os.ReadFile(stateFile) //nolint:gosec // stateFile is derived from sessionID
+	fileName := sessionID + ".json"
+	data, err := osroot.ReadFile(root, fileName)
 	if os.IsNotExist(err) {
 		return nil, nil //nolint:nilnil // nil,nil indicates session not found (expected case)
 	}
@@ -330,13 +339,23 @@ func (s *StateStore) Save(ctx context.Context, state *State) error {
 		return fmt.Errorf("failed to marshal session state: %w", err)
 	}
 
-	stateFile := s.stateFilePath(state.SessionID)
+	// Use os.Root for traversal-resistant write of temp file.
+	// Rename is not available on os.Root, so we keep using os.Rename.
+	root, err := os.OpenRoot(s.stateDir)
+	if err != nil {
+		return fmt.Errorf("failed to open session state directory: %w", err)
+	}
+	defer root.Close()
 
-	// Atomic write: write to temp file, then rename
-	tmpFile := stateFile + ".tmp"
-	if err := os.WriteFile(tmpFile, data, 0o600); err != nil {
+	fileName := state.SessionID + ".json"
+	tmpFileName := fileName + ".tmp"
+	if err := osroot.WriteFile(root, tmpFileName, data, 0o600); err != nil {
 		return fmt.Errorf("failed to write session state: %w", err)
 	}
+
+	// Atomic rename: not available on os.Root, use os.Rename with validated paths.
+	stateFile := s.stateFilePath(state.SessionID)
+	tmpFile := stateFile + ".tmp"
 	if err := os.Rename(tmpFile, stateFile); err != nil {
 		return fmt.Errorf("failed to rename session state file: %w", err)
 	}
@@ -353,9 +372,17 @@ func (s *StateStore) Clear(ctx context.Context, sessionID string) error {
 	}
 
 	// Remove all files for this session (state .json, .model hint, any future hint files).
+	// filepath.Glob finds matches; os.Root ensures traversal-resistant removal.
 	matches, _ := filepath.Glob(filepath.Join(s.stateDir, sessionID+".*")) //nolint:errcheck // pattern is always valid
-	for _, f := range matches {
-		_ = os.Remove(f)
+	if len(matches) > 0 {
+		root, rootErr := os.OpenRoot(s.stateDir)
+		if rootErr != nil {
+			return fmt.Errorf("failed to open session state directory for cleanup: %w", rootErr)
+		}
+		defer root.Close()
+		for _, f := range matches {
+			_ = osroot.Remove(root, filepath.Base(f)) //nolint:errcheck // best-effort cleanup
+		}
 	}
 
 	return nil
