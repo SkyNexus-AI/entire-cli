@@ -1,0 +1,133 @@
+name: E2E Triage
+
+on:
+  repository_dispatch:
+    types:
+      - slack_e2e_triage_requested
+  workflow_dispatch:
+    inputs:
+      run_url:
+        description: GitHub Actions run URL to triage
+        required: true
+        type: string
+      sha:
+        description: Commit SHA that failed
+        required: true
+        type: string
+      failed_agents:
+        description: Comma-separated list of failed agents
+        required: true
+        type: string
+      slack_channel:
+        description: Slack channel ID for the originating thread
+        required: false
+        type: string
+      slack_thread_ts:
+        description: Slack thread timestamp for replies
+        required: false
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  matrix-setup:
+    runs-on: ubuntu-latest
+    outputs:
+      agents: ${{ steps.set.outputs.agents }}
+      run_url: ${{ steps.set.outputs.run_url }}
+      sha: ${{ steps.set.outputs.sha }}
+      slack_channel: ${{ steps.set.outputs.slack_channel }}
+      slack_thread_ts: ${{ steps.set.outputs.slack_thread_ts }}
+    steps:
+      - name: Validate payload and build matrix
+        id: set
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          RUN_URL_INPUT: ${{ inputs.run_url }}
+          SHA_INPUT: ${{ inputs.sha }}
+          FAILED_AGENTS_INPUT: ${{ inputs.failed_agents }}
+          SLACK_CHANNEL_INPUT: ${{ inputs.slack_channel }}
+          SLACK_THREAD_TS_INPUT: ${{ inputs.slack_thread_ts }}
+        run: |
+          set -euo pipefail
+
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            run_url="$RUN_URL_INPUT"
+            sha="$SHA_INPUT"
+            slack_channel="${SLACK_CHANNEL_INPUT:-}"
+            slack_thread_ts="${SLACK_THREAD_TS_INPUT:-}"
+            failed_agents_raw="$FAILED_AGENTS_INPUT"
+            agents_json="$(printf '%s' "$failed_agents_raw" | jq -R -s -c 'split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0))')"
+          else
+            run_url="$(jq -r '.client_payload.run_url // empty' "$GITHUB_EVENT_PATH")"
+            sha="$(jq -r '.client_payload.sha // empty' "$GITHUB_EVENT_PATH")"
+            slack_channel="$(jq -r '.client_payload.slack_channel // empty' "$GITHUB_EVENT_PATH")"
+            slack_thread_ts="$(jq -r '.client_payload.slack_thread_ts // empty' "$GITHUB_EVENT_PATH")"
+            if jq -e '.client_payload.failed_agents | type == "array"' "$GITHUB_EVENT_PATH" >/dev/null 2>&1; then
+              agents_json="$(jq -c '.client_payload.failed_agents' "$GITHUB_EVENT_PATH")"
+            else
+              failed_agents_raw="$(jq -r '.client_payload.failed_agents // empty' "$GITHUB_EVENT_PATH")"
+              agents_json="$(printf '%s' "$failed_agents_raw" | jq -R -s -c 'split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0))')"
+            fi
+          fi
+
+          if [ -z "$run_url" ]; then
+            echo "run_url is required" >&2
+            exit 1
+          fi
+          if [ -z "$sha" ]; then
+            echo "sha is required" >&2
+            exit 1
+          fi
+          if [ -z "$agents_json" ] || [ "$agents_json" = "[]" ]; then
+            echo "failed_agents is required" >&2
+            exit 1
+          fi
+
+          echo "run_url=$run_url" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "slack_channel=$slack_channel" >> "$GITHUB_OUTPUT"
+          echo "slack_thread_ts=$slack_thread_ts" >> "$GITHUB_OUTPUT"
+          echo "agents=$agents_json" >> "$GITHUB_OUTPUT"
+
+  triage:
+    needs: [matrix-setup]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        agent: ${{ fromJson(needs.matrix-setup.outputs.agents) }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.matrix-setup.outputs.sha }}
+
+      - name: Setup mise
+        uses: jdx/mise-action@v4
+
+      - name: Install Claude CLI
+        run: |
+          curl -fsSL https://claude.ai/install.sh | bash
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Run triage
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ needs.matrix-setup.outputs.run_url }}
+          E2E_AGENT: ${{ matrix.agent }}
+          TRIAGE_OUTPUT_FILE: ${{ github.workspace }}/e2e-triage-artifacts/${{ matrix.agent }}/triage.log
+        run: scripts/run-e2e-triage.sh
+
+      - name: Upload triage output
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-triage-${{ matrix.agent }}
+          path: e2e-triage-artifacts/
+          retention-days: 7
