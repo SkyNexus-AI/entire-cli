@@ -67,7 +67,11 @@ func (s *Span) End() {
 	// Build log attributes: op, duration_ms, error flag, then child step durations.
 	// Component is set via context so it appears exactly once in the log line.
 	logCtx := logging.WithComponent(s.ctx, "perf")
-	attrs := make([]any, 0, 3+2*len(s.children)+len(s.attrs))
+	grandchildren := 0
+	for _, c := range s.children {
+		grandchildren += len(c.children)
+	}
+	attrs := make([]any, 0, 3+2*len(s.children)+2*grandchildren+len(s.attrs))
 	attrs = append(attrs, slog.String("op", s.name))
 	attrs = append(attrs, slog.Int64("duration_ms", s.duration.Milliseconds()))
 	if s.err != nil {

@@ -206,6 +206,7 @@ func collectTraceEntries(logFile string, last int, hookFilter string) ([]traceEn
 	var entries []traceEntry
 
 	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024) // allow up to 1MB lines in shared log file
 	for scanner.Scan() {
 		entry := parseTraceEntry(scanner.Text())
 		if entry == nil {
