@@ -83,3 +83,4 @@ See Guide: [Testing Patterns](agent-guide.md#testing-patterns)
 - [ ] **Resumed session**: Resume existing session, add turns, verify checkpoint includes historical messages
 - [ ] **Rewind**: Rewind to earlier checkpoint, verify agent can continue from that state
 - [ ] **Agent shutdown**: Verify graceful handling if agent exits during checkpoint
+- [ ] **Manual token validation for session-wide aggregate agents**: If an agent emits authoritative token totals only at session end (for example Copilot CLI `session.shutdown`), manually verify checkpoint-scoped metadata and full-session status separately. See [Copilot Token Validation](copilot-token-validation.md).

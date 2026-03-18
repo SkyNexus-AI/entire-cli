@@ -476,10 +476,12 @@ func TestCalculateTokenUsage_WithOffset(t *testing.T) {
 	t.Parallel()
 	ag := &CopilotCLIAgent{}
 
-	// session.shutdown is on line 2; offset 1 skips line 1 but still sees shutdown
+	// session.shutdown is session-wide, so offset-scoped calculations must ignore it
+	// and only use assistant.message outputTokens within the sliced transcript.
 	lines := []string{
 		`{"type":"user.message","data":{"content":"hello"},"id":"1","timestamp":"2026-03-03T00:00:00Z","parentId":""}`,
-		`{"type":"session.shutdown","data":{"modelMetrics":[{"modelId":"claude-sonnet-4.6","requests":{"count":1},"usage":{"inputTokens":500,"outputTokens":50,"cacheReadTokens":0,"cacheWriteTokens":0}}]},"id":"2","timestamp":"2026-03-03T00:00:01Z","parentId":""}`,
+		`{"type":"assistant.message","data":{"content":"hi","outputTokens":25},"id":"2","timestamp":"2026-03-03T00:00:01Z","parentId":"1"}`,
+		`{"type":"session.shutdown","data":{"modelMetrics":[{"modelId":"claude-sonnet-4.6","requests":{"count":1},"usage":{"inputTokens":500,"outputTokens":50,"cacheReadTokens":0,"cacheWriteTokens":0}}]},"id":"3","timestamp":"2026-03-03T00:00:02Z","parentId":""}`,
 	}
 	content := []byte(strings.Join(lines, "\n") + "\n")
 
@@ -487,8 +489,14 @@ func TestCalculateTokenUsage_WithOffset(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if usage.InputTokens != 500 {
-		t.Errorf("InputTokens = %d, want 500", usage.InputTokens)
+	if usage.InputTokens != 0 {
+		t.Errorf("InputTokens = %d, want 0", usage.InputTokens)
+	}
+	if usage.OutputTokens != 25 {
+		t.Errorf("OutputTokens = %d, want 25", usage.OutputTokens)
+	}
+	if usage.APICallCount != 1 {
+		t.Errorf("APICallCount = %d, want 1", usage.APICallCount)
 	}
 }
 

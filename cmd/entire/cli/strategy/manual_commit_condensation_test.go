@@ -12,14 +12,15 @@ import (
 
 	// Register agents so GetByAgentType works in tests.
 	_ "github.com/entireio/cli/cmd/entire/cli/agent/claudecode"
+	_ "github.com/entireio/cli/cmd/entire/cli/agent/copilotcli"
 	_ "github.com/entireio/cli/cmd/entire/cli/agent/cursor"
 	_ "github.com/entireio/cli/cmd/entire/cli/agent/factoryaidroid"
 )
 
-// calculateTokenUsage is a test helper that looks up the Factory AI Droid agent
-// and calculates token usage from pre-loaded transcript bytes.
-func calculateTokenUsage(_ types.AgentType, data []byte, offset int) *agent.TokenUsage {
-	ag, err := agent.GetByAgentType(agent.AgentTypeFactoryAIDroid)
+// calculateTokenUsage is a test helper that looks up an agent by type and
+// calculates token usage from pre-loaded transcript bytes.
+func calculateTokenUsage(agentType types.AgentType, data []byte, offset int) *agent.TokenUsage {
+	ag, err := agent.GetByAgentType(agentType)
 	if err != nil {
 		return nil
 	}
@@ -200,6 +201,32 @@ func TestCalculateTokenUsage_CursorWithOffset(t *testing.T) {
 	if result != nil {
 		t.Errorf("CalculateTokenUsage(Cursor, offset=3) = %+v, want nil", result)
 	}
+}
+
+func TestSessionStateBackfillTokenUsage_CopilotUsesFullSessionAggregate(t *testing.T) {
+	t.Parallel()
+
+	transcript := []byte(strings.Join([]string{
+		`{"type":"user.message","data":{"content":"hello"},"id":"1","timestamp":"2026-03-03T00:00:00Z","parentId":""}`,
+		`{"type":"assistant.message","data":{"content":"hi","outputTokens":25},"id":"2","timestamp":"2026-03-03T00:00:01Z","parentId":"1"}`,
+		`{"type":"session.shutdown","data":{"modelMetrics":[{"modelId":"claude-sonnet-4.6","requests":{"count":3},"usage":{"inputTokens":500,"outputTokens":50,"cacheReadTokens":20,"cacheWriteTokens":10}}]},"id":"3","timestamp":"2026-03-03T00:00:02Z","parentId":""}`,
+	}, "\n") + "\n")
+
+	ag, err := agent.GetByAgentType(agent.AgentTypeCopilotCLI)
+	require.NoError(t, err)
+
+	checkpointUsage := agent.CalculateTokenUsage(context.Background(), ag, transcript, 1, "")
+	require.NotNil(t, checkpointUsage)
+	require.Zero(t, checkpointUsage.InputTokens)
+	require.Equal(t, 25, checkpointUsage.OutputTokens)
+
+	backfillUsage := sessionStateBackfillTokenUsage(context.Background(), ag, agent.AgentTypeCopilotCLI, transcript, checkpointUsage)
+	require.NotNil(t, backfillUsage)
+	require.Equal(t, 500, backfillUsage.InputTokens)
+	require.Equal(t, 50, backfillUsage.OutputTokens)
+	require.Equal(t, 20, backfillUsage.CacheReadTokens)
+	require.Equal(t, 10, backfillUsage.CacheCreationTokens)
+	require.Equal(t, 3, backfillUsage.APICallCount)
 }
 
 // droidMessage builds a Droid JSONL "message" line with the given id, role, and optional usage.
