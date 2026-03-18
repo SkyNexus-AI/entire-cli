@@ -1,5 +1,6 @@
 {
-  "strategy": "manual-commit",
   "enabled": true,
-  "local_dev": true
+  "local_dev": true,
+  "log_level": "debug",
+  "strategy": "manual-commit"
 }
