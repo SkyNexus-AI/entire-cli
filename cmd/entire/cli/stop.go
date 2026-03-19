@@ -22,10 +22,11 @@ func newStopCmd() *cobra.Command {
 		Short: "Stop one or more active sessions",
 		Long: `Mark one or more active sessions as ended.
 
-This is a pure state mutation — no checkpoints are written, no condensation happens.
+Fires EventSessionStop through the state machine with a no-op action handler,
+so no condensation or checkpoint-writing occurs. To flush pending work, commit first.
 
 Examples:
-  entire stop                     Stop the one active session, or show selector if multiple
+  entire stop                     No sessions: exits. One session: confirm and stop. Multiple: show selector
   entire stop --session <id>      Stop a specific session by ID
   entire stop --all               Stop all active sessions in current worktree
   entire stop --force             Skip confirmation prompt`,
@@ -56,7 +57,7 @@ Examples:
 
 // runStop is the main logic for the stop command.
 func runStop(ctx context.Context, cmd *cobra.Command, sessionID string, all, force bool) error {
-	// --session path: stop a specific session
+	// --session path: stop a specific session by explicit ID (no worktree scoping).
 	if sessionID != "" {
 		return runStopSession(ctx, cmd, sessionID, force)
 	}
@@ -67,33 +68,48 @@ func runStop(ctx context.Context, cmd *cobra.Command, sessionID string, all, for
 		return fmt.Errorf("failed to list sessions: %w", err)
 	}
 
-	// Filter to active sessions (Phase != PhaseEnded)
 	activeSessions := filterActiveSessions(states)
 
-	if len(activeSessions) == 0 {
-		fmt.Fprintln(cmd.OutOrStdout(), "No active sessions.")
-		return nil
-	}
-
-	// --all path: stop all active sessions in current worktree
+	// --all path: stop all active sessions in current worktree (scoped inside runStopAll).
 	if all {
 		return runStopAll(ctx, cmd, activeSessions, force)
 	}
 
-	// No flags: one active session → confirm + stop; multiple → TUI selector
-	if len(activeSessions) == 1 {
-		return runStopSession(ctx, cmd, activeSessions[0].SessionID, force)
+	// No-flags path: scope to current worktree before presenting options.
+	worktreePath, err := paths.WorktreeRoot(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to resolve worktree root: %w", err)
+	}
+	var scoped []*strategy.SessionState
+	for _, s := range activeSessions {
+		if s.WorktreePath == worktreePath || s.WorktreePath == "" {
+			scoped = append(scoped, s)
+		}
 	}
 
-	// Multiple active sessions: show TUI multi-select
-	return runStopMultiSelect(ctx, cmd, activeSessions, force)
+	if len(scoped) == 0 {
+		fmt.Fprintln(cmd.OutOrStdout(), "No active sessions.")
+		return nil
+	}
+
+	// One active session: confirm + stop.
+	if len(scoped) == 1 {
+		return runStopSession(ctx, cmd, scoped[0].SessionID, force)
+	}
+
+	// Multiple active sessions: show TUI multi-select.
+	return runStopMultiSelect(ctx, cmd, scoped, force)
 }
 
-// filterActiveSessions returns sessions where Phase != PhaseEnded.
+// filterActiveSessions returns sessions in PhaseIdle or PhaseActive — all sessions
+// that have not been explicitly ended. Both phases are considered stoppable: IDLE
+// means the agent finished its last turn but the session is still open.
+// Matches the EndedAt == nil check used by status.go to avoid false positives on
+// legacy sessions where Phase may have defaulted to Idle despite EndedAt being set.
 func filterActiveSessions(states []*strategy.SessionState) []*strategy.SessionState {
 	var active []*strategy.SessionState
 	for _, s := range states {
-		if s.Phase != session.PhaseEnded {
+		if s.Phase != session.PhaseEnded && s.EndedAt == nil {
 			active = append(active, s)
 		}
 	}
@@ -112,7 +128,7 @@ func runStopSession(ctx context.Context, cmd *cobra.Command, sessionID string, f
 		return NewSilentError(fmt.Errorf("session not found: %s", sessionID))
 	}
 
-	if state.Phase == session.PhaseEnded {
+	if state.Phase == session.PhaseEnded || state.EndedAt != nil {
 		fmt.Fprintf(cmd.OutOrStdout(), "Session %s is already stopped.\n", sessionID)
 		return nil
 	}
@@ -140,8 +156,9 @@ func runStopSession(ctx context.Context, cmd *cobra.Command, sessionID string, f
 
 // runStopAll stops all active sessions scoped to the current worktree.
 func runStopAll(ctx context.Context, cmd *cobra.Command, activeSessions []*strategy.SessionState, force bool) error {
-	// Scope to current worktree: include sessions where WorktreePath matches
-	// or WorktreePath is empty (safer than silently excluding).
+	// Scope to current worktree. Sessions with an empty WorktreePath predate
+	// worktree-path tracking and cannot be attributed to any specific worktree —
+	// including them here prevents them from being permanently unreachable via --all.
 	worktreePath, err := paths.WorktreeRoot(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to resolve worktree root: %w", err)
@@ -177,13 +194,7 @@ func runStopAll(ctx context.Context, cmd *cobra.Command, activeSessions []*strat
 		}
 	}
 
-	var stopErr error
-	for _, s := range toStop {
-		if err := stopSessionAndPrint(ctx, cmd, s); err != nil {
-			stopErr = err
-		}
-	}
-	return stopErr
+	return stopSelectedSessions(ctx, cmd, toStop)
 }
 
 // runStopMultiSelect shows a TUI multi-select for multiple active sessions.
@@ -241,23 +252,33 @@ func runStopMultiSelect(ctx context.Context, cmd *cobra.Command, activeSessions 
 		}
 	}
 
-	var stopErr error
+	var toStop []*strategy.SessionState
 	for _, id := range selectedIDs {
-		s, ok := stateByID[id]
-		if !ok {
-			continue
-		}
-		if err := stopSessionAndPrint(ctx, cmd, s); err != nil {
-			stopErr = err
+		if s, ok := stateByID[id]; ok {
+			toStop = append(toStop, s)
 		}
 	}
-	return stopErr
+	return stopSelectedSessions(ctx, cmd, toStop)
 }
 
-// stopSessionAndPrint stops a session and prints the result.
-// It snapshots the needed fields before calling markSessionEnded.
+// stopSelectedSessions stops each session in the list and prints a result line.
+// Errors from individual sessions are all accumulated and returned as a joined error,
+// so a single failure does not prevent remaining sessions from being stopped.
+func stopSelectedSessions(ctx context.Context, cmd *cobra.Command, sessions []*strategy.SessionState) error {
+	var errs []error
+	for _, s := range sessions {
+		if err := stopSessionAndPrint(ctx, cmd, s); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// stopSessionAndPrint stops a session and prints a summary line.
+// Fields needed for output are read before calling markSessionEnded because
+// markSessionEnded loads and operates on its own copy of the session state by ID —
+// it does not update the caller's state pointer.
 func stopSessionAndPrint(ctx context.Context, cmd *cobra.Command, state *strategy.SessionState) error {
-	// Snapshot fields needed for output before calling markSessionEnded
 	sessionID := state.SessionID
 	lastCheckpointID := state.LastCheckpointID
 	stepCount := state.StepCount

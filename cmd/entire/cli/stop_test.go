@@ -395,3 +395,132 @@ func TestStopCmd_MultiSession_NoFlags(t *testing.T) {
 		}
 	}
 }
+
+// TestStopCmd_AlreadyStopped_EndedAtOnly verifies that a session with EndedAt set
+// is treated as already stopped even when Phase has not been updated to PhaseEnded
+// (legacy sessions where the phase field may have defaulted to Idle).
+func TestStopCmd_AlreadyStopped_EndedAtOnly(t *testing.T) {
+	setupStopTestRepo(t)
+
+	// Simulate a legacy session: EndedAt is set but Phase is still PhaseIdle.
+	state := makeSessionState("test-stop-ended-at-only", session.PhaseIdle)
+	now := time.Now()
+	state.EndedAt = &now
+	if err := strategy.SaveSessionState(context.Background(), state); err != nil {
+		t.Fatalf("SaveSessionState() error = %v", err)
+	}
+
+	cmd := newStopCmd()
+	var stdout, stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{"--session", "test-stop-ended-at-only", "--force"})
+
+	err := cmd.ExecuteContext(context.Background())
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	out := stdout.String()
+	if !strings.Contains(out, "is already stopped.") {
+		t.Errorf("expected 'is already stopped.' in output, got: %q", out)
+	}
+
+	// Phase should remain unchanged — we must not overwrite legacy state.
+	loaded, err := strategy.LoadSessionState(context.Background(), "test-stop-ended-at-only")
+	if err != nil {
+		t.Fatalf("LoadSessionState() error = %v", err)
+	}
+	if loaded == nil {
+		t.Fatal("expected session state to still exist")
+	}
+	if loaded.Phase != session.PhaseIdle {
+		t.Errorf("expected Phase to remain PhaseIdle (legacy), got: %v", loaded.Phase)
+	}
+}
+
+// TestFilterActiveSessions_ExcludesEndedAtSet verifies that filterActiveSessions
+// excludes sessions with EndedAt set regardless of Phase, matching the status.go
+// invariant that EndedAt is the authoritative "ended" signal.
+func TestFilterActiveSessions_ExcludesEndedAtSet(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+
+	legacyEnded := makeSessionState("legacy-ended", session.PhaseIdle)
+	legacyEnded.EndedAt = &now
+
+	properEnded := makeSessionState("proper-ended", session.PhaseEnded)
+	properEnded.EndedAt = &now
+
+	active := makeSessionState("active", session.PhaseIdle)
+
+	result := filterActiveSessions([]*strategy.SessionState{legacyEnded, properEnded, active})
+
+	if len(result) != 1 {
+		t.Fatalf("expected 1 active session, got %d", len(result))
+	}
+	if result[0].SessionID != "active" {
+		t.Errorf("expected active session ID %q, got %q", "active", result[0].SessionID)
+	}
+}
+
+// TestStopCmd_WorktreeScoping_NoFlags verifies that the no-flags path scopes session
+// listing to the current worktree, so sessions from other worktrees are invisible.
+func TestStopCmd_WorktreeScoping_NoFlags(t *testing.T) {
+	setupStopTestRepo(t)
+
+	ctx := context.Background()
+	worktreePath, err := paths.WorktreeRoot(ctx)
+	if err != nil {
+		t.Fatalf("WorktreeRoot() error = %v", err)
+	}
+
+	// One session in the current worktree, one in a foreign worktree.
+	inScope := makeSessionState("test-stop-scope-in", session.PhaseIdle)
+	inScope.WorktreePath = worktreePath
+
+	outOfScope := makeSessionState("test-stop-scope-out", session.PhaseIdle)
+	outOfScope.WorktreePath = "/some/other/worktree"
+
+	for _, s := range []*strategy.SessionState{inScope, outOfScope} {
+		if err := strategy.SaveSessionState(ctx, s); err != nil {
+			t.Fatalf("SaveSessionState() error = %v", err)
+		}
+	}
+
+	cmd := newStopCmd()
+	var stdout, stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	// Single in-scope session → confirm + stop path (bypasses TUI selector).
+	cmd.SetArgs([]string{"--force"})
+
+	if err := cmd.ExecuteContext(ctx); err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	// In-scope session must be stopped.
+	stopped, err := strategy.LoadSessionState(ctx, "test-stop-scope-in")
+	if err != nil {
+		t.Fatalf("LoadSessionState(in-scope) error = %v", err)
+	}
+	if stopped == nil {
+		t.Fatal("expected in-scope session to exist")
+	}
+	if stopped.Phase != session.PhaseEnded {
+		t.Errorf("expected in-scope session Phase=PhaseEnded, got: %v", stopped.Phase)
+	}
+
+	// Out-of-scope session must be untouched.
+	untouched, err := strategy.LoadSessionState(ctx, "test-stop-scope-out")
+	if err != nil {
+		t.Fatalf("LoadSessionState(out-of-scope) error = %v", err)
+	}
+	if untouched == nil {
+		t.Fatal("expected out-of-scope session to exist")
+	}
+	if untouched.Phase == session.PhaseEnded {
+		t.Errorf("expected out-of-scope session to remain non-ended, got PhaseEnded")
+	}
+}
