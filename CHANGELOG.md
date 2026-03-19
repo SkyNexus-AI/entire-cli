@@ -13,8 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - `entire trace` command for diagnosing slow performance hooks and lifecycle events ([#652](https://github.com/entireio/cli/pull/652))
 - Opt-in PII redaction with typed tokens ([#397](https://github.com/entireio/cli/pull/397))
 - Auto-discover external agents during `entire enable`, `entire rewind`, and `entire resume` ([#678](https://github.com/entireio/cli/pull/678))
-- Preview support for dedicated remote repository for checkpoint data, onboarded the CLI repository ([#677](https://github.com/entireio/cli/pull/677), ([#732](https://github.com/entireio/cli/pull/732))
-)
+- Preview support for dedicated remote repository for checkpoint data, onboarded the CLI repository ([#677](https://github.com/entireio/cli/pull/677), [#732](https://github.com/entireio/cli/pull/732))
 - E2E tests for external agents with roger-roger canary ([#700](https://github.com/entireio/cli/pull/700), [#702](https://github.com/entireio/cli/pull/702))
 - hk hook manager detection ([#657](https://github.com/entireio/cli/pull/657))
 
