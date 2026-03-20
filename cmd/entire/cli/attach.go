@@ -163,10 +163,10 @@ func runAttach(ctx context.Context, w io.Writer, sessionID string, agentName typ
 	fmt.Fprintf(w, "Attached session %s\n", sessionID)
 	if isExistingCheckpoint {
 		fmt.Fprintf(w, "  Added to existing checkpoint %s\n", checkpointID)
-	} else {
-		fmt.Fprintf(w, "  Created checkpoint %s\n", checkpointID)
+		return nil
 	}
 
+	fmt.Fprintf(w, "  Created checkpoint %s\n", checkpointID)
 	cpIDStr := checkpointID.String()
 	if err := promptAmendCommit(logCtx, w, cpIDStr, force); err != nil {
 		logging.Warn(logCtx, "failed to amend commit", "error", err)
