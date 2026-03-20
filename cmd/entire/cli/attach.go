@@ -23,6 +23,8 @@ import (
 	"github.com/entireio/cli/cmd/entire/cli/versioninfo"
 
 	"github.com/charmbracelet/huh"
+	"github.com/go-git/go-git/v6"
+	"github.com/go-git/go-git/v6/plumbing/object"
 	"github.com/spf13/cobra"
 )
 
@@ -69,7 +71,18 @@ func runAttach(ctx context.Context, w io.Writer, sessionID string, agentName typ
 
 	logCtx := logging.WithComponent(ctx, "attach")
 
-	existingState, err := validateAttachPreconditions(ctx, sessionID)
+	// Open repository once — shared across all operations.
+	repo, err := openRepository(ctx)
+	if err != nil {
+		return err
+	}
+
+	existingState, err := validateAttachPreconditions(ctx, repo, sessionID)
+	if err != nil {
+		return err
+	}
+
+	headCommit, err := getHeadCommit(repo)
 	if err != nil {
 		return err
 	}
@@ -78,27 +91,17 @@ func runAttach(ctx context.Context, w io.Writer, sessionID string, agentName typ
 	if existingState != nil && !existingState.LastCheckpointID.IsEmpty() {
 		cpID := existingState.LastCheckpointID.String()
 		fmt.Fprintf(w, "Session %s already has checkpoint %s\n", sessionID, cpID)
-		if err := promptAmendCommit(logCtx, w, cpID, force); err != nil {
+		if err := promptAmendCommit(logCtx, w, headCommit, cpID, force); err != nil {
 			logging.Warn(logCtx, "failed to amend commit", "error", err)
 			fmt.Fprintf(w, "\nCopy to your commit message to attach:\n\n  Entire-Checkpoint: %s\n", cpID)
 		}
 		return nil
 	}
 
-	// Resolve agent — from existing state or flag + auto-detection.
-	var ag agent.Agent
-	if existingState != nil {
-		ag, err = resolveAgentForState(existingState, agentName)
-	} else {
-		ag, _, err = resolveAgentAndTranscript(logCtx, w, sessionID, agentName)
-	}
+	// Resolve agent and transcript path.
+	ag, transcriptPath, err := resolveAgentAndTranscript(logCtx, w, sessionID, agentName, existingState)
 	if err != nil {
 		return err
-	}
-
-	transcriptPath, err := resolveAndValidateTranscript(logCtx, sessionID, ag)
-	if err != nil {
-		return fmt.Errorf("transcript not found for session %s: %w", sessionID, err)
 	}
 
 	transcriptData, err := ag.ReadTranscript(transcriptPath)
@@ -119,16 +122,9 @@ func runAttach(ctx context.Context, w io.Writer, sessionID string, agentName typ
 	meta := extractTranscriptMetadata(transcriptData)
 
 	// Determine checkpoint ID: reuse from HEAD if one exists, otherwise generate new.
-	checkpointID, isExistingCheckpoint, err := resolveCheckpointID(logCtx)
-	if err != nil {
-		return err
-	}
+	checkpointID, isExistingCheckpoint := resolveCheckpointID(headCommit)
 
 	// Write directly to entire/checkpoints/v1.
-	repo, err := openRepository(ctx)
-	if err != nil {
-		return err
-	}
 	store := cpkg.NewGitStore(repo)
 
 	author, err := GetGitAuthor(ctx)
@@ -141,15 +137,12 @@ func runAttach(ctx context.Context, w io.Writer, sessionID string, agentName typ
 		prompts = []string{meta.FirstPrompt}
 	}
 
-	var tokenUsage *agent.TokenUsage
-	if usage := agent.CalculateTokenUsage(logCtx, ag, transcriptData, 0, ""); usage != nil {
-		tokenUsage = usage
-	}
+	tokenUsage := agent.CalculateTokenUsage(logCtx, ag, transcriptData, 0, "")
 
 	if err := store.WriteCommitted(ctx, cpkg.WriteCommittedOptions{
 		CheckpointID: checkpointID,
 		SessionID:    sessionID,
-		Strategy:     "manual-commit",
+		Strategy:     strategy.StrategyNameManualCommit,
 		Transcript:   storedTranscript,
 		Prompts:      prompts,
 		AuthorName:   author.Name,
@@ -162,7 +155,7 @@ func runAttach(ctx context.Context, w io.Writer, sessionID string, agentName typ
 	}
 
 	// Create or update session state.
-	if err := saveAttachSessionState(logCtx, sessionID, ag.Type(), transcriptPath, checkpointID, meta, tokenUsage); err != nil {
+	if err := saveAttachSessionState(logCtx, existingState, sessionID, ag.Type(), transcriptPath, checkpointID, meta, tokenUsage); err != nil {
 		logging.Warn(logCtx, "failed to save session state", "error", err)
 	}
 
@@ -174,7 +167,7 @@ func runAttach(ctx context.Context, w io.Writer, sessionID string, agentName typ
 
 	fmt.Fprintf(w, "  Created checkpoint %s\n", checkpointID)
 	cpIDStr := checkpointID.String()
-	if err := promptAmendCommit(logCtx, w, cpIDStr, force); err != nil {
+	if err := promptAmendCommit(logCtx, w, headCommit, cpIDStr, force); err != nil {
 		logging.Warn(logCtx, "failed to amend commit", "error", err)
 		fmt.Fprintf(w, "\nCopy to your commit message to attach:\n\n  Entire-Checkpoint: %s\n", cpIDStr)
 	}
@@ -182,50 +175,48 @@ func runAttach(ctx context.Context, w io.Writer, sessionID string, agentName typ
 	return nil
 }
 
+// getHeadCommit returns the HEAD commit object.
+func getHeadCommit(repo *git.Repository) (*object.Commit, error) {
+	headRef, err := repo.Head()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get HEAD: %w", err)
+	}
+	commit, err := repo.CommitObject(headRef.Hash())
+	if err != nil {
+		return nil, fmt.Errorf("failed to get HEAD commit: %w", err)
+	}
+	return commit, nil
+}
+
 // resolveCheckpointID returns the checkpoint ID to use for the attach.
 // If HEAD already has an Entire-Checkpoint trailer, reuses that ID (the session
 // gets added as an additional session in the existing checkpoint).
 // Otherwise generates a new ID.
-func resolveCheckpointID(ctx context.Context) (id.CheckpointID, bool, error) {
-	repo, err := openRepository(ctx)
-	if err != nil {
-		return id.EmptyCheckpointID, false, err
-	}
-	headRef, err := repo.Head()
-	if err != nil {
-		return id.EmptyCheckpointID, false, fmt.Errorf("failed to get HEAD: %w", err)
-	}
-	headCommit, err := repo.CommitObject(headRef.Hash())
-	if err != nil {
-		return id.EmptyCheckpointID, false, fmt.Errorf("failed to get HEAD commit: %w", err)
-	}
-
+func resolveCheckpointID(headCommit *object.Commit) (id.CheckpointID, bool) {
 	existing := trailers.ParseAllCheckpoints(headCommit.Message)
 	if len(existing) > 0 {
-		// Use the last checkpoint ID on HEAD.
-		return existing[len(existing)-1], true, nil
+		return existing[len(existing)-1], true
 	}
 
 	cpID, err := id.Generate()
 	if err != nil {
-		return id.EmptyCheckpointID, false, fmt.Errorf("failed to generate checkpoint ID: %w", err)
+		// Generation only fails if crypto/rand fails — extremely unlikely.
+		// Fall back to empty which will cause WriteCommitted to fail with a clear error.
+		return id.EmptyCheckpointID, false
 	}
-	return cpID, false, nil
+	return cpID, false
 }
 
 // saveAttachSessionState creates or updates the session state file for the attached session.
-func saveAttachSessionState(ctx context.Context, sessionID string, agentType types.AgentType, transcriptPath string, checkpointID id.CheckpointID, meta transcriptMetadata, tokenUsage *agent.TokenUsage) error {
+// If existingState is non-nil, it is updated in place (avoids a redundant disk load).
+func saveAttachSessionState(ctx context.Context, existingState *session.State, sessionID string, agentType types.AgentType, transcriptPath string, checkpointID id.CheckpointID, meta transcriptMetadata, tokenUsage *agent.TokenUsage) error {
 	stateStore, err := session.NewStateStore(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to open session store: %w", err)
 	}
 
-	state, err := stateStore.Load(ctx, sessionID)
-	if err != nil {
-		return fmt.Errorf("failed to load session state: %w", err)
-	}
-
 	now := time.Now()
+	state := existingState
 	if state == nil {
 		state = &session.State{
 			SessionID: sessionID,
@@ -251,8 +242,6 @@ func saveAttachSessionState(ctx context.Context, sessionID string, agentType typ
 	if tokenUsage != nil {
 		state.TokenUsage = tokenUsage
 	}
-	// Note: session duration is not estimated here because we don't have the
-	// raw transcript data. The token usage and turn count are sufficient metadata.
 
 	if err := stateStore.Save(ctx, state); err != nil {
 		return fmt.Errorf("failed to save session state: %w", err)
@@ -262,15 +251,11 @@ func saveAttachSessionState(ctx context.Context, sessionID string, agentType typ
 
 // validateAttachPreconditions checks session ID format and git repo state.
 // Returns the existing session state if the session is already tracked (nil if new).
-func validateAttachPreconditions(ctx context.Context, sessionID string) (*session.State, error) {
+func validateAttachPreconditions(ctx context.Context, repo *git.Repository, sessionID string) (*session.State, error) {
 	if err := validation.ValidateSessionID(sessionID); err != nil {
 		return nil, fmt.Errorf("invalid session ID: %w", err)
 	}
 
-	repo, repoErr := strategy.OpenRepository(ctx)
-	if repoErr != nil {
-		return nil, fmt.Errorf("failed to open repository: %w", repoErr)
-	}
 	if strategy.IsEmptyRepository(repo) {
 		return nil, errors.New("repository has no commits yet — make an initial commit before running attach")
 	}
@@ -287,15 +272,18 @@ func validateAttachPreconditions(ctx context.Context, sessionID string) (*sessio
 	return existing, nil
 }
 
-// resolveAgentAndTranscript resolves the agent and transcript path, with auto-detection fallback.
-func resolveAgentAndTranscript(ctx context.Context, w io.Writer, sessionID string, agentName types.AgentName) (agent.Agent, string, error) {
-	ag, err := agent.Get(agentName)
+// resolveAgentAndTranscript resolves the agent and transcript path.
+// For existing sessions, resolves the agent from session state's AgentType.
+// For new sessions, uses the --agent flag with auto-detection fallback.
+func resolveAgentAndTranscript(ctx context.Context, w io.Writer, sessionID string, agentName types.AgentName, existingState *session.State) (agent.Agent, string, error) {
+	ag, err := resolveAgent(existingState, agentName)
 	if err != nil {
-		return nil, "", fmt.Errorf("agent %q not available: %w", agentName, err)
+		return nil, "", err
 	}
 
 	transcriptPath, err := resolveAndValidateTranscript(ctx, sessionID, ag)
 	if err != nil {
+		// Auto-detect: try all other agents.
 		detectedAg, detectedPath, detectErr := detectAgentByTranscript(ctx, sessionID, agentName)
 		if detectErr != nil {
 			return nil, "", fmt.Errorf("%w (also tried auto-detecting other agents: %w)", err, detectErr)
@@ -309,19 +297,15 @@ func resolveAgentAndTranscript(ctx context.Context, w io.Writer, sessionID strin
 	return ag, transcriptPath, nil
 }
 
-// resolveAgentForState resolves the agent from session state's AgentType,
-// falling back to the --agent flag if the state has no type.
-func resolveAgentForState(state *session.State, agentName types.AgentName) (agent.Agent, error) {
-	if state.AgentType != "" {
-		for _, name := range agent.List() {
-			ag, err := agent.Get(name)
-			if err != nil {
-				continue
-			}
-			if ag.Type() == state.AgentType {
-				return ag, nil
-			}
+// resolveAgent resolves the agent to use. For existing sessions with an AgentType,
+// uses agent.GetByAgentType. Otherwise falls back to the --agent flag.
+func resolveAgent(existingState *session.State, agentName types.AgentName) (agent.Agent, error) {
+	if existingState != nil && existingState.AgentType != "" {
+		ag, err := agent.GetByAgentType(existingState.AgentType)
+		if err == nil {
+			return ag, nil
 		}
+		// Fall through to flag-based resolution.
 	}
 	ag, err := agent.Get(agentName)
 	if err != nil {
@@ -380,21 +364,8 @@ func detectAgentByTranscript(ctx context.Context, sessionID string, skip types.A
 
 // promptAmendCommit shows the last commit and asks whether to amend it with the checkpoint trailer.
 // When force is true, it amends without prompting.
-func promptAmendCommit(ctx context.Context, w io.Writer, checkpointIDStr string, force bool) error {
-	repo, err := openRepository(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to open repository: %w", err)
-	}
-	headRef, err := repo.Head()
-	if err != nil {
-		return fmt.Errorf("failed to get HEAD: %w", err)
-	}
-	headCommit, err := repo.CommitObject(headRef.Hash())
-	if err != nil {
-		return fmt.Errorf("failed to get HEAD commit: %w", err)
-	}
-
-	shortHash := headRef.Hash().String()[:7]
+func promptAmendCommit(ctx context.Context, w io.Writer, headCommit *object.Commit, checkpointIDStr string, force bool) error {
+	shortHash := headCommit.Hash.String()[:7]
 	subject := strings.SplitN(headCommit.Message, "\n", 2)[0]
 
 	// Skip amending if this exact checkpoint ID is already in the commit.

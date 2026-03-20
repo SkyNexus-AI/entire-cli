@@ -1,9 +1,7 @@
 package cli
 
 import (
-	"bytes"
 	"encoding/json"
-	"time"
 
 	"github.com/entireio/cli/cmd/entire/cli/agent/geminicli"
 	"github.com/entireio/cli/cmd/entire/cli/transcript"
@@ -55,41 +53,4 @@ func extractTranscriptMetadata(data []byte) transcriptMetadata {
 	}
 
 	return meta
-}
-
-// estimateSessionDuration estimates session duration in milliseconds from JSONL transcript timestamps.
-// The "timestamp" field is a top-level field in JSONL lines (alongside "type", "uuid", "message"),
-// NOT inside the "message" object. We parse raw lines since transcript.Line doesn't capture it.
-// Returns 0 if timestamps are not available (e.g., Gemini transcripts).
-func estimateSessionDuration(data []byte) int64 {
-	type timestamped struct {
-		Timestamp string `json:"timestamp"`
-	}
-
-	var first, last time.Time
-	for _, rawLine := range bytes.Split(data, []byte("\n")) {
-		if len(rawLine) == 0 {
-			continue
-		}
-		var ts timestamped
-		if err := json.Unmarshal(rawLine, &ts); err != nil || ts.Timestamp == "" {
-			continue
-		}
-		parsed, err := time.Parse(time.RFC3339Nano, ts.Timestamp)
-		if err != nil {
-			parsed, err = time.Parse(time.RFC3339, ts.Timestamp)
-			if err != nil {
-				continue
-			}
-		}
-		if first.IsZero() {
-			first = parsed
-		}
-		last = parsed
-	}
-
-	if first.IsZero() || last.IsZero() || !last.After(first) {
-		return 0
-	}
-	return last.Sub(first).Milliseconds()
 }

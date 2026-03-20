@@ -297,47 +297,6 @@ func TestExtractModelFromTranscript(t *testing.T) {
 	}
 }
 
-func TestEstimateSessionDuration(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name    string
-		data    []byte
-		wantPos bool
-	}{
-		{
-			name: "jsonl with timestamps",
-			data: []byte(`{"type":"user","message":{"role":"user","content":"hi"},"uuid":"u1","timestamp":"2026-01-01T10:00:00.000Z"}
-{"type":"assistant","message":{"role":"assistant","content":"hello"},"uuid":"a1","timestamp":"2026-01-01T10:05:00.000Z"}
-`),
-			wantPos: true,
-		},
-		{
-			name:    "no timestamps",
-			data:    []byte("{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"hi\"},\"uuid\":\"u1\"}\n"),
-			wantPos: false,
-		},
-		{
-			name:    "gemini format (no timestamps)",
-			data:    []byte(`{"messages":[{"type":"user","content":"hi"}]}`),
-			wantPos: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			got := estimateSessionDuration(tt.data)
-			if tt.wantPos && got <= 0 {
-				t.Errorf("estimateSessionDuration() = %d, want > 0", got)
-			}
-			if !tt.wantPos && got != 0 {
-				t.Errorf("estimateSessionDuration() = %d, want 0", got)
-			}
-		})
-	}
-}
-
 func TestExtractFirstPromptFromTranscript_GeminiFormat(t *testing.T) {
 	t.Parallel()
 
