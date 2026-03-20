@@ -68,19 +68,10 @@ func runLogin(ctx context.Context, outW, errW io.Writer, client deviceAuthClient
 
 	fmt.Fprintf(outW, "Device code: %s\n", start.UserCode)
 
-	// Use the clean URL (without code) for display, but open the complete URL
-	// (with code pre-filled) in the browser for a smoother experience.
-	displayURL := start.VerificationURI
-	browserURL := start.VerificationURIComplete
-	if browserURL == "" {
-		browserURL = displayURL
-	}
-	if displayURL == "" {
-		displayURL = browserURL
-	}
+	approvalURL := start.VerificationURI
 
 	if canPromptInteractively() {
-		fmt.Fprintf(outW, "Press Enter to open %s in your browser...", displayURL)
+		fmt.Fprintf(outW, "Press Enter to open %s in your browser and enter the generated device code...", approvalURL)
 
 		// Read from /dev/tty so we get a real keypress and don't consume piped stdin.
 		if err := waitForEnter(ctx); err != nil {
@@ -89,12 +80,12 @@ func runLogin(ctx context.Context, outW, errW io.Writer, client deviceAuthClient
 
 		fmt.Fprintln(outW)
 
-		if err := openURL(ctx, browserURL); err != nil {
+		if err := openURL(ctx, approvalURL); err != nil {
 			fmt.Fprintf(errW, "Warning: failed to open browser: %v\n", err)
-			fmt.Fprintf(outW, "Open the approval URL in your browser to continue: %s\n", browserURL)
+			fmt.Fprintf(outW, "Open the approval URL in your browser to continue and enter the generated device code: %s\n", approvalURL)
 		}
 	} else {
-		fmt.Fprintf(outW, "Approval URL: %s\n", displayURL)
+		fmt.Fprintf(outW, "Approval URL: %s\n", approvalURL)
 	}
 
 	fmt.Fprintln(outW, "Waiting for approval...")
@@ -183,9 +174,8 @@ func waitForApproval(ctx context.Context, poller deviceAuthClient, deviceCode st
 func waitForEnter(ctx context.Context) error {
 	tty, err := os.Open("/dev/tty")
 	if err != nil {
-		return nil
+		return nil //nolint:nilerr // tty unavailable (e.g. Windows) — skip prompt silently
 	}
-	defer tty.Close()
 
 	done := make(chan error, 1)
 	go func() {
@@ -200,6 +190,7 @@ func waitForEnter(ctx context.Context) error {
 		_ = tty.Close()
 		return fmt.Errorf("interrupted: %w", ctx.Err())
 	case <-done:
+		_ = tty.Close()
 		return nil
 	}
 }
