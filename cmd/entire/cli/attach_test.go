@@ -88,6 +88,7 @@ func TestAttach_Success(t *testing.T) {
 		t.Error("expected LastCheckpointID to be set after attach")
 	}
 
+	// Verify output message
 	output := out.String()
 	if !strings.Contains(output, "Attached session") {
 		t.Errorf("expected 'Attached session' in output, got: %s", output)
@@ -362,9 +363,12 @@ func TestExtractFirstPromptFromTranscript_JSONLFormat(t *testing.T) {
 func TestAttach_GeminiSubdirectorySession(t *testing.T) {
 	setupAttachTestRepo(t)
 
+	// Redirect HOME so searchTranscriptInProjectDirs searches our fake Gemini dir
 	fakeHome := t.TempDir()
 	t.Setenv("HOME", fakeHome)
 
+	// Create a Gemini transcript in a *different* project hash directory,
+	// simulating a session started from a subdirectory (different CWD hash).
 	differentProjectDir := filepath.Join(fakeHome, ".gemini", "tmp", "different-hash", "chats")
 	if err := os.MkdirAll(differentProjectDir, 0o750); err != nil {
 		t.Fatal(err)
@@ -372,11 +376,14 @@ func TestAttach_GeminiSubdirectorySession(t *testing.T) {
 
 	sessionID := "abcd1234-gemini-subdir-test"
 	transcriptContent := `{"messages":[{"type":"user","content":"hello"},{"type":"gemini","content":"hi"}]}`
+	// Gemini names files as session-<date>-<shortid>.json where shortid = sessionID[:8]
 	transcriptFile := filepath.Join(differentProjectDir, "session-2026-01-01T10-00-abcd1234.json")
 	if err := os.WriteFile(transcriptFile, []byte(transcriptContent), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
+	// Set the expected project dir to an empty directory so the primary lookup fails
+	// and the fallback search kicks in.
 	emptyProjectDir := t.TempDir()
 	t.Setenv("ENTIRE_TEST_GEMINI_PROJECT_DIR", emptyProjectDir)
 
@@ -413,6 +420,7 @@ func TestAttach_GeminiSubdirectorySession(t *testing.T) {
 func TestAttach_GeminiSuccess(t *testing.T) {
 	setupAttachTestRepo(t)
 
+	// Create Gemini transcript in expected project dir
 	geminiDir := t.TempDir()
 	t.Setenv("ENTIRE_TEST_GEMINI_PROJECT_DIR", geminiDir)
 
@@ -434,6 +442,7 @@ func TestAttach_GeminiSuccess(t *testing.T) {
 		t.Errorf("expected 'Attached session' in output, got: %s", output)
 	}
 
+	// Verify session state
 	store, storeErr := session.NewStateStore(context.Background())
 	if storeErr != nil {
 		t.Fatal(storeErr)
@@ -460,9 +469,11 @@ func TestAttach_CursorSuccess(t *testing.T) {
 	t.Setenv("ENTIRE_TEST_CURSOR_PROJECT_DIR", cursorDir)
 
 	sessionID := "test-attach-cursor-session"
+	// Cursor uses JSONL format, same as Claude Code
 	transcriptContent := `{"type":"user","message":{"role":"user","content":"add dark mode"},"uuid":"u1"}
 {"type":"assistant","message":{"role":"assistant","content":"I'll add dark mode support."},"uuid":"a1"}
 `
+	// Cursor flat layout: <dir>/<id>.jsonl
 	if err := os.WriteFile(filepath.Join(cursorDir, sessionID+".jsonl"), []byte(transcriptContent), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -503,9 +514,11 @@ func TestAttach_FactoryAIDroidSuccess(t *testing.T) {
 	t.Setenv("ENTIRE_TEST_DROID_PROJECT_DIR", droidDir)
 
 	sessionID := "test-attach-droid-session"
+	// Factory AI Droid uses JSONL format
 	transcriptContent := `{"type":"user","message":{"role":"user","content":"deploy to staging"},"uuid":"u1"}
 {"type":"assistant","message":{"role":"assistant","content":"Deploying to staging now."},"uuid":"a1"}
 `
+	// Factory AI Droid: flat <dir>/<id>.jsonl
 	if err := os.WriteFile(filepath.Join(droidDir, sessionID+".jsonl"), []byte(transcriptContent), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -548,6 +561,7 @@ func TestAttach_CursorNestedLayout(t *testing.T) {
 	sessionID := "test-cursor-nested-layout"
 	transcriptContent := `{"type":"user","message":{"role":"user","content":"hello"},"uuid":"u1"}
 `
+	// Cursor IDE nested layout: <dir>/<id>/<id>.jsonl
 	nestedDir := filepath.Join(cursorDir, sessionID)
 	if err := os.MkdirAll(nestedDir, 0o750); err != nil {
 		t.Fatal(err)
