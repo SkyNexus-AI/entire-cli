@@ -96,8 +96,8 @@ func TestInstallHooks_LocalDev(t *testing.T) {
 	}
 
 	content := string(data)
-	if !strings.Contains(content, "go run") {
-		t.Error("local dev mode: plugin file should contain 'go run'")
+	if !strings.Contains(content, "go run $(git rev-parse --show-toplevel)/cmd/entire/main.go") {
+		t.Error("local dev mode: plugin file should use git rev-parse for go run path")
 	}
 }
 

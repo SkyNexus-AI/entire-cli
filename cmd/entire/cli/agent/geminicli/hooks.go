@@ -39,7 +39,7 @@ const GeminiSettingsFileName = "settings.json"
 // entireHookPrefixes are command prefixes that identify Entire hooks
 var entireHookPrefixes = []string{
 	"entire ",
-	"go run ${GEMINI_PROJECT_DIR}/cmd/entire/main.go ",
+	"go run $(git rev-parse --show-toplevel)/cmd/entire/main.go ",
 }
 
 // InstallHooks installs Gemini CLI hooks in .gemini/settings.json.
@@ -102,7 +102,7 @@ func (g *GeminiCLIAgent) InstallHooks(ctx context.Context, localDev bool, force 
 	// Define hook commands based on localDev mode
 	var cmdPrefix string
 	if localDev {
-		cmdPrefix = "go run ${GEMINI_PROJECT_DIR}/cmd/entire/main.go hooks gemini "
+		cmdPrefix = "go run $(git rev-parse --show-toplevel)/cmd/entire/main.go hooks gemini "
 	} else {
 		cmdPrefix = "entire hooks gemini "
 	}
