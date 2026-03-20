@@ -310,8 +310,9 @@ func enrichSessionState(ctx context.Context, sessionID string, ag agent.Agent, t
 
 // condenseAndFinalizeSession condenses the session to permanent storage and transitions it to IDLE.
 // Returns the checkpoint ID string and any condensation error.
-// Note: accepts *strategy.ManualCommitStrategy directly because CondenseSessionByID is intentionally
-// not on the Strategy interface — it's a strategy-specific repair/attach operation.
+// Note: accepts *strategy.ManualCommitStrategy directly because checkpoint storage is conceptually
+// strategy-independent but currently lives on the strategy struct. Extracting it would require
+// publicizing several private methods — worth doing if a second strategy ever appears.
 func condenseAndFinalizeSession(ctx context.Context, strat *strategy.ManualCommitStrategy, sessionID string) (string, error) {
 	var checkpointIDStr string
 	var condenseErr error
