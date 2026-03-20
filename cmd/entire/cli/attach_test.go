@@ -57,8 +57,10 @@ func TestAttach_Success(t *testing.T) {
 	setupAttachTestRepo(t)
 
 	sessionID := "test-attach-session-001"
-	setupClaudeTranscript(t, sessionID, `{"type":"user","message":{"role":"user","content":"hello"},"uuid":"uuid-1"}
-{"type":"assistant","message":{"role":"assistant","content":"done"},"uuid":"uuid-2"}
+	setupClaudeTranscript(t, sessionID, `{"type":"user","message":{"role":"user","content":"create a hello world file"},"uuid":"uuid-1"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tu_1","name":"Write","input":{"file_path":"hello.txt","content":"world"}}]},"uuid":"uuid-2"}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tu_1","content":"wrote file"}]},"uuid":"uuid-3"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Done! I created hello.txt."}]},"uuid":"uuid-4"}
 `)
 
 	var out bytes.Buffer
@@ -99,8 +101,8 @@ func TestAttach_SessionAlreadyTracked_NoCheckpoint(t *testing.T) {
 	setupAttachTestRepo(t)
 
 	sessionID := "test-attach-duplicate"
-	setupClaudeTranscript(t, sessionID, `{"type":"user","message":{"role":"user","content":"hello"},"uuid":"uuid-1"}
-{"type":"assistant","message":{"role":"assistant","content":"hi"},"uuid":"uuid-2"}
+	setupClaudeTranscript(t, sessionID, `{"type":"user","message":{"role":"user","content":"explain the auth module"},"uuid":"uuid-1"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"The auth module handles user authentication via JWT tokens."}]},"uuid":"uuid-2"}
 `)
 
 	// Pre-create session state without a checkpoint ID (simulates hooks tracking
@@ -141,8 +143,10 @@ func TestAttach_OutputContainsCheckpointID(t *testing.T) {
 	setupAttachTestRepo(t)
 
 	sessionID := "test-attach-checkpoint-output"
-	setupClaudeTranscript(t, sessionID, `{"type":"user","message":{"role":"user","content":"hello"},"uuid":"uuid-1"}
-{"type":"assistant","message":{"role":"assistant","content":"done"},"uuid":"uuid-2"}
+	setupClaudeTranscript(t, sessionID, `{"type":"user","message":{"role":"user","content":"add error handling"},"uuid":"uuid-1"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tu_1","name":"Edit","input":{"file_path":"main.go","old_string":"return nil","new_string":"return fmt.Errorf(\"failed: %w\", err)"}}]},"uuid":"uuid-2"}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tu_1","content":"edited file"}]},"uuid":"uuid-3"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Added error wrapping."}]},"uuid":"uuid-4"}
 `)
 
 	var out bytes.Buffer
