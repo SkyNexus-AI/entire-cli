@@ -752,7 +752,7 @@ func warnStaleEndedSessionsTo(ctx context.Context, count int, w io.Writer) {
 	os.WriteFile(warnFile, []byte{}, 0o644)
 	fmt.Fprintf(w,
 		"\nentire: %d ended session(s) are accumulating and slowing down commits.\n"+
-			"Run 'entire clean --force' to remove them and restore commit performance.\n\n",
+			"Run 'entire doctor' to condense them and restore commit performance.\n\n",
 		count,
 	)
 }

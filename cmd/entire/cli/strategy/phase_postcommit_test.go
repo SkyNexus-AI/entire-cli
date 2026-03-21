@@ -2450,7 +2450,7 @@ func TestWarnStaleEndedSessions_RateLimit(t *testing.T) {
 	// First call: no sentinel file → should write to stderr
 	var buf bytes.Buffer
 	warnStaleEndedSessionsTo(ctx, 5, &buf)
-	assert.Contains(t, buf.String(), "entire clean --force")
+	assert.Contains(t, buf.String(), "entire doctor")
 
 	// Sentinel file now exists with current mtime → second call suppressed
 	buf.Reset()
@@ -2466,5 +2466,5 @@ func TestWarnStaleEndedSessions_RateLimit(t *testing.T) {
 
 	buf.Reset()
 	warnStaleEndedSessionsTo(ctx, 5, &buf)
-	assert.Contains(t, buf.String(), "entire clean --force")
+	assert.Contains(t, buf.String(), "entire doctor")
 }
