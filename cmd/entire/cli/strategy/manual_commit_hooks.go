@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -721,6 +722,41 @@ func (h *postCommitActionHandler) shouldCondenseWithOverlapCheck(isActive bool, 
 	})
 }
 
+const (
+	staleEndedSessionWarnThreshold = 3                   // warn when ≥ this many stale sessions
+	staleEndedSessionWarnInterval  = 24 * time.Hour      // rate-limit window
+	staleEndedSessionWarnFile      = ".warn-stale-ended" // sentinel file name in entire-sessions/
+)
+
+// warnStaleEndedSessions emits a rate-limited warning to stderr when too many
+// non-FullyCondensed ENDED sessions are accumulating.
+func warnStaleEndedSessions(ctx context.Context, count int) {
+	warnStaleEndedSessionsTo(ctx, count, os.Stderr)
+}
+
+func warnStaleEndedSessionsTo(ctx context.Context, count int, w io.Writer) {
+	commonDir, err := GetGitCommonDir(ctx)
+	if err != nil {
+		return // fail-open
+	}
+	warnDir := filepath.Join(commonDir, session.SessionStateDirName)
+	warnFile := filepath.Join(warnDir, staleEndedSessionWarnFile)
+	if info, statErr := os.Stat(warnFile); statErr == nil {
+		if time.Since(info.ModTime()) < staleEndedSessionWarnInterval {
+			return // rate-limited
+		}
+	}
+	//nolint:errcheck,gosec // G104: Best-effort warning — fail-open if file ops fail
+	os.MkdirAll(warnDir, 0o755)
+	//nolint:errcheck,gosec // G104: Best-effort sentinel file write
+	os.WriteFile(warnFile, []byte{}, 0o644)
+	fmt.Fprintf(w,
+		"\nentire: %d ended session(s) are accumulating and slowing down commits.\n"+
+			"Run 'entire clean --force' to remove them and restore commit performance.\n\n",
+		count,
+	)
+}
+
 // activeSessionInteractionThreshold is the maximum age of LastInteractionTime
 // for an ACTIVE session to be considered genuinely active. 24h is generous
 // because LastInteractionTime only updates at TurnStart, not per-tool-call.
@@ -799,6 +835,10 @@ func (s *ManualCommitStrategy) PostCommit(ctx context.Context) error { //nolint:
 	sessions, err := s.findSessionsForWorktree(ctx, worktreePath)
 	findSessionsSpan.RecordError(err)
 	findSessionsSpan.End()
+
+	if stale := countStaleEndedSessions(sessions); stale >= staleEndedSessionWarnThreshold {
+		warnStaleEndedSessions(ctx, stale)
+	}
 
 	if err != nil || len(sessions) == 0 {
 		logging.Warn(logCtx, "post-commit: no active sessions despite trailer",

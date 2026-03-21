@@ -9,6 +9,7 @@ import (
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint"
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint/id"
 	"github.com/entireio/cli/cmd/entire/cli/paths"
+	"github.com/entireio/cli/cmd/entire/cli/session"
 	"github.com/entireio/cli/cmd/entire/cli/versioninfo"
 
 	"github.com/go-git/go-git/v6"
@@ -99,6 +100,18 @@ func (s *ManualCommitStrategy) listAllSessionStates(ctx context.Context) ([]*Ses
 		states = append(states, state)
 	}
 	return states, nil
+}
+
+// countStaleEndedSessions returns the number of ENDED sessions that have not
+// been fully condensed. These sessions still incur PostCommit processing cost.
+func countStaleEndedSessions(sessions []*SessionState) int {
+	n := 0
+	for _, s := range sessions {
+		if s.Phase == session.PhaseEnded && !s.FullyCondensed {
+			n++
+		}
+	}
+	return n
 }
 
 // findSessionsForWorktree finds all sessions for the given worktree path.

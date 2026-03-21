@@ -1,6 +1,7 @@
 package strategy
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
@@ -2389,4 +2390,81 @@ func TestPostCommit_ActiveSession_DifferentFilesThanCommit_ShouldCondense(t *tes
 	_, err = repo.Reference(plumbing.NewBranchReferenceName(paths.MetadataBranchName), true)
 	require.NoError(t, err,
 		"entire/checkpoints/v1 should exist — ACTIVE session with different files must still condense")
+}
+
+// TestCountStaleEndedSessions verifies detection of non-FullyCondensed ENDED sessions.
+// Safe to parallelize — no CWD dependency.
+func TestCountStaleEndedSessions(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name     string
+		sessions []*SessionState
+		want     int
+	}{
+		{
+			name:     "empty",
+			sessions: nil,
+			want:     0,
+		},
+		{
+			name: "all active — no stale",
+			sessions: []*SessionState{
+				{Phase: session.PhaseActive, FullyCondensed: false},
+				{Phase: session.PhaseIdle, FullyCondensed: false},
+			},
+			want: 0,
+		},
+		{
+			name: "ended but FullyCondensed — not stale",
+			sessions: []*SessionState{
+				{Phase: session.PhaseEnded, FullyCondensed: true},
+			},
+			want: 0,
+		},
+		{
+			name: "two stale ended sessions",
+			sessions: []*SessionState{
+				{Phase: session.PhaseEnded, FullyCondensed: false},
+				{Phase: session.PhaseEnded, FullyCondensed: false},
+				{Phase: session.PhaseIdle, FullyCondensed: false},
+			},
+			want: 2,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := countStaleEndedSessions(tc.sessions)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+// TestWarnStaleEndedSessions_RateLimit verifies the 24h sentinel file gate.
+// Uses t.Chdir — do NOT add t.Parallel().
+func TestWarnStaleEndedSessions_RateLimit(t *testing.T) {
+	dir := setupGitRepo(t)
+	t.Chdir(dir)
+	ctx := context.Background()
+
+	// First call: no sentinel file → should write to stderr
+	var buf bytes.Buffer
+	warnStaleEndedSessionsTo(ctx, 5, &buf)
+	assert.Contains(t, buf.String(), "entire clean --force")
+
+	// Sentinel file now exists with current mtime → second call suppressed
+	buf.Reset()
+	warnStaleEndedSessionsTo(ctx, 5, &buf)
+	assert.Empty(t, buf.String(), "second call within window must be suppressed")
+
+	// Backdate sentinel file by 25h → call should warn again
+	commonDir, err := GetGitCommonDir(ctx)
+	require.NoError(t, err)
+	warnFile := filepath.Join(commonDir, session.SessionStateDirName, staleEndedSessionWarnFile)
+	past := time.Now().Add(-25 * time.Hour)
+	require.NoError(t, os.Chtimes(warnFile, past, past))
+
+	buf.Reset()
+	warnStaleEndedSessionsTo(ctx, 5, &buf)
+	assert.Contains(t, buf.String(), "entire clean --force")
 }
