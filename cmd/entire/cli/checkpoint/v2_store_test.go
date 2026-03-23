@@ -1,11 +1,17 @@
 package checkpoint
 
 import (
+	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/entireio/cli/cmd/entire/cli/agent"
+	"github.com/entireio/cli/cmd/entire/cli/checkpoint/id"
 	"github.com/entireio/cli/cmd/entire/cli/paths"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/go-git/go-git/v6"
@@ -35,18 +41,18 @@ func initTestRepo(t *testing.T) *git.Repository {
 	return repo
 }
 
-func TestNewV2Store(t *testing.T) {
+func TestNewV2GitStore(t *testing.T) {
 	t.Parallel()
 	repo := initTestRepo(t)
-	store := NewV2Store(repo)
+	store := NewV2GitStore(repo)
 	require.NotNil(t, store)
 	require.Equal(t, repo, store.repo)
 }
 
-func TestV2Store_EnsureRef_CreatesNewRef(t *testing.T) {
+func TestV2GitStore_EnsureRef_CreatesNewRef(t *testing.T) {
 	t.Parallel()
 	repo := initTestRepo(t)
-	store := NewV2Store(repo)
+	store := NewV2GitStore(repo)
 
 	refName := plumbing.ReferenceName(paths.V2MainRefName)
 
@@ -69,10 +75,10 @@ func TestV2Store_EnsureRef_CreatesNewRef(t *testing.T) {
 	require.Empty(t, tree.Entries, "initial tree should be empty")
 }
 
-func TestV2Store_EnsureRef_Idempotent(t *testing.T) {
+func TestV2GitStore_EnsureRef_Idempotent(t *testing.T) {
 	t.Parallel()
 	repo := initTestRepo(t)
-	store := NewV2Store(repo)
+	store := NewV2GitStore(repo)
 
 	refName := plumbing.ReferenceName(paths.V2MainRefName)
 
@@ -87,10 +93,10 @@ func TestV2Store_EnsureRef_Idempotent(t *testing.T) {
 	require.Equal(t, ref1.Hash(), ref2.Hash())
 }
 
-func TestV2Store_EnsureRef_DifferentRefs(t *testing.T) {
+func TestV2GitStore_EnsureRef_DifferentRefs(t *testing.T) {
 	t.Parallel()
 	repo := initTestRepo(t)
-	store := NewV2Store(repo)
+	store := NewV2GitStore(repo)
 
 	mainRef := plumbing.ReferenceName(paths.V2MainRefName)
 	fullRef := plumbing.ReferenceName(paths.V2FullCurrentRefName)
@@ -105,10 +111,10 @@ func TestV2Store_EnsureRef_DifferentRefs(t *testing.T) {
 	require.NoError(t, err)
 }
 
-func TestV2Store_GetRefState_ReturnsParentAndTree(t *testing.T) {
+func TestV2GitStore_GetRefState_ReturnsParentAndTree(t *testing.T) {
 	t.Parallel()
 	repo := initTestRepo(t)
-	store := NewV2Store(repo)
+	store := NewV2GitStore(repo)
 
 	refName := plumbing.ReferenceName(paths.V2MainRefName)
 	require.NoError(t, store.ensureRef(refName))
@@ -120,20 +126,20 @@ func TestV2Store_GetRefState_ReturnsParentAndTree(t *testing.T) {
 	_ = treeHash
 }
 
-func TestV2Store_GetRefState_ErrorsOnMissingRef(t *testing.T) {
+func TestV2GitStore_GetRefState_ErrorsOnMissingRef(t *testing.T) {
 	t.Parallel()
 	repo := initTestRepo(t)
-	store := NewV2Store(repo)
+	store := NewV2GitStore(repo)
 
 	refName := plumbing.ReferenceName("refs/entire/nonexistent")
 	_, _, err := store.getRefState(refName)
 	require.Error(t, err)
 }
 
-func TestV2Store_UpdateRef_CreatesCommit(t *testing.T) {
+func TestV2GitStore_UpdateRef_CreatesCommit(t *testing.T) {
 	t.Parallel()
 	repo := initTestRepo(t)
-	store := NewV2Store(repo)
+	store := NewV2GitStore(repo)
 
 	refName := plumbing.ReferenceName(paths.V2MainRefName)
 	require.NoError(t, store.ensureRef(refName))
@@ -166,4 +172,207 @@ func TestV2Store_UpdateRef_CreatesCommit(t *testing.T) {
 	require.Equal(t, "test commit", commit.Message)
 	require.Len(t, commit.ParentHashes, 1)
 	require.Equal(t, parentHash, commit.ParentHashes[0])
+}
+
+// v2MainTree returns the root tree from the /main ref for test assertions.
+func v2MainTree(t *testing.T, repo *git.Repository) *object.Tree {
+	t.Helper()
+	ref, err := repo.Reference(plumbing.ReferenceName(paths.V2MainRefName), true)
+	require.NoError(t, err)
+	commit, err := repo.CommitObject(ref.Hash())
+	require.NoError(t, err)
+	tree, err := commit.Tree()
+	require.NoError(t, err)
+	return tree
+}
+
+// v2ReadFile reads a file from a git tree by path.
+func v2ReadFile(t *testing.T, tree *object.Tree, path string) string {
+	t.Helper()
+	file, err := tree.File(path)
+	require.NoError(t, err, "expected file at %s", path)
+	content, err := file.Contents()
+	require.NoError(t, err)
+	return content
+}
+
+func TestV2GitStore_WriteCommittedMain_WritesMetadata(t *testing.T) {
+	t.Parallel()
+	repo := initTestRepo(t)
+	store := NewV2GitStore(repo)
+	ctx := context.Background()
+
+	cpID := id.MustCheckpointID("a1b2c3d4e5f6")
+	err := store.writeCommittedMain(ctx, WriteCommittedOptions{
+		CheckpointID: cpID,
+		SessionID:    "test-session-001",
+		Strategy:     "manual-commit",
+		Agent:        agent.AgentTypeClaudeCode,
+		Transcript:   []byte(`{"type":"human","message":"hello"}`),
+		Prompts:      []string{"hello"},
+		AuthorName:   "Test",
+		AuthorEmail:  "test@test.com",
+	})
+	require.NoError(t, err)
+
+	tree := v2MainTree(t, repo)
+	cpPath := cpID.Path()
+
+	// Root CheckpointSummary should exist
+	summaryContent := v2ReadFile(t, tree, cpPath+"/"+paths.MetadataFileName)
+	var summary CheckpointSummary
+	require.NoError(t, json.Unmarshal([]byte(summaryContent), &summary))
+	assert.Equal(t, cpID, summary.CheckpointID)
+	assert.Equal(t, "manual-commit", summary.Strategy)
+	assert.Len(t, summary.Sessions, 1)
+
+	// Session metadata should exist in subdirectory 0/
+	sessionMeta := v2ReadFile(t, tree, cpPath+"/0/"+paths.MetadataFileName)
+	var meta CommittedMetadata
+	require.NoError(t, json.Unmarshal([]byte(sessionMeta), &meta))
+	assert.Equal(t, "test-session-001", meta.SessionID)
+	assert.Equal(t, agent.AgentTypeClaudeCode, meta.Agent)
+}
+
+func TestV2GitStore_WriteCommittedMain_WritesPromptsAndContentHash(t *testing.T) {
+	t.Parallel()
+	repo := initTestRepo(t)
+	store := NewV2GitStore(repo)
+	ctx := context.Background()
+
+	cpID := id.MustCheckpointID("b2c3d4e5f6a1")
+	err := store.writeCommittedMain(ctx, WriteCommittedOptions{
+		CheckpointID: cpID,
+		SessionID:    "test-session-002",
+		Strategy:     "manual-commit",
+		Transcript:   []byte(`{"line":"one"}`),
+		Prompts:      []string{"do the thing", "also this"},
+		AuthorName:   "Test",
+		AuthorEmail:  "test@test.com",
+	})
+	require.NoError(t, err)
+
+	tree := v2MainTree(t, repo)
+	cpPath := cpID.Path()
+
+	// prompt.txt should contain both prompts joined by separator
+	promptContent := v2ReadFile(t, tree, cpPath+"/0/"+paths.PromptFileName)
+	assert.Contains(t, promptContent, "do the thing")
+	assert.Contains(t, promptContent, "also this")
+
+	// content_hash.txt should be a sha256 hash of the (redacted) transcript
+	hashContent := v2ReadFile(t, tree, cpPath+"/0/"+paths.ContentHashFileName)
+	assert.True(t, strings.HasPrefix(hashContent, "sha256:"), "content hash should be sha256 prefixed")
+}
+
+func TestV2GitStore_WriteCommittedMain_ExcludesTranscript(t *testing.T) {
+	t.Parallel()
+	repo := initTestRepo(t)
+	store := NewV2GitStore(repo)
+	ctx := context.Background()
+
+	cpID := id.MustCheckpointID("c3d4e5f6a1b2")
+	err := store.writeCommittedMain(ctx, WriteCommittedOptions{
+		CheckpointID: cpID,
+		SessionID:    "test-session-003",
+		Strategy:     "manual-commit",
+		Transcript:   []byte(`{"line":"one"}` + "\n" + `{"line":"two"}`),
+		Prompts:      []string{"hello"},
+		AuthorName:   "Test",
+		AuthorEmail:  "test@test.com",
+	})
+	require.NoError(t, err)
+
+	tree := v2MainTree(t, repo)
+	cpPath := cpID.Path()
+
+	// full.jsonl should NOT be in the /main tree
+	cpTree, err := tree.Tree(cpPath)
+	require.NoError(t, err)
+
+	sessionTree, err := cpTree.Tree("0")
+	require.NoError(t, err)
+
+	for _, entry := range sessionTree.Entries {
+		assert.NotEqual(t, paths.TranscriptFileName, entry.Name,
+			"raw transcript (full.jsonl) must not be on /main ref")
+		assert.False(t, strings.HasPrefix(entry.Name, paths.TranscriptFileName+"."),
+			"transcript chunks must not be on /main ref")
+	}
+}
+
+func TestV2GitStore_WriteCommittedMain_NoTranscript_SkipsContentHash(t *testing.T) {
+	t.Parallel()
+	repo := initTestRepo(t)
+	store := NewV2GitStore(repo)
+	ctx := context.Background()
+
+	cpID := id.MustCheckpointID("d4e5f6a1b2c3")
+	err := store.writeCommittedMain(ctx, WriteCommittedOptions{
+		CheckpointID: cpID,
+		SessionID:    "test-session-004",
+		Strategy:     "manual-commit",
+		AuthorName:   "Test",
+		AuthorEmail:  "test@test.com",
+	})
+	require.NoError(t, err)
+
+	tree := v2MainTree(t, repo)
+	cpPath := cpID.Path()
+
+	// content_hash.txt should NOT exist when there's no transcript
+	cpTree, err := tree.Tree(cpPath)
+	require.NoError(t, err)
+	sessionTree, err := cpTree.Tree("0")
+	require.NoError(t, err)
+
+	_, err = sessionTree.File(paths.ContentHashFileName)
+	assert.Error(t, err, "content_hash.txt should not exist without transcript")
+}
+
+func TestV2GitStore_WriteCommittedMain_MultiSession(t *testing.T) {
+	t.Parallel()
+	repo := initTestRepo(t)
+	store := NewV2GitStore(repo)
+	ctx := context.Background()
+
+	cpID := id.MustCheckpointID("e5f6a1b2c3d4")
+
+	// First session
+	err := store.writeCommittedMain(ctx, WriteCommittedOptions{
+		CheckpointID:     cpID,
+		SessionID:        "session-A",
+		Strategy:         "manual-commit",
+		Transcript:       []byte(`{"line":"a"}`),
+		CheckpointsCount: 3,
+		AuthorName:       "Test",
+		AuthorEmail:      "test@test.com",
+	})
+	require.NoError(t, err)
+
+	// Second session (different session ID, same checkpoint)
+	err = store.writeCommittedMain(ctx, WriteCommittedOptions{
+		CheckpointID:     cpID,
+		SessionID:        "session-B",
+		Strategy:         "manual-commit",
+		Transcript:       []byte(`{"line":"b"}`),
+		CheckpointsCount: 2,
+		AuthorName:       "Test",
+		AuthorEmail:      "test@test.com",
+	})
+	require.NoError(t, err)
+
+	tree := v2MainTree(t, repo)
+	cpPath := cpID.Path()
+
+	// Root summary should list 2 sessions
+	summaryContent := v2ReadFile(t, tree, cpPath+"/"+paths.MetadataFileName)
+	var summary CheckpointSummary
+	require.NoError(t, json.Unmarshal([]byte(summaryContent), &summary))
+	assert.Len(t, summary.Sessions, 2)
+	assert.Equal(t, 5, summary.CheckpointsCount, "aggregated count: 3+2")
+
+	// Both session subdirectories should exist
+	_ = v2ReadFile(t, tree, cpPath+"/0/"+paths.MetadataFileName)
+	_ = v2ReadFile(t, tree, cpPath+"/1/"+paths.MetadataFileName)
 }

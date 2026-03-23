@@ -8,25 +8,31 @@ import (
 	"github.com/go-git/go-git/v6/plumbing/object"
 )
 
-// V2Store provides checkpoint storage operations for the v2 ref layout.
+// V2GitStore provides checkpoint storage operations for the v2 ref layout.
 // It writes to two custom refs under refs/entire/:
 //   - /main: permanent metadata + compact transcripts
 //   - /full/current: active generation of raw transcripts
 //
-// V2Store is separate from GitStore (v1) to keep concerns isolated
-// and simplify future v1 removal.
-type V2Store struct {
+// V2GitStore is separate from GitStore (v1) to keep concerns isolated
+// and simplify future v1 removal. It composes GitStore internally to
+// reuse ref-agnostic entry-building helpers (tree surgery, session
+// indexing, summary aggregation).
+type V2GitStore struct {
 	repo *git.Repository
+	gs   *GitStore // shared entry-building helpers (same package)
 }
 
-// NewV2Store creates a new v2 checkpoint store backed by the given git repository.
-func NewV2Store(repo *git.Repository) *V2Store {
-	return &V2Store{repo: repo}
+// NewV2GitStore creates a new v2 checkpoint store backed by the given git repository.
+func NewV2GitStore(repo *git.Repository) *V2GitStore {
+	return &V2GitStore{
+		repo: repo,
+		gs:   &GitStore{repo: repo},
+	}
 }
 
 // ensureRef ensures that a custom ref exists, creating an orphan commit
 // with an empty tree if it does not.
-func (s *V2Store) ensureRef(refName plumbing.ReferenceName) error {
+func (s *V2GitStore) ensureRef(refName plumbing.ReferenceName) error {
 	_, err := s.repo.Reference(refName, true)
 	if err == nil {
 		return nil // Already exists
@@ -52,7 +58,7 @@ func (s *V2Store) ensureRef(refName plumbing.ReferenceName) error {
 }
 
 // getRefState returns the parent commit hash and root tree hash for a ref.
-func (s *V2Store) getRefState(refName plumbing.ReferenceName) (parentHash, treeHash plumbing.Hash, err error) {
+func (s *V2GitStore) getRefState(refName plumbing.ReferenceName) (parentHash, treeHash plumbing.Hash, err error) {
 	ref, err := s.repo.Reference(refName, true)
 	if err != nil {
 		return plumbing.ZeroHash, plumbing.ZeroHash, fmt.Errorf("ref %s not found: %w", refName, err)
@@ -67,7 +73,7 @@ func (s *V2Store) getRefState(refName plumbing.ReferenceName) (parentHash, treeH
 }
 
 // updateRef creates a new commit on a ref with the given tree, updating the ref to point to it.
-func (s *V2Store) updateRef(refName plumbing.ReferenceName, treeHash, parentHash plumbing.Hash, message, authorName, authorEmail string) error {
+func (s *V2GitStore) updateRef(refName plumbing.ReferenceName, treeHash, parentHash plumbing.Hash, message, authorName, authorEmail string) error {
 	commitHash, err := CreateCommit(s.repo, treeHash, parentHash, message, authorName, authorEmail)
 	if err != nil {
 		return fmt.Errorf("failed to create commit: %w", err)
