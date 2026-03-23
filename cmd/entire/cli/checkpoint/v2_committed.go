@@ -144,11 +144,6 @@ func (s *V2GitStore) writeMainSessionToSubdirectory(opts WriteCommittedOptions, 
 		}
 	}
 
-	// Write content hash from transcript (but not the transcript itself)
-	if err := s.writeContentHash(opts, sessionPath, entries, &filePaths); err != nil {
-		return filePaths, err
-	}
-
 	// Write prompts
 	if len(opts.Prompts) > 0 {
 		promptContent := redact.String(strings.Join(opts.Prompts, "\n\n---\n\n"))
@@ -206,21 +201,9 @@ func (s *V2GitStore) writeMainSessionToSubdirectory(opts WriteCommittedOptions, 
 	return filePaths, nil
 }
 
-// writeContentHash computes and writes the content hash for the transcript
-// without writing the transcript blobs themselves.
-func (s *V2GitStore) writeContentHash(opts WriteCommittedOptions, sessionPath string, entries map[string]object.TreeEntry, filePaths *SessionFilePaths) error {
-	transcript := opts.Transcript
-	if len(transcript) == 0 {
-		return nil
-	}
-
-	// Redact before hashing so the hash matches what /full/current stores
-	redacted, err := redact.JSONLBytes(transcript)
-	if err != nil {
-		return fmt.Errorf("failed to redact transcript for content hash: %w", err)
-	}
-
-	contentHash := fmt.Sprintf("sha256:%x", sha256.Sum256(redacted))
+// writeContentHash computes and writes the content hash for already-redacted transcript bytes.
+func (s *V2GitStore) writeContentHash(redactedTranscript []byte, sessionPath string, entries map[string]object.TreeEntry) error {
+	contentHash := fmt.Sprintf("sha256:%x", sha256.Sum256(redactedTranscript))
 	hashBlob, err := CreateBlobFromContent(s.repo, []byte(contentHash))
 	if err != nil {
 		return err
@@ -230,8 +213,6 @@ func (s *V2GitStore) writeContentHash(opts WriteCommittedOptions, sessionPath st
 		Mode: filemode.Regular,
 		Hash: hashBlob,
 	}
-	filePaths.ContentHash = "/" + sessionPath + paths.ContentHashFileName
-
 	return nil
 }
 
@@ -275,7 +256,13 @@ func (s *V2GitStore) writeCommittedFullTranscript(ctx context.Context, opts Writ
 	sessionPath := fmt.Sprintf("%s%d/", basePath, sessionIndex)
 
 	entries := make(map[string]object.TreeEntry)
-	if err := s.writeTranscriptBlobs(ctx, transcript, opts.Agent, sessionPath, entries); err != nil {
+	redactedTranscript, err := s.writeTranscriptBlobs(ctx, transcript, opts.Agent, sessionPath, entries)
+	if err != nil {
+		return err
+	}
+
+	// Write content hash alongside the transcript it references
+	if err := s.writeContentHash(redactedTranscript, sessionPath, entries); err != nil {
 		return err
 	}
 
@@ -289,25 +276,24 @@ func (s *V2GitStore) writeCommittedFullTranscript(ctx context.Context, opts Writ
 }
 
 // writeTranscriptBlobs writes redacted, chunked transcript blobs to entries.
-// Unlike GitStore.writeTranscript, this does NOT write content_hash.txt — that
-// belongs on the /main ref.
-func (s *V2GitStore) writeTranscriptBlobs(ctx context.Context, transcript []byte, agentType types.AgentType, sessionPath string, entries map[string]object.TreeEntry) error {
+// Returns the redacted transcript bytes so the caller can compute the content hash.
+func (s *V2GitStore) writeTranscriptBlobs(ctx context.Context, transcript []byte, agentType types.AgentType, sessionPath string, entries map[string]object.TreeEntry) ([]byte, error) {
 	// Redact secrets before chunking
 	redacted, err := redact.JSONLBytes(transcript)
 	if err != nil {
-		return fmt.Errorf("failed to redact transcript: %w", err)
+		return nil, fmt.Errorf("failed to redact transcript: %w", err)
 	}
 
 	chunks, err := agent.ChunkTranscript(ctx, redacted, agentType)
 	if err != nil {
-		return fmt.Errorf("failed to chunk transcript: %w", err)
+		return nil, fmt.Errorf("failed to chunk transcript: %w", err)
 	}
 
 	for i, chunk := range chunks {
 		chunkPath := sessionPath + agent.ChunkFileName(paths.TranscriptFileName, i)
 		blobHash, err := CreateBlobFromContent(s.repo, chunk)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		entries[chunkPath] = object.TreeEntry{
 			Name: chunkPath,
@@ -316,7 +302,7 @@ func (s *V2GitStore) writeTranscriptBlobs(ctx context.Context, transcript []byte
 		}
 	}
 
-	return nil
+	return redacted, nil
 }
 
 // validateWriteOpts validates identifiers in WriteCommittedOptions.

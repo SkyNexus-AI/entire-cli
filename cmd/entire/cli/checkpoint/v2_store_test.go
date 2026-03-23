@@ -234,7 +234,7 @@ func TestV2GitStore_WriteCommittedMain_WritesMetadata(t *testing.T) {
 	assert.Equal(t, agent.AgentTypeClaudeCode, meta.Agent)
 }
 
-func TestV2GitStore_WriteCommittedMain_WritesPromptsAndContentHash(t *testing.T) {
+func TestV2GitStore_WriteCommittedMain_WritesPrompts(t *testing.T) {
 	t.Parallel()
 	repo := initTestRepo(t)
 	store := NewV2GitStore(repo)
@@ -260,9 +260,11 @@ func TestV2GitStore_WriteCommittedMain_WritesPromptsAndContentHash(t *testing.T)
 	assert.Contains(t, promptContent, "do the thing")
 	assert.Contains(t, promptContent, "also this")
 
-	// content_hash.txt should be a sha256 hash of the (redacted) transcript
-	hashContent := v2ReadFile(t, tree, cpPath+"/0/"+paths.ContentHashFileName)
-	assert.True(t, strings.HasPrefix(hashContent, "sha256:"), "content hash should be sha256 prefixed")
+	// content_hash.txt should NOT be on /main — it lives on /full/current
+	mainSessionTree, err := tree.Tree(cpPath + "/0")
+	require.NoError(t, err)
+	_, err = mainSessionTree.File(paths.ContentHashFileName)
+	assert.Error(t, err, "content_hash.txt should not be on /main ref")
 }
 
 func TestV2GitStore_WriteCommittedMain_ExcludesTranscript(t *testing.T) {
@@ -299,35 +301,6 @@ func TestV2GitStore_WriteCommittedMain_ExcludesTranscript(t *testing.T) {
 		assert.False(t, strings.HasPrefix(entry.Name, paths.TranscriptFileName+"."),
 			"transcript chunks must not be on /main ref")
 	}
-}
-
-func TestV2GitStore_WriteCommittedMain_NoTranscript_SkipsContentHash(t *testing.T) {
-	t.Parallel()
-	repo := initTestRepo(t)
-	store := NewV2GitStore(repo)
-	ctx := context.Background()
-
-	cpID := id.MustCheckpointID("d4e5f6a1b2c3")
-	_, err := store.writeCommittedMain(ctx, WriteCommittedOptions{
-		CheckpointID: cpID,
-		SessionID:    "test-session-004",
-		Strategy:     "manual-commit",
-		AuthorName:   "Test",
-		AuthorEmail:  "test@test.com",
-	})
-	require.NoError(t, err)
-
-	tree := v2MainTree(t, repo)
-	cpPath := cpID.Path()
-
-	// content_hash.txt should NOT exist when there's no transcript
-	cpTree, err := tree.Tree(cpPath)
-	require.NoError(t, err)
-	sessionTree, err := cpTree.Tree("0")
-	require.NoError(t, err)
-
-	_, err = sessionTree.File(paths.ContentHashFileName)
-	assert.Error(t, err, "content_hash.txt should not exist without transcript")
 }
 
 func TestV2GitStore_WriteCommittedMain_MultiSession(t *testing.T) {
@@ -450,9 +423,11 @@ func TestV2GitStore_WriteCommittedFull_ExcludesMetadata(t *testing.T) {
 			"metadata.json must not be on /full/current ref")
 		assert.NotEqual(t, paths.PromptFileName, entry.Name,
 			"prompt.txt must not be on /full/current ref")
-		assert.NotEqual(t, paths.ContentHashFileName, entry.Name,
-			"content_hash.txt must not be on /full/current ref")
 	}
+
+	// content_hash.txt SHOULD be on /full/current (co-located with the transcript it hashes)
+	hashContent := v2ReadFile(t, tree, cpPath+"/0/"+paths.ContentHashFileName)
+	assert.True(t, strings.HasPrefix(hashContent, "sha256:"), "content hash should be sha256 prefixed")
 }
 
 func TestV2GitStore_WriteCommittedFull_NoTranscript_Noop(t *testing.T) {
@@ -546,23 +521,25 @@ func TestV2GitStore_WriteCommitted_WritesBothRefs(t *testing.T) {
 
 	cpPath := cpID.Path()
 
-	// /main ref should have metadata, prompt, content hash — no transcript
+	// /main ref should have metadata and prompt — no transcript or content hash
 	mainTree := v2MainTree(t, repo)
 	_ = v2ReadFile(t, mainTree, cpPath+"/"+paths.MetadataFileName)
 	_ = v2ReadFile(t, mainTree, cpPath+"/0/"+paths.MetadataFileName)
 	_ = v2ReadFile(t, mainTree, cpPath+"/0/"+paths.PromptFileName)
-	_ = v2ReadFile(t, mainTree, cpPath+"/0/"+paths.ContentHashFileName)
 
 	mainSessionTree, err := mainTree.Tree(cpPath + "/0")
 	require.NoError(t, err)
 	for _, entry := range mainSessionTree.Entries {
 		assert.NotEqual(t, paths.TranscriptFileName, entry.Name)
+		assert.NotEqual(t, paths.ContentHashFileName, entry.Name)
 	}
 
-	// /full/current ref should have transcript only
+	// /full/current ref should have transcript + content hash
 	fullTree := v2FullTree(t, repo)
 	content := v2ReadFile(t, fullTree, cpPath+"/0/"+paths.TranscriptFileName)
 	assert.Contains(t, content, `"type":"assistant"`)
+	hashContent := v2ReadFile(t, fullTree, cpPath+"/0/"+paths.ContentHashFileName)
+	assert.True(t, strings.HasPrefix(hashContent, "sha256:"))
 }
 
 func TestV2GitStore_WriteCommitted_NoTranscript_OnlyWritesMain(t *testing.T) {
