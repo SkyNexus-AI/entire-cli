@@ -2,6 +2,10 @@
 
 Apply fixes for E2E test failures, verify with scoped E2E tests.
 
+> **Before implementing any fixes, enter plan mode by invoking /plan.**
+> Analyze the findings (Steps 1-2 below), produce a complete fix plan with
+> specific file paths and code changes, and get user approval before executing.
+
 > **IMPORTANT: Running real E2E tests is a HARD REQUIREMENT of this procedure.**
 > Every fix MUST be verified with real E2E tests before the summary step.
 > Canary tests use the Vogon fake agent and cannot catch agent-specific issues.
