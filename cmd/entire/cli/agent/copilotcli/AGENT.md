@@ -165,7 +165,7 @@ The `TranscriptAnalyzer` interface is implemented for Copilot CLI, providing:
 ## Presence Detection
 
 - No repo-level `.copilot/` directory (unlike other agents)
-- `DetectPresence` delegates to `AreHooksInstalled`, which reads `.github/hooks/entire.json` and checks if any hook entry has an Entire command prefix (`entire ` or `go run ${COPILOT_PROJECT_DIR}/cmd/entire/main.go `)
+- `DetectPresence` delegates to `AreHooksInstalled`, which reads `.github/hooks/entire.json` and checks if any hook entry has an Entire command prefix (`entire ` or `go run "$(git rev-parse --show-toplevel)"/cmd/entire/main.go `)
 - Simply having a `.github/hooks/` directory is NOT sufficient -- the directory must contain `entire.json` with Entire hook entries
 - Alternative: check for `copilot` binary in PATH
 

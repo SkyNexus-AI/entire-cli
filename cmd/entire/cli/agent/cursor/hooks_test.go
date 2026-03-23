@@ -236,7 +236,7 @@ func TestInstallHooks_LocalDev(t *testing.T) {
 	}
 
 	hooksFile := readHooksFile(t, tempDir)
-	assertEntryCommand(t, hooksFile.Hooks.Stop, "go run ${CURSOR_PROJECT_DIR}/cmd/entire/main.go hooks cursor stop")
+	assertEntryCommand(t, hooksFile.Hooks.Stop, `go run "$(git rev-parse --show-toplevel)"/cmd/entire/main.go hooks cursor stop`)
 }
 
 func TestInstallHooks_PreservesUnknownFields(t *testing.T) {

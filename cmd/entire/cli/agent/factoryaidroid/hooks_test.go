@@ -114,23 +114,24 @@ func TestInstallHooks_LocalDev(t *testing.T) {
 
 	settings := readFactorySettings(t, tempDir)
 
-	// Verify local dev commands use FACTORY_PROJECT_DIR format
+	// Verify local dev commands use git rev-parse for runtime repo root resolution
+	prefix := `go run "$(git rev-parse --show-toplevel)"/cmd/entire/main.go hooks factoryai-droid `
 	assertFactoryHookExists(t, settings.Hooks.SessionStart, "",
-		"go run ${FACTORY_PROJECT_DIR}/cmd/entire/main.go hooks factoryai-droid session-start", "SessionStart localDev")
+		prefix+"session-start", "SessionStart localDev")
 	assertFactoryHookExists(t, settings.Hooks.SessionStart, "",
-		"go run ${FACTORY_PROJECT_DIR}/cmd/entire/main.go hooks factoryai-droid user-prompt-submit", "SessionStart user-prompt-submit localDev")
+		prefix+"user-prompt-submit", "SessionStart user-prompt-submit localDev")
 	assertFactoryHookExists(t, settings.Hooks.SessionEnd, "",
-		"go run ${FACTORY_PROJECT_DIR}/cmd/entire/main.go hooks factoryai-droid session-end", "SessionEnd localDev")
+		prefix+"session-end", "SessionEnd localDev")
 	assertFactoryHookExists(t, settings.Hooks.Stop, "",
-		"go run ${FACTORY_PROJECT_DIR}/cmd/entire/main.go hooks factoryai-droid stop", "Stop localDev")
+		prefix+"stop", "Stop localDev")
 	assertFactoryHookExists(t, settings.Hooks.UserPromptSubmit, "",
-		"go run ${FACTORY_PROJECT_DIR}/cmd/entire/main.go hooks factoryai-droid user-prompt-submit", "UserPromptSubmit localDev")
+		prefix+"user-prompt-submit", "UserPromptSubmit localDev")
 	assertFactoryHookExists(t, settings.Hooks.PreToolUse, "Task",
-		"go run ${FACTORY_PROJECT_DIR}/cmd/entire/main.go hooks factoryai-droid pre-tool-use", "PreToolUse localDev")
+		prefix+"pre-tool-use", "PreToolUse localDev")
 	assertFactoryHookExists(t, settings.Hooks.PostToolUse, "Task",
-		"go run ${FACTORY_PROJECT_DIR}/cmd/entire/main.go hooks factoryai-droid post-tool-use", "PostToolUse localDev")
+		prefix+"post-tool-use", "PostToolUse localDev")
 	assertFactoryHookExists(t, settings.Hooks.PreCompact, "",
-		"go run ${FACTORY_PROJECT_DIR}/cmd/entire/main.go hooks factoryai-droid pre-compact", "PreCompact localDev")
+		prefix+"pre-compact", "PreCompact localDev")
 }
 
 func TestInstallHooks_Force(t *testing.T) {

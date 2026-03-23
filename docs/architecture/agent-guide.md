@@ -384,13 +384,14 @@ func (a *YourAgent) InstallHooks(localDev bool, force bool) (int, error) {
     // ... read and parse ...
 
     // 3. Build hook commands
-    // localDev mode uses an agent-specific env var (e.g., ${CLAUDE_PROJECT_DIR},
-    // ${GEMINI_PROJECT_DIR}) that the agent expands at runtime. Choose a name
-    // for your agent and add it to entireHookPrefixes so existing hooks can be
-    // detected/removed during install/uninstall.
+    // localDev mode uses $(git rev-parse --show-toplevel) to resolve the repo
+    // root at runtime via shell command substitution. This works regardless of
+    // where the repo is checked out on disk.
+    // Note: Only Claude Code provides a PROJECT_DIR env var (CLAUDE_PROJECT_DIR).
+    // Other agents should use the git rev-parse approach instead.
     var cmdPrefix string
     if localDev {
-        cmdPrefix = "go run ${YOUR_AGENT_PROJECT_DIR}/cmd/entire/main.go hooks your-agent "
+        cmdPrefix = `go run "$(git rev-parse --show-toplevel)"/cmd/entire/main.go hooks your-agent `
     } else {
         cmdPrefix = "entire hooks your-agent "
     }
@@ -619,8 +620,8 @@ Claude Code, Gemini CLI, Cursor, Factory AI Droid, and Copilot CLI use a JSON se
 Key principles:
 - **Preserve unknown fields** - don't destroy user's custom hooks or settings
 - **Idempotent installs** - running `entire enable` twice doesn't duplicate hooks
-- **Support `localDev` mode** - use `go run ${PROJECT_DIR}/...` for development
-- **Identify Entire hooks** by command prefix (e.g., `"entire "` or `"go run ${...}"`)
+- **Support `localDev` mode** - use `go run "$(git rev-parse --show-toplevel)"/...` for development (only Claude Code provides a `PROJECT_DIR` env var; other agents use `git rev-parse` to resolve the repo root at runtime)
+- **Identify Entire hooks** by command prefix (e.g., `"entire "` or `go run "$(git rev-parse --show-toplevel)"/...`)
 
 ### Example: Claude Code Hook Config
 

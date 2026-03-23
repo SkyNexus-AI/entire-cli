@@ -100,17 +100,18 @@ func TestInstallHooks_LocalDev(t *testing.T) {
 
 	settings := readGeminiSettings(t, tempDir)
 
-	// Verify local dev commands use go run
-	verifyHookCommand(t, settings.Hooks.SessionStart, "", "go run ${GEMINI_PROJECT_DIR}/cmd/entire/main.go hooks gemini session-start")
-	verifyHookCommand(t, settings.Hooks.SessionEnd, "exit", "go run ${GEMINI_PROJECT_DIR}/cmd/entire/main.go hooks gemini session-end")
-	verifyHookCommand(t, settings.Hooks.SessionEnd, "logout", "go run ${GEMINI_PROJECT_DIR}/cmd/entire/main.go hooks gemini session-end")
-	verifyHookCommand(t, settings.Hooks.BeforeAgent, "", "go run ${GEMINI_PROJECT_DIR}/cmd/entire/main.go hooks gemini before-agent")
-	verifyHookCommand(t, settings.Hooks.AfterAgent, "", "go run ${GEMINI_PROJECT_DIR}/cmd/entire/main.go hooks gemini after-agent")
-	verifyHookCommand(t, settings.Hooks.BeforeModel, "", "go run ${GEMINI_PROJECT_DIR}/cmd/entire/main.go hooks gemini before-model")
-	verifyHookCommand(t, settings.Hooks.AfterModel, "", "go run ${GEMINI_PROJECT_DIR}/cmd/entire/main.go hooks gemini after-model")
-	verifyHookCommand(t, settings.Hooks.BeforeToolSelection, "", "go run ${GEMINI_PROJECT_DIR}/cmd/entire/main.go hooks gemini before-tool-selection")
-	verifyHookCommand(t, settings.Hooks.PreCompress, "", "go run ${GEMINI_PROJECT_DIR}/cmd/entire/main.go hooks gemini pre-compress")
-	verifyHookCommand(t, settings.Hooks.Notification, "", "go run ${GEMINI_PROJECT_DIR}/cmd/entire/main.go hooks gemini notification")
+	// Verify local dev commands use git rev-parse for runtime repo root resolution
+	prefix := `go run "$(git rev-parse --show-toplevel)"/cmd/entire/main.go hooks gemini `
+	verifyHookCommand(t, settings.Hooks.SessionStart, "", prefix+"session-start")
+	verifyHookCommand(t, settings.Hooks.SessionEnd, "exit", prefix+"session-end")
+	verifyHookCommand(t, settings.Hooks.SessionEnd, "logout", prefix+"session-end")
+	verifyHookCommand(t, settings.Hooks.BeforeAgent, "", prefix+"before-agent")
+	verifyHookCommand(t, settings.Hooks.AfterAgent, "", prefix+"after-agent")
+	verifyHookCommand(t, settings.Hooks.BeforeModel, "", prefix+"before-model")
+	verifyHookCommand(t, settings.Hooks.AfterModel, "", prefix+"after-model")
+	verifyHookCommand(t, settings.Hooks.BeforeToolSelection, "", prefix+"before-tool-selection")
+	verifyHookCommand(t, settings.Hooks.PreCompress, "", prefix+"pre-compress")
+	verifyHookCommand(t, settings.Hooks.Notification, "", prefix+"notification")
 }
 
 func TestInstallHooks_Idempotent(t *testing.T) {

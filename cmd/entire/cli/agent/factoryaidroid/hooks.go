@@ -37,10 +37,10 @@ const FactorySettingsFileName = "settings.json"
 // metadataDenyRule blocks Factory Droid from reading Entire session metadata
 const metadataDenyRule = "Read(./.entire/metadata/**)"
 
-// entireHookPrefixes are command prefixes that identify Entire hooks (both old and new formats)
+// entireHookPrefixes are command prefixes that identify Entire hooks
 var entireHookPrefixes = []string{
 	"entire ",
-	"go run ${FACTORY_PROJECT_DIR}/cmd/entire/main.go ",
+	`go run "$(git rev-parse --show-toplevel)"/cmd/entire/main.go `,
 }
 
 // InstallHooks installs Factory AI Droid hooks in .factory/settings.json.
@@ -118,14 +118,15 @@ func (f *FactoryAIDroidAgent) InstallHooks(ctx context.Context, localDev bool, f
 
 	// Define hook commands
 	var sessionStartCmd, sessionEndCmd, stopCmd, userPromptSubmitCmd, preTaskCmd, postTaskCmd, preCompactCmd string
+	localDevPrefix := `go run "$(git rev-parse --show-toplevel)"/cmd/entire/main.go hooks factoryai-droid `
 	if localDev {
-		sessionStartCmd = "go run ${FACTORY_PROJECT_DIR}/cmd/entire/main.go hooks factoryai-droid session-start"
-		sessionEndCmd = "go run ${FACTORY_PROJECT_DIR}/cmd/entire/main.go hooks factoryai-droid session-end"
-		stopCmd = "go run ${FACTORY_PROJECT_DIR}/cmd/entire/main.go hooks factoryai-droid stop"
-		userPromptSubmitCmd = "go run ${FACTORY_PROJECT_DIR}/cmd/entire/main.go hooks factoryai-droid user-prompt-submit"
-		preTaskCmd = "go run ${FACTORY_PROJECT_DIR}/cmd/entire/main.go hooks factoryai-droid pre-tool-use"
-		postTaskCmd = "go run ${FACTORY_PROJECT_DIR}/cmd/entire/main.go hooks factoryai-droid post-tool-use"
-		preCompactCmd = "go run ${FACTORY_PROJECT_DIR}/cmd/entire/main.go hooks factoryai-droid pre-compact"
+		sessionStartCmd = localDevPrefix + "session-start"
+		sessionEndCmd = localDevPrefix + "session-end"
+		stopCmd = localDevPrefix + "stop"
+		userPromptSubmitCmd = localDevPrefix + "user-prompt-submit"
+		preTaskCmd = localDevPrefix + "pre-tool-use"
+		postTaskCmd = localDevPrefix + "post-tool-use"
+		preCompactCmd = localDevPrefix + "pre-compact"
 	} else {
 		sessionStartCmd = "entire hooks factoryai-droid session-start"
 		sessionEndCmd = "entire hooks factoryai-droid session-end"
@@ -401,9 +402,9 @@ func (f *FactoryAIDroidAgent) AreHooksInstalled(ctx context.Context) bool {
 		return false
 	}
 
-	// Check for at least one of our hooks (new or old format)
+	// Check for at least one of our hooks (production or local-dev format)
 	return hookCommandExists(settings.Hooks.Stop, "entire hooks factoryai-droid stop") ||
-		hookCommandExists(settings.Hooks.Stop, "go run ${FACTORY_PROJECT_DIR}/cmd/entire/main.go hooks factoryai-droid stop")
+		hookCommandExists(settings.Hooks.Stop, `go run "$(git rev-parse --show-toplevel)"/cmd/entire/main.go hooks factoryai-droid stop`)
 }
 
 // Helper functions for hook management
@@ -443,7 +444,7 @@ func addHookToMatcher(matchers []FactoryHookMatcher, matcherName, command string
 	return append(matchers, FactoryHookMatcher{Matcher: matcherName, Hooks: []FactoryHookEntry{entry}})
 }
 
-// isEntireHook checks if a command is an Entire hook (old or new format)
+// isEntireHook checks if a command is an Entire hook
 func isEntireHook(command string) bool {
 	for _, prefix := range entireHookPrefixes {
 		if strings.HasPrefix(command, prefix) {

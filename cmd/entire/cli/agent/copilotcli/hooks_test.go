@@ -240,7 +240,7 @@ func TestInstallHooks_LocalDev(t *testing.T) {
 	}
 
 	hooksFile := readHooksFile(t, tempDir)
-	assertEntryBash(t, hooksFile.Hooks.AgentStop, "go run ${COPILOT_PROJECT_DIR}/cmd/entire/main.go hooks copilot-cli agent-stop")
+	assertEntryBash(t, hooksFile.Hooks.AgentStop, `go run "$(git rev-parse --show-toplevel)"/cmd/entire/main.go hooks copilot-cli agent-stop`)
 }
 
 func TestInstallHooks_PreservesUnknownFields(t *testing.T) {

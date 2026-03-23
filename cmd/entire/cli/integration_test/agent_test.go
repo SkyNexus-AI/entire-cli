@@ -602,8 +602,8 @@ func TestGeminiCLIHookInstallation(t *testing.T) {
 		if !strings.Contains(content, "go run") {
 			t.Error("localDev hooks should use 'go run', but settings.json doesn't contain it")
 		}
-		if !strings.Contains(content, "${GEMINI_PROJECT_DIR}") {
-			t.Error("localDev hooks should use '${GEMINI_PROJECT_DIR}', but settings.json doesn't contain it")
+		if !strings.Contains(content, "$(git rev-parse --show-toplevel)") {
+			t.Error("localDev hooks should use '$(git rev-parse --show-toplevel)', but settings.json doesn't contain it")
 		}
 	})
 
@@ -998,8 +998,8 @@ func TestFactoryAIDroidHookInstallation(t *testing.T) {
 		if !strings.Contains(content, "go run") {
 			t.Error("localDev hooks should use 'go run', but settings.json doesn't contain it")
 		}
-		if !strings.Contains(content, "${FACTORY_PROJECT_DIR}") {
-			t.Error("localDev hooks should use '${FACTORY_PROJECT_DIR}', but settings.json doesn't contain it")
+		if !strings.Contains(content, "$(git rev-parse --show-toplevel)") {
+			t.Error("localDev hooks should use '$(git rev-parse --show-toplevel)', but settings.json doesn't contain it")
 		}
 	})
 
