@@ -258,7 +258,7 @@ func (s *V2GitStore) writeMainCheckpointEntries(ctx context.Context, opts WriteC
 	// Determine session index
 	sessionIndex := s.gs.findSessionIndex(ctx, basePath, existingSummary, entries, opts.SessionID)
 
-	// Write session files (metadata, prompts, content hash — no transcript)
+	// Write session files (metadata and prompts — no transcript or content hash)
 	sessionPath := fmt.Sprintf("%s%d/", basePath, sessionIndex)
 	sessionFilePaths, err := s.writeMainSessionToSubdirectory(opts, sessionPath, entries)
 	if err != nil {
