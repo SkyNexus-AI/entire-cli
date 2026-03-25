@@ -47,16 +47,6 @@ func (a *OpenCodeAgent) InstallHooks(ctx context.Context, localDev bool, force b
 		return 0, err
 	}
 
-	// Check if already installed (idempotent) unless force
-	if !force {
-		if _, err := os.Stat(pluginPath); err == nil {
-			data, readErr := os.ReadFile(pluginPath) //nolint:gosec // Path constructed from repo root
-			if readErr == nil && strings.Contains(string(data), entireMarker) {
-				return 0, nil // Already installed
-			}
-		}
-	}
-
 	// Build the command prefix
 	var cmdPrefix string
 	if localDev {
@@ -67,6 +57,15 @@ func (a *OpenCodeAgent) InstallHooks(ctx context.Context, localDev bool, force b
 
 	// Generate plugin content from template
 	content := strings.ReplaceAll(pluginTemplate, entireCmdPlaceholder, cmdPrefix)
+
+	// Check if already installed with identical content (idempotent) unless force
+	if !force {
+		if existing, readErr := os.ReadFile(pluginPath); readErr == nil { //nolint:gosec // Path constructed from repo root
+			if string(existing) == content {
+				return 0, nil // Already up-to-date
+			}
+		}
+	}
 
 	// Ensure directory exists
 	pluginDir := filepath.Dir(pluginPath)
