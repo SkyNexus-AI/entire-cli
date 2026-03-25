@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/entireio/cli/cmd/entire/cli/checkpoint/id"
 	"github.com/entireio/cli/cmd/entire/cli/jsonutil"
 	"github.com/entireio/cli/cmd/entire/cli/paths"
 	"github.com/go-git/go-git/v6/plumbing"
@@ -104,6 +105,39 @@ func (s *V2GitStore) writeGeneration(gen GenerationMetadata, entries map[string]
 	}
 
 	return nil
+}
+
+// updateGenerationForWrite reads the current generation metadata, appends the
+// checkpoint ID (if not already present), and updates timestamps.
+// Returns the updated metadata for the caller to write into the tree.
+func (s *V2GitStore) updateGenerationForWrite(rootTreeHash plumbing.Hash, checkpointID id.CheckpointID, now time.Time) (GenerationMetadata, error) {
+	gen, err := s.readGeneration(rootTreeHash)
+	if err != nil {
+		return GenerationMetadata{}, err
+	}
+
+	cpStr := checkpointID.String()
+
+	// Only append if checkpoint ID is not already present (multi-session writes
+	// to the same checkpoint should not duplicate the ID).
+	found := false
+	for _, existing := range gen.Checkpoints {
+		if existing == cpStr {
+			found = true
+			break
+		}
+	}
+	if !found {
+		gen.Checkpoints = append(gen.Checkpoints, cpStr)
+		gen.CheckpointCount = len(gen.Checkpoints)
+	}
+
+	gen.NewestCheckpointAt = now
+	if gen.OldestCheckpointAt.IsZero() {
+		gen.OldestCheckpointAt = now
+	}
+
+	return gen, nil
 }
 
 // addGenerationToRootTree adds generation.json to an existing root tree, returning
