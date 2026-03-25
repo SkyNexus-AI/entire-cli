@@ -36,14 +36,19 @@ func TestInstallHooks_CreatesConfig(t *testing.T) {
 	require.Contains(t, string(data), "entire hooks codex user-prompt-submit")
 	require.Contains(t, string(data), "entire hooks codex stop")
 
-	// Verify user-level config enables codex_hooks feature and trusts this project
-	configPath := filepath.Join(codexHome, configFileName)
-	configData, err := os.ReadFile(configPath)
+	// Verify project-level config.toml enables codex_hooks feature (per-repo)
+	projectConfig := filepath.Join(tempDir, ".codex", configFileName)
+	projectData, err := os.ReadFile(projectConfig)
 	require.NoError(t, err)
-	require.Contains(t, string(configData), "codex_hooks = true")
-	require.Contains(t, string(configData), "[features]")
-	require.Contains(t, string(configData), `trust_level = "trusted"`)
-	require.Contains(t, string(configData), tempDir) // project path in trust entry
+	require.Contains(t, string(projectData), "codex_hooks = true")
+	require.Contains(t, string(projectData), "[features]")
+
+	// Verify user-level config.toml trusts this project
+	userConfig := filepath.Join(codexHome, configFileName)
+	userData, err := os.ReadFile(userConfig)
+	require.NoError(t, err)
+	require.Contains(t, string(userData), `trust_level = "trusted"`)
+	require.Contains(t, string(userData), tempDir)
 }
 
 func TestInstallHooks_Idempotent(t *testing.T) {
@@ -51,12 +56,10 @@ func TestInstallHooks_Idempotent(t *testing.T) {
 
 	ag := &CodexAgent{}
 
-	// First install
 	count1, err := ag.InstallHooks(context.Background(), false, false)
 	require.NoError(t, err)
 	require.Equal(t, 3, count1)
 
-	// Second install should be idempotent
 	count2, err := ag.InstallHooks(context.Background(), false, false)
 	require.NoError(t, err)
 	require.Equal(t, 0, count2)
@@ -81,11 +84,9 @@ func TestInstallHooks_Force(t *testing.T) {
 
 	ag := &CodexAgent{}
 
-	// Install first
 	_, err := ag.InstallHooks(context.Background(), false, false)
 	require.NoError(t, err)
 
-	// Force reinstall removes old and adds new
 	count, err := ag.InstallHooks(context.Background(), false, true)
 	require.NoError(t, err)
 	require.Equal(t, 3, count)
@@ -96,15 +97,12 @@ func TestUninstallHooks(t *testing.T) {
 
 	ag := &CodexAgent{}
 
-	// Install first
 	_, err := ag.InstallHooks(context.Background(), false, false)
 	require.NoError(t, err)
 
-	// Uninstall
 	err = ag.UninstallHooks(context.Background())
 	require.NoError(t, err)
 
-	// Verify hooks are gone
 	require.False(t, ag.AreHooksInstalled(context.Background()))
 }
 
@@ -125,12 +123,11 @@ func TestAreHooksInstalled_WithHooks(t *testing.T) {
 	require.True(t, ag.AreHooksInstalled(context.Background()))
 }
 
-func TestInstallHooks_PreservesExistingConfig(t *testing.T) {
+func TestInstallHooks_PreservesExistingHooksJSON(t *testing.T) {
 	tempDir := setupTestEnv(t)
 
 	ag := &CodexAgent{}
 
-	// Write existing config with custom hooks
 	codexDir := filepath.Join(tempDir, ".codex")
 	require.NoError(t, os.MkdirAll(codexDir, 0o750))
 	existingConfig := `{
@@ -147,11 +144,9 @@ func TestInstallHooks_PreservesExistingConfig(t *testing.T) {
 	}`
 	require.NoError(t, os.WriteFile(filepath.Join(codexDir, HooksFileName), []byte(existingConfig), 0o600))
 
-	// Install Entire hooks
 	_, err := ag.InstallHooks(context.Background(), false, false)
 	require.NoError(t, err)
 
-	// Verify custom hooks are preserved
 	data, err := os.ReadFile(filepath.Join(codexDir, HooksFileName))
 	require.NoError(t, err)
 	require.Contains(t, string(data), "my-custom-hook")
@@ -162,7 +157,6 @@ func TestInstallHooks_PreservesExistingUserConfig(t *testing.T) {
 	setupTestEnv(t)
 	codexHome := os.Getenv("CODEX_HOME")
 
-	// Write existing user-level config
 	require.NoError(t, os.MkdirAll(codexHome, 0o750))
 	existingConfig := "model = \"gpt-4.1\"\n"
 	require.NoError(t, os.WriteFile(filepath.Join(codexHome, configFileName), []byte(existingConfig), 0o600))
@@ -171,9 +165,8 @@ func TestInstallHooks_PreservesExistingUserConfig(t *testing.T) {
 	_, err := ag.InstallHooks(context.Background(), false, false)
 	require.NoError(t, err)
 
-	// Verify existing config is preserved and feature is added
 	configData, err := os.ReadFile(filepath.Join(codexHome, configFileName))
 	require.NoError(t, err)
 	require.Contains(t, string(configData), "model = \"gpt-4.1\"")
-	require.Contains(t, string(configData), "codex_hooks = true")
+	require.Contains(t, string(configData), `trust_level = "trusted"`)
 }
