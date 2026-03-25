@@ -84,24 +84,33 @@ func (s *V2GitStore) readGenerationFromRef(refName plumbing.ReferenceName) (Gene
 	return s.readGeneration(treeHash)
 }
 
-// writeGeneration marshals gen as generation.json and adds the blob entry to entries.
-func (s *V2GitStore) writeGeneration(gen GenerationMetadata, entries map[string]object.TreeEntry) error {
+// marshalGenerationBlob marshals gen as generation.json and stores it as a git blob.
+// Returns a TreeEntry ready to be placed in a tree.
+func (s *V2GitStore) marshalGenerationBlob(gen GenerationMetadata) (object.TreeEntry, error) {
 	data, err := jsonutil.MarshalIndentWithNewline(gen, "", "  ")
 	if err != nil {
-		return fmt.Errorf("failed to marshal %s: %w", paths.GenerationFileName, err)
+		return object.TreeEntry{}, fmt.Errorf("failed to marshal %s: %w", paths.GenerationFileName, err)
 	}
 
 	blobHash, err := CreateBlobFromContent(s.repo, data)
 	if err != nil {
-		return fmt.Errorf("failed to create %s blob: %w", paths.GenerationFileName, err)
+		return object.TreeEntry{}, fmt.Errorf("failed to create %s blob: %w", paths.GenerationFileName, err)
 	}
 
-	entries[paths.GenerationFileName] = object.TreeEntry{
+	return object.TreeEntry{
 		Name: paths.GenerationFileName,
 		Mode: filemode.Regular,
 		Hash: blobHash,
-	}
+	}, nil
+}
 
+// writeGeneration marshals gen as generation.json and adds the blob entry to entries.
+func (s *V2GitStore) writeGeneration(gen GenerationMetadata, entries map[string]object.TreeEntry) error {
+	entry, err := s.marshalGenerationBlob(gen)
+	if err != nil {
+		return err
+	}
+	entries[paths.GenerationFileName] = entry
 	return nil
 }
 
@@ -140,19 +149,13 @@ func (s *V2GitStore) updateGenerationForWrite(rootTreeHash plumbing.Hash, checkp
 // addGenerationToRootTree adds generation.json to an existing root tree, returning
 // a new root tree hash. Preserves all existing entries (shard directories, etc.).
 func (s *V2GitStore) addGenerationToRootTree(rootTreeHash plumbing.Hash, gen GenerationMetadata) (plumbing.Hash, error) {
-	data, err := jsonutil.MarshalIndentWithNewline(gen, "", "  ")
+	entry, err := s.marshalGenerationBlob(gen)
 	if err != nil {
-		return plumbing.ZeroHash, fmt.Errorf("failed to marshal %s: %w", paths.GenerationFileName, err)
+		return plumbing.ZeroHash, err
 	}
 
-	blobHash, err := CreateBlobFromContent(s.repo, data)
-	if err != nil {
-		return plumbing.ZeroHash, fmt.Errorf("failed to create %s blob: %w", paths.GenerationFileName, err)
-	}
-
-	return UpdateSubtree(s.repo, rootTreeHash, nil, []object.TreeEntry{
-		{Name: paths.GenerationFileName, Mode: filemode.Regular, Hash: blobHash},
-	}, UpdateSubtreeOptions{MergeMode: MergeKeepExisting})
+	return UpdateSubtree(s.repo, rootTreeHash, nil, []object.TreeEntry{entry},
+		UpdateSubtreeOptions{MergeMode: MergeKeepExisting})
 }
 
 // generationRefWidth is the zero-padded width of archived generation ref names.
