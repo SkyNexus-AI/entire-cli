@@ -26,7 +26,7 @@ type Codex struct{}
 func (c *Codex) Name() string               { return "codex" }
 func (c *Codex) Binary() string             { return "codex" }
 func (c *Codex) EntireAgent() string        { return "codex" }
-func (c *Codex) PromptPattern() string      { return `>` }
+func (c *Codex) PromptPattern() string      { return `›` }
 func (c *Codex) TimeoutMultiplier() float64 { return 1.5 }
 
 func (c *Codex) Bootstrap() error {
