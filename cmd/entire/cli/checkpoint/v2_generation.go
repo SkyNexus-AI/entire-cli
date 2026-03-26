@@ -205,16 +205,18 @@ func (s *V2GitStore) nextGenerationNumber() (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	if len(archived) == 0 {
-		return 1, nil
-	}
 
-	highest := archived[len(archived)-1]
-	n, err := strconv.ParseInt(highest, 10, 64)
-	if err != nil {
-		return 0, fmt.Errorf("failed to parse archived generation number %q: %w", highest, err)
+	var maxNum int64
+	for _, name := range archived {
+		n, parseErr := strconv.ParseInt(name, 10, 64)
+		if parseErr != nil {
+			continue // skip unparseable entries
+		}
+		if n > maxNum {
+			maxNum = n
+		}
 	}
-	return int(n) + 1, nil
+	return int(maxNum) + 1, nil
 }
 
 // rotateGeneration archives the current /full/current generation and creates
