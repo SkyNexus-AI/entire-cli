@@ -190,7 +190,14 @@ func (a *OpenCodeAgent) fetchAndCacheExport(ctx context.Context, sessionID strin
 
 	// Validate output is valid JSON before caching
 	if !json.Valid(data) {
-		return "", fmt.Errorf("opencode export returned invalid JSON (%d bytes)", len(data))
+		// Include first/last bytes for diagnostics — helps distinguish
+		// prefix/suffix corruption (log lines in stdout) from malformed JSON.
+		prefix := string(data[:min(len(data), 200)])
+		suffix := ""
+		if len(data) > 200 {
+			suffix = string(data[max(0, len(data)-200):])
+		}
+		return "", fmt.Errorf("opencode export returned invalid JSON (%d bytes, prefix=%q, suffix=%q)", len(data), prefix, suffix)
 	}
 
 	// Write to temp directory under .entire
