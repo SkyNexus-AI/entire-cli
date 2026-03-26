@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"time"
 
 	"github.com/entireio/cli/cmd/entire/cli/agent"
 	"github.com/entireio/cli/cmd/entire/cli/agent/types"
@@ -104,6 +103,11 @@ func (c *CodexAgent) ReadSession(input *agent.HookInput) (*agent.AgentSession, e
 		return nil, fmt.Errorf("failed to read transcript: %w", err)
 	}
 
+	startTime, err := parseSessionStartTime(data)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse session start time: %w", err)
+	}
+
 	// Extract modified files from the rollout transcript (best-effort, deduplicated).
 	var modifiedFiles []string
 	seen := make(map[string]struct{})
@@ -120,7 +124,7 @@ func (c *CodexAgent) ReadSession(input *agent.HookInput) (*agent.AgentSession, e
 		SessionID:     input.SessionID,
 		AgentName:     c.Name(),
 		SessionRef:    input.SessionRef,
-		StartTime:     time.Now(),
+		StartTime:     startTime,
 		NativeData:    data,
 		ModifiedFiles: modifiedFiles,
 	}, nil

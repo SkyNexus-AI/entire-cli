@@ -9,6 +9,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/entireio/cli/cmd/entire/cli/agent"
 )
@@ -25,6 +26,12 @@ type rolloutLine struct {
 	Timestamp string          `json:"timestamp"`
 	Type      string          `json:"type"` // "session_meta", "response_item", "event_msg", "turn_context"
 	Payload   json.RawMessage `json:"payload"`
+}
+
+// sessionMetaPayload is the payload for type="session_meta" lines.
+type sessionMetaPayload struct {
+	ID        string `json:"id"`
+	Timestamp string `json:"timestamp"`
 }
 
 // responseItemPayload is the payload for type="response_item" lines.
@@ -305,4 +312,33 @@ func splitJSONL(data []byte) [][]byte {
 		}
 	}
 	return lines
+}
+
+func parseSessionStartTime(data []byte) (time.Time, error) {
+	lines := splitJSONL(data)
+	if len(lines) == 0 {
+		return time.Time{}, fmt.Errorf("transcript is empty")
+	}
+
+	var line rolloutLine
+	if err := json.Unmarshal(lines[0], &line); err != nil {
+		return time.Time{}, fmt.Errorf("parse first transcript line: %w", err)
+	}
+	if line.Type != "session_meta" {
+		return time.Time{}, fmt.Errorf("first transcript line is %q, want session_meta", line.Type)
+	}
+
+	var meta sessionMetaPayload
+	if err := json.Unmarshal(line.Payload, &meta); err != nil {
+		return time.Time{}, fmt.Errorf("parse session_meta payload: %w", err)
+	}
+	if meta.Timestamp == "" {
+		return time.Time{}, fmt.Errorf("session_meta timestamp is empty")
+	}
+
+	startTime, err := time.Parse(time.RFC3339Nano, meta.Timestamp)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("parse session_meta timestamp %q: %w", meta.Timestamp, err)
+	}
+	return startTime, nil
 }

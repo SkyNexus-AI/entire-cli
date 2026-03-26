@@ -1,7 +1,10 @@
 package codex
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/entireio/cli/cmd/entire/cli/agent"
 	"github.com/entireio/cli/cmd/entire/cli/agent/types"
@@ -60,4 +63,37 @@ func TestCodexAgent_FormatResumeCommand(t *testing.T) {
 	ag := &CodexAgent{}
 	cmd := ag.FormatResumeCommand("550e8400-e29b-41d4-a716-446655440000")
 	require.Equal(t, "codex resume 550e8400-e29b-41d4-a716-446655440000", cmd)
+}
+
+func TestCodexAgent_ReadSession(t *testing.T) {
+	t.Parallel()
+	ag := &CodexAgent{}
+	path := writeSampleRollout(t)
+
+	session, err := ag.ReadSession(&agent.HookInput{
+		SessionID:  "codex-session-1",
+		SessionRef: path,
+	})
+	require.NoError(t, err)
+	require.Equal(t, "codex-session-1", session.SessionID)
+	require.Equal(t, agent.AgentNameCodex, session.AgentName)
+	require.Equal(t, path, session.SessionRef)
+	require.Equal(t, time.Date(2026, time.March, 25, 11, 31, 10, 922000000, time.UTC), session.StartTime)
+	require.ElementsMatch(t, []string{"hello.txt", "docs/readme.md"}, session.ModifiedFiles)
+	require.Equal(t, []byte(sampleRollout), session.NativeData)
+}
+
+func TestCodexAgent_ReadSession_InvalidSessionMeta(t *testing.T) {
+	t.Parallel()
+	ag := &CodexAgent{}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "rollout.jsonl")
+	require.NoError(t, os.WriteFile(path, []byte(`{"timestamp":"2026-03-25T11:31:11.754Z","type":"response_item","payload":{"type":"message"}}`), 0o600))
+
+	_, err := ag.ReadSession(&agent.HookInput{
+		SessionID:  "codex-session-1",
+		SessionRef: path,
+	})
+	require.Error(t, err)
+	require.ErrorContains(t, err, `first transcript line is "response_item", want session_meta`)
 }
