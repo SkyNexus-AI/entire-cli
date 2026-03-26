@@ -213,7 +213,7 @@ func TestShouldSkipJSONLField_RedactionBehavior(t *testing.T) {
 
 func TestString_PatternDetection(t *testing.T) {
 	// These secrets have entropy below 4.5 so entropy-only detection misses them.
-	// Betterleaks pattern matching should catch them.
+	// Gitleaks pattern matching should catch them.
 	tests := []struct {
 		name  string
 		input string

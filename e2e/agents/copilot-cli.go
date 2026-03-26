@@ -119,6 +119,123 @@ func (c *CopilotCLI) RunPrompt(ctx context.Context, dir string, prompt string, o
 	return out, err
 }
 
+// CopilotSession wraps TmuxSession to handle Copilot CLI's dual input modes.
+// Copilot CLI can be in "Chat" mode (Enter submits) or "Edit" mode (Ctrl+S
+// submits). After completing a prompt, copilot may return to either mode
+// non-deterministically. This wrapper detects Edit mode after sending Enter
+// and falls back to Ctrl+S if needed.
+type CopilotSession struct {
+	*TmuxSession
+}
+
+func (cs *CopilotSession) Send(input string) error {
+	preSend := stableContent(cs.Capture())
+
+	if err := cs.sendOnce(input, preSend); err != nil {
+		return err
+	}
+
+	// Copilot CLI's autocomplete can non-deterministically trigger during
+	// text input (e.g. a "/" in "docs/red.md" opens the slash-command menu).
+	// If detected, dismiss with Escape, clear the input, and retry once.
+	time.Sleep(300 * time.Millisecond)
+	if isAutocompleteMenu(cs.Capture()) {
+		if err := cs.SendKeys("Escape"); err != nil {
+			return err
+		}
+		time.Sleep(200 * time.Millisecond)
+		// Ctrl+U clears the current input line.
+		if err := cs.SendKeys("C-u"); err != nil {
+			return err
+		}
+		time.Sleep(200 * time.Millisecond)
+		if err := cs.sendOnce(input, stableContent(cs.Capture())); err != nil {
+			return err
+		}
+	}
+
+	// Wait for the terminal to reflect the echoed input, then snapshot.
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		time.Sleep(200 * time.Millisecond)
+		current := stableContent(cs.Capture())
+		if current != preSend {
+			cs.stableAtSend = current
+			return nil
+		}
+	}
+	cs.stableAtSend = stableContent(cs.Capture())
+	return nil
+}
+
+// sendOnce types the input text, sends Enter, and handles Edit mode fallback.
+func (cs *CopilotSession) sendOnce(input string, preSend string) error {
+	// Use -l (literal) flag to prevent tmux from interpreting characters
+	// in the prompt text as special key names.
+	args := []string{"send-keys", "-l", "-t", cs.name, input}
+	cmd := exec.Command("tmux", args...)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("tmux send-keys -l: %w\n%s", err, out)
+	}
+	time.Sleep(200 * time.Millisecond)
+	if err := cs.SendKeys("Enter"); err != nil {
+		return err
+	}
+
+	// Briefly poll to see if copilot is still in Edit mode (Enter didn't submit).
+	// In Edit mode the status bar shows "ctrl+s run command". If detected,
+	// send Ctrl+S to actually submit the prompt. Break early if the content
+	// changes from the pre-send snapshot, indicating submission has started.
+	editDeadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(editDeadline) {
+		content := cs.Capture()
+		if isEditMode(content) {
+			if err := cs.SendKeys("C-s"); err != nil {
+				return err
+			}
+			break
+		}
+		if stableContent(content) != preSend {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return nil
+}
+
+// isEditMode checks if copilot-cli is in Edit mode by looking for the
+// "ctrl+s run command" indicator in the last few lines (status bar area).
+// Restricting the search avoids false positives if the phrase appears in
+// agent output.
+func isEditMode(content string) bool {
+	lines := strings.Split(content, "\n")
+	const statusPhrase = "ctrl+s run command"
+	for i := len(lines) - 1; i >= 0 && i >= len(lines)-3; i-- {
+		if strings.Contains(lines[i], statusPhrase) {
+			return true
+		}
+	}
+	return false
+}
+
+// isAutocompleteMenu detects copilot's slash-command autocomplete dropdown.
+// When triggered, copilot shows a list of commands starting with "▋  /"
+// below the input line, preventing prompt submission.
+func isAutocompleteMenu(content string) bool {
+	lines := strings.Split(content, "\n")
+	matches := 0
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "▋") && strings.Contains(trimmed, "/") {
+			matches++
+			if matches >= 2 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (c *CopilotCLI) StartSession(ctx context.Context, dir string) (Session, error) {
 	bin, err := exec.LookPath(c.Binary())
 	if err != nil {
@@ -174,5 +291,5 @@ func (c *CopilotCLI) StartSession(ctx context.Context, dir string) (Session, err
 	}
 	s.stableAtSend = ""
 
-	return s, nil
+	return &CopilotSession{TmuxSession: s}, nil
 }
