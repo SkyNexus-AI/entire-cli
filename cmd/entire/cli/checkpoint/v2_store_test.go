@@ -721,7 +721,7 @@ func TestWriteCommitted_TriggersRotationAtThreshold(t *testing.T) {
 	t.Parallel()
 	repo := initTestRepo(t)
 	store := NewV2GitStore(repo)
-	store.MaxCheckpointsPerGeneration = 3 // Low threshold for testing
+	store.maxCheckpointsPerGeneration = 3 // Low threshold for testing
 	ctx := context.Background()
 
 	// Write 3 checkpoints — the 3rd should trigger rotation
@@ -777,7 +777,7 @@ func TestWriteCommitted_NoRotationBelowThreshold(t *testing.T) {
 	t.Parallel()
 	repo := initTestRepo(t)
 	store := NewV2GitStore(repo)
-	store.MaxCheckpointsPerGeneration = 5
+	store.maxCheckpointsPerGeneration = 5
 	ctx := context.Background()
 
 	// Write 3 checkpoints (below threshold of 5)

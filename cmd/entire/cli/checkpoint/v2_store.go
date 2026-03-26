@@ -21,15 +21,15 @@ type V2GitStore struct {
 	repo *git.Repository
 	gs   *GitStore // shared entry-building helpers (same package)
 
-	// MaxCheckpointsPerGeneration overrides the rotation threshold for testing.
+	// maxCheckpointsPerGeneration overrides the rotation threshold for testing.
 	// Zero means use DefaultMaxCheckpointsPerGeneration.
-	MaxCheckpointsPerGeneration int
+	maxCheckpointsPerGeneration int
 }
 
 // maxCheckpoints returns the effective rotation threshold.
 func (s *V2GitStore) maxCheckpoints() int {
-	if s.MaxCheckpointsPerGeneration > 0 {
-		return s.MaxCheckpointsPerGeneration
+	if s.maxCheckpointsPerGeneration > 0 {
+		return s.maxCheckpointsPerGeneration
 	}
 	return DefaultMaxCheckpointsPerGeneration
 }

@@ -445,7 +445,7 @@ func TestRotateGeneration_ArchivesCurrentAndCreatesNewOrphan(t *testing.T) {
 	t.Parallel()
 	repo := initTestRepo(t)
 	store := NewV2GitStore(repo)
-	store.MaxCheckpointsPerGeneration = 3
+	store.maxCheckpointsPerGeneration = 3
 
 	// Write 3 checkpoints — the 3rd triggers auto-rotation via writeCommittedFullTranscript
 	cpIDs := populateFullCurrent(t, store, 3)
@@ -498,7 +498,7 @@ func TestRotateGeneration_SequentialNumbering(t *testing.T) {
 	t.Parallel()
 	repo := initTestRepo(t)
 	store := NewV2GitStore(repo)
-	store.MaxCheckpointsPerGeneration = 2
+	store.maxCheckpointsPerGeneration = 2
 	ctx := context.Background()
 
 	// First rotation: populate and rotate
