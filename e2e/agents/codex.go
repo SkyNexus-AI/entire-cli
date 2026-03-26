@@ -68,6 +68,13 @@ func (c *Codex) RunPrompt(ctx context.Context, dir string, prompt string, opts .
 		o(cfg)
 	}
 
+	timeout := 60 * time.Second
+	if cfg.PromptTimeout > 0 {
+		timeout = cfg.PromptTimeout
+	}
+	promptCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
 	home, cleanup, err := codexHome()
 	if err != nil {
 		return Output{}, fmt.Errorf("create codex home: %w", err)
@@ -92,7 +99,7 @@ func (c *Codex) RunPrompt(ctx context.Context, dir string, prompt string, opts .
 		"CODEX_HOME="+home,
 	)
 
-	cmd := exec.CommandContext(ctx, c.Binary(), args...)
+	cmd := exec.CommandContext(promptCtx, c.Binary(), args...)
 	cmd.Dir = dir
 	cmd.Stdin = nil
 	cmd.Env = env
@@ -114,6 +121,9 @@ func (c *Codex) RunPrompt(ctx context.Context, dir string, prompt string, opts .
 			exitCode = exitErr.ExitCode()
 		} else {
 			exitCode = -1
+		}
+		if promptCtx.Err() == context.DeadlineExceeded {
+			err = fmt.Errorf("%w: %w", err, context.DeadlineExceeded)
 		}
 	}
 
