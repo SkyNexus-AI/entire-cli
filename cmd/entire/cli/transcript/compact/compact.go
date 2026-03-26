@@ -55,17 +55,6 @@ func Compact(content []byte, opts Options) ([]byte, error) {
 		return compactOpenCode(truncated, opts)
 	}
 
-	if isGeminiFormat(truncated) {
-		return compactGemini(truncated, opts)
-	}
-
-	if isCopilotFormat(truncated) {
-		return compactCopilot(truncated, opts)
-	}
-
-	if isDroidFormat(truncated) {
-		return compactDroid(truncated, opts)
-	}
 
 	return compactJSONL(truncated, opts)
 }
