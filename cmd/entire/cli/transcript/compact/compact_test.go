@@ -241,6 +241,49 @@ func TestCompact_EditToolResult_PreservesFilePath(t *testing.T) {
 	assertJSONLines(t, result, expected)
 }
 
+// --- Image tests ---
+
+func TestCompact_UserWithImages(t *testing.T) {
+	t.Parallel()
+
+	tinyPNG := "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+
+	input := []byte(`{"type":"user","promptId":"p1","timestamp":"t1","message":{"content":[{"type":"text","text":"the footer should still show"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"` + tinyPNG + `"}},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"` + tinyPNG + `"}}]}}
+{"type":"assistant","timestamp":"t2","requestId":"r1","message":{"id":"m1","content":[{"type":"text","text":"I see the screenshots."}]}}
+`)
+
+	expected := []string{
+		`{"v":1,"agent":"claude-code","cli_version":"0.5.1","type":"user","ts":"t1","content":[{"id":"p1","text":"the footer should still show"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"` + tinyPNG + `"}},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"` + tinyPNG + `"}}]}`,
+		`{"v":1,"agent":"claude-code","cli_version":"0.5.1","type":"assistant","ts":"t2","id":"m1","content":[{"type":"text","text":"I see the screenshots."}]}`,
+	}
+
+	result, err := Compact(input, defaultOpts)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	assertJSONLines(t, result, expected)
+}
+
+func TestCompact_UserWithImageOnly(t *testing.T) {
+	t.Parallel()
+
+	tinyPNG := "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+
+	// User message with only an image and no text should still be emitted.
+	input := []byte(`{"type":"user","timestamp":"t1","message":{"content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"` + tinyPNG + `"}}]}}
+`)
+
+	expected := []string{
+		`{"v":1,"agent":"claude-code","cli_version":"0.5.1","type":"user","ts":"t1","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"` + tinyPNG + `"}}]}`,
+	}
+
+	result, err := Compact(input, defaultOpts)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	assertJSONLines(t, result, expected)
+}
+
 // --- Truncation + filtering tests ---
 
 // Realistic full.jsonl: lines 0-2 are duplicated prefix, lines 3-6 are new content.

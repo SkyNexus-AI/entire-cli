@@ -114,6 +114,7 @@ type parsedEntry struct {
 	userID      string            // prompt ID (user only, e.g. Claude's promptId)
 	content     json.RawMessage   // stripped assistant content array, or nil
 	userText    string            // extracted user text
+	userImages  []json.RawMessage // image blocks from user messages
 	toolResults []toolResultEntry // user tool_result entries
 }
 
@@ -152,9 +153,9 @@ func compactJSONLWith(content []byte, opts Options, preprocess linePreprocessor)
 				merged = inlineToolResults(merged, userEntry)
 				i++ // consume the user tool_result entry
 
-				// If the consumed user entry also had text content, emit it
+				// If the consumed user entry also had text or image content, emit it
 				// as a separate user line after the assistant.
-				if userEntry.userText != "" {
+				if userEntry.userText != "" || len(userEntry.userImages) > 0 {
 					emitAssistant(&result, meta, merged)
 					emitUser(&result, meta, userEntry)
 					continue
@@ -171,8 +172,8 @@ func compactJSONLWith(content []byte, opts Options, preprocess linePreprocessor)
 			// User entries that are purely tool results were already consumed
 			// by the assistant look-ahead above. If we reach one here it was
 			// not preceded by an assistant with a matching tool_use, so emit
-			// it only if it has text content.
-			if hasToolResults(e) && e.userText == "" {
+			// it only if it has text or image content.
+			if hasToolResults(e) && e.userText == "" && len(e.userImages) == 0 {
 				continue
 			}
 			emitUser(&result, meta, e)
@@ -197,11 +198,21 @@ func emitAssistant(result *[]byte, meta compactMeta, e parsedEntry) {
 }
 
 func emitUser(result *[]byte, meta compactMeta, e parsedEntry) {
-	block := marshalOrdered(
-		"id", jsonStringOrNil(e.userID),
-		"text", mustMarshal(e.userText),
-	)
-	contentJSON := mustMarshal([]json.RawMessage{block})
+	var blocks []json.RawMessage
+
+	// Text block (with optional prompt ID).
+	if e.userText != "" || len(e.userImages) == 0 {
+		block := marshalOrdered(
+			"id", jsonStringOrNil(e.userID),
+			"text", mustMarshal(e.userText),
+		)
+		blocks = append(blocks, block)
+	}
+
+	// Image blocks passed through verbatim.
+	blocks = append(blocks, e.userImages...)
+
+	contentJSON := mustMarshal(blocks)
 
 	b := marshalOrdered(
 		"v", meta.v,
@@ -278,9 +289,10 @@ func parseLine(lineBytes []byte, preprocess linePreprocessor) (parsedEntry, bool
 		e.userID = unquote(raw["promptId"])
 		if msg != nil {
 			if contentRaw, ok := msg["content"]; ok {
-				text, toolResults := extractUserContent(contentRaw)
-				e.userText = text
-				e.toolResults = toolResults
+				uc := extractUserContent(contentRaw)
+				e.userText = uc.text
+				e.userImages = uc.images
+				e.toolResults = uc.toolResults
 			}
 		}
 		// Enrich tool results with metadata from toolUseResult.
@@ -491,47 +503,60 @@ func parseMessage(raw map[string]json.RawMessage) map[string]json.RawMessage {
 	return nil
 }
 
-// extractUserContent separates user message content into text and tool_result entries.
+// userContent holds the extracted parts of a user message content array.
+type userContent struct {
+	text        string
+	images      []json.RawMessage
+	toolResults []toolResultEntry
+}
+
+// extractUserContent separates user message content into text, images, and tool_result entries.
 // IDE context tags (e.g. <user_query>, <ide_opened_file>) are stripped from user text.
-func extractUserContent(contentRaw json.RawMessage) (string, []toolResultEntry) {
+func extractUserContent(contentRaw json.RawMessage) userContent {
 	var str string
 	if json.Unmarshal(contentRaw, &str) == nil {
-		return textutil.StripIDEContextTags(str), nil
+		return userContent{text: textutil.StripIDEContextTags(str)}
 	}
 
-	var blocks []map[string]json.RawMessage
+	var blocks []json.RawMessage
 	if json.Unmarshal(contentRaw, &blocks) != nil {
-		return "", nil
+		return userContent{}
 	}
 
-	var texts []string
-	var toolResults []toolResultEntry
+	var uc userContent
 
-	for _, block := range blocks {
+	for _, blockRaw := range blocks {
+		var block map[string]json.RawMessage
+		if json.Unmarshal(blockRaw, &block) != nil {
+			continue
+		}
 		blockType := unquote(block["type"])
 
-		if blockType == "tool_result" {
+		switch blockType {
+		case "tool_result":
 			var isErr bool
 			if raw, ok := block["is_error"]; ok {
 				_ = json.Unmarshal(raw, &isErr) //nolint:errcheck // best-effort
 			}
-			toolResults = append(toolResults, toolResultEntry{
+			uc.toolResults = append(uc.toolResults, toolResultEntry{
 				toolUseID: unquote(block["tool_use_id"]),
 				output:    unquote(block["content"]),
 				isError:   isErr,
 			})
-			continue
-		}
 
-		if blockType == transcript.ContentTypeText {
+		case "image":
+			uc.images = append(uc.images, blockRaw)
+
+		case transcript.ContentTypeText:
 			stripped := textutil.StripIDEContextTags(unquote(block[transcript.ContentTypeText]))
 			if stripped != "" {
-				texts = append(texts, stripped)
+				uc.text += stripped + "\n\n"
 			}
 		}
 	}
 
-	return strings.Join(texts, "\n\n"), toolResults
+	uc.text = strings.TrimSpace(uc.text)
+	return uc
 }
 
 func stripAssistantContent(contentRaw json.RawMessage) json.RawMessage {
