@@ -104,7 +104,7 @@ func (s *V2GitStore) ReadSessionContent(ctx context.Context, checkpointID id.Che
 		}
 	}
 
-	transcript, _ := s.resolveTranscriptFromFull(ctx, checkpointID, sessionIndex) //nolint:errcheck // Missing transcript is not an error — caller handles empty transcript
+	transcript, _ := s.resolveTranscriptFromFull(ctx, checkpointID, sessionIndex) //nolint:errcheck // Missing transcript is not an error
 	result.Transcript = transcript
 
 	return result, nil
