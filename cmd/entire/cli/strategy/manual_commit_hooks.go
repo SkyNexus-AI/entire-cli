@@ -1205,6 +1205,7 @@ func truncateHash(h string) string {
 // Computes the staged files list once and reuses it across all sessions to avoid
 // redundant `git diff --cached` calls (previously called up to 3 times per session).
 func (s *ManualCommitStrategy) filterSessionsWithNewContent(ctx context.Context, repo *git.Repository, sessions []*SessionState) []*SessionState {
+	logCtx := logging.WithComponent(ctx, "manual-commit")
 	var result []*SessionState
 
 	// Compute staged files once for all sessions.
@@ -1212,7 +1213,7 @@ func (s *ManualCommitStrategy) filterSessionsWithNewContent(ctx context.Context,
 	// "unavailable" and skips overlap checks, falling through to other heuristics.
 	stagedFiles, err := getStagedFiles(ctx)
 	if err != nil {
-		logging.Debug(logging.WithComponent(ctx, "manual-commit"),
+		logging.Debug(logCtx,
 			"filterSessionsWithNewContent: getStagedFiles failed, skipping overlap checks",
 			slog.String("error", err.Error()),
 		)
@@ -1222,13 +1223,27 @@ func (s *ManualCommitStrategy) filterSessionsWithNewContent(ctx context.Context,
 	for _, state := range sessions {
 		// Skip fully-condensed ended sessions — no new content possible.
 		if state.FullyCondensed && state.Phase == session.PhaseEnded {
+			logging.Debug(logCtx, "filterSessionsWithNewContent: skipping fully-condensed ended session",
+				slog.String("session_id", state.SessionID),
+			)
 			continue
 		}
 		hasNew, err := s.sessionHasNewContent(ctx, repo, state, contentCheckOpts{stagedFiles: stagedFiles})
 		if err != nil {
+			logging.Debug(logCtx, "filterSessionsWithNewContent: error checking session, including it (fail-open)",
+				slog.String("session_id", state.SessionID),
+				slog.String("error", err.Error()),
+			)
 			// On error, include the session (fail open for hooks)
 			result = append(result, state)
 			continue
+		}
+		if !hasNew {
+			logging.Debug(logCtx, "filterSessionsWithNewContent: session has no new content",
+				slog.String("session_id", state.SessionID),
+				slog.String("phase", string(state.Phase)),
+				slog.Int("files_touched", len(state.FilesTouched)),
+			)
 		}
 		if hasNew {
 			result = append(result, state)
@@ -1650,7 +1665,8 @@ func (s *ManualCommitStrategy) extractModifiedFilesFromLiveTranscript(ctx contex
 //     have /dev/tty but can't respond to prompts, and content detection fails
 //     since the shadow branch doesn't exist yet).
 func (s *ManualCommitStrategy) tryAgentCommitFastPath(ctx context.Context, commitMsgFile string, sessions []*SessionState, source string) bool {
-	skipContentDetection := !hasTTY()
+	noTTY := !hasTTY()
+	skipContentDetection := noTTY
 	if !skipContentDetection {
 		if stngs, err := settings.Load(ctx); err == nil {
 			skipContentDetection = stngs.GetCommitLinking() == settings.CommitLinkingAlways
@@ -1666,6 +1682,16 @@ func (s *ManualCommitStrategy) tryAgentCommitFastPath(ctx context.Context, commi
 			return true
 		}
 	}
+	// Log why fast path didn't fire — collect session phases for diagnostics.
+	phases := make([]string, 0, len(sessions))
+	for _, state := range sessions {
+		phases = append(phases, string(state.Phase))
+	}
+	logging.Debug(logCtx, "prepare-commit-msg: fast path found no ACTIVE sessions",
+		slog.Bool("no_tty", noTTY),
+		slog.Int("sessions", len(sessions)),
+		slog.Any("session_phases", phases),
+	)
 	return false
 }
 
