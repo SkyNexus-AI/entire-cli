@@ -178,10 +178,10 @@ func convertOpenCodeAssistant(msg openCodeMessage, ts json.RawMessage, meta comp
 	return [][]byte{b}
 }
 
-// openCodeToolResult builds the compact {"output":"...","status":"done"|"error"}
+// openCodeToolResult builds the compact {"output":"...","status":"success"|"error"}
 // object from an OpenCode tool state map.
 func openCodeToolResult(state map[string]json.RawMessage) json.RawMessage {
-	status := "done"
+	status := "success"
 	if s := unquote(state["status"]); s != "" && s != "completed" {
 		status = "error"
 	}
