@@ -702,7 +702,15 @@ func (s *ManualCommitStrategy) RestoreLogsOnly(ctx context.Context, w, errW io.W
 			if v2Err == nil {
 				content, readErr = v2Store.ReadSessionContent(ctx, point.CheckpointID, i)
 				if readErr != nil || content == nil || len(content.Transcript) == 0 {
+					if readErr != nil {
+						logging.Debug(ctx, "v2 ReadSessionContent failed, falling back to v1",
+							slog.String("checkpoint_id", string(point.CheckpointID)),
+							slog.Int("session_index", i),
+							slog.String("error", readErr.Error()),
+						)
+					}
 					content = nil // Fall through to v1
+					readErr = nil
 				}
 			}
 		}
