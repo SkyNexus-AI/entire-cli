@@ -60,9 +60,11 @@ func (s *V2GitStore) ReadCommitted(ctx context.Context, checkpointID id.Checkpoi
 }
 
 // ReadSessionContent reads a session's metadata and prompts from the v2 /main ref,
-// and the raw transcript from /full/* refs (current + archived generations).
-// If the transcript is not found in any /full/* ref, the returned SessionContent
-// has an empty Transcript field — metadata and prompts are still populated.
+// and the raw transcript (full.jsonl) from /full/* refs (current + archived generations).
+// This is the v2 equivalent of GitStore.ReadSessionContent — it reads the raw agent
+// transcript, not the compact transcript.jsonl. Used by resume and RestoreLogsOnly.
+// Returns ErrNoTranscript if the session exists but no raw transcript is available.
+// Returns ErrCheckpointNotFound if the checkpoint or session doesn't exist on /main.
 func (s *V2GitStore) ReadSessionContent(ctx context.Context, checkpointID id.CheckpointID, sessionIndex int) (*SessionContent, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err //nolint:wrapcheck // Propagating context cancellation
@@ -108,11 +110,14 @@ func (s *V2GitStore) ReadSessionContent(ctx context.Context, checkpointID id.Che
 
 	transcript, transcriptErr := s.readTranscriptFromFullRefs(ctx, checkpointID, sessionIndex, result.Metadata.Agent)
 	if transcriptErr != nil {
-		logging.Debug(ctx, "v2 transcript resolution failed",
+		logging.Debug(ctx, "v2 raw transcript read failed",
 			slog.String("checkpoint_id", string(checkpointID)),
 			slog.Int("session_index", sessionIndex),
 			slog.String("error", transcriptErr.Error()),
 		)
+	}
+	if len(transcript) == 0 {
+		return nil, ErrNoTranscript
 	}
 	result.Transcript = transcript
 
@@ -252,9 +257,6 @@ func (s *V2GitStore) GetSessionLog(ctx context.Context, cpID id.CheckpointID) ([
 	content, err := s.ReadSessionContent(ctx, cpID, latestIndex)
 	if err != nil {
 		return nil, "", err
-	}
-	if len(content.Transcript) == 0 {
-		return nil, "", ErrNoTranscript
 	}
 	return content.Transcript, content.Metadata.SessionID, nil
 }

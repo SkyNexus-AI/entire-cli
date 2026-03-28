@@ -112,7 +112,7 @@ func TestV2ReadSessionContent_TranscriptFromArchivedGeneration(t *testing.T) {
 	assert.NotEmpty(t, content.Transcript, "transcript should be found in archived generation")
 }
 
-func TestV2ReadSessionContent_MissingTranscript_ReturnsEmptyTranscript(t *testing.T) {
+func TestV2ReadSessionContent_MissingTranscript_ReturnsError(t *testing.T) {
 	t.Parallel()
 	repo := initTestRepo(t)
 	store := NewV2GitStore(repo)
@@ -129,11 +129,8 @@ func TestV2ReadSessionContent_MissingTranscript_ReturnsEmptyTranscript(t *testin
 	})
 	require.NoError(t, err)
 
-	content, err := store.ReadSessionContent(ctx, cpID, 0)
-	require.NoError(t, err)
-	require.NotNil(t, content)
-	assert.Equal(t, "session-1", content.Metadata.SessionID)
-	assert.Empty(t, content.Transcript, "transcript should be empty when not written")
+	_, err = store.ReadSessionContent(ctx, cpID, 0)
+	require.ErrorIs(t, err, ErrNoTranscript)
 }
 
 func TestV2ReadSessionContent_ChunkedTranscript(t *testing.T) {

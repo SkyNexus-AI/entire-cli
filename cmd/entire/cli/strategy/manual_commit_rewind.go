@@ -707,7 +707,9 @@ func (s *ManualCommitStrategy) RestoreLogsOnly(ctx context.Context, w, errW io.W
 	for i := range totalSessions {
 		content, readErr := reader.ReadSessionContent(ctx, point.CheckpointID, i)
 		if readErr != nil {
-			fmt.Fprintf(errW, "  Warning: failed to read session %d: %v\n", i, readErr)
+			if !errors.Is(readErr, cpkg.ErrNoTranscript) {
+				fmt.Fprintf(errW, "  Warning: failed to read session %d: %v\n", i, readErr)
+			}
 			continue
 		}
 		if content == nil || len(content.Transcript) == 0 {
