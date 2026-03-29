@@ -76,30 +76,26 @@ func hasStrategyFlags(cmd *cobra.Command) bool {
 }
 
 // updateStrategyOptions applies strategy flags to settings without re-running agent setup.
+// Loads and writes only the target file to avoid leaking settings between layers.
 func updateStrategyOptions(ctx context.Context, w io.Writer, opts EnableOptions) error {
-	s, err := LoadEntireSettings(ctx)
+	targetFile, configDisplay := settingsTargetFile(ctx, opts.UseLocalSettings, opts.UseProjectSettings)
+
+	targetFileAbs, err := paths.AbsPath(ctx, targetFile)
+	if err != nil {
+		targetFileAbs = targetFile
+	}
+
+	s, err := settings.LoadFromFile(targetFileAbs)
 	if err != nil {
 		return fmt.Errorf("failed to load settings: %w", err)
 	}
 
 	opts.applyStrategyOptions(s)
 
-	entireDirAbs, err := paths.AbsPath(ctx, paths.EntireDir)
-	if err != nil {
-		entireDirAbs = paths.EntireDir
-	}
-	shouldUseLocal, showNotification := determineSettingsTarget(entireDirAbs, opts.UseLocalSettings, opts.UseProjectSettings)
-	if showNotification {
-		fmt.Fprintln(w, "Info: Project settings exist. Saving to settings.local.json instead.")
-		fmt.Fprintln(w, "  Use --project to update the project settings file.")
-	}
-
-	configDisplay := configDisplayProject
-	if shouldUseLocal {
+	if targetFile == settings.EntireSettingsLocalFile {
 		if err := SaveEntireSettingsLocal(ctx, s); err != nil {
 			return fmt.Errorf("failed to save settings: %w", err)
 		}
-		configDisplay = configDisplayLocal
 	} else {
 		if err := SaveEntireSettings(ctx, s); err != nil {
 			return fmt.Errorf("failed to save settings: %w", err)
@@ -108,6 +104,36 @@ func updateStrategyOptions(ctx context.Context, w io.Writer, opts EnableOptions)
 
 	fmt.Fprintf(w, "✓ Settings updated (%s)\n", configDisplay)
 	return nil
+}
+
+// settingsTargetFile determines which settings file to write to based on flags
+// and which files exist. Unlike determineSettingsTarget, this correctly handles
+// local-only repos by checking for settings.local.json when settings.json is absent.
+func settingsTargetFile(ctx context.Context, useLocal, useProject bool) (string, string) {
+	if useLocal {
+		return settings.EntireSettingsLocalFile, configDisplayLocal
+	}
+	if useProject {
+		return settings.EntireSettingsFile, configDisplayProject
+	}
+
+	// No explicit flag — write to whichever file exists.
+	// Check project file first, then local.
+	projectAbs, err := paths.AbsPath(ctx, settings.EntireSettingsFile)
+	if err == nil {
+		if _, statErr := os.Stat(projectAbs); statErr == nil {
+			return settings.EntireSettingsFile, configDisplayProject
+		}
+	}
+	localAbs, err := paths.AbsPath(ctx, settings.EntireSettingsLocalFile)
+	if err == nil {
+		if _, statErr := os.Stat(localAbs); statErr == nil {
+			return settings.EntireSettingsLocalFile, configDisplayLocal
+		}
+	}
+
+	// Neither exists — default to project
+	return settings.EntireSettingsFile, configDisplayProject
 }
 
 // parseCheckpointRemoteFlag parses a "provider:owner/repo" string into its components.
