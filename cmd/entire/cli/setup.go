@@ -78,6 +78,13 @@ func hasStrategyFlags(cmd *cobra.Command) bool {
 // updateStrategyOptions applies strategy flags to settings without re-running agent setup.
 // Loads and writes only the target file to avoid leaking settings between layers.
 func updateStrategyOptions(ctx context.Context, w io.Writer, opts EnableOptions) error {
+	// Validate before doing any I/O so we don't report "Settings updated" on bad input.
+	if opts.CheckpointRemote != "" {
+		if _, _, err := parseCheckpointRemoteFlag(opts.CheckpointRemote); err != nil {
+			return fmt.Errorf("invalid --checkpoint-remote: %w", err)
+		}
+	}
+
 	targetFile, configDisplay := settingsTargetFile(ctx, opts.UseLocalSettings, opts.UseProjectSettings)
 
 	targetFileAbs, err := paths.AbsPath(ctx, targetFile)
