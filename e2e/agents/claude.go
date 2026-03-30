@@ -193,3 +193,27 @@ func (c *Claude) StartSession(ctx context.Context, dir string) (Session, error) 
 
 	return s, nil
 }
+
+// cleanConfigDir creates an isolated temp directory for CLAUDE_CONFIG_DIR so
+// that E2E test runs don't inherit any user settings (CLAUDE.md, skills,
+// projects, plugins, etc.).
+func cleanConfigDir() (string, error) {
+	dst, err := os.MkdirTemp("", "claude-config-*")
+	if err != nil {
+		return "", err
+	}
+
+	if os.Getenv("CI") != "" {
+		if home, err := os.UserHomeDir(); err == nil {
+			src := filepath.Join(home, ".claude", ".claude.json")
+			if _, err := os.Stat(src); err == nil {
+				_ = os.Symlink(src, filepath.Join(dst, ".claude.json"))
+			}
+		}
+	} else {
+		_ = os.WriteFile(filepath.Join(dst, ".claude.json"),
+			[]byte(`{"hasCompletedOnboarding":true}`), 0o644)
+	}
+
+	return dst, nil
+}
