@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/entireio/cli/cmd/entire/cli/checkpoint/id"
 	"github.com/entireio/cli/cmd/entire/cli/jsonutil"
 	"github.com/entireio/cli/cmd/entire/cli/logging"
 	"github.com/entireio/cli/cmd/entire/cli/paths"
@@ -126,19 +127,11 @@ func (s *V2GitStore) CountCheckpointsInTree(treeHash plumbing.Hash) (int, error)
 	}
 
 	count := 0
-	for _, entry := range tree.Entries {
-		if entry.Mode != filemode.Dir {
-			continue // skip root-level files (e.g., generation.json on archived gens)
-		}
-		subtree, err := s.repo.TreeObject(entry.Hash)
-		if err != nil {
-			continue
-		}
-		for _, subEntry := range subtree.Entries {
-			if subEntry.Mode == filemode.Dir {
-				count++
-			}
-		}
+	if err := WalkCheckpointShards(s.repo, tree, func(_ id.CheckpointID, _ plumbing.Hash) error {
+		count++
+		return nil
+	}); err != nil {
+		return 0, err
 	}
 
 	return count, nil
