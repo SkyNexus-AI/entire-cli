@@ -34,8 +34,13 @@ func TestMain(m *testing.M) {
 	os.Setenv("PATH", filepath.Dir(entireBin)+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	// Preflight: verify required dependencies before running any tests.
+	// tmux is only required on Unix (interactive session tests are skipped on Windows).
 	var missing []string
-	for _, bin := range []string{"git", "tmux"} {
+	requiredBins := []string{"git"}
+	if runtime.GOOS != "windows" {
+		requiredBins = append(requiredBins, "tmux")
+	}
+	for _, bin := range requiredBins {
 		if _, err := exec.LookPath(bin); err != nil {
 			missing = append(missing, bin)
 		}
@@ -63,7 +68,11 @@ func TestMain(m *testing.M) {
 
 	// Don't look at user's Git config, ignore everything except the project-local Git settings.
 	// This avoids oddball configs in ~/.gitconfig messing with our E2E tests.
-	os.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
+	nullPath := "/dev/null"
+	if runtime.GOOS == "windows" {
+		nullPath = "NUL"
+	}
+	os.Setenv("GIT_CONFIG_GLOBAL", nullPath)
 
 	os.Exit(m.Run())
 }
