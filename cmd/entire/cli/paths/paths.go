@@ -99,9 +99,7 @@ func WorktreeRoot(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("failed to get git worktree root: %w", err)
 	}
 
-	// Normalize path: git on Windows returns forward-slash paths (e.g., C:/Users/...)
-	// but Go's filepath functions expect backslashes on Windows.
-	root := filepath.FromSlash(strings.TrimSpace(string(output)))
+	root := strings.TrimSpace(string(output))
 
 	worktreeRootMu.Lock()
 	worktreeRootCache = root
@@ -164,8 +162,8 @@ func ToRelativePath(absPath, cwd string) string {
 	if err != nil || strings.HasPrefix(relPath, "..") {
 		return ""
 	}
-	// Always use forward slashes for consistency with git paths.
-	return filepath.ToSlash(relPath)
+
+	return relPath
 }
 
 // nonAlphanumericRegex matches any non-alphanumeric character
