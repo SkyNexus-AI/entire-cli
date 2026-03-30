@@ -43,6 +43,7 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           E2E_ARTIFACT_DIR: ${{ github.workspace }}/e2e-artifacts
+          E2E_PARALLEL: 1
         run: |
           mkdir -p "$E2E_ARTIFACT_DIR"
           mise run test:e2e --agent claude-code "${{ inputs.test }}"
