@@ -17,6 +17,7 @@ require (
 	github.com/zalando/go-keyring v0.2.8
 	github.com/zricethezav/gitleaks/v8 v8.30.1
 	golang.org/x/mod v0.34.0
+	golang.org/x/sys v0.42.0
 	golang.org/x/term v0.41.0
 )
 
@@ -115,7 +116,6 @@ require (
 	golang.org/x/exp v0.0.0-20250218142911-aa4b98e5adaa // indirect
 	golang.org/x/net v0.50.0 // indirect
 	golang.org/x/sync v0.19.0 // indirect
-	golang.org/x/sys v0.42.0 // indirect
 	golang.org/x/text v0.34.0 // indirect
 	gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c // indirect
 	gopkg.in/ini.v1 v1.67.0 // indirect
