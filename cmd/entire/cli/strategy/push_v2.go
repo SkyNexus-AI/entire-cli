@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint"
+	"github.com/entireio/cli/cmd/entire/cli/paths"
 
 	"github.com/go-git/go-git/v6/plumbing"
 	"github.com/go-git/go-git/v6/plumbing/object"
@@ -178,6 +179,27 @@ func fetchAndMergeRef(ctx context.Context, target string, refName plumbing.Refer
 	_ = repo.Storer.RemoveReference(tmpRefName) //nolint:errcheck // cleanup is best-effort
 
 	return nil
+}
+
+// pushV2Refs pushes v2 checkpoint refs to the target.
+// Pushes /main, /full/current, and the latest archived generation (if any).
+// Older archived generations are immutable and were pushed when created.
+func pushV2Refs(ctx context.Context, target string) {
+	pushRefIfNeeded(ctx, target, plumbing.ReferenceName(paths.V2MainRefName))
+	pushRefIfNeeded(ctx, target, plumbing.ReferenceName(paths.V2FullCurrentRefName))
+
+	// Push only the latest archived generation (most likely to be newly created)
+	repo, err := OpenRepository(ctx)
+	if err != nil {
+		return
+	}
+	store := checkpoint.NewV2GitStore(repo)
+	archived, err := store.ListArchivedGenerations()
+	if err != nil || len(archived) == 0 {
+		return
+	}
+	latest := archived[len(archived)-1]
+	pushRefIfNeeded(ctx, target, plumbing.ReferenceName(paths.V2FullRefPrefix+latest))
 }
 
 // shortRefName returns a human-readable short form of a ref name for log output.

@@ -196,3 +196,54 @@ func TestFetchAndMergeRef_MergesTrees(t *testing.T) {
 	assert.True(t, hasAA, "merged tree should contain checkpoint aabbccddeeff")
 	assert.True(t, has11, "merged tree should contain checkpoint 112233445566")
 }
+
+// TestPushV2Refs_PushesAllRefs verifies that pushV2Refs pushes /main,
+// /full/current, and any archived generations to a bare repo.
+// Not parallel: uses t.Chdir()
+func TestPushV2Refs_PushesAllRefs(t *testing.T) {
+	ctx := context.Background()
+
+	tmpDir := setupRepoWithV2Ref(t)
+	repo, err := git.PlainOpen(tmpDir)
+	require.NoError(t, err)
+
+	// Write a checkpoint (creates both /main and /full/current)
+	writeV2Checkpoint(t, repo, id.MustCheckpointID("aabbccddeeff"), "test-session")
+
+	// Create two fake archived generation refs — only the latest should be pushed
+	fullRef, err := repo.Reference(plumbing.ReferenceName(paths.V2FullCurrentRefName), true)
+	require.NoError(t, err)
+	for _, num := range []string{"0000000000001", "0000000000002"} {
+		ref := plumbing.NewHashReference(
+			plumbing.ReferenceName(paths.V2FullRefPrefix+num),
+			fullRef.Hash(),
+		)
+		require.NoError(t, repo.Storer.SetReference(ref))
+	}
+
+	t.Chdir(tmpDir)
+
+	bareDir := t.TempDir()
+	initCmd := exec.CommandContext(ctx, "git", "init", "--bare")
+	initCmd.Dir = bareDir
+	initCmd.Env = testutil.GitIsolatedEnv()
+	require.NoError(t, initCmd.Run())
+
+	pushV2Refs(ctx, bareDir)
+
+	// Verify all three refs exist in bare repo
+	bareRepo, err := git.PlainOpen(bareDir)
+	require.NoError(t, err)
+
+	_, err = bareRepo.Reference(plumbing.ReferenceName(paths.V2MainRefName), true)
+	assert.NoError(t, err, "/main ref should exist in bare repo")
+
+	_, err = bareRepo.Reference(plumbing.ReferenceName(paths.V2FullCurrentRefName), true)
+	assert.NoError(t, err, "/full/current ref should exist in bare repo")
+
+	_, err = bareRepo.Reference(plumbing.ReferenceName(paths.V2FullRefPrefix+"0000000000002"), true)
+	assert.NoError(t, err, "latest archived generation should exist in bare repo")
+
+	_, err = bareRepo.Reference(plumbing.ReferenceName(paths.V2FullRefPrefix+"0000000000001"), true)
+	assert.Error(t, err, "older archived generation should NOT be pushed")
+}
