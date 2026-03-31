@@ -446,8 +446,15 @@ func runCleanAllWithItems(ctx context.Context, cmd *cobra.Command, force, dryRun
 // excluding files belonging to active sessions.
 // Uses os.DirFS + fs.WalkDir to confine listing to the temp directory.
 func listTempFiles(ctx context.Context) ([]string, error) {
-	root, err := os.OpenRoot(paths.EntireTmpDir)
+	absDir, err := paths.AbsPath(ctx, paths.EntireTmpDir)
 	if err != nil {
+		return nil, fmt.Errorf("failed to resolve temp dir: %w", err)
+	}
+	root, err := os.OpenRoot(absDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
 		return nil, fmt.Errorf("failed to open root: %w", err)
 	}
 	defer root.Close()
@@ -495,8 +502,15 @@ type TempFileDeleteError struct {
 // deleteTempFiles removes all files in .entire/tmp/.
 // Uses os.Root to ensure deletions are confined to the temp directory.
 // Returns successfully deleted files and any failures with their error reasons.
-func deleteTempFiles(_ context.Context, files []string) (deleted []string, failed []TempFileDeleteError) {
-	root, err := os.OpenRoot(paths.EntireTmpDir)
+func deleteTempFiles(ctx context.Context, files []string) (deleted []string, failed []TempFileDeleteError) {
+	absDir, err := paths.AbsPath(ctx, paths.EntireTmpDir)
+	if err != nil {
+		for _, file := range files {
+			failed = append(failed, TempFileDeleteError{File: file, Err: err})
+		}
+		return nil, failed
+	}
+	root, err := os.OpenRoot(absDir)
 	if err != nil {
 		for _, file := range files {
 			failed = append(failed, TempFileDeleteError{File: file, Err: err})
