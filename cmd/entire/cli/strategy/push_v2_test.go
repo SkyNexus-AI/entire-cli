@@ -118,6 +118,17 @@ func TestShortRefName(t *testing.T) {
 	}
 }
 
+// Not parallel: uses t.Chdir()
+func TestFetchV2MainRefIfMissing_SkipsWhenExists(t *testing.T) {
+	tmpDir := setupRepoWithV2Ref(t)
+	t.Chdir(tmpDir)
+
+	ctx := context.Background()
+	// Should be a no-op since the ref already exists locally
+	err := fetchV2MainRefIfMissing(ctx, "https://example.com/repo.git")
+	assert.NoError(t, err)
+}
+
 // writeV2Checkpoint writes a checkpoint to both /main and /full/current via V2GitStore.
 func writeV2Checkpoint(t *testing.T, repo *git.Repository, cpID id.CheckpointID, sessionID string) {
 	t.Helper()
