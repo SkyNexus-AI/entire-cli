@@ -362,6 +362,7 @@ To enable:
 entire enable --agent codex
 ```
 
+This command will also create or update `.codex/config.toml` with `codex_hooks = true` to enable Codex hooks. If you configure Codex manually, make sure this flag is set in your `.codex/config.toml`.
 Or select Codex from the interactive agent picker when running `entire enable`.
 
 All commands (`rewind`, `resume`, `status`, `doctor`, etc.) work the same regardless of which agent is configured.
