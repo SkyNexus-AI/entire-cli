@@ -457,9 +457,12 @@ func FetchMetadataTreeOnly(ctx context.Context) error {
 // configured checkpoint_remote URL and updates the local branch.
 // Returns an error if the fetch fails or no checkpoint_remote is configured.
 func FetchMetadataFromCheckpointRemote(ctx context.Context) error {
-	checkpointURL, ok := strategy.ResolveCheckpointRemoteURL(ctx)
-	if !ok {
+	checkpointURL, hasCheckpointRemote, resolveErr := strategy.ResolveCheckpointRemoteURL(ctx)
+	if !hasCheckpointRemote {
 		return errors.New("no checkpoint_remote configured")
+	}
+	if resolveErr != nil {
+		return fmt.Errorf("checkpoint_remote configured but could not resolve URL: %w", resolveErr)
 	}
 
 	if err := strategy.FetchMetadataBranch(ctx, checkpointURL); err != nil {

@@ -579,8 +579,9 @@ func TestResolveCheckpointRemoteURL_ReturnsURL(t *testing.T) {
 
 	t.Chdir(localDir)
 
-	url, ok := ResolveCheckpointRemoteURL(ctx)
+	url, ok, err := ResolveCheckpointRemoteURL(ctx)
 	assert.True(t, ok)
+	assert.NoError(t, err)
 	assert.Equal(t, "git@github.com:org/checkpoints.git", url)
 }
 
@@ -602,8 +603,9 @@ func TestResolveCheckpointRemoteURL_NoConfig(t *testing.T) {
 
 	t.Chdir(localDir)
 
-	url, ok := ResolveCheckpointRemoteURL(t.Context())
+	url, ok, err := ResolveCheckpointRemoteURL(t.Context())
 	assert.False(t, ok)
+	assert.NoError(t, err)
 	assert.Empty(t, url)
 }
 
@@ -638,8 +640,9 @@ func TestResolveCheckpointRemoteURL_IgnoresForkDetection(t *testing.T) {
 
 	// resolvePushSettings would reject this (fork detected), but ResolveCheckpointRemoteURL
 	// must return the URL — reading checkpoints is always allowed.
-	url, ok := ResolveCheckpointRemoteURL(ctx)
+	url, ok, err := ResolveCheckpointRemoteURL(ctx)
 	assert.True(t, ok, "ResolveCheckpointRemoteURL should resolve even from forked clones")
+	assert.NoError(t, err)
 	assert.Equal(t, "git@github.com:org/checkpoints.git", url)
 
 	// Contrast: push settings should reject the same config

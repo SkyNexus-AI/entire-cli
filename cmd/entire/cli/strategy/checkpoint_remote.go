@@ -283,42 +283,38 @@ func redactURL(rawURL string) string {
 }
 
 // ResolveCheckpointRemoteURL resolves the checkpoint remote URL from settings.
-// Returns the URL and true if a checkpoint_remote is configured, or ("", false) otherwise.
+// Returns (url, true, nil) if a checkpoint_remote is configured and resolved successfully,
+// ("", false, nil) if no checkpoint_remote is configured, or ("", true, err) if configured
+// but resolution failed (e.g., missing origin remote, unparseable URL).
 // Unlike resolvePushSettings, this skips fork detection (reading is always allowed)
 // and has no side effects (no fetching).
-func ResolveCheckpointRemoteURL(ctx context.Context) (string, bool) {
-	return deriveCheckpointRemoteURL(ctx, "origin")
-}
-
-// deriveCheckpointRemoteURL derives the checkpoint remote URL from settings and the
-// given remote's protocol. Pure function with no side effects (no fork detection, no fetching).
-func deriveCheckpointRemoteURL(ctx context.Context, remoteName string) (string, bool) {
+func ResolveCheckpointRemoteURL(ctx context.Context) (string, bool, error) {
 	s, err := settings.Load(ctx)
 	if err != nil {
-		return "", false
+		return "", false, nil
 	}
 
 	config := s.GetCheckpointRemote()
 	if config == nil {
-		return "", false
+		return "", false, nil
 	}
 
-	remoteURL, err := getRemoteURL(ctx, remoteName)
+	remoteURL, err := getRemoteURL(ctx, "origin")
 	if err != nil {
-		return "", false
+		return "", true, fmt.Errorf("could not get origin remote URL: %w", err)
 	}
 
 	remoteInfo, err := parseGitRemoteURL(remoteURL)
 	if err != nil {
-		return "", false
+		return "", true, fmt.Errorf("could not parse origin remote URL: %w", err)
 	}
 
 	checkpointURL, err := deriveCheckpointURLFromInfo(remoteInfo, config)
 	if err != nil {
-		return "", false
+		return "", true, fmt.Errorf("could not derive checkpoint URL: %w", err)
 	}
 
-	return checkpointURL, true
+	return checkpointURL, true, nil
 }
 
 // FetchMetadataBranch fetches the metadata branch from the checkpoint remote URL

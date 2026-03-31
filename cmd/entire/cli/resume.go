@@ -629,10 +629,15 @@ func checkRemoteMetadata(ctx context.Context, checkpointID id.CheckpointID) erro
 	}
 
 	// Resolve checkpoint remote URL once; reuse for both fetch and error message.
-	checkpointURL, hasCheckpointRemote := strategy.ResolveCheckpointRemoteURL(ctx)
+	checkpointURL, hasCheckpointRemote, resolveErr := strategy.ResolveCheckpointRemoteURL(ctx)
+	if resolveErr != nil {
+		logging.Warn(logCtx, "checkpoint_remote configured but could not resolve URL",
+			slog.String("error", resolveErr.Error()),
+		)
+	}
 
-	// Try checkpoint_remote first if configured (that's where checkpoints are stored)
-	if hasCheckpointRemote {
+	// Try checkpoint_remote first if configured and resolved (that's where checkpoints are stored)
+	if hasCheckpointRemote && resolveErr == nil {
 		if fetchErr := strategy.FetchMetadataBranch(ctx, checkpointURL); fetchErr == nil {
 			freshRepo, freshErr := openRepository(ctx)
 			if freshErr == nil {
