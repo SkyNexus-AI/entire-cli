@@ -334,8 +334,15 @@ func FetchMetadataBranch(ctx context.Context, remoteURL string) error {
 	fetchCmd.Env = append(os.Environ(),
 		"GIT_TERMINAL_PROMPT=0",
 	)
-	if err := fetchCmd.Run(); err != nil {
-		return fmt.Errorf("fetch failed: %w", err)
+	if output, err := fetchCmd.CombinedOutput(); err != nil {
+		// Include redactedURL output for diagnostics without leaking credentials.
+		// Git stderr may echo the URL with embedded credentials, so replace it.
+		redactedURL := redactURL(remoteURL)
+		msg := strings.TrimSpace(strings.ReplaceAll(string(output), remoteURL, redactedURL))
+		if msg != "" {
+			return fmt.Errorf("fetch from %s failed: %s: %w", redactedURL, msg, err)
+		}
+		return fmt.Errorf("fetch from %s failed: %w", redactedURL, err)
 	}
 
 	repo, err := OpenRepository(ctx)
