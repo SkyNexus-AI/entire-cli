@@ -291,7 +291,7 @@ func redactURL(rawURL string) string {
 func ResolveCheckpointRemoteURL(ctx context.Context) (string, bool, error) {
 	s, err := settings.Load(ctx)
 	if err != nil {
-		return "", false, nil
+		return "", false, nil //nolint:nilerr // settings load failure means "can't determine config" — treat as not configured
 	}
 
 	config := s.GetCheckpointRemote()
