@@ -53,6 +53,12 @@ Use --dry-run to preview what would be deleted without prompting.`,
 				return errors.New("--all and --session cannot be used together")
 			}
 
+			// Check if in git repository before initializing logging,
+			// to avoid creating .entire/logs in arbitrary directories.
+			if _, err := paths.WorktreeRoot(ctx); err != nil {
+				return errors.New("not a git repository")
+			}
+
 			// Initialize logging
 			logging.SetLogLevelGetter(GetLogLevel)
 			if err := logging.Init(ctx, ""); err == nil {
@@ -61,11 +67,6 @@ Use --dry-run to preview what would be deleted without prompting.`,
 
 			if allFlag {
 				return runCleanAll(ctx, cmd, forceFlag, dryRunFlag)
-			}
-
-			// Check if in git repository
-			if _, err := paths.WorktreeRoot(ctx); err != nil {
-				return errors.New("not a git repository")
 			}
 
 			if sessionFlag != "" {
