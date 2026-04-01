@@ -18,10 +18,13 @@ import (
 )
 
 const fallbackDeviceAuthPollInterval = time.Second
-const slowDownBackoff = 5 * time.Second
 const maxPollInterval = 30 * time.Second
 const maxExpiresIn = 15 * time.Minute
 const maxTransientErrors = 5
+
+// slowDownBackoff is the additional delay added when the server returns "slow_down".
+// It is a var (not const) so tests can override it to avoid real-time waits.
+var slowDownBackoff = 5 * time.Second
 
 // browserOpenFunc is the signature for opening a URL in the user's browser.
 type browserOpenFunc func(ctx context.Context, url string) error
@@ -90,7 +93,7 @@ func runLogin(ctx context.Context, outW, errW io.Writer, client deviceAuthClient
 
 	fmt.Fprintln(outW, "Waiting for approval...")
 
-	token, err := waitForApproval(ctx, client, start.DeviceCode, start.ExpiresIn, start.Interval)
+	token, err := waitForApproval(ctx, client, start.DeviceCode, start.ExpiresIn, time.Duration(start.Interval)*time.Second)
 	if err != nil {
 		return fmt.Errorf("complete login: %w", err)
 	}
@@ -105,13 +108,13 @@ func runLogin(ctx context.Context, outW, errW io.Writer, client deviceAuthClient
 	return nil
 }
 
-func waitForApproval(ctx context.Context, poller deviceAuthClient, deviceCode string, expiresIn, interval int) (string, error) {
+func waitForApproval(ctx context.Context, poller deviceAuthClient, deviceCode string, expiresIn int, interval time.Duration) (string, error) {
 	expiry := time.Duration(expiresIn) * time.Second
 	if expiry <= 0 || expiry > maxExpiresIn {
 		expiry = maxExpiresIn
 	}
 	deadline := time.Now().Add(expiry)
-	pollInterval := time.Duration(interval) * time.Second
+	pollInterval := interval
 	if pollInterval <= 0 {
 		pollInterval = fallbackDeviceAuthPollInterval
 	}
