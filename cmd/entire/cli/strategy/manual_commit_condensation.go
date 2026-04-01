@@ -24,6 +24,8 @@ import (
 	"github.com/entireio/cli/cmd/entire/cli/summarize"
 	"github.com/entireio/cli/cmd/entire/cli/textutil"
 	"github.com/entireio/cli/cmd/entire/cli/transcript"
+	"github.com/entireio/cli/cmd/entire/cli/transcript/compact"
+	"github.com/entireio/cli/cmd/entire/cli/versioninfo"
 
 	"github.com/go-git/go-git/v6"
 	"github.com/go-git/go-git/v6/plumbing"
@@ -266,6 +268,8 @@ func (s *ManualCommitStrategy) CondenseSession(ctx context.Context, repo *git.Re
 		InitialAttribution:          attribution,
 		Summary:                     summary,
 	}
+
+	writeOpts.CompactTranscript = compactTranscriptForV2(ctx, ag, sessionData.Transcript, state.CheckpointTranscriptStart)
 
 	// Write checkpoint metadata to v1 branch
 	if err := store.WriteCommitted(ctx, writeOpts); err != nil {
@@ -911,6 +915,33 @@ func (s *ManualCommitStrategy) cleanupShadowBranchIfUnused(ctx context.Context, 
 		return fmt.Errorf("failed to remove shadow branch: %w", err)
 	}
 	return nil
+}
+
+// compactTranscriptForV2 produces the Entire Transcript Format (transcript.jsonl)
+// from a raw agent transcript. Returns nil if compaction cannot be performed
+// (nil agent, empty transcript, or compaction error) — callers treat nil as
+// "skip writing transcript.jsonl to /main".
+func compactTranscriptForV2(ctx context.Context, ag agent.Agent, transcript []byte, checkpointTranscriptStart int) []byte {
+	if ag == nil || len(transcript) == 0 {
+		return nil
+	}
+	if !settings.IsCheckpointsV2Enabled(ctx) {
+		return nil
+	}
+
+	compacted, err := compact.Compact(transcript, compact.MetadataFields{
+		Agent:      string(ag.Name()),
+		CLIVersion: versioninfo.Version,
+		StartLine:  checkpointTranscriptStart,
+	})
+	if err != nil {
+		logging.Warn(ctx, "compact transcript generation failed, skipping transcript.jsonl on /main",
+			slog.String("agent", string(ag.Name())),
+			slog.String("error", err.Error()),
+		)
+		return nil
+	}
+	return compacted
 }
 
 // writeCommittedV2IfEnabled writes checkpoint data to v2 refs when checkpoints_v2
