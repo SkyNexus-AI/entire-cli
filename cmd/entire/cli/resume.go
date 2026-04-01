@@ -697,7 +697,7 @@ func checkRemoteMetadata(ctx context.Context, w, errW io.Writer, checkpointID id
 				}
 				metadata, metaErr := strategy.ReadCheckpointMetadataFromSubtree(ft, checkpointID.Path())
 				if metaErr == nil {
-					return resumeSession(ctx, os.Stdout, os.Stderr, metadata, false)
+					return resumeSession(ctx, w, errW, metadata, false)
 				}
 			}
 		}
