@@ -427,8 +427,8 @@ func (m CommittedMetadata) GetTranscriptStart() int {
 // Paths include the full checkpoint path prefix (e.g., "/a1/b2c3d4e5f6/1/metadata.json").
 // Used in CheckpointSummary.Sessions to map session IDs to their file locations.
 type SessionFilePaths struct {
-	Metadata string `json:"metadata"`
-	Transcript string `json:"transcript,omitempty"`
+	Metadata    string `json:"metadata"`
+	Transcript  string `json:"transcript,omitempty"`
 	ContentHash string `json:"content_hash,omitempty"`
 	Prompt      string `json:"prompt"`
 }
