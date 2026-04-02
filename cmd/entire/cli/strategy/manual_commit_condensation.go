@@ -210,44 +210,9 @@ func (s *ManualCommitStrategy) CondenseSession(ctx context.Context, repo *git.Re
 	// Get current branch name
 	branchName := GetCurrentBranchName(repo)
 
-	// Generate summary if enabled
 	var summary *cpkg.Summary
 	if settings.IsSummarizeEnabled(ctx) && len(sessionData.Transcript) > 0 {
-		summarizeCtx := logging.WithComponent(ctx, "summarize")
-
-		var scopedTranscript []byte
-		switch state.AgentType {
-		case agent.AgentTypeGemini:
-			scoped, sliceErr := geminicli.SliceFromMessage(sessionData.Transcript, state.CheckpointTranscriptStart)
-			if sliceErr != nil {
-				logging.Warn(summarizeCtx, "failed to scope Gemini transcript for summary",
-					slog.String("session_id", state.SessionID),
-					slog.String("error", sliceErr.Error()))
-			}
-			scopedTranscript = scoped
-		case agent.AgentTypeOpenCode:
-			scoped, sliceErr := opencode.SliceFromMessage(sessionData.Transcript, state.CheckpointTranscriptStart)
-			if sliceErr != nil {
-				logging.Warn(summarizeCtx, "failed to scope OpenCode transcript for summary",
-					slog.String("session_id", state.SessionID),
-					slog.String("error", sliceErr.Error()))
-			}
-			scopedTranscript = scoped
-		case agent.AgentTypeClaudeCode, agent.AgentTypeCursor, agent.AgentTypeFactoryAIDroid, agent.AgentTypeUnknown:
-			scopedTranscript = transcript.SliceFromLine(sessionData.Transcript, state.CheckpointTranscriptStart)
-		}
-		if len(scopedTranscript) > 0 {
-			var err error
-			summary, err = summarize.GenerateFromTranscript(summarizeCtx, scopedTranscript, sessionData.FilesTouched, state.AgentType, nil)
-			if err != nil {
-				logging.Warn(summarizeCtx, "summary generation failed",
-					slog.String("session_id", state.SessionID),
-					slog.String("error", err.Error()))
-			} else {
-				logging.Info(summarizeCtx, "summary generated",
-					slog.String("session_id", state.SessionID))
-			}
-		}
+		summary = generateSummary(ctx, sessionData, state)
 	}
 
 	// Build write options (shared by v1 and v2)
@@ -300,6 +265,49 @@ func (s *ManualCommitStrategy) CondenseSession(ctx context.Context, repo *git.Re
 		TotalTranscriptLines: sessionData.FullTranscriptLines,
 		Transcript:           sessionData.Transcript,
 	}, nil
+}
+
+// generateSummary produces an LLM-generated summary of the session transcript.
+// Returns nil if the scoped transcript is empty or generation fails.
+func generateSummary(ctx context.Context, sessionData *ExtractedSessionData, state *SessionState) *cpkg.Summary {
+	summarizeCtx := logging.WithComponent(ctx, "summarize")
+
+	var scopedTranscript []byte
+	switch state.AgentType {
+	case agent.AgentTypeGemini:
+		scoped, sliceErr := geminicli.SliceFromMessage(sessionData.Transcript, state.CheckpointTranscriptStart)
+		if sliceErr != nil {
+			logging.Warn(summarizeCtx, "failed to scope Gemini transcript for summary",
+				slog.String("session_id", state.SessionID),
+				slog.String("error", sliceErr.Error()))
+		}
+		scopedTranscript = scoped
+	case agent.AgentTypeOpenCode:
+		scoped, sliceErr := opencode.SliceFromMessage(sessionData.Transcript, state.CheckpointTranscriptStart)
+		if sliceErr != nil {
+			logging.Warn(summarizeCtx, "failed to scope OpenCode transcript for summary",
+				slog.String("session_id", state.SessionID),
+				slog.String("error", sliceErr.Error()))
+		}
+		scopedTranscript = scoped
+	case agent.AgentTypeClaudeCode, agent.AgentTypeCursor, agent.AgentTypeFactoryAIDroid, agent.AgentTypeUnknown:
+		scopedTranscript = transcript.SliceFromLine(sessionData.Transcript, state.CheckpointTranscriptStart)
+	}
+
+	if len(scopedTranscript) == 0 {
+		return nil
+	}
+
+	summary, err := summarize.GenerateFromTranscript(summarizeCtx, scopedTranscript, sessionData.FilesTouched, state.AgentType, nil)
+	if err != nil {
+		logging.Warn(summarizeCtx, "summary generation failed",
+			slog.String("session_id", state.SessionID),
+			slog.String("error", err.Error()))
+		return nil
+	}
+	logging.Info(summarizeCtx, "summary generated",
+		slog.String("session_id", state.SessionID))
+	return summary
 }
 
 // buildSessionMetrics creates a SessionMetrics from session state if any metrics are available.
