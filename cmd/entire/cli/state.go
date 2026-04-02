@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -291,49 +290,60 @@ func DetectFileChanges(ctx context.Context, previouslyUntracked []string) (*File
 // (already condensed by PostCommit) back to FilesTouched via SaveStep. Files not in
 // HEAD or with different content in the working tree are kept. Fails open: if any git
 // operation errors, returns the original list unchanged.
-//
-// Uses git CLI instead of go-git because go-git's content comparison doesn't
-// handle line-ending normalization (core.autocrlf) correctly on Windows,
-// causing committed files to appear as modified. See HardResetWithProtection
-// and HasUncommittedChanges for similar go-git workarounds.
 func filterToUncommittedFiles(ctx context.Context, files []string, repoRoot string) []string {
-	logCtx := logging.WithComponent(ctx, "filter-uncommitted")
-
 	if len(files) == 0 {
 		return files
 	}
 
-	// Use git status to find which candidate files have uncommitted changes.
-	// Files that are clean (committed with matching content) won't appear in
-	// the output and should be filtered out.
-	args := []string{"status", "--porcelain", "-z", "--"}
-	args = append(args, files...)
-	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Dir = repoRoot // file paths are repo-root-relative
-	output, err := cmd.Output()
+	repo, err := openRepository(ctx)
 	if err != nil {
-		logging.Debug(logCtx, "git status failed, returning all files",
-			slog.String("error", err.Error()))
 		return files // fail open
 	}
 
-	// Parse NUL-delimited output. Each entry is "XY path\0" where XY is the
-	// two-character status code. Files that are clean don't appear at all.
-	dirtyFiles := make(map[string]bool)
-	for _, entry := range strings.Split(string(output), "\x00") {
-		if len(entry) < 4 {
-			continue // skip empty entries and malformed lines
-		}
-		// Format: "XY <path>" — status is first 2 chars, space, then path
-		path := filepath.ToSlash(entry[3:])
-		dirtyFiles[path] = true
+	head, err := repo.Head()
+	if err != nil {
+		return files // fail open (empty repo, detached HEAD, etc.)
+	}
+
+	commit, err := repo.CommitObject(head.Hash())
+	if err != nil {
+		return files // fail open
+	}
+
+	headTree, err := commit.Tree()
+	if err != nil {
+		return files // fail open
 	}
 
 	var result []string
 	for _, relPath := range files {
-		if dirtyFiles[relPath] {
+		headFile, err := headTree.File(relPath)
+		if err != nil {
+			// File not in HEAD — it's uncommitted
+			result = append(result, relPath)
+			continue
+		}
+
+		// File is in HEAD — compare content with working tree
+		absPath := filepath.Join(repoRoot, relPath)
+		workingContent, err := os.ReadFile(absPath) //nolint:gosec // path from controlled source
+		if err != nil {
+			// Can't read working tree file (deleted?) — keep it
+			result = append(result, relPath)
+			continue
+		}
+
+		headContent, err := headFile.Contents()
+		if err != nil {
+			result = append(result, relPath)
+			continue
+		}
+
+		if string(workingContent) != headContent {
+			// Working tree differs from HEAD — uncommitted changes
 			result = append(result, relPath)
 		}
+		// else: content matches HEAD — already committed, skip
 	}
 
 	return result
