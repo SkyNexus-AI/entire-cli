@@ -296,7 +296,7 @@ func DetectFileChanges(ctx context.Context, previouslyUntracked []string) (*File
 // handle line-ending normalization (core.autocrlf) correctly on Windows,
 // causing committed files to appear as modified. See HardResetWithProtection
 // and HasUncommittedChanges for similar go-git workarounds.
-func filterToUncommittedFiles(ctx context.Context, files []string, _ string) []string {
+func filterToUncommittedFiles(ctx context.Context, files []string, repoRoot string) []string {
 	logCtx := logging.WithComponent(ctx, "filter-uncommitted")
 
 	if len(files) == 0 {
@@ -309,6 +309,7 @@ func filterToUncommittedFiles(ctx context.Context, files []string, _ string) []s
 	args := []string{"status", "--porcelain", "-z", "--"}
 	args = append(args, files...)
 	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = repoRoot // file paths are repo-root-relative
 	output, err := cmd.Output()
 	if err != nil {
 		logging.Debug(logCtx, "git status failed, returning all files",
