@@ -17,6 +17,8 @@ import (
 	"github.com/entireio/cli/cmd/entire/cli/validation"
 )
 
+var runOpenCodeExportToFileFn = runOpenCodeExportToFile
+
 // Hook name constants — these become CLI subcommands under `entire hooks opencode`.
 const (
 	HookNameSessionStart = "session-start"
@@ -190,7 +192,7 @@ func (a *OpenCodeAgent) fetchAndCacheExport(ctx context.Context, sessionID strin
 		return "", fmt.Errorf("failed to create temp dir: %w", err)
 	}
 
-	if err := runOpenCodeExportToFile(ctx, sessionID, tmpFile); err != nil {
+	if err := runOpenCodeExportToFileFn(ctx, sessionID, tmpFile); err != nil {
 		return "", fmt.Errorf("opencode export failed: %w", err)
 	}
 

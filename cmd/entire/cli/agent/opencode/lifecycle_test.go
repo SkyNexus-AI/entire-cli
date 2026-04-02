@@ -3,6 +3,7 @@ package opencode
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -361,35 +362,23 @@ func TestParseHookEvent_TurnEnd_InvalidSessionID(t *testing.T) {
 	}
 }
 
-func TestFetchAndCacheExport_UsesRedirectedExportWhenPipeOutputWouldBeInvalid(t *testing.T) {
+func TestFetchAndCacheExport_WritesAndValidatesExportFile(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Chdir(tmpDir)
 
 	paths.ClearWorktreeRootCache()
 	t.Cleanup(paths.ClearWorktreeRootCache)
 
-	binDir := filepath.Join(tmpDir, "bin")
-	require.NoError(t, os.MkdirAll(binDir, 0o755))
-
-	opencodePath := filepath.Join(binDir, "opencode")
-	script := `#!/bin/sh
-if [ "$1" = "export" ]; then
-  # Simulate truncated/invalid JSON only when stdout is a pipe.
-  if [ -p /dev/fd/1 ]; then
-    printf '{"info":'
-    exit 0
-  fi
-
-  # Redirection path should return full valid JSON.
-  printf '{"info":{"id":"%s"},"messages":[]}\n' "$2"
-  exit 0
-fi
-
-echo "unexpected args" >&2
-exit 1
-`
-	require.NoError(t, os.WriteFile(opencodePath, []byte(script), 0o755))
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	original := runOpenCodeExportToFileFn
+	runOpenCodeExportToFileFn = func(_ context.Context, sessionID, outputPath string) error {
+		if sessionID != "ses_abc123" {
+			return fmt.Errorf("unexpected session id: %s", sessionID)
+		}
+		return os.WriteFile(outputPath, []byte(`{"info":{"id":"ses_abc123"},"messages":[]}`), 0o600)
+	}
+	t.Cleanup(func() {
+		runOpenCodeExportToFileFn = original
+	})
 
 	ag := &OpenCodeAgent{}
 	transcriptPath, err := ag.fetchAndCacheExport(context.Background(), "ses_abc123")
