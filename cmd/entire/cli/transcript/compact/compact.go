@@ -93,6 +93,10 @@ func Compact(content []byte, opts MetadataFields) ([]byte, error) {
 		truncated = []byte{}
 	}
 
+	if isDroidFormat(truncated) {
+		return compactDroid(truncated, opts)
+	}
+
 	return compactJSONL(truncated, opts)
 }
 
@@ -132,6 +136,9 @@ func normalizeKind(raw map[string]json.RawMessage) string {
 	return ""
 }
 
+// linePreprocessor transforms a parsed JSONL line before conversion.
+type linePreprocessor func(map[string]json.RawMessage) map[string]json.RawMessage
+
 // parsedEntry is an intermediate representation of a JSONL line used during
 // the two-pass compact conversion.
 type parsedEntry struct {
@@ -150,10 +157,14 @@ type parsedEntry struct {
 // compactJSONL converts JSONL transcripts (Claude Code, Cursor) into the
 // transcript.jsonl format.
 func compactJSONL(content []byte, opts MetadataFields) ([]byte, error) {
+	return compactJSONLWith(content, opts, nil)
+}
+
+func compactJSONLWith(content []byte, opts MetadataFields, preprocess linePreprocessor) ([]byte, error) {
 	base := newTranscriptLine(opts)
 
 	// Pass 1: parse all lines into intermediate entries.
-	entries, err := parseJSONLEntries(content)
+	entries, err := parseJSONLEntries(content, preprocess)
 	if err != nil {
 		return nil, err
 	}
@@ -258,7 +269,7 @@ func appendLine(result *[]byte, line transcriptLine) {
 
 // parseJSONLEntries parses all JSONL lines into intermediate entries,
 // filtering dropped types and malformed lines.
-func parseJSONLEntries(content []byte) ([]parsedEntry, error) {
+func parseJSONLEntries(content []byte, preprocess linePreprocessor) ([]parsedEntry, error) {
 	reader := bufio.NewReader(bytes.NewReader(content))
 	var entries []parsedEntry
 
@@ -269,7 +280,7 @@ func parseJSONLEntries(content []byte) ([]parsedEntry, error) {
 		}
 
 		if len(bytes.TrimSpace(lineBytes)) > 0 {
-			if e, ok := parseLine(lineBytes); ok {
+			if e, ok := parseLine(lineBytes, preprocess); ok {
 				entries = append(entries, e)
 			}
 		}
@@ -284,10 +295,14 @@ func parseJSONLEntries(content []byte) ([]parsedEntry, error) {
 
 // parseLine converts a single JSONL line into a parsedEntry.
 // Returns ok=false for dropped/malformed lines.
-func parseLine(lineBytes []byte) (parsedEntry, bool) {
+func parseLine(lineBytes []byte, preprocess linePreprocessor) (parsedEntry, bool) {
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(lineBytes, &raw); err != nil {
 		return parsedEntry{}, false
+	}
+
+	if preprocess != nil {
+		raw = preprocess(raw)
 	}
 
 	kind := normalizeKind(raw)
