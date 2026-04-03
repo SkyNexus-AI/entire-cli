@@ -1027,6 +1027,22 @@ func TestRunStatus_ShowsEnabledAgents(t *testing.T) {
 	}
 }
 
+func TestRunStatus_EnabledNoAgentsHidesHooksLine(t *testing.T) {
+	setupTestRepo(t)
+	writeSettings(t, testSettingsEnabled)
+	// No agent hooks installed
+
+	var stdout bytes.Buffer
+	if err := runStatus(context.Background(), &stdout, false); err != nil {
+		t.Fatalf("runStatus() error = %v", err)
+	}
+
+	output := stdout.String()
+	if strings.Contains(output, "Hooks installed:") {
+		t.Errorf("Should not show hooks line when no agents installed, got: %s", output)
+	}
+}
+
 func TestRunStatus_DetailedShowsEnabledAgents(t *testing.T) {
 	setupTestRepo(t)
 	writeSettings(t, testSettingsEnabled)
