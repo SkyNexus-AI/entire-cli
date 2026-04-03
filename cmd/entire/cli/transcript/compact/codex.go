@@ -17,26 +17,7 @@ const (
 	codexTypeFunctionCall       = "function_call"
 	codexTypeFunctionCallOutput = "function_call_output"
 )
-
-// --- Codex format support ---
-//
-// Codex transcripts are JSONL with each line having:
-//
-//	{"timestamp":"...","type":"session_meta"|"event_msg"|"response_item"|"turn_context","payload":{...}}
-//
-// Key entry types within payload:
-//   - session_meta: session metadata (dropped)
-//   - event_msg: events like task_started, token_count, exec_command_end (dropped)
-//   - turn_context: turn metadata (dropped)
-//   - response_item with payload.type=message, role=developer: system prompt (dropped)
-//   - response_item with payload.type=message, role=user: user message
-//   - response_item with payload.type=message, role=assistant: assistant text
-//   - response_item with payload.type=function_call: tool invocation
-//   - response_item with payload.type=function_call_output: tool result
-//   - response_item with payload.type=reasoning: reasoning/thinking (dropped)
-
 // isCodexFormat checks whether JSONL content uses the Codex format.
-// It looks for a "session_meta" line (always first in Codex transcripts).
 func isCodexFormat(content []byte) bool {
 	scanner := bufio.NewScanner(bytes.NewReader(content))
 	for scanner.Scan() {
@@ -82,20 +63,22 @@ func compactCodex(content []byte, opts MetadataFields) ([]byte, error) {
 	}
 
 	if opts.StartLine > 0 {
-		if opts.StartLine >= len(lines) {
+		lines = codexSliceFromResponseItem(lines, opts.StartLine)
+		if len(lines) == 0 {
 			return []byte{}, nil
 		}
-		lines = lines[opts.StartLine:]
 	}
 
 	base := newTranscriptLine(opts)
 	var result []byte
+	var pendingInTok, pendingOutTok int
 
 	for i := 0; i < len(lines); i++ {
 		cl := lines[i]
 
 		// Consume token_count lines at the top level (e.g. before any assistant).
 		if isCodexTokenCountLine(cl) {
+			pendingInTok, pendingOutTok = codexTokenCount(cl.Payload)
 			continue
 		}
 
@@ -133,7 +116,8 @@ func compactCodex(content []byte, opts MetadataFields) ([]byte, error) {
 
 			// Collect any function_calls that follow this assistant message.
 			var toolBlocks []map[string]json.RawMessage
-			var inTok, outTok int
+			inTok, outTok := pendingInTok, pendingOutTok
+			pendingInTok, pendingOutTok = 0, 0
 			for i+1 < len(lines) {
 				next := lines[i+1]
 				if isCodexTokenCountLine(next) {
@@ -184,7 +168,8 @@ func compactCodex(content []byte, opts MetadataFields) ([]byte, error) {
 		case p.Type == codexTypeFunctionCall:
 			// Standalone function_call not preceded by assistant text.
 			tb := codexToolUseBlock(p)
-			var inTok, outTok int
+			inTok, outTok := pendingInTok, pendingOutTok
+			pendingInTok, pendingOutTok = 0, 0
 			// Skip token_count lines between function_call and output.
 			for i+1 < len(lines) && isCodexTokenCountLine(lines[i+1]) {
 				inTok, outTok = codexTokenCount(lines[i+1].Payload)
@@ -328,12 +313,33 @@ func codexAssistantText(raw json.RawMessage) string {
 	if json.Unmarshal(raw, &blocks) != nil {
 		return ""
 	}
+	var texts []string
 	for _, b := range blocks {
 		if b.Type == "output_text" && b.Text != "" {
-			return b.Text
+			texts = append(texts, b.Text)
 		}
 	}
-	return ""
+	return strings.Join(texts, "\n\n")
+}
+
+// codexSliceFromResponseItem returns a suffix of lines starting after skipping
+// n response_item entries. token_count lines do not count toward the offset.
+func codexSliceFromResponseItem(lines []codexLine, n int) []codexLine {
+	if n <= 0 {
+		return lines
+	}
+
+	seen := 0
+	for i, line := range lines {
+		if line.Type == "response_item" {
+			seen++
+		}
+		if seen >= n {
+			return lines[i+1:]
+		}
+	}
+
+	return nil
 }
 
 // codexToolUseBlock builds a compact tool_use content block from a function_call.

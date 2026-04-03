@@ -41,6 +41,15 @@ func TestCompact_CodexInlineCases(t *testing.T) {
 			},
 		},
 		{
+			name: "assistant with multiple output text blocks",
+			input: []byte(`{"timestamp":"t1","type":"session_meta","payload":{"id":"s1"}}
+{"timestamp":"t2","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"first line"},{"type":"output_text","text":"second line"}]}}
+`),
+			expected: []string{
+				`{"v":1,"agent":"codex","cli_version":"0.5.1","type":"assistant","ts":"t2","content":[{"type":"text","text":"first line\n\nsecond line"}]}`,
+			},
+		},
+		{
 			name: "drops reasoning and event_msg",
 			input: []byte(`{"timestamp":"t1","type":"session_meta","payload":{"id":"s1"}}
 {"timestamp":"t2","type":"event_msg","payload":{"type":"task_started"}}
@@ -123,6 +132,30 @@ func TestCompact_CodexStartLine(t *testing.T) {
 	expected := []string{
 		`{"v":1,"agent":"codex","cli_version":"0.5.1","type":"user","ts":"t6","content":[{"text":"second prompt"}]}`,
 		`{"v":1,"agent":"codex","cli_version":"0.5.1","type":"assistant","ts":"t7","content":[{"type":"text","text":"response to second"}]}`,
+	}
+
+	result, err := Compact(input, opts)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	assertJSONLines(t, result, expected)
+}
+
+func TestCompact_CodexStartLine_IgnoresTokenCountEvents(t *testing.T) {
+	t.Parallel()
+
+	// StartLine=1 should skip exactly one response_item (the first user),
+	// not the token_count event line.
+	opts := MetadataFields{Agent: "codex", CLIVersion: "0.5.1", StartLine: 1}
+
+	input := []byte(`{"timestamp":"t1","type":"session_meta","payload":{"id":"s1"}}
+{"timestamp":"t2","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"first prompt"}]}}
+{"timestamp":"t3","type":"event_msg","payload":{"type":"token_count","input_tokens":10,"output_tokens":0}}
+{"timestamp":"t4","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"second entry"}]}}
+`)
+
+	expected := []string{
+		`{"v":1,"agent":"codex","cli_version":"0.5.1","type":"assistant","ts":"t4","input_tokens":10,"content":[{"type":"text","text":"second entry"}]}`,
 	}
 
 	result, err := Compact(input, opts)
