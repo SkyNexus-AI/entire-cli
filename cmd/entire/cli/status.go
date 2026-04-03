@@ -157,6 +157,16 @@ func formatSettingsStatusShort(ctx context.Context, s *EntireSettings, sty statu
 		}
 	}
 
+	// Show enabled agents
+	if s.Enabled {
+		if displayNames := InstalledAgentDisplayNames(ctx); len(displayNames) > 0 {
+			b.WriteString("\n")
+			b.WriteString(sty.render(sty.dim, "  Agents · "))
+
+			b.WriteString(strings.Join(displayNames, ", "))
+		}
+	}
+
 	return b.String()
 }
 
