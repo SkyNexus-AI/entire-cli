@@ -276,6 +276,10 @@ func runManageAgents(ctx context.Context, w io.Writer, opts EnableOptions, selec
 
 	// If user deselected all agents, remove them all and show guidance
 	if len(selectedAgentNames) == 0 {
+		if len(installedNames) == 0 {
+			fmt.Fprintln(w, "No changes made.")
+			return nil
+		}
 		var errs []error
 		for _, name := range installedNames {
 			ag, err := agent.Get(name)
