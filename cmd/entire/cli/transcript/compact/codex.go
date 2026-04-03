@@ -17,6 +17,7 @@ const (
 	codexTypeFunctionCall       = "function_call"
 	codexTypeFunctionCallOutput = "function_call_output"
 )
+
 // isCodexFormat checks whether JSONL content uses the Codex format.
 func isCodexFormat(content []byte) bool {
 	scanner := bufio.NewScanner(bytes.NewReader(content))
