@@ -85,8 +85,6 @@ func runStatus(ctx context.Context, w io.Writer, detailed bool) error {
 		return fmt.Errorf("failed to load settings: %w", err)
 	}
 
-	fmt.Fprintln(w)
-	fmt.Fprintln(w)
 	fmt.Fprintln(w, formatSettingsStatusShort(ctx, s, sty))
 	if s.Enabled {
 		writeActiveSessions(ctx, w, sty)
@@ -102,8 +100,6 @@ func runStatusDetailed(ctx context.Context, w io.Writer, sty statusStyles, setti
 	if err != nil {
 		return fmt.Errorf("failed to load settings: %w", err)
 	}
-	fmt.Fprintln(w)
-	fmt.Fprintln(w)
 	fmt.Fprintln(w, formatSettingsStatusShort(ctx, effectiveSettings, sty))
 	fmt.Fprintln(w) // blank line
 
