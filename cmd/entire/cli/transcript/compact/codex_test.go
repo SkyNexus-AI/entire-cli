@@ -1,6 +1,9 @@
 package compact
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestCompact_CodexFixture(t *testing.T) {
 	t.Parallel()
@@ -109,6 +112,16 @@ func TestIsCodexFormat(t *testing.T) {
 				t.Errorf("isCodexFormat() = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestIsCodexFormat_LargeFirstLine(t *testing.T) {
+	t.Parallel()
+
+	large := strings.Repeat("x", 70*1024)
+	input := []byte(`{"timestamp":"t1","type":"session_meta","payload":{"id":"s1","blob":"` + large + `"}}` + "\n")
+	if got := isCodexFormat(input); !got {
+		t.Fatalf("isCodexFormat() = %v, want true", got)
 	}
 }
 

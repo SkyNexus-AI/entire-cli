@@ -1,6 +1,9 @@
 package compact
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // --- Factory AI Droid tests ---
 
@@ -98,6 +101,20 @@ func TestIsDroidFormat(t *testing.T) {
 				t.Errorf("isDroidFormat() = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestIsDroidFormat_LargeLeadingLine(t *testing.T) {
+	t.Parallel()
+
+	large := strings.Repeat("x", 70*1024)
+	input := []byte(
+		`{"type":"session_start","title":"` + large + `"}` + "\n" +
+			`{"type":"message","id":"m1","message":{"role":"user","content":"hi"}}` + "\n",
+	)
+
+	if got := isDroidFormat(input); !got {
+		t.Fatalf("isDroidFormat() = %v, want true", got)
 	}
 }
 

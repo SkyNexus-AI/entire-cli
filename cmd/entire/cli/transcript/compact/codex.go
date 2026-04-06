@@ -21,6 +21,7 @@ const (
 // isCodexFormat checks whether JSONL content uses the Codex format.
 func isCodexFormat(content []byte) bool {
 	scanner := bufio.NewScanner(bytes.NewReader(content))
+	scanner.Buffer(make([]byte, 0, 64*1024), 10*1024*1024)
 	for scanner.Scan() {
 		line := bytes.TrimSpace(scanner.Bytes())
 		if len(line) == 0 {
@@ -33,6 +34,9 @@ func isCodexFormat(content []byte) bool {
 			continue
 		}
 		return probe.Type == "session_meta"
+	}
+	if scanner.Err() != nil {
+		return false
 	}
 	return false
 }

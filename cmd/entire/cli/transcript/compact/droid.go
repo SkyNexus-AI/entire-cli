@@ -14,6 +14,7 @@ import (
 // Droid format. Unrecognized types (session_start, session_event) are skipped.
 func isDroidFormat(content []byte) bool {
 	scanner := bufio.NewScanner(bytes.NewReader(content))
+	scanner.Buffer(make([]byte, 0, 64*1024), 10*1024*1024)
 	for scanner.Scan() {
 		line := bytes.TrimSpace(scanner.Bytes())
 		if len(line) == 0 {
@@ -33,6 +34,9 @@ func isDroidFormat(content []byte) bool {
 		if userAliases[probe.Type] || probe.Type == transcript.TypeAssistant || droppedTypes[probe.Type] {
 			return false
 		}
+	}
+	if scanner.Err() != nil {
+		return false
 	}
 	return false
 }
