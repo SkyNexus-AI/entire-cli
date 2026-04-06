@@ -56,3 +56,37 @@ func ResolveCommittedReaderForCheckpoint(
 
 	return v1Store, summary, nil
 }
+
+// ResolveRawSessionLogForCheckpoint resolves the raw transcript log bytes for a
+// checkpoint with v2-first, v1-fallback behavior.
+//
+// Fallback behavior mirrors resume/rewind patterns:
+//   - Try v2 first when preferV2 is true
+//   - Fall back to v1 when checkpoint/transcript is missing in v2
+func ResolveRawSessionLogForCheckpoint(
+	ctx context.Context,
+	checkpointID id.CheckpointID,
+	v1Store *GitStore,
+	v2Store *V2GitStore,
+	preferV2 bool,
+) ([]byte, string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, "", err //nolint:wrapcheck // Propagating context cancellation
+	}
+
+	if preferV2 && v2Store != nil {
+		content, sessionID, err := v2Store.GetSessionLog(ctx, checkpointID)
+		if err == nil && len(content) > 0 {
+			return content, sessionID, nil
+		}
+		if err != nil && !errors.Is(err, ErrCheckpointNotFound) && !errors.Is(err, ErrNoTranscript) {
+			return nil, "", err
+		}
+	}
+
+	if v1Store == nil {
+		return nil, "", ErrCheckpointNotFound
+	}
+
+	return v1Store.GetSessionLog(ctx, checkpointID)
+}
