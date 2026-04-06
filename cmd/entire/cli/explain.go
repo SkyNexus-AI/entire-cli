@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -272,6 +273,26 @@ func runExplainCheckpoint(ctx context.Context, w, errW io.Writer, checkpointIDPr
 	content, err := readLatestSessionContentForExplain(ctx, resolvedReader, fullCheckpointID, summary)
 	if err != nil {
 		return fmt.Errorf("failed to read checkpoint content: %w", err)
+	}
+
+	// For v2 checkpoints, prefer compact transcript.jsonl from /main for
+	// human-readable output (default and --short/verbose modes). Keep --full
+	// on raw full.jsonl semantics.
+	if !full {
+		if v2Reader, ok := resolvedReader.(*checkpoint.V2GitStore); ok && len(summary.Sessions) > 0 {
+			latestIndex := len(summary.Sessions) - 1
+			compactTranscript, compactErr := v2Reader.ReadSessionCompactTranscript(ctx, fullCheckpointID, latestIndex)
+			if compactErr == nil && len(compactTranscript) > 0 {
+				content.Transcript = compactTranscript
+				content.Metadata.CheckpointTranscriptStart = 0
+				content.Metadata.TranscriptLinesAtStart = 0
+			} else if compactErr != nil && !errors.Is(compactErr, checkpoint.ErrNoTranscript) && !errors.Is(compactErr, checkpoint.ErrCheckpointNotFound) {
+				logging.Debug(ctx, "failed to read compact transcript, using raw transcript",
+					slog.String("checkpoint_id", fullCheckpointID.String()),
+					slog.String("error", compactErr.Error()),
+				)
+			}
+		}
 	}
 
 	// Handle summary generation
@@ -624,7 +645,10 @@ func extractPromptsFromTranscript(transcriptBytes []byte, agentType types.AgentT
 	}
 
 	condensed, err := summarize.BuildCondensedTranscriptFromBytes(transcriptBytes, agentType)
-	if err != nil {
+	if err != nil || len(condensed) == 0 {
+		condensed, err = buildCondensedCompactTranscript(transcriptBytes)
+	}
+	if err != nil || len(condensed) == 0 {
 		return nil
 	}
 
@@ -773,6 +797,9 @@ func formatTranscriptBytes(transcriptBytes []byte, fallback string, agentType ty
 
 	condensed, err := summarize.BuildCondensedTranscriptFromBytes(transcriptBytes, agentType)
 	if err != nil || len(condensed) == 0 {
+		condensed, err = buildCondensedCompactTranscript(transcriptBytes)
+	}
+	if err != nil || len(condensed) == 0 {
 		if fallback != "" {
 			return fallback + "\n"
 		}
@@ -781,6 +808,91 @@ func formatTranscriptBytes(transcriptBytes []byte, fallback string, agentType ty
 
 	input := summarize.Input{Transcript: condensed}
 	return summarize.FormatCondensedTranscript(input)
+}
+
+func buildCondensedCompactTranscript(transcriptBytes []byte) ([]summarize.Entry, error) {
+	type compactLine struct {
+		V          int             `json:"v"`
+		Type       string          `json:"type"`
+		Content    json.RawMessage `json:"content"`
+		CLIVersion string          `json:"cli_version"`
+	}
+
+	type contentBlock struct {
+		Type  string                 `json:"type"`
+		Text  string                 `json:"text"`
+		Name  string                 `json:"name"`
+		Input map[string]interface{} `json:"input"`
+	}
+
+	lines := strings.Split(strings.TrimSpace(string(transcriptBytes)), "\n")
+	entries := make([]summarize.Entry, 0, len(lines))
+
+	for _, rawLine := range lines {
+		rawLine = strings.TrimSpace(rawLine)
+		if rawLine == "" {
+			continue
+		}
+
+		var line compactLine
+		if err := json.Unmarshal([]byte(rawLine), &line); err != nil {
+			return nil, err
+		}
+		if line.V == 0 || line.CLIVersion == "" {
+			return nil, errors.New("not compact transcript format")
+		}
+
+		var blocks []contentBlock
+		if len(line.Content) > 0 {
+			if err := json.Unmarshal(line.Content, &blocks); err != nil {
+				continue
+			}
+		}
+
+		switch line.Type {
+		case string(summarize.EntryTypeUser):
+			var parts []string
+			for _, block := range blocks {
+				if block.Text != "" {
+					parts = append(parts, block.Text)
+				}
+			}
+			if len(parts) > 0 {
+				entries = append(entries, summarize.Entry{Type: summarize.EntryTypeUser, Content: strings.Join(parts, "\n")})
+			}
+
+		case string(summarize.EntryTypeAssistant):
+			for _, block := range blocks {
+				switch block.Type {
+				case "text":
+					if block.Text != "" {
+						entries = append(entries, summarize.Entry{Type: summarize.EntryTypeAssistant, Content: block.Text})
+					}
+				case "tool_use":
+					entries = append(entries, summarize.Entry{
+						Type:       summarize.EntryTypeTool,
+						ToolName:   block.Name,
+						ToolDetail: extractToolDetailForExplain(block.Input),
+					})
+				}
+			}
+		}
+	}
+
+	if len(entries) == 0 {
+		return nil, errors.New("no parseable compact transcript entries")
+	}
+
+	return entries, nil
+}
+
+func extractToolDetailForExplain(input map[string]interface{}) string {
+	for _, key := range []string{"description", "command", "file_path", "filePath", "path", "pattern"} {
+		if v, ok := input[key].(string); ok && v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 // formatSummaryDetails formats the detailed sections of an AI summary.
