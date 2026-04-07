@@ -1058,6 +1058,135 @@ func TestRunExplainCheckpoint_V2UsesCompactTranscriptForIntent(t *testing.T) {
 	}
 }
 
+func TestListCommittedForExplain_MergesV1AndV2(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	repo, err := git.PlainInit(tmpDir, false)
+	require.NoError(t, err)
+
+	wt, err := repo.Worktree()
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "f.txt"), []byte("x"), 0o644))
+	_, err = wt.Add("f.txt")
+	require.NoError(t, err)
+	_, err = wt.Commit("init", &git.CommitOptions{
+		Author: &object.Signature{Name: "T", Email: "t@t.com", When: time.Now()},
+	})
+	require.NoError(t, err)
+
+	v1Store := checkpoint.NewGitStore(repo)
+	v2Store := checkpoint.NewV2GitStore(repo, "origin")
+	ctx := context.Background()
+
+	transcript := []byte(`{"type":"user","message":{"content":[{"type":"text","text":"hello"}]}}` + "\n")
+
+	// Write a v1-only checkpoint (pre-v2 era).
+	v1OnlyID := id.MustCheckpointID("aaa111222333")
+	require.NoError(t, v1Store.WriteCommitted(ctx, checkpoint.WriteCommittedOptions{
+		CheckpointID: v1OnlyID,
+		SessionID:    "session-v1-only",
+		Strategy:     "manual-commit",
+		Transcript:   transcript,
+		AuthorName:   "T",
+		AuthorEmail:  "t@t.com",
+	}))
+
+	// Write a dual-write checkpoint (exists in both v1 and v2).
+	dualID := id.MustCheckpointID("bbb444555666")
+	require.NoError(t, v1Store.WriteCommitted(ctx, checkpoint.WriteCommittedOptions{
+		CheckpointID: dualID,
+		SessionID:    "session-dual",
+		Strategy:     "manual-commit",
+		Transcript:   transcript,
+		AuthorName:   "T",
+		AuthorEmail:  "t@t.com",
+	}))
+	require.NoError(t, v2Store.WriteCommitted(ctx, checkpoint.WriteCommittedOptions{
+		CheckpointID: dualID,
+		SessionID:    "session-dual",
+		Strategy:     "manual-commit",
+		Transcript:   transcript,
+		AuthorName:   "T",
+		AuthorEmail:  "t@t.com",
+	}))
+
+	// With v2 preferred: should return both the dual-write AND the v1-only checkpoint.
+	results, err := listCommittedForExplain(ctx, v1Store, v2Store, true)
+	require.NoError(t, err)
+
+	foundIDs := make(map[id.CheckpointID]bool)
+	for _, r := range results {
+		foundIDs[r.CheckpointID] = true
+	}
+	require.True(t, foundIDs[v1OnlyID], "v1-only checkpoint should be visible when v2 is preferred")
+	require.True(t, foundIDs[dualID], "dual-write checkpoint should be visible")
+
+	// No duplicates: dual checkpoint should appear exactly once.
+	dualCount := 0
+	for _, r := range results {
+		if r.CheckpointID == dualID {
+			dualCount++
+		}
+	}
+	require.Equal(t, 1, dualCount, "dual-write checkpoint should not be duplicated")
+}
+
+func TestListCommittedForExplain_V2Disabled_ReturnsV1Only(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	repo, err := git.PlainInit(tmpDir, false)
+	require.NoError(t, err)
+
+	wt, err := repo.Worktree()
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "f.txt"), []byte("x"), 0o644))
+	_, err = wt.Add("f.txt")
+	require.NoError(t, err)
+	_, err = wt.Commit("init", &git.CommitOptions{
+		Author: &object.Signature{Name: "T", Email: "t@t.com", When: time.Now()},
+	})
+	require.NoError(t, err)
+
+	v1Store := checkpoint.NewGitStore(repo)
+	v2Store := checkpoint.NewV2GitStore(repo, "origin")
+	ctx := context.Background()
+
+	transcript := []byte(`{"type":"user","message":{"content":[{"type":"text","text":"hello"}]}}` + "\n")
+
+	v1ID := id.MustCheckpointID("ccc777888999")
+	require.NoError(t, v1Store.WriteCommitted(ctx, checkpoint.WriteCommittedOptions{
+		CheckpointID: v1ID,
+		SessionID:    "session-v1",
+		Strategy:     "manual-commit",
+		Transcript:   transcript,
+		AuthorName:   "T",
+		AuthorEmail:  "t@t.com",
+	}))
+
+	// v2 also has a checkpoint, but v2 is disabled — should only see v1.
+	v2ID := id.MustCheckpointID("ddd000111222")
+	require.NoError(t, v2Store.WriteCommitted(ctx, checkpoint.WriteCommittedOptions{
+		CheckpointID: v2ID,
+		SessionID:    "session-v2",
+		Strategy:     "manual-commit",
+		Transcript:   transcript,
+		AuthorName:   "T",
+		AuthorEmail:  "t@t.com",
+	}))
+
+	results, err := listCommittedForExplain(ctx, v1Store, v2Store, false)
+	require.NoError(t, err)
+
+	foundIDs := make(map[id.CheckpointID]bool)
+	for _, r := range results {
+		foundIDs[r.CheckpointID] = true
+	}
+	require.True(t, foundIDs[v1ID], "v1 checkpoint should be returned")
+	require.False(t, foundIDs[v2ID], "v2-only checkpoint should NOT appear when v2 is disabled")
+}
+
 func TestFormatCheckpointOutput_Short(t *testing.T) {
 	summary := &checkpoint.CheckpointSummary{
 		CheckpointID:     id.MustCheckpointID("abc123def456"),
