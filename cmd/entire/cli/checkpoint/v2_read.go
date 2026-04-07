@@ -88,7 +88,7 @@ func (s *V2GitStore) ListCommitted(ctx context.Context) ([]CommittedInfo, error)
 			logging.Debug(ctx, "v2 ListCommitted: skipping unreadable checkpoint tree",
 				slog.String("checkpoint_id", checkpointID.String()),
 				slog.String("error", cpTreeErr.Error()))
-			return nil //nolint:nilerr // skip unreadable entries, continue walking
+			return nil
 		}
 
 		info := CommittedInfo{CheckpointID: checkpointID}

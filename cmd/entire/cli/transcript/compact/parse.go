@@ -3,6 +3,7 @@ package compact
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 )
 
@@ -30,7 +31,7 @@ func parseLines(content []byte) ([]transcriptLine, error) {
 
 		var line transcriptLine
 		if err := json.Unmarshal([]byte(lineText), &line); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("parsing compact transcript line: %w", err)
 		}
 		if line.V == 0 || line.CLIVersion == "" {
 			return nil, errors.New("not compact transcript format")
@@ -73,7 +74,9 @@ func BuildCondensedEntries(content []byte) ([]CondensedEntry, error) {
 		case "assistant":
 			for _, block := range blocks {
 				var blockType string
-				_ = json.Unmarshal(block["type"], &blockType)
+				if err := json.Unmarshal(block["type"], &blockType); err != nil {
+					continue
+				}
 
 				switch blockType {
 				case "text":
@@ -83,11 +86,15 @@ func BuildCondensedEntries(content []byte) ([]CondensedEntry, error) {
 					}
 				case "tool_use":
 					var toolName string
-					_ = json.Unmarshal(block["name"], &toolName)
+					if err := json.Unmarshal(block["name"], &toolName); err != nil {
+						continue
+					}
 
 					var input map[string]interface{}
 					if inputJSON, ok := block["input"]; ok && len(inputJSON) > 0 {
-						_ = json.Unmarshal(inputJSON, &input)
+						if err := json.Unmarshal(inputJSON, &input); err != nil {
+							input = nil
+						}
 					}
 
 					entries = append(entries, CondensedEntry{

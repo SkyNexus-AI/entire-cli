@@ -21,6 +21,8 @@ type CommittedReader interface {
 //   - Try v2 first when preferCheckpointsV2 is true
 //   - Fall back to v1 when checkpoint is not found in v2
 //   - Fall back to v1 when v2 returns ErrCheckpointNotFound/ErrNoTranscript
+//
+//nolint:ireturn // Interface return is intentional — caller needs polymorphic v1/v2 reader.
 func ResolveCommittedReaderForCheckpoint(
 	ctx context.Context,
 	checkpointID id.CheckpointID,

@@ -298,7 +298,7 @@ func runExplainCheckpoint(ctx context.Context, w, errW io.Writer, checkpointIDPr
 			if compactErr == nil && len(compactTranscript) > 0 {
 				content.Transcript = compactTranscript
 				content.Metadata.CheckpointTranscriptStart = 0
-				content.Metadata.TranscriptLinesAtStart = 0
+				content.Metadata.TranscriptLinesAtStart = 0 //nolint:staticcheck // Set for backward compat with older CLI readers
 			} else if compactErr != nil && !errors.Is(compactErr, checkpoint.ErrNoTranscript) && !errors.Is(compactErr, checkpoint.ErrCheckpointNotFound) {
 				logging.Debug(ctx, "failed to read compact transcript, using raw transcript",
 					slog.String("checkpoint_id", fullCheckpointID.String()),
@@ -352,7 +352,10 @@ func listCommittedForExplain(ctx context.Context, v1Store *checkpoint.GitStore, 
 	v1Committed, v1Err := v1Store.ListCommitted(ctx)
 
 	if !preferCheckpointsV2 {
-		return v1Committed, v1Err
+		if v1Err != nil {
+			return nil, fmt.Errorf("listing v1 checkpoints: %w", v1Err)
+		}
+		return v1Committed, nil
 	}
 
 	v2Committed, v2Err := v2Store.ListCommitted(ctx)
@@ -360,7 +363,10 @@ func listCommittedForExplain(ctx context.Context, v1Store *checkpoint.GitStore, 
 		logging.Debug(ctx, "v2 ListCommitted failed, using v1 only",
 			slog.String("error", v2Err.Error()),
 		)
-		return v1Committed, v1Err
+		if v1Err != nil {
+			return nil, fmt.Errorf("listing checkpoints: %w", v1Err)
+		}
+		return v1Committed, nil
 	}
 
 	// Merge: start with v2, add v1-only entries so pre-v2 checkpoints
@@ -384,7 +390,11 @@ func readLatestSessionContentForExplain(ctx context.Context, reader checkpoint.C
 	}
 
 	latestIndex := len(summary.Sessions) - 1
-	return reader.ReadSessionContent(ctx, checkpointID, latestIndex)
+	content, err := reader.ReadSessionContent(ctx, checkpointID, latestIndex)
+	if err != nil {
+		return nil, fmt.Errorf("reading session %d content: %w", latestIndex, err)
+	}
+	return content, nil
 }
 
 // generateCheckpointSummary generates an AI summary for a checkpoint and persists it.
@@ -832,7 +842,7 @@ func formatTranscriptBytes(transcriptBytes []byte, fallback string, agentType ty
 func buildCondensedCompactTranscriptEntries(transcriptBytes []byte) ([]summarize.Entry, error) {
 	compactEntries, err := transcriptcompact.BuildCondensedEntries(transcriptBytes)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("parsing compact transcript: %w", err)
 	}
 
 	entries := make([]summarize.Entry, 0, len(compactEntries))
