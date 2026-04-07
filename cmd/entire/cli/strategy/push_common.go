@@ -6,10 +6,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"strings"
 	"time"
-
-	"github.com/entireio/cli/cmd/entire/cli/checkpoint"
 
 	"github.com/go-git/go-git/v6"
 	"github.com/go-git/go-git/v6/plumbing"
@@ -78,11 +77,11 @@ func doPushBranch(ctx context.Context, target, branchName string) error {
 	}
 	stop("")
 
-	// Push failed - likely non-fast-forward. Try to fetch and merge.
+	// Push failed - likely non-fast-forward. Try to fetch and rebase.
 	fmt.Fprintf(os.Stderr, "[entire] Syncing %s with remote...", branchName)
 	stop = startProgressDots(os.Stderr)
 
-	if err := fetchAndMergeSessionsCommon(ctx, target, branchName); err != nil {
+	if err := fetchAndRebaseSessionsCommon(ctx, target, branchName); err != nil {
 		stop("")
 		fmt.Fprintf(os.Stderr, "[entire] Warning: couldn't sync %s: %v\n", branchName, err)
 		printCheckpointRemoteHint(target)
@@ -90,7 +89,7 @@ func doPushBranch(ctx context.Context, target, branchName string) error {
 	}
 	stop(" done")
 
-	// Try pushing again after merge
+	// Try pushing again after rebase
 	fmt.Fprintf(os.Stderr, "[entire] Pushing %s to %s...", branchName, displayTarget)
 	stop = startProgressDots(os.Stderr)
 
@@ -135,10 +134,11 @@ func tryPushSessionsCommon(ctx context.Context, remote, branchName string) error
 	return nil
 }
 
-// fetchAndMergeSessionsCommon fetches remote sessions and merges into local using go-git.
-// Since session logs are append-only (unique cond-* directories), we just combine trees.
+// fetchAndRebaseSessionsCommon fetches remote sessions and rebases local commits
+// on top of the remote tip. Since checkpoint shards use unique paths, rebases
+// always apply cleanly.
 // The target can be a remote name or a URL.
-func fetchAndMergeSessionsCommon(ctx context.Context, target, branchName string) error {
+func fetchAndRebaseSessionsCommon(ctx context.Context, target, branchName string) error {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 
@@ -166,11 +166,11 @@ func fetchAndMergeSessionsCommon(ctx context.Context, target, branchName string)
 		return fmt.Errorf("failed to open git repository: %w", err)
 	}
 
-	// Reconcile disconnected metadata branches before merging trees.
+	// Reconcile disconnected metadata branches before rebasing.
 	// The fetch above updated the remote-tracking ref, so reconciliation
 	// can compare fresh local vs remote. If disconnected (empty-orphan bug),
 	// this cherry-picks local commits onto remote tip, updating the local ref.
-	// If reconciliation fails, abort — proceeding to tree merge on disconnected
+	// If reconciliation fails, abort — proceeding to rebase on disconnected
 	// branches would silently combine unrelated histories.
 	if reconcileErr := ReconcileDisconnectedMetadataBranch(ctx, repo, os.Stderr); reconcileErr != nil {
 		return fmt.Errorf("metadata reconciliation failed: %w", reconcileErr)
@@ -181,55 +181,65 @@ func fetchAndMergeSessionsCommon(ctx context.Context, target, branchName string)
 	if err != nil {
 		return fmt.Errorf("failed to get local ref: %w", err)
 	}
-	localCommit, err := repo.CommitObject(localRef.Hash())
-	if err != nil {
-		return fmt.Errorf("failed to get local commit: %w", err)
-	}
-	localTree, err := localCommit.Tree()
-	if err != nil {
-		return fmt.Errorf("failed to get local tree: %w", err)
-	}
 
 	// Get fetched ref (remote-tracking or temp ref, updated by the fetch above)
 	remoteRef, err := repo.Reference(fetchedRefName, true)
 	if err != nil {
 		return fmt.Errorf("failed to get remote ref: %w", err)
 	}
-	remoteCommit, err := repo.CommitObject(remoteRef.Hash())
-	if err != nil {
-		return fmt.Errorf("failed to get remote commit: %w", err)
-	}
-	remoteTree, err := remoteCommit.Tree()
-	if err != nil {
-		return fmt.Errorf("failed to get remote tree: %w", err)
+
+	// If local is already at or behind remote, fast-forward
+	if localRef.Hash() == remoteRef.Hash() {
+		return nil
 	}
 
-	// Flatten both trees and combine entries
-	// Session logs have unique cond-* directories, so no conflicts expected
-	entries := make(map[string]object.TreeEntry)
-	if err := checkpoint.FlattenTree(repo, localTree, "", entries); err != nil {
-		return fmt.Errorf("failed to flatten local tree: %w", err)
+	// Find merge base
+	repoPath, err := getRepoPath(repo)
+	if err != nil {
+		return fmt.Errorf("failed to get repo path: %w", err)
 	}
-	if err := checkpoint.FlattenTree(repo, remoteTree, "", entries); err != nil {
-		return fmt.Errorf("failed to flatten remote tree: %w", err)
+	mergeBase, err := getMergeBase(ctx, repoPath, localRef.Hash().String(), remoteRef.Hash().String())
+	if err != nil {
+		return fmt.Errorf("failed to find merge base: %w", err)
 	}
 
-	// Build merged tree
-	mergedTreeHash, err := checkpoint.BuildTreeFromEntries(repo, entries)
-	if err != nil {
-		return fmt.Errorf("failed to build merged tree: %w", err)
+	// If local is ancestor of remote (merge base == local), fast-forward to remote
+	if mergeBase == localRef.Hash() {
+		ref := plumbing.NewHashReference(plumbing.NewBranchReferenceName(branchName), remoteRef.Hash())
+		if err := repo.Storer.SetReference(ref); err != nil {
+			return fmt.Errorf("failed to fast-forward branch ref: %w", err)
+		}
+		if isURL(target) {
+			_ = repo.Storer.RemoveReference(fetchedRefName) //nolint:errcheck // cleanup is best-effort
+		}
+		return nil
 	}
 
-	// Create merge commit with both parents
-	mergeCommitHash, err := createMergeCommitCommon(repo, mergedTreeHash,
-		[]plumbing.Hash{localRef.Hash(), remoteRef.Hash()},
-		"Merge remote session logs")
+	// Collect local commits since merge base and cherry-pick onto remote tip
+	localCommits, err := collectCommitsSince(repo, localRef.Hash(), mergeBase)
 	if err != nil {
-		return fmt.Errorf("failed to create merge commit: %w", err)
+		return fmt.Errorf("failed to collect local commits: %w", err)
+	}
+
+	if len(localCommits) == 0 {
+		// No local-only commits — just point to remote
+		ref := plumbing.NewHashReference(plumbing.NewBranchReferenceName(branchName), remoteRef.Hash())
+		if err := repo.Storer.SetReference(ref); err != nil {
+			return fmt.Errorf("failed to update branch ref: %w", err)
+		}
+		if isURL(target) {
+			_ = repo.Storer.RemoveReference(fetchedRefName) //nolint:errcheck // cleanup is best-effort
+		}
+		return nil
+	}
+
+	newTip, err := cherryPickOnto(repo, remoteRef.Hash(), localCommits)
+	if err != nil {
+		return fmt.Errorf("failed to rebase local commits onto remote: %w", err)
 	}
 
 	// Update branch ref
-	newRef := plumbing.NewHashReference(plumbing.NewBranchReferenceName(branchName), mergeCommitHash)
+	newRef := plumbing.NewHashReference(plumbing.NewBranchReferenceName(branchName), newTip)
 	if err := repo.Storer.SetReference(newRef); err != nil {
 		return fmt.Errorf("failed to update branch ref: %w", err)
 	}
@@ -240,6 +250,52 @@ func fetchAndMergeSessionsCommon(ctx context.Context, target, branchName string)
 	}
 
 	return nil
+}
+
+// getMergeBase returns the merge base hash of two commits, or an error if they
+// have no common ancestor.
+func getMergeBase(ctx context.Context, repoPath, hashA, hashB string) (plumbing.Hash, error) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "git", "merge-base", hashA, hashB)
+	cmd.Dir = repoPath
+	output, err := cmd.Output()
+	if err != nil {
+		return plumbing.ZeroHash, fmt.Errorf("git merge-base failed: %w", err)
+	}
+
+	return plumbing.NewHash(strings.TrimSpace(string(output))), nil
+}
+
+// collectCommitsSince walks from tip backwards (first parent only) and collects
+// commits until it reaches stopAt (exclusive). Returns commits oldest-first.
+func collectCommitsSince(repo *git.Repository, tip, stopAt plumbing.Hash) ([]*object.Commit, error) {
+	var chain []*object.Commit
+	current := tip
+
+	for range MaxCommitTraversalDepth {
+		if current == stopAt {
+			break
+		}
+		commit, err := repo.CommitObject(current)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get commit %s: %w", current, err)
+		}
+		chain = append(chain, commit)
+
+		if len(commit.ParentHashes) == 0 {
+			break
+		}
+		current = commit.ParentHashes[0]
+	}
+
+	// Reverse to oldest-first
+	for i, j := 0, len(chain)-1; i < j; i, j = i+1, j-1 {
+		chain[i], chain[j] = chain[j], chain[i]
+	}
+
+	return chain, nil
 }
 
 // startProgressDots prints dots to w every second until the returned stop function
