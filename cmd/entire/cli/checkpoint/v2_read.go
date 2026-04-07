@@ -85,6 +85,9 @@ func (s *V2GitStore) ListCommitted(ctx context.Context) ([]CommittedInfo, error)
 	_ = WalkCheckpointShards(s.repo, rootTree, func(checkpointID id.CheckpointID, cpTreeHash plumbing.Hash) error { //nolint:errcheck // callback never returns errors
 		checkpointTree, cpTreeErr := s.repo.TreeObject(cpTreeHash)
 		if cpTreeErr != nil {
+			logging.Debug(ctx, "v2 ListCommitted: skipping unreadable checkpoint tree",
+				slog.String("checkpoint_id", checkpointID.String()),
+				slog.String("error", cpTreeErr.Error()))
 			return nil //nolint:nilerr // skip unreadable entries, continue walking
 		}
 
@@ -93,7 +96,11 @@ func (s *V2GitStore) ListCommitted(ctx context.Context) ([]CommittedInfo, error)
 		if metadataFile, fileErr := checkpointTree.File(paths.MetadataFileName); fileErr == nil {
 			if content, contentErr := metadataFile.Contents(); contentErr == nil {
 				var summary CheckpointSummary
-				if json.Unmarshal([]byte(content), &summary) == nil {
+				if unmarshalErr := json.Unmarshal([]byte(content), &summary); unmarshalErr != nil {
+					logging.Debug(ctx, "v2 ListCommitted: skipping malformed metadata",
+						slog.String("checkpoint_id", checkpointID.String()),
+						slog.String("error", unmarshalErr.Error()))
+				} else {
 					info.CheckpointsCount = summary.CheckpointsCount
 					info.FilesTouched = summary.FilesTouched
 					info.SessionCount = len(summary.Sessions)
