@@ -370,16 +370,17 @@ func listCommittedForExplain(ctx context.Context, v1Store *checkpoint.GitStore, 
 
 	// Merge: start with v2, add v1-only entries so pre-v2 checkpoints
 	// remain visible during the transition period.
-	seen := make(map[id.CheckpointID]struct{}, len(v2Committed))
-	for _, c := range v2Committed {
+	merged := v2Committed
+	seen := make(map[id.CheckpointID]struct{}, len(merged))
+	for _, c := range merged {
 		seen[c.CheckpointID] = struct{}{}
 	}
 	for _, c := range v1Committed {
 		if _, ok := seen[c.CheckpointID]; !ok {
-			v2Committed = append(v2Committed, c)
+			merged = append(merged, c)
 		}
 	}
-	return v2Committed, nil
+	return merged, nil
 }
 
 func readLatestSessionContentForExplain(ctx context.Context, reader checkpoint.CommittedReader, checkpointID id.CheckpointID, summary *checkpoint.CheckpointSummary) (*checkpoint.SessionContent, error) {
