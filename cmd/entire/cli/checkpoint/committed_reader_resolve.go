@@ -21,7 +21,9 @@ type CommittedReader interface {
 //   - Try v2 first when preferCheckpointsV2 is true
 //   - Fall back to v1 when v2 returns nil summary, ErrCheckpointNotFound, or ErrNoTranscript
 //   - Propagate other v2 errors without fallback
-func ResolveCommittedReaderForCheckpoint(
+//
+
+func ResolveCommittedReaderForCheckpoint( //nolint:ireturn // Caller needs polymorphic v1/v2 reader.
 	ctx context.Context,
 	checkpointID id.CheckpointID,
 	v1Store *GitStore,
