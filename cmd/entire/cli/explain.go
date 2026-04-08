@@ -369,6 +369,13 @@ func listCommittedForExplain(ctx context.Context, v1Store *checkpoint.GitStore, 
 		return v1Committed, nil
 	}
 
+	if v1Err != nil {
+		logging.Debug(ctx, "v1 ListCommitted failed, returning v2 only",
+			slog.String("error", v1Err.Error()),
+		)
+		return v2Committed, nil
+	}
+
 	// Merge: start with v2, add v1-only entries so pre-v2 checkpoints
 	// remain visible during the transition period.
 	merged := v2Committed
