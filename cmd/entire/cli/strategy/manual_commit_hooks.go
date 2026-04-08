@@ -701,16 +701,16 @@ func (h *postCommitActionHandler) shouldCondenseWithOverlapCheck(isActive bool, 
 	if !h.hasNew {
 		return false
 	}
-	// ACTIVE sessions with recent interaction: skip the overlap check.
-	// PrepareCommitMsg already validated this commit is session-related
-	// (added trailer). The overlap check is only meaningful when we need
-	// heuristic evidence that a commit was related to the session.
+	// ACTIVE sessions with recent interaction: skip the overlap check,
+	// but still require that the session has tracked files. Sessions that
+	// never called SaveStep (e.g., read-only codex exec from tools like
+	// summarize) should not be condensed even if still active.
 	//
 	// We check LastInteractionTime to avoid condensing stale ACTIVE sessions
 	// (agent killed without Stop hook) into every subsequent commit. A stale
 	// session has no recent interaction and falls through to the overlap check.
 	if isActive && isRecentInteraction(lastInteraction) {
-		return true
+		return len(h.filesTouchedBefore) > 0
 	}
 	if len(h.filesTouchedBefore) == 0 {
 		return false // No files tracked = no overlap evidence

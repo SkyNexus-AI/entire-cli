@@ -209,9 +209,10 @@ func TestPostCommit_ActiveSessionAlwaysCondenses(t *testing.T) {
 	require.NoError(t, s.saveSessionState(context.Background(), idleState))
 
 	// Create a second session with the SAME base commit and worktree (concurrent session).
-	// This session is ACTIVE but has NO checkpoints (StepCount=0, no shadow branch content).
-	// Despite having no content, it WILL be condensed because ACTIVE sessions always
-	// condense — PrepareCommitMsg already validated the trailer.
+	// This session is ACTIVE but has NO checkpoints (StepCount=0, no shadow branch content)
+	// and NO files touched. Read-only ACTIVE sessions (e.g., codex exec from summarize)
+	// should NOT be condensed even though they have recent interaction — they never
+	// modified any files, so there's nothing meaningful to attach to the checkpoint.
 	now := time.Now()
 	activeState := &SessionState{
 		SessionID:           activeSessionID,
@@ -241,7 +242,7 @@ func TestPostCommit_ActiveSessionAlwaysCondenses(t *testing.T) {
 	assert.Equal(t, session.PhaseActive, activeState.Phase,
 		"ACTIVE session should stay ACTIVE after GitCommit")
 
-	// Verify both sessions condensed (entire/checkpoints/v1 branch should exist)
+	// Only the IDLE session should be condensed (entire/checkpoints/v1 branch should exist)
 	idleState, err = s.loadSessionState(context.Background(), idleSessionID)
 	require.NoError(t, err)
 	sessionsRef, err := repo.Reference(plumbing.NewBranchReferenceName(paths.MetadataBranchName), true)
@@ -252,12 +253,12 @@ func TestPostCommit_ActiveSessionAlwaysCondenses(t *testing.T) {
 	assert.Equal(t, 0, idleState.StepCount,
 		"IDLE session StepCount should be reset after condensation")
 
-	// Verify shadow branch is cleaned up because ALL sessions condensed
-	// (both IDLE and ACTIVE were condensed on this commit)
+	// Shadow branch should be preserved because the ACTIVE session was NOT condensed
+	// (it had no files touched) and still references this branch
 	refName := plumbing.NewBranchReferenceName(shadowBranch)
 	_, err = repo.Reference(refName, true)
-	assert.Error(t, err,
-		"shadow branch should be deleted when all sessions have been condensed")
+	assert.NoError(t, err,
+		"shadow branch should be preserved — uncondensed ACTIVE session still references it")
 }
 
 // TestPostCommit_CondensationFailure_PreservesShadowBranch verifies that when
