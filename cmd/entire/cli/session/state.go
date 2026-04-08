@@ -239,11 +239,6 @@ func (s *State) NormalizeAfterLoad(ctx context.Context) {
 			s.CheckpointTranscriptStart = s.TranscriptLinesAtStart
 		}
 	}
-	// Do not backfill CompactTranscriptStart from CheckpointTranscriptStart.
-	// They are different domains: CheckpointTranscriptStart is full.jsonl lines,
-	// while CompactTranscriptStart is compact transcript.jsonl lines (which may
-	// merge/drop events). Leaving legacy values at zero fails open and avoids
-	// skipping compact transcript content due to inflated offsets.
 	// Clear deprecated fields so they aren't re-persisted.
 	// Note: this is a one-way migration. If the state is re-saved, older CLI versions
 	// will see 0 for these fields and fall back to scoping from the transcript start.
