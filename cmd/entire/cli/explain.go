@@ -337,9 +337,7 @@ func runExplainCheckpoint(ctx context.Context, w, errW io.Writer, checkpointIDPr
 			Email: associatedCommits[0].Email,
 		}
 	} else {
-		if v1Reader, ok := resolvedReader.(*checkpoint.GitStore); ok {
-			author, _ = v1Reader.GetCheckpointAuthor(ctx, fullCheckpointID) //nolint:errcheck // Author is optional
-		}
+		author, _ = v1Store.GetCheckpointAuthor(ctx, fullCheckpointID) //nolint:errcheck // Author is optional
 	}
 
 	// Format and output
