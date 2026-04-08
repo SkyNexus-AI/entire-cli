@@ -156,6 +156,17 @@ func buildCheckpointSummaryProvider(name types.AgentName, model string) (*checkp
 	}, nil
 }
 
+func validateSummaryProvider(provider string) error {
+	ag, err := getSummaryAgent(types.AgentName(provider))
+	if err != nil {
+		return fmt.Errorf("unknown summary provider %q", provider)
+	}
+	if _, ok := agent.AsTextGenerator(ag); !ok {
+		return fmt.Errorf("agent %q does not support summary generation", provider)
+	}
+	return nil
+}
+
 func persistSummaryProviderSelection(ctx context.Context, provider types.AgentName, model string) error {
 	targetFile, _ := settingsTargetFile(ctx, false, false)
 	targetFileAbs, err := paths.AbsPath(ctx, targetFile)
