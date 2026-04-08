@@ -22,7 +22,7 @@ type CommittedReader interface {
 //   - Fall back to v1 when v2 returns nil summary, ErrCheckpointNotFound, or ErrNoTranscript
 //   - Propagate other v2 errors without fallback
 //
-//nolint:ireturn // Interface return is intentional — caller needs polymorphic v1/v2 reader.
+
 func ResolveCommittedReaderForCheckpoint(
 	ctx context.Context,
 	checkpointID id.CheckpointID,
