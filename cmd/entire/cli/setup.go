@@ -1612,20 +1612,34 @@ func vercelDeploymentDisabled(config map[string]any) bool {
 	return ok && !enabled
 }
 
-func mergeVercelDeploymentDisabled(config map[string]any) {
-	gitConfig, ok := config["git"].(map[string]any)
-	if !ok {
+func mergeVercelDeploymentDisabled(config map[string]any) error {
+	var gitConfig map[string]any
+	if existingGitConfig, exists := config["git"]; exists {
+		var ok bool
+		gitConfig, ok = existingGitConfig.(map[string]any)
+		if !ok {
+			return fmt.Errorf("vercel.json git config must be an object")
+		}
+	} else {
 		gitConfig = make(map[string]any)
 		config["git"] = gitConfig
 	}
 
-	deploymentEnabled, ok := gitConfig["deploymentEnabled"].(map[string]any)
-	if !ok {
+	var deploymentEnabled map[string]any
+	if existingDeploymentEnabled, exists := gitConfig["deploymentEnabled"]; exists {
+		var ok bool
+		deploymentEnabled, ok = existingDeploymentEnabled.(map[string]any)
+		if !ok {
+			return fmt.Errorf("vercel.json git.deploymentEnabled config must be an object")
+		}
+	} else {
 		deploymentEnabled = make(map[string]any)
 		gitConfig["deploymentEnabled"] = deploymentEnabled
 	}
 
 	deploymentEnabled[vercelBranchPattern] = false
+
+	return nil
 }
 
 func promptVercelDeploymentDisable() (bool, error) {
