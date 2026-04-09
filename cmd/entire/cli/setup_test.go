@@ -21,7 +21,7 @@ import (
 	"github.com/entireio/cli/cmd/entire/cli/session"
 	"github.com/entireio/cli/cmd/entire/cli/settings"
 	"github.com/entireio/cli/cmd/entire/cli/strategy"
-	"github.com/go-git/go-git/v6"
+	"github.com/entireio/cli/cmd/entire/cli/testutil"
 )
 
 // Note: Tests for hook manipulation functions (addHookToMatcher, hookCommandExists, etc.)
@@ -44,9 +44,7 @@ func setupTestDir(t *testing.T) string {
 func setupTestRepo(t *testing.T) {
 	t.Helper()
 	tmpDir := setupTestDir(t)
-	if _, err := git.PlainInit(tmpDir, false); err != nil {
-		t.Fatalf("Failed to init repo: %v", err)
-	}
+	testutil.InitRepo(t, tmpDir)
 }
 
 // writeSettings writes settings content to the settings file.
