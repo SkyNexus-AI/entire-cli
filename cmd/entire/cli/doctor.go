@@ -9,6 +9,7 @@ import (
 
 	"github.com/charmbracelet/huh"
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint"
+	"github.com/entireio/cli/cmd/entire/cli/paths"
 	"github.com/entireio/cli/cmd/entire/cli/session"
 	"github.com/entireio/cli/cmd/entire/cli/strategy"
 
@@ -314,7 +315,8 @@ func checkDisconnectedMetadata(cmd *cobra.Command, force bool) error {
 	}
 
 	ctx := cmd.Context()
-	disconnected, err := strategy.IsMetadataDisconnected(ctx, repo)
+	remoteRefName := plumbing.NewRemoteReferenceName("origin", paths.MetadataBranchName)
+	disconnected, err := strategy.IsMetadataDisconnected(ctx, repo, remoteRefName)
 	if err != nil {
 		return fmt.Errorf("could not check metadata branch state: %w", err)
 	}
@@ -352,7 +354,7 @@ func checkDisconnectedMetadata(cmd *cobra.Command, force bool) error {
 		}
 	}
 
-	if fixErr := strategy.ReconcileDisconnectedMetadataBranch(ctx, repo, cmd.ErrOrStderr()); fixErr != nil {
+	if fixErr := strategy.ReconcileDisconnectedMetadataBranch(ctx, repo, remoteRefName, cmd.ErrOrStderr()); fixErr != nil {
 		return fmt.Errorf("failed to reconcile metadata branches: %w", fixErr)
 	}
 
