@@ -32,9 +32,11 @@ func (a *CursorCLI) Binary() string             { return "agent" }
 func (a *CursorCLI) EntireAgent() string        { return "cursor" }
 func (a *CursorCLI) TimeoutMultiplier() float64 { return 1.5 }
 
-// PromptPattern returns a regex matching the Cursor CLI's TUI input prompt.
-// Cursor has used both legacy and newer placeholder copy across releases.
-func (a *CursorCLI) PromptPattern() string { return `(/ commands|Plan, search, build anything)` }
+// PromptPattern returns a regex matching Cursor's ready-state prompt markers.
+// Cursor has used multiple startup/completion markers across releases.
+func (a *CursorCLI) PromptPattern() string {
+	return `(/ commands|Plan, search, build anything|Add a follow-up)`
+}
 
 func (a *CursorCLI) IsTransientError(out Output, err error) bool {
 	if err == nil {
