@@ -284,7 +284,7 @@ func fetchAndRebaseSessionsCommon(ctx context.Context, target, branchName string
 		return nil
 	}
 
-	newTip, err := cherryPickOnto(repo, remoteRef.Hash(), localCommits)
+	newTip, err := cherryPickOnto(ctx, repo, remoteRef.Hash(), localCommits)
 	if err != nil {
 		return fmt.Errorf("failed to rebase local commits onto remote: %w", err)
 	}
