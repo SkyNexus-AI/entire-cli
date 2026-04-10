@@ -2487,7 +2487,6 @@ func (s *ManualCommitStrategy) finalizeAllTurnCheckpoints(ctx context.Context, s
 		state.TurnCheckpointIDs = nil
 		return 1 // Count as error - all checkpoints will be skipped
 	}
-	fullTranscript = redactedTranscript.Bytes()
 	for i, p := range prompts {
 		prompts[i] = redact.String(p)
 	}
@@ -2515,13 +2514,13 @@ func (s *ManualCommitStrategy) finalizeAllTurnCheckpoints(ctx context.Context, s
 		updateOpts := checkpoint.UpdateCommittedOptions{
 			CheckpointID: cpID,
 			SessionID:    state.SessionID,
-			Transcript:   fullTranscript,
+			Transcript:   redactedTranscript,
 			Prompts:      prompts,
 			Agent:        state.AgentType,
 		}
 
 		// Generate compact transcript for v2 /main
-		if v2Store != nil && len(fullTranscript) > 0 {
+		if v2Store != nil && len(redactedTranscript) > 0 {
 			finalAg, _ := agent.GetByAgentType(state.AgentType) //nolint:errcheck // ag may be nil for unknown agent types; compactTranscriptForV2 handles nil
 			startLine := 0
 			if content, readErr := store.ReadSessionContentByID(ctx, cpID, state.SessionID); readErr == nil && content != nil {
@@ -2537,7 +2536,7 @@ func (s *ManualCommitStrategy) finalizeAllTurnCheckpoints(ctx context.Context, s
 					slog.String("error", errMsg),
 				)
 			}
-			updateOpts.CompactTranscript = compactTranscriptForV2(logCtx, finalAg, redact.AlreadyRedacted(fullTranscript), startLine)
+			updateOpts.CompactTranscript = compactTranscriptForV2(logCtx, finalAg, redactedTranscript, startLine)
 		}
 
 		updateErr := store.UpdateCommitted(ctx, updateOpts)

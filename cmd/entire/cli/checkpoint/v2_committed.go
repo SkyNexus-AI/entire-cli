@@ -448,7 +448,7 @@ func (s *V2GitStore) writeCompactTranscriptHash(compactTranscript []byte, sessio
 // consistent with the /main ref's session numbering.
 // This is a no-op if opts.Transcript is empty (and opts.TranscriptPath is unset).
 func (s *V2GitStore) writeCommittedFullTranscript(ctx context.Context, opts WriteCommittedOptions, sessionIndex int) error {
-	transcript := redact.AlreadyRedacted(opts.Transcript)
+	transcript := opts.Transcript
 
 	// TranscriptPath fallback: data read from disk is an untrusted source,
 	// so we redact it here. The in-memory path (opts.Transcript) is already
@@ -539,8 +539,8 @@ func (s *V2GitStore) writeCommittedFullTranscript(ctx context.Context, opts Writ
 	return nil
 }
 
-// writeTranscriptBlobs writes redacted, chunked transcript blobs to entries.
-// Returns the redacted transcript bytes so the caller can compute the content hash.
+// writeTranscriptBlobs writes pre-redacted, chunked transcript blobs to entries.
+// Returns the transcript bytes so the caller can compute the content hash.
 func (s *V2GitStore) writeTranscriptBlobs(ctx context.Context, transcript redact.RedactedBytes, agentType types.AgentType, sessionPath string, entries map[string]object.TreeEntry) ([]byte, error) {
 	chunks, err := agent.ChunkTranscript(ctx, transcript.Bytes(), agentType)
 	if err != nil {

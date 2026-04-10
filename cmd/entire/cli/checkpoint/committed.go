@@ -195,7 +195,7 @@ func (s *GitStore) writeIncrementalTaskCheckpoint(opts WriteCommittedOptions, ta
 		Type:      opts.IncrementalType,
 		ToolUseID: opts.ToolUseID,
 		Timestamp: time.Now().UTC(),
-		Data:      json.RawMessage(incData.Bytes()),
+		Data:      json.RawMessage(incData),
 	}
 	cpData, err := jsonutil.MarshalIndentWithNewline(checkpoint, "", "  ")
 	if err != nil {

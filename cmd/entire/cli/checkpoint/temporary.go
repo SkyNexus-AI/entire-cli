@@ -320,7 +320,7 @@ func (s *GitStore) addTaskMetadataToTree(ctx context.Context, baseTreeHash plumb
 			if redactErr != nil {
 				return plumbing.ZeroHash, fmt.Errorf("failed to redact incremental checkpoint: %w", redactErr)
 			}
-			incData = json.RawMessage(redacted.Bytes())
+			incData = json.RawMessage(redacted)
 		}
 		incrementalCheckpoint := struct {
 			Type      string          `json:"type"`
