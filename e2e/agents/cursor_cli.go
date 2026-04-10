@@ -132,11 +132,10 @@ func (a *CursorCLI) RunPrompt(ctx context.Context, dir string, prompt string, op
 			fmt.Errorf("sending prompt: %w", err)
 	}
 
-	// Wait for the "Add a follow-up" text that only appears after the agent
-	// finishes processing. We cannot reuse PromptPattern() ("/ commands")
-	// because that text is always visible in the status bar — even during
-	// the "Thinking" phase — causing WaitFor to settle prematurely when the
-	// model takes >2s to start producing visible output.
+	// Wait for the "Add a follow-up" completion marker that appears after the
+	// agent finishes processing. We cannot reuse PromptPattern() here because
+	// it matches ready-state UI markers that can already be visible while the
+	// model is still thinking, causing WaitFor to settle prematurely.
 	content, waitErr := s.WaitFor(`Add a follow-up`, timeout)
 	if waitErr != nil {
 		// Check for deadline exceeded to allow transient error detection.
