@@ -12,8 +12,6 @@ import (
 	"github.com/entireio/cli/cmd/entire/cli/agent"
 )
 
-var commandContext = exec.CommandContext
-
 // GenerateText sends a prompt to the Claude CLI and returns the raw text response.
 // Implements the agent.TextGenerator interface.
 // The model parameter hints which model to use (e.g., "haiku", "sonnet").
@@ -24,7 +22,12 @@ func (c *ClaudeCodeAgent) GenerateText(ctx context.Context, prompt string, model
 		model = "haiku"
 	}
 
-	cmd := commandContext(ctx, claudePath,
+	commandRunner := c.CommandRunner
+	if commandRunner == nil {
+		commandRunner = exec.CommandContext
+	}
+
+	cmd := commandRunner(ctx, claudePath,
 		"--print", "--output-format", "json",
 		"--model", model, "--setting-sources", "")
 

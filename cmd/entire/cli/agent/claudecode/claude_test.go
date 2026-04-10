@@ -26,19 +26,13 @@ func TestProtectedDirs(t *testing.T) {
 }
 
 func TestGenerateText_ArrayResponse(t *testing.T) {
-	t.Parallel()
-
-	originalCommandContext := commandContext
-	t.Cleanup(func() {
-		commandContext = originalCommandContext
-	})
-
-	commandContext = func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
-		response := `[{"type":"system","subtype":"init"},{"type":"assistant","message":"Working on it"},{"type":"result","result":"final generated text"}]`
-		return exec.CommandContext(ctx, "sh", "-c", "printf '%s' '"+response+"'")
+	ag := &ClaudeCodeAgent{
+		CommandRunner: func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
+			response := `[{"type":"system","subtype":"init"},{"type":"assistant","message":"Working on it"},{"type":"result","result":"final generated text"}]`
+			return exec.CommandContext(ctx, "sh", "-c", "printf '%s' '"+response+"'")
+		},
 	}
 
-	ag := &ClaudeCodeAgent{}
 	result, err := ag.GenerateText(context.Background(), "prompt", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
