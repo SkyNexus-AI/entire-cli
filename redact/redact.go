@@ -48,10 +48,10 @@ func (r RedactedBytes) Len() int {
 	return len(r.data)
 }
 
-// AlreadyRedacted wraps data that is known to have been redacted by a prior
-// operation. Use this ONLY for trusted sources — e.g., transcripts read back
-// from storage (which were redacted on write) or synthetic test data.
-// This is NOT a way to bypass redaction for fresh transcripts.
+// AlreadyRedacted wraps transcript bytes known to already be redacted by a
+// prior write path. Use this ONLY for trusted sources such as persisted
+// checkpoint transcripts or controlled test fixtures. For fresh transcript
+// input, use JSONLBytes.
 func AlreadyRedacted(data []byte) RedactedBytes {
 	return RedactedBytes{data: data}
 }
