@@ -179,7 +179,7 @@ func fetchAndMergeRef(ctx context.Context, target string, refName plumbing.Refer
 		return fmt.Errorf("failed to flatten remote tree: %w", err)
 	}
 
-	mergedTreeHash, err := checkpoint.BuildTreeFromEntries(repo, entries)
+	mergedTreeHash, err := checkpoint.BuildTreeFromEntries(ctx, repo, entries)
 	if err != nil {
 		return fmt.Errorf("failed to build merged tree: %w", err)
 	}
@@ -309,7 +309,7 @@ func handleRotationConflict(ctx context.Context, target string, repo *git.Reposi
 		}
 	}
 
-	mergedTreeHash, err := checkpoint.BuildTreeFromEntries(repo, entries)
+	mergedTreeHash, err := checkpoint.BuildTreeFromEntries(ctx, repo, entries)
 	if err != nil {
 		return fmt.Errorf("failed to build merged tree: %w", err)
 	}

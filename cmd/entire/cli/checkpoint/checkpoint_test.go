@@ -660,7 +660,7 @@ func TestUpdateSummary_NotFound(t *testing.T) {
 	store := NewGitStore(repo)
 
 	// Ensure sessions branch exists
-	err := store.ensureSessionsBranch()
+	err := store.ensureSessionsBranch(context.Background())
 	if err != nil {
 		t.Fatalf("ensureSessionsBranch() error = %v", err)
 	}
@@ -1534,7 +1534,7 @@ func TestReadCommitted_NonexistentCheckpoint(t *testing.T) {
 	store := NewGitStore(repo)
 
 	// Ensure sessions branch exists
-	err := store.ensureSessionsBranch()
+	err := store.ensureSessionsBranch(context.Background())
 	if err != nil {
 		t.Fatalf("ensureSessionsBranch() error = %v", err)
 	}
@@ -1557,7 +1557,7 @@ func TestReadSessionContent_NonexistentCheckpoint(t *testing.T) {
 	store := NewGitStore(repo)
 
 	// Ensure sessions branch exists
-	err := store.ensureSessionsBranch()
+	err := store.ensureSessionsBranch(context.Background())
 	if err != nil {
 		t.Fatalf("ensureSessionsBranch() error = %v", err)
 	}

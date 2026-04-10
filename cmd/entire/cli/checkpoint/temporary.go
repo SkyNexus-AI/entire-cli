@@ -425,7 +425,7 @@ func (s *GitStore) addTaskMetadataToTree(ctx context.Context, baseTreeHash plumb
 		})
 	}
 
-	return ApplyTreeChanges(s.repo, baseTreeHash, changes)
+	return ApplyTreeChanges(ctx, s.repo, baseTreeHash, changes)
 }
 
 // ListTemporaryCheckpoints lists all checkpoint commits on a shadow branch.
@@ -735,7 +735,7 @@ func (s *GitStore) buildTreeWithChanges(
 	for _, file := range deletedFiles {
 		relPath, relErr := normalizeRepoRelativeTreePath(repoRoot, file)
 		if relErr != nil {
-			logInvalidGitTreePath("delete shadow branch entry", file, relErr)
+			logInvalidGitTreePath(ctx, "delete shadow branch entry", file, relErr)
 			continue
 		}
 		changes = append(changes, TreeChange{Path: relPath, Entry: nil})
@@ -745,7 +745,7 @@ func (s *GitStore) buildTreeWithChanges(
 	for _, file := range modifiedFiles {
 		relPath, relErr := normalizeRepoRelativeTreePath(repoRoot, file)
 		if relErr != nil {
-			logInvalidGitTreePath("add shadow branch entry", file, relErr)
+			logInvalidGitTreePath(ctx, "add shadow branch entry", file, relErr)
 			continue
 		}
 
@@ -775,7 +775,7 @@ func (s *GitStore) buildTreeWithChanges(
 	if metadataDir != "" && metadataDirAbs != "" {
 		metadataRel, relErr := normalizeRepoRelativeTreePath(repoRoot, metadataDir)
 		if relErr != nil {
-			logInvalidGitTreePath("add metadata directory", metadataDir, relErr)
+			logInvalidGitTreePath(ctx, "add metadata directory", metadataDir, relErr)
 		} else {
 			metaChanges, metaErr := addDirectoryToChanges(s.repo, metadataDirAbs, metadataRel)
 			if metaErr != nil {
@@ -785,7 +785,7 @@ func (s *GitStore) buildTreeWithChanges(
 		}
 	}
 
-	return ApplyTreeChanges(s.repo, baseTreeHash, changes)
+	return ApplyTreeChanges(ctx, s.repo, baseTreeHash, changes)
 }
 
 // createCommit creates a commit object.
@@ -1000,7 +1000,7 @@ func addDirectoryToChanges(repo *git.Repository, dirPathAbs, dirPathRel string) 
 
 // BuildTreeFromEntries builds a proper git tree structure from flattened file entries.
 // Exported for use by strategy package (push_common.go, session_test.go)
-func BuildTreeFromEntries(repo *git.Repository, entries map[string]object.TreeEntry) (plumbing.Hash, error) {
+func BuildTreeFromEntries(ctx context.Context, repo *git.Repository, entries map[string]object.TreeEntry) (plumbing.Hash, error) {
 	// Build a tree structure
 	root := &treeNode{
 		entries: make(map[string]*treeNode),
@@ -1011,7 +1011,7 @@ func BuildTreeFromEntries(repo *git.Repository, entries map[string]object.TreeEn
 	for fullPath, entry := range entries {
 		normalizedPath, err := normalizeGitTreePath(fullPath)
 		if err != nil {
-			logInvalidGitTreePath("build tree entry", fullPath, err)
+			logInvalidGitTreePath(ctx, "build tree entry", fullPath, err)
 			continue
 		}
 		parts := strings.Split(normalizedPath, "/")

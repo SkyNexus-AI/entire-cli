@@ -1,6 +1,7 @@
 package checkpoint
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -8,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint/id"
+	"github.com/entireio/cli/cmd/entire/cli/logging"
 	"github.com/entireio/cli/cmd/entire/cli/paths"
 
 	"github.com/go-git/go-git/v6"
@@ -199,6 +201,7 @@ func storeTree(repo *git.Repository, entries []object.TreeEntry) (plumbing.Hash,
 // Unchanged subdirectories retain their hashes — this is the key optimization
 // over FlattenTree + BuildTreeFromEntries for sparse changes.
 func ApplyTreeChanges(
+	ctx context.Context,
 	repo *git.Repository,
 	rootTreeHash plumbing.Hash,
 	changes []TreeChange,
@@ -229,7 +232,7 @@ func ApplyTreeChanges(
 		c := changes[i]
 		normalizedPath, err := normalizeGitTreePath(c.Path)
 		if err != nil {
-			logInvalidGitTreePath("apply tree change", c.Path, err)
+			logInvalidGitTreePath(ctx, "apply tree change", c.Path, err)
 			continue
 		}
 
@@ -273,7 +276,7 @@ func ApplyTreeChanges(
 			if existing, ok := entryMap[name]; ok && existing.Mode == filemode.Dir {
 				existingHash = existing.Hash
 			}
-			newSubHash, err := ApplyTreeChanges(repo, existingHash, dc.subChanges)
+			newSubHash, err := ApplyTreeChanges(ctx, repo, existingHash, dc.subChanges)
 			if err != nil {
 				return plumbing.ZeroHash, fmt.Errorf("failed to apply changes in %s: %w", name, err)
 			}
@@ -365,8 +368,8 @@ func isAbsoluteGitTreePath(path string) bool {
 	return false
 }
 
-func logInvalidGitTreePath(operation, path string, err error) {
-	slog.Warn("skipping invalid git tree path",
+func logInvalidGitTreePath(ctx context.Context, operation, path string, err error) {
+	logging.Warn(ctx, "skipping invalid git tree path",
 		slog.String("operation", operation),
 		slog.String("path", path),
 		slog.String("error", err.Error()),

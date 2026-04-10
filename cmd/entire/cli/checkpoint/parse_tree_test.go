@@ -1,6 +1,7 @@
 package checkpoint
 
 import (
+	"context"
 	"fmt"
 	"testing"
 
@@ -199,7 +200,7 @@ func TestApplyTreeChanges_SkipsInvalidPaths(t *testing.T) {
 			validBlob := storeBlob(t, repo, "valid")
 			invalidBlob := storeBlob(t, repo, "invalid")
 
-			treeHash, err := ApplyTreeChanges(repo, plumbing.ZeroHash, []TreeChange{
+			treeHash, err := ApplyTreeChanges(context.Background(), repo, plumbing.ZeroHash, []TreeChange{
 				{
 					Path: "valid.txt",
 					Entry: &object.TreeEntry{
@@ -253,7 +254,7 @@ func TestBuildTreeFromEntries_SkipsInvalidPaths(t *testing.T) {
 			validBlob := storeBlob(t, repo, "valid")
 			invalidBlob := storeBlob(t, repo, "invalid")
 
-			treeHash, err := BuildTreeFromEntries(repo, map[string]object.TreeEntry{
+			treeHash, err := BuildTreeFromEntries(context.Background(), repo, map[string]object.TreeEntry{
 				"valid.txt": {
 					Name: "valid.txt",
 					Mode: filemode.Regular,
@@ -596,7 +597,7 @@ func TestApplyTreeChanges_Empty(t *testing.T) {
 	})
 
 	// No changes should return the same hash
-	result, err := ApplyTreeChanges(repo, rootTree, nil)
+	result, err := ApplyTreeChanges(context.Background(), repo, rootTree, nil)
 	if err != nil {
 		t.Fatalf("ApplyTreeChanges() error = %v", err)
 	}
@@ -615,7 +616,7 @@ func TestApplyTreeChanges_AddFile(t *testing.T) {
 		{Name: "existing.txt", Mode: filemode.Regular, Hash: blob1},
 	})
 
-	result, err := ApplyTreeChanges(repo, rootTree, []TreeChange{
+	result, err := ApplyTreeChanges(context.Background(), repo, rootTree, []TreeChange{
 		{Path: "new.txt", Entry: &object.TreeEntry{
 			Name: "new.txt", Mode: filemode.Regular, Hash: blob2,
 		}},
@@ -647,7 +648,7 @@ func TestApplyTreeChanges_DeleteFile(t *testing.T) {
 		{Name: "keep.txt", Mode: filemode.Regular, Hash: blob1},
 	})
 
-	result, err := ApplyTreeChanges(repo, rootTree, []TreeChange{
+	result, err := ApplyTreeChanges(context.Background(), repo, rootTree, []TreeChange{
 		{Path: "delete.txt", Entry: nil}, // nil Entry means delete
 	})
 	if err != nil {
@@ -681,7 +682,7 @@ func TestApplyTreeChanges_ModifyNestedFile(t *testing.T) {
 	})
 
 	// Modify src/handler.go
-	result, err := ApplyTreeChanges(repo, rootTree, []TreeChange{
+	result, err := ApplyTreeChanges(context.Background(), repo, rootTree, []TreeChange{
 		{Path: "src/handler.go", Entry: &object.TreeEntry{
 			Name: "handler.go", Mode: filemode.Regular, Hash: blobNew,
 		}},
@@ -719,7 +720,7 @@ func TestApplyTreeChanges_MultipleDirectories(t *testing.T) {
 	})
 
 	// Modify dir1/a.txt and dir3/c.txt, leave dir2 untouched
-	result, err := ApplyTreeChanges(repo, rootTree, []TreeChange{
+	result, err := ApplyTreeChanges(context.Background(), repo, rootTree, []TreeChange{
 		{Path: "dir1/a.txt", Entry: &object.TreeEntry{
 			Name: "a.txt", Mode: filemode.Regular, Hash: blobNew,
 		}},
@@ -758,7 +759,7 @@ func TestApplyTreeChanges_CreateNestedFromEmpty(t *testing.T) {
 	blob := storeBlob(t, repo, "deep-content")
 
 	// Start from empty tree
-	result, err := ApplyTreeChanges(repo, plumbing.ZeroHash, []TreeChange{
+	result, err := ApplyTreeChanges(context.Background(), repo, plumbing.ZeroHash, []TreeChange{
 		{Path: "a/b/c/file.txt", Entry: &object.TreeEntry{
 			Name: "file.txt", Mode: filemode.Regular, Hash: blob,
 		}},
@@ -793,7 +794,7 @@ func TestApplyTreeChanges_MixedOperations(t *testing.T) {
 		{Name: "modify.txt", Mode: filemode.Regular, Hash: blobOld},
 	})
 
-	result, err := ApplyTreeChanges(repo, rootTree, []TreeChange{
+	result, err := ApplyTreeChanges(context.Background(), repo, rootTree, []TreeChange{
 		// Delete
 		{Path: "delete.txt", Entry: nil},
 		// Modify
@@ -882,7 +883,7 @@ func TestUpdateSubtree_EquivalenceWithFlattenRebuild(t *testing.T) {
 		Mode: filemode.Regular,
 		Hash: newBlob,
 	}
-	flatResult, err := BuildTreeFromEntries(repo, flatEntries)
+	flatResult, err := BuildTreeFromEntries(context.Background(), repo, flatEntries)
 	if err != nil {
 		t.Fatalf("BuildTreeFromEntries() error = %v", err)
 	}
