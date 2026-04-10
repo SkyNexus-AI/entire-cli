@@ -183,17 +183,13 @@ func (s *ManualCommitStrategy) CondenseSession(ctx context.Context, repo *git.Re
 
 	// Redact the transcript once. The result is passed to both the compact
 	// package (for v2 transcript.jsonl) and the checkpoint stores (for v1
-	// and v2 full transcript). If redaction fails, the transcript is dropped
-	// to avoid persisting potentially sensitive content.
+	// and v2 full transcript).
 	var redactedTranscript redact.RedactedBytes
 	if len(sessionData.Transcript) > 0 {
 		var redactErr error
 		redactedTranscript, redactErr = redact.JSONLBytes(sessionData.Transcript)
 		if redactErr != nil {
-			logging.Warn(ctx, "transcript redaction failed, dropping transcript",
-				slog.String("session_id", state.SessionID),
-				slog.String("error", redactErr.Error()),
-			)
+			return nil, fmt.Errorf("failed to redact transcript secrets: %w", redactErr)
 		}
 	}
 
