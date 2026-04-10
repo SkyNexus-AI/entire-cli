@@ -317,10 +317,16 @@ func TestUpdateCommand(t *testing.T) {
 		want           string
 	}{
 		{
-			name:           "homebrew stable path",
+			name:           "homebrew stable cellar path uses cask command",
 			currentVersion: "1.0.0",
 			execPath:       func() (string, error) { return "/opt/homebrew/Cellar/entire/1.0.0/bin/entire", nil },
-			want:           "brew upgrade entire",
+			want:           "brew upgrade --cask entire",
+		},
+		{
+			name:           "homebrew stable cask path uses cask command",
+			currentVersion: "1.0.0",
+			execPath:       func() (string, error) { return "/opt/homebrew/bin/entire", nil },
+			want:           "brew upgrade --cask entire",
 		},
 		{
 			name:           "homebrew nightly path uses cask command",
@@ -332,7 +338,7 @@ func TestUpdateCommand(t *testing.T) {
 			name:           "linuxbrew path",
 			currentVersion: "1.0.0",
 			execPath:       func() (string, error) { return "/home/linuxbrew/.linuxbrew/bin/entire", nil },
-			want:           "brew upgrade entire",
+			want:           "brew upgrade --cask entire",
 		},
 		{
 			name:           "mise path",

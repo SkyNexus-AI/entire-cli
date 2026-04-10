@@ -354,7 +354,7 @@ func updateCommand(currentVersion string) string {
 		if releaseChannel(currentVersion) == installChannelNightly {
 			return "brew upgrade --cask entire@nightly"
 		}
-		return "brew upgrade entire"
+		return "brew upgrade --cask entire"
 	case installManagerMise:
 		return "mise upgrade entire"
 	case installManagerScoop:

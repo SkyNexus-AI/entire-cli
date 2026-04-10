@@ -45,7 +45,7 @@ With Entire, you can:
 ```bash
 # Install stable via Homebrew
 brew tap entireio/tap
-brew install entireio/tap/entire
+brew install --cask entire
 
 # Or install nightly via Homebrew
 brew tap entireio/tap
@@ -83,7 +83,7 @@ Entire currently ships two release channels:
 
 How to use each channel:
 
-- Homebrew stable: `brew install entireio/tap/entire`
+- Homebrew stable: `brew install --cask entire`
 - Homebrew nightly: `brew install --cask entire@nightly`
 - `install.sh` stable: `curl -fsSL https://entire.io/install.sh | bash`
 - `install.sh` nightly: `curl -fsSL https://entire.io/install.sh | bash -s -- --channel nightly`
