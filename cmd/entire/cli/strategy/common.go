@@ -1656,20 +1656,22 @@ func prepareTranscriptForState(ctx context.Context, state *SessionState) {
 		return
 	}
 
-	// Re-resolve transcript path before waiting — agents like Cursor may
+	// Re-resolve transcript path before waiting for Cursor sessions. Cursor may
 	// relocate transcripts from a flat layout (<dir>/<id>.jsonl) to a nested
-	// layout (<dir>/<id>/<id>.jsonl). ResolveSessionFile predicts the correct
-	// destination based on directory structure, even before the file is flushed.
-	sessionDir := filepath.Dir(state.TranscriptPath)
-	base := filepath.Base(state.TranscriptPath)
-	agentSessionID := strings.TrimSuffix(base, filepath.Ext(base))
-	if resolved := ag.ResolveSessionFile(sessionDir, agentSessionID); resolved != state.TranscriptPath {
-		logging.Debug(ctx, "prepareTranscriptForState: re-resolved transcript path",
-			slog.String("session_id", state.SessionID),
-			slog.String("old_path", state.TranscriptPath),
-			slog.String("new_path", resolved),
-		)
-		state.TranscriptPath = resolved
+	// layout (<dir>/<id>/<id>.jsonl). Other agents can use different filename
+	// conventions, so avoid unconditionally deriving IDs from the basename.
+	if state.AgentType == agent.AgentTypeCursor {
+		sessionDir := filepath.Dir(state.TranscriptPath)
+		base := filepath.Base(state.TranscriptPath)
+		agentSessionID := strings.TrimSuffix(base, filepath.Ext(base))
+		if resolved := ag.ResolveSessionFile(sessionDir, agentSessionID); resolved != state.TranscriptPath {
+			logging.Debug(ctx, "prepareTranscriptForState: re-resolved transcript path",
+				slog.String("session_id", state.SessionID),
+				slog.String("old_path", state.TranscriptPath),
+				slog.String("new_path", resolved),
+			)
+			state.TranscriptPath = resolved
+		}
 	}
 
 	prepareTranscriptIfNeeded(ctx, ag, state.TranscriptPath)
