@@ -215,7 +215,7 @@ func (s *V2GitStore) updateCommittedFullTranscript(ctx context.Context, opts Upd
 		}
 	}
 
-	redactedTranscript, err := s.writeTranscriptBlobs(ctx, redact.AlreadyRedacted(opts.Transcript), opts.Agent, sessionPath, entries)
+	redactedTranscript, err := s.writeTranscriptBlobs(ctx, opts.Transcript, opts.Agent, sessionPath, entries)
 	if err != nil {
 		return err
 	}

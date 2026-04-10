@@ -627,28 +627,31 @@ func aggregateTokenUsage(a, b *agent.TokenUsage) *agent.TokenUsage {
 // writeTranscript writes the transcript file from in-memory content or file path.
 // If the transcript exceeds MaxChunkSize, it's split into multiple chunk files.
 func (s *GitStore) writeTranscript(ctx context.Context, opts WriteCommittedOptions, basePath string, entries map[string]object.TreeEntry) error {
-	transcript := opts.Transcript
-	if len(transcript) == 0 && opts.TranscriptPath != "" {
-		var readErr error
-		transcript, readErr = os.ReadFile(opts.TranscriptPath)
+	transcriptBytes := opts.Transcript.Bytes()
+
+	// TranscriptPath fallback: data read from disk is an untrusted source,
+	// so we redact it here. The in-memory path (opts.Transcript) is already
+	// pre-redacted by the caller — enforced by the RedactedBytes type.
+	if len(transcriptBytes) == 0 && opts.TranscriptPath != "" {
+		rawData, readErr := os.ReadFile(opts.TranscriptPath)
 		if readErr != nil {
 			// Non-fatal: transcript may not exist yet
-			transcript = nil
+			rawData = nil
+		}
+		if len(rawData) > 0 {
+			redacted, redactErr := redact.JSONLBytes(rawData)
+			if redactErr != nil {
+				return fmt.Errorf("failed to redact transcript from file: %w", redactErr)
+			}
+			transcriptBytes = redacted.Bytes()
 		}
 	}
-	if len(transcript) == 0 {
+	if len(transcriptBytes) == 0 {
 		return nil
 	}
 
-	// Redact secrets before chunking so content hash reflects redacted content
-	redacted, err := redact.JSONLBytes(transcript)
-	if err != nil {
-		return fmt.Errorf("failed to redact transcript secrets: %w", err)
-	}
-	transcript = redacted.Bytes()
-
 	// Chunk the transcript if it's too large
-	chunks, err := agent.ChunkTranscript(ctx, transcript, opts.Agent)
+	chunks, err := agent.ChunkTranscript(ctx, transcriptBytes, opts.Agent)
 	if err != nil {
 		return fmt.Errorf("failed to chunk transcript: %w", err)
 	}
@@ -668,7 +671,7 @@ func (s *GitStore) writeTranscript(ctx context.Context, opts WriteCommittedOptio
 	}
 
 	// Content hash for deduplication (hash of full transcript)
-	contentHash := fmt.Sprintf("sha256:%x", sha256.Sum256(transcript))
+	contentHash := fmt.Sprintf("sha256:%x", sha256.Sum256(transcriptBytes))
 	hashBlob, err := CreateBlobFromContent(s.repo, []byte(contentHash))
 	if err != nil {
 		return err

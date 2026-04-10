@@ -19,6 +19,7 @@ import (
 	"github.com/entireio/cli/cmd/entire/cli/testutil"
 	"github.com/entireio/cli/cmd/entire/cli/trailers"
 	"github.com/entireio/cli/cmd/entire/cli/versioninfo"
+	"github.com/entireio/cli/redact"
 	"github.com/stretchr/testify/require"
 
 	"github.com/go-git/go-git/v6"
@@ -2985,13 +2986,19 @@ func TestWriteCommitted_RedactsTranscriptSecrets(t *testing.T) {
 	store := NewGitStore(repo)
 	checkpointID := id.MustCheckpointID("aabbccddeef1")
 
-	transcript := []byte(`{"role":"assistant","content":"Here is your key: ` + highEntropySecret + `"}` + "\n")
+	// Callers are responsible for redacting transcripts before passing to WriteCommitted.
+	// The store trusts that opts.Transcript is pre-redacted (enforced by RedactedBytes type).
+	rawTranscript := []byte(`{"role":"assistant","content":"Here is your key: ` + highEntropySecret + `"}` + "\n")
+	redactedTranscript, err := redact.JSONLBytes(rawTranscript)
+	if err != nil {
+		t.Fatalf("redact.JSONLBytes() error = %v", err)
+	}
 
-	err := store.WriteCommitted(context.Background(), WriteCommittedOptions{
+	err = store.WriteCommitted(context.Background(), WriteCommittedOptions{
 		CheckpointID:     checkpointID,
 		SessionID:        "redact-transcript-session",
 		Strategy:         "manual-commit",
-		Transcript:       transcript,
+		Transcript:       redactedTranscript,
 		CheckpointsCount: 1,
 		AuthorName:       "Test Author",
 		AuthorEmail:      "test@example.com",
