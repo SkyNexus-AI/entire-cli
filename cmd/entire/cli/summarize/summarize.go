@@ -20,12 +20,12 @@ import (
 	"github.com/entireio/cli/redact"
 )
 
-// GenerateFromTranscript generates a summary from raw transcript bytes.
+// GenerateFromTranscript generates a summary from pre-redacted transcript bytes.
 // This is the shared implementation used by both explain --generate and auto-summarize.
 //
 // Parameters:
 //   - ctx: context for cancellation
-//   - transcriptBytes: raw transcript bytes (JSONL or JSON format depending on agent)
+//   - transcriptBytes: pre-redacted transcript (JSONL or JSON format depending on agent)
 //   - filesTouched: list of files modified during the session
 //   - agentType: the agent type to determine transcript format
 //   - generator: summary generator to use (if nil, uses default ClaudeGenerator)
@@ -114,7 +114,7 @@ var minimalDetailTools = map[string]bool{
 	"WebFetch": true, // Show URL only, not fetched content
 }
 
-// BuildCondensedTranscriptFromBytes parses transcript bytes and extracts a condensed view.
+// BuildCondensedTranscriptFromBytes parses pre-redacted transcript bytes and extracts a condensed view.
 // This is a convenience function that combines parsing and condensing.
 // The agentType parameter determines which parser to use (Claude/OpenCode JSONL vs Gemini JSON).
 func BuildCondensedTranscriptFromBytes(content redact.RedactedBytes, agentType types.AgentType) ([]Entry, error) {
