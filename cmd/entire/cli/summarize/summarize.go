@@ -320,7 +320,7 @@ func extractOpenCodeToolDetail(input map[string]interface{}) string {
 }
 
 // extractGenericToolDetail extracts an appropriate detail string from a tool's input/args map.
-// Checks common fields in order of preference. Used by Gemini condensation.
+// Checks common fields in order of preference.
 func extractGenericToolDetail(input map[string]interface{}) string {
 	if input == nil {
 		return ""

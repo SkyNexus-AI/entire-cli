@@ -164,7 +164,7 @@ func buildCheckpointSummaryProvider(name types.AgentName, model string) (*checkp
 func validateSummaryProvider(provider string) error {
 	ag, err := getSummaryAgent(types.AgentName(provider))
 	if err != nil {
-		return fmt.Errorf("unknown summary provider %q", provider)
+		return fmt.Errorf("unknown summary provider %q: %w", provider, err)
 	}
 	if _, ok := agent.AsTextGenerator(ag); !ok {
 		return fmt.Errorf("agent %q does not support summary generation", provider)

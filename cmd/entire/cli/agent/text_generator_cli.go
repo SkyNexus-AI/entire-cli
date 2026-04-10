@@ -39,7 +39,11 @@ func RunIsolatedTextGeneratorCLI(ctx context.Context, runner TextCommandRunner, 
 		}
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
-			return "", fmt.Errorf("%s CLI failed (exit %d): %s", displayName, exitErr.ExitCode(), stderr.String())
+			detail := stderr.String()
+			if detail == "" {
+				detail = stdout.String()
+			}
+			return "", fmt.Errorf("%s CLI failed (exit %d): %s", displayName, exitErr.ExitCode(), detail)
 		}
 		return "", fmt.Errorf("failed to run %s CLI: %w", displayName, err)
 	}
