@@ -1114,7 +1114,7 @@ func (s *ManualCommitStrategy) cleanupShadowBranchIfUnused(ctx context.Context, 
 // (nil agent, empty transcript, or compaction error) —
 // callers treat nil as "skip writing transcript.jsonl to /main".
 func compactTranscriptForV2(ctx context.Context, ag agent.Agent, transcript redact.RedactedBytes, checkpointTranscriptStart int) []byte {
-	if ag == nil || len(transcript) == 0 {
+	if ag == nil || transcript.Len() == 0 {
 		return nil
 	}
 

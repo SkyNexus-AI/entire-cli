@@ -254,7 +254,7 @@ func repairPartialV2Checkpoint(ctx context.Context, repo *git.Repository, v1Stor
 		updateOpts := checkpoint.UpdateCommittedOptions{
 			CheckpointID: info.CheckpointID,
 			SessionID:    content.Metadata.SessionID,
-			Transcript:   content.Transcript,
+			Transcript:   redact.AlreadyRedacted(content.Transcript),
 			Prompts:      checkpoint.SplitPromptContent(content.Prompts),
 			Agent:        content.Metadata.Agent,
 		}
@@ -392,7 +392,7 @@ func buildMigrateWriteOpts(content *checkpoint.SessionContent, info checkpoint.C
 		SessionID:                   m.SessionID,
 		Strategy:                    m.Strategy,
 		Branch:                      m.Branch,
-		Transcript:                  content.Transcript,
+		Transcript:                  redact.AlreadyRedacted(content.Transcript),
 		Prompts:                     prompts,
 		FilesTouched:                m.FilesTouched,
 		CheckpointsCount:            m.CheckpointsCount,

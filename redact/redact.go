@@ -32,12 +32,20 @@ const RedactedPlaceholder = "REDACTED"
 // redaction. Consumers that require pre-redacted input (e.g., compact.Compact,
 // checkpoint stores) accept this type to enforce the contract at compile time.
 //
-// Produced by JSONLBytes (primary constructor) or AlreadyRedacted (escape hatch).
-type RedactedBytes []byte
+// Produced by JSONLBytes (primary constructor) or trusted wrappers for data
+// previously persisted by checkpoint writers.
+type RedactedBytes struct {
+	data []byte
+}
 
 // Bytes returns the underlying byte slice.
 func (r RedactedBytes) Bytes() []byte {
-	return []byte(r)
+	return r.data
+}
+
+// Len returns the number of bytes in the redacted payload.
+func (r RedactedBytes) Len() int {
+	return len(r.data)
 }
 
 // AlreadyRedacted wraps data that is known to have been redacted by a prior
@@ -45,7 +53,7 @@ func (r RedactedBytes) Bytes() []byte {
 // from storage (which were redacted on write) or synthetic test data.
 // This is NOT a way to bypass redaction for fresh transcripts.
 func AlreadyRedacted(data []byte) RedactedBytes {
-	return RedactedBytes(data)
+	return RedactedBytes{data: data}
 }
 
 var (
@@ -184,12 +192,12 @@ func JSONLBytes(b []byte) (RedactedBytes, error) {
 	s := string(b)
 	redacted, err := JSONLContent(s)
 	if err != nil {
-		return nil, err
+		return RedactedBytes{}, err
 	}
 	if redacted == s {
-		return RedactedBytes(b), nil
+		return RedactedBytes{data: b}, nil
 	}
-	return RedactedBytes(redacted), nil
+	return RedactedBytes{data: []byte(redacted)}, nil
 }
 
 // JSONLContent parses each line as JSON to determine which string values

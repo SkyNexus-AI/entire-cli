@@ -2520,7 +2520,7 @@ func (s *ManualCommitStrategy) finalizeAllTurnCheckpoints(ctx context.Context, s
 		}
 
 		// Generate compact transcript for v2 /main
-		if v2Store != nil && len(redactedTranscript) > 0 {
+		if v2Store != nil && redactedTranscript.Len() > 0 {
 			finalAg, _ := agent.GetByAgentType(state.AgentType) //nolint:errcheck // ag may be nil for unknown agent types; compactTranscriptForV2 handles nil
 			startLine := 0
 			if content, readErr := store.ReadSessionContentByID(ctx, cpID, state.SessionID); readErr == nil && content != nil {

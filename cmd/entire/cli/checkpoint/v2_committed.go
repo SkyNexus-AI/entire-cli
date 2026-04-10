@@ -67,7 +67,7 @@ func (s *V2GitStore) UpdateCommitted(ctx context.Context, opts UpdateCommittedOp
 		return fmt.Errorf("v2 /main update failed: %w", err)
 	}
 
-	if len(opts.Transcript) > 0 {
+	if opts.Transcript.Len() > 0 {
 		if err := s.updateCommittedFullTranscript(ctx, opts, sessionIndex); err != nil {
 			return fmt.Errorf("v2 /full/current update failed: %w", err)
 		}
@@ -453,7 +453,7 @@ func (s *V2GitStore) writeCommittedFullTranscript(ctx context.Context, opts Writ
 	// TranscriptPath fallback: data read from disk is an untrusted source,
 	// so we redact it here. The in-memory path (opts.Transcript) is already
 	// pre-redacted by the caller.
-	if len(transcript) == 0 && opts.TranscriptPath != "" {
+	if transcript.Len() == 0 && opts.TranscriptPath != "" {
 		rawData, readErr := os.ReadFile(opts.TranscriptPath)
 		if readErr != nil {
 			rawData = nil
@@ -466,7 +466,7 @@ func (s *V2GitStore) writeCommittedFullTranscript(ctx context.Context, opts Writ
 			transcript = redacted
 		}
 	}
-	if len(transcript) == 0 {
+	if transcript.Len() == 0 {
 		return nil // No transcript to write
 	}
 

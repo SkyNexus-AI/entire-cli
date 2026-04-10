@@ -63,11 +63,20 @@ func TestRedactedBytes_Bytes(t *testing.T) {
 	}
 }
 
+func TestRedactedBytes_Len(t *testing.T) {
+	t.Parallel()
+	input := []byte(`some data`)
+	rb := AlreadyRedacted(input)
+	if rb.Len() != len(input) {
+		t.Errorf("Len() = %d, want %d", rb.Len(), len(input))
+	}
+}
+
 func TestAlreadyRedacted(t *testing.T) {
 	t.Parallel()
 	input := []byte(`some data`)
 	rb := AlreadyRedacted(input)
-	if !bytes.Equal([]byte(rb), input) {
+	if !bytes.Equal(rb.Bytes(), input) {
 		t.Errorf("AlreadyRedacted() = %q, want %q", rb, input)
 	}
 }

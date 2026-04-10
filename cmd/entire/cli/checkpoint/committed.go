@@ -195,7 +195,7 @@ func (s *GitStore) writeIncrementalTaskCheckpoint(opts WriteCommittedOptions, ta
 		Type:      opts.IncrementalType,
 		ToolUseID: opts.ToolUseID,
 		Timestamp: time.Now().UTC(),
-		Data:      json.RawMessage(incData),
+		Data:      json.RawMessage(incData.Bytes()),
 	}
 	cpData, err := jsonutil.MarshalIndentWithNewline(checkpoint, "", "  ")
 	if err != nil {
@@ -1274,7 +1274,7 @@ func (s *GitStore) UpdateCommitted(ctx context.Context, opts UpdateCommittedOpti
 
 	// Replace transcript (full replace, not append).
 	// Transcript is pre-redacted by the caller (enforced by RedactedBytes type).
-	if len(opts.Transcript) > 0 {
+	if opts.Transcript.Len() > 0 {
 		if err := s.replaceTranscript(ctx, opts.Transcript, opts.Agent, sessionPath, entries); err != nil {
 			return fmt.Errorf("failed to replace transcript: %w", err)
 		}
@@ -1348,7 +1348,7 @@ func (s *GitStore) replaceTranscript(ctx context.Context, transcript redact.Reda
 	}
 
 	// Update content hash
-	contentHash := fmt.Sprintf("sha256:%x", sha256.Sum256(transcript))
+	contentHash := fmt.Sprintf("sha256:%x", sha256.Sum256(transcript.Bytes()))
 	hashBlob, err := CreateBlobFromContent(s.repo, []byte(contentHash))
 	if err != nil {
 		return fmt.Errorf("failed to create content hash blob: %w", err)

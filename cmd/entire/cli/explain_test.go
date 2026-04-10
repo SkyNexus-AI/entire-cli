@@ -18,6 +18,7 @@ import (
 	"github.com/entireio/cli/cmd/entire/cli/testutil"
 	"github.com/entireio/cli/cmd/entire/cli/trailers"
 	"github.com/entireio/cli/cmd/entire/cli/transcript"
+	"github.com/entireio/cli/redact"
 	"github.com/go-git/go-git/v6"
 	"github.com/go-git/go-git/v6/plumbing"
 	"github.com/go-git/go-git/v6/plumbing/object"
@@ -906,7 +907,7 @@ func TestRunExplainCheckpoint_V2OnlyCheckpoint(t *testing.T) {
 		CheckpointID: cpID,
 		SessionID:    "session-v2",
 		Strategy:     "manual-commit",
-		Transcript:   []byte(`{"type":"user","message":{"content":[{"type":"text","text":"hello from v2"}]}}` + "\n"),
+		Transcript:   redact.AlreadyRedacted([]byte(`{"type":"user","message":{"content":[{"type":"text","text":"hello from v2"}]}}` + "\n")),
 		AuthorName:   "Test",
 		AuthorEmail:  "test@example.com",
 	}); err != nil {
@@ -972,7 +973,7 @@ func TestRunExplainCheckpoint_V2OnlyRawTranscript(t *testing.T) {
 		CheckpointID: cpID,
 		SessionID:    "session-v2",
 		Strategy:     "manual-commit",
-		Transcript:   []byte(`{"type":"user","message":{"content":[{"type":"text","text":"raw from v2"}]}}` + "\n"),
+		Transcript:   redact.AlreadyRedacted([]byte(`{"type":"user","message":{"content":[{"type":"text","text":"raw from v2"}]}}` + "\n")),
 		AuthorName:   "Test",
 		AuthorEmail:  "test@example.com",
 	}); err != nil {
@@ -1040,7 +1041,7 @@ func TestRunExplainCheckpoint_V2UsesCompactTranscriptForIntent(t *testing.T) {
 		CheckpointID:              cpID,
 		SessionID:                 "session-v2",
 		Strategy:                  "manual-commit",
-		Transcript:                []byte(`{"type":"user","message":{"content":[{"type":"text","text":"raw prompt text"}]}}` + "\n"),
+		Transcript:                redact.AlreadyRedacted([]byte(`{"type":"user","message":{"content":[{"type":"text","text":"raw prompt text"}]}}` + "\n")),
 		CompactTranscript:         compactTranscript,
 		AuthorName:                "Test",
 		AuthorEmail:               "test@example.com",
@@ -1099,7 +1100,7 @@ func TestRunExplainCheckpoint_V2PreferredGenerateWritesBothStores(t *testing.T) 
 		CheckpointID: cpID,
 		SessionID:    "session-dual",
 		Strategy:     "manual-commit",
-		Transcript:   transcript,
+		Transcript:   redact.AlreadyRedacted(transcript),
 		AuthorName:   "Test",
 		AuthorEmail:  "test@example.com",
 	}))
@@ -1107,7 +1108,7 @@ func TestRunExplainCheckpoint_V2PreferredGenerateWritesBothStores(t *testing.T) 
 		CheckpointID: cpID,
 		SessionID:    "session-dual",
 		Strategy:     "manual-commit",
-		Transcript:   transcript,
+		Transcript:   redact.AlreadyRedacted(transcript),
 		AuthorName:   "Test",
 		AuthorEmail:  "test@example.com",
 	}))
@@ -1159,7 +1160,7 @@ func TestRunExplainCheckpoint_V2OnlyGenerateSucceedsViaV2Store(t *testing.T) {
 		CheckpointID: cpID,
 		SessionID:    "session-v2-only",
 		Strategy:     "manual-commit",
-		Transcript:   transcript,
+		Transcript:   redact.AlreadyRedacted(transcript),
 		AuthorName:   "Test",
 		AuthorEmail:  "test@example.com",
 	}))
@@ -1217,7 +1218,7 @@ func TestRunExplainCheckpoint_V2FallsBackToFullWhenCompactMissing(t *testing.T) 
 		CheckpointID: cpID,
 		SessionID:    "session-no-compact",
 		Strategy:     "manual-commit",
-		Transcript:   rawTranscript,
+		Transcript:   redact.AlreadyRedacted(rawTranscript),
 		AuthorName:   "Test",
 		AuthorEmail:  "test@example.com",
 	}))
@@ -1272,7 +1273,7 @@ func TestRunExplainCheckpoint_V2CompactTranscriptNotUsedForGenerate(t *testing.T
 		CheckpointID: cpID,
 		SessionID:    "session-compact",
 		Strategy:     "manual-commit",
-		Transcript:   rawTranscript,
+		Transcript:   redact.AlreadyRedacted(rawTranscript),
 		AuthorName:   "Test",
 		AuthorEmail:  "test@example.com",
 	}))
@@ -1280,7 +1281,7 @@ func TestRunExplainCheckpoint_V2CompactTranscriptNotUsedForGenerate(t *testing.T
 		CheckpointID:      cpID,
 		SessionID:         "session-compact",
 		Strategy:          "manual-commit",
-		Transcript:        rawTranscript,
+		Transcript:        redact.AlreadyRedacted(rawTranscript),
 		CompactTranscript: compactTranscript,
 		AuthorName:        "Test",
 		AuthorEmail:       "test@example.com",
@@ -1325,7 +1326,7 @@ func TestListCommittedForExplain_MergesV1AndV2(t *testing.T) {
 		CheckpointID: v1OnlyID,
 		SessionID:    "session-v1-only",
 		Strategy:     "manual-commit",
-		Transcript:   transcript,
+		Transcript:   redact.AlreadyRedacted(transcript),
 		AuthorName:   "T",
 		AuthorEmail:  "t@t.com",
 	}))
@@ -1336,7 +1337,7 @@ func TestListCommittedForExplain_MergesV1AndV2(t *testing.T) {
 		CheckpointID: dualID,
 		SessionID:    "session-dual",
 		Strategy:     "manual-commit",
-		Transcript:   transcript,
+		Transcript:   redact.AlreadyRedacted(transcript),
 		AuthorName:   "T",
 		AuthorEmail:  "t@t.com",
 	}))
@@ -1344,7 +1345,7 @@ func TestListCommittedForExplain_MergesV1AndV2(t *testing.T) {
 		CheckpointID: dualID,
 		SessionID:    "session-dual",
 		Strategy:     "manual-commit",
-		Transcript:   transcript,
+		Transcript:   redact.AlreadyRedacted(transcript),
 		AuthorName:   "T",
 		AuthorEmail:  "t@t.com",
 	}))
@@ -1399,7 +1400,7 @@ func TestListCommittedForExplain_V2Disabled_ReturnsV1Only(t *testing.T) {
 		CheckpointID: v1ID,
 		SessionID:    "session-v1",
 		Strategy:     "manual-commit",
-		Transcript:   transcript,
+		Transcript:   redact.AlreadyRedacted(transcript),
 		AuthorName:   "T",
 		AuthorEmail:  "t@t.com",
 	}))
@@ -1410,7 +1411,7 @@ func TestListCommittedForExplain_V2Disabled_ReturnsV1Only(t *testing.T) {
 		CheckpointID: v2ID,
 		SessionID:    "session-v2",
 		Strategy:     "manual-commit",
-		Transcript:   transcript,
+		Transcript:   redact.AlreadyRedacted(transcript),
 		AuthorName:   "T",
 		AuthorEmail:  "t@t.com",
 	}))
@@ -4254,7 +4255,7 @@ func TestGetBranchCheckpoints_V2OnlyCheckpointDiscoverable(t *testing.T) {
 		CheckpointID: cpID,
 		SessionID:    "session-v2-only",
 		Strategy:     "manual-commit",
-		Transcript:   []byte(`{"type":"user","message":{"content":[{"type":"text","text":"hello"}]}}` + "\n"),
+		Transcript:   redact.AlreadyRedacted([]byte(`{"type":"user","message":{"content":[{"type":"text","text":"hello"}]}}` + "\n")),
 		Prompts:      []string{expectedPrompt},
 		AuthorName:   "Test",
 		AuthorEmail:  "test@example.com",
@@ -4328,7 +4329,7 @@ func TestGetBranchCheckpoints_V2PromptFallbackWhenV1Deleted(t *testing.T) {
 		CheckpointID: cpID,
 		SessionID:    "session-dual",
 		Strategy:     "manual-commit",
-		Transcript:   []byte(`{"type":"user","message":{"content":[{"type":"text","text":"hello"}]}}` + "\n"),
+		Transcript:   redact.AlreadyRedacted([]byte(`{"type":"user","message":{"content":[{"type":"text","text":"hello"}]}}` + "\n")),
 		Prompts:      []string{expectedPrompt},
 		AuthorName:   "Test",
 		AuthorEmail:  "test@example.com",
@@ -4337,7 +4338,7 @@ func TestGetBranchCheckpoints_V2PromptFallbackWhenV1Deleted(t *testing.T) {
 		CheckpointID: cpID,
 		SessionID:    "session-dual",
 		Strategy:     "manual-commit",
-		Transcript:   []byte(`{"type":"user","message":{"content":[{"type":"text","text":"hello"}]}}` + "\n"),
+		Transcript:   redact.AlreadyRedacted([]byte(`{"type":"user","message":{"content":[{"type":"text","text":"hello"}]}}` + "\n")),
 		Prompts:      []string{expectedPrompt},
 		AuthorName:   "Test",
 		AuthorEmail:  "test@example.com",
