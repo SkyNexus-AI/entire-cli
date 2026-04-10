@@ -69,6 +69,8 @@ type userTextBlock struct {
 }
 
 // Compact converts a full.jsonl transcript into the condensed transcript.jsonl format.
+// The input must be pre-redacted — callers are responsible for running
+// redact.JSONLBytes before calling this function.
 //
 // The output format puts version, agent, and cli_version on every line,
 // merges streaming assistant fragments with the same message ID, and inlines
@@ -76,9 +78,6 @@ type userTextBlock struct {
 //
 //	{"v":1,"agent":"claude-code","cli_version":"0.42.0","type":"user","ts":"...","content":"..."}
 //	{"v":1,"agent":"claude-code","cli_version":"0.42.0","type":"assistant","ts":"...","id":"msg_xxx","content":[{"type":"text","text":"..."},{"type":"tool_use","id":"...","name":"...","input":{...},"result":{"output":"...","status":"..."}}]}
-// Compact converts a full agent transcript into the normalized Entire Transcript
-// Format (transcript.jsonl). The input must be pre-redacted — callers are
-// responsible for running redact.JSONLBytes before calling this function.
 func Compact(redacted redact.RedactedBytes, opts MetadataFields) ([]byte, error) {
 	content := redacted.Bytes()
 
