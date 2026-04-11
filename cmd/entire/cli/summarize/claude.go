@@ -3,6 +3,7 @@ package summarize
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -52,7 +53,7 @@ const DefaultModel = "sonnet"
 var defaultTextGeneratorFactory = func() (agent.TextGenerator, error) {
 	textGenerator, ok := agent.AsTextGenerator(claudecode.NewClaudeCodeAgent())
 	if !ok {
-		return nil, fmt.Errorf("default summarizer does not support text generation")
+		return nil, errors.New("default summarizer does not support text generation")
 	}
 	return textGenerator, nil
 }
