@@ -74,9 +74,8 @@ func doPushBranch(ctx context.Context, target, branchName string) error {
 	stop := startProgressDots(os.Stderr)
 
 	// Try pushing first
-	if err := tryPushSessionsCommon(ctx, target, branchName); err == nil {
-		stop(" done")
-		printSettingsCommitHint(ctx, target)
+	if result, err := tryPushSessionsCommon(ctx, target, branchName); err == nil {
+		finishPush(ctx, stop, result, target)
 		return nil
 	}
 	stop("")
@@ -97,13 +96,12 @@ func doPushBranch(ctx context.Context, target, branchName string) error {
 	fmt.Fprintf(os.Stderr, "[entire] Pushing %s to %s...", branchName, displayTarget)
 	stop = startProgressDots(os.Stderr)
 
-	if err := tryPushSessionsCommon(ctx, target, branchName); err != nil {
+	if result, err := tryPushSessionsCommon(ctx, target, branchName); err != nil {
 		stop("")
 		fmt.Fprintf(os.Stderr, "[entire] Warning: failed to push %s after sync: %v\n", branchName, err)
 		printCheckpointRemoteHint(target)
 	} else {
-		stop(" done")
-		printSettingsCommitHint(ctx, target)
+		finishPush(ctx, stop, result, target)
 	}
 
 	return nil
@@ -159,8 +157,35 @@ func isCheckpointRemoteCommitted(ctx context.Context) bool {
 	return committed.GetCheckpointRemote() != nil
 }
 
+// pushResult describes what happened during a push attempt.
+type pushResult struct {
+	// upToDate is true when the remote already had all commits (nothing transferred).
+	upToDate bool
+}
+
+// parsePushResult checks git push output for known status strings and returns
+// a pushResult. git prints "Everything up-to-date" to stderr when nothing was pushed.
+func parsePushResult(output string) pushResult {
+	return pushResult{
+		upToDate: strings.Contains(output, "Everything up-to-date") ||
+			strings.Contains(output, "everything up-to-date"),
+	}
+}
+
+// finishPush stops the progress dots and prints "already up-to-date" or "done"
+// depending on the push result. Only prints the settings commit hint when new
+// content was actually pushed.
+func finishPush(ctx context.Context, stop func(string), result pushResult, target string) {
+	if result.upToDate {
+		stop(" already up-to-date")
+	} else {
+		stop(" done")
+		printSettingsCommitHint(ctx, target)
+	}
+}
+
 // tryPushSessionsCommon attempts to push the sessions branch.
-func tryPushSessionsCommon(ctx context.Context, remote, branchName string) error {
+func tryPushSessionsCommon(ctx context.Context, remote, branchName string) (pushResult, error) {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 
@@ -168,15 +193,17 @@ func tryPushSessionsCommon(ctx context.Context, remote, branchName string) error
 	cmd := CheckpointGitCommand(ctx, remote, "push", "--no-verify", remote, branchName)
 
 	output, err := cmd.CombinedOutput()
+	outputStr := string(output)
 	if err != nil {
 		// Check if it's a non-fast-forward error (we can try to recover)
-		if strings.Contains(string(output), "non-fast-forward") ||
-			strings.Contains(string(output), "rejected") {
-			return errors.New("non-fast-forward")
+		if strings.Contains(outputStr, "non-fast-forward") ||
+			strings.Contains(outputStr, "rejected") {
+			return pushResult{}, errors.New("non-fast-forward")
 		}
-		return fmt.Errorf("push failed: %s", output)
+		return pushResult{}, fmt.Errorf("push failed: %s", outputStr)
 	}
-	return nil
+
+	return parsePushResult(outputStr), nil
 }
 
 // fetchAndRebaseSessionsCommon fetches remote sessions and rebases local commits
