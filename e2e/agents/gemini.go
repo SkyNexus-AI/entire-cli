@@ -111,8 +111,7 @@ func (g *Gemini) RunPrompt(ctx context.Context, dir string, prompt string, opts 
 	}, err
 }
 
-func (g *Gemini) StartSession(ctx context.Context, dir string) (Session, error) {
-	_ = ctx
+func (g *Gemini) StartSession(_ context.Context, dir string) (Session, error) {
 	name := fmt.Sprintf("gemini-test-%d", time.Now().UnixNano())
 
 	envArgs := []string{"ACCESSIBLE=1", "HOME=" + geminiTestHomeDir(dir)}

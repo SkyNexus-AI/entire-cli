@@ -159,7 +159,7 @@ func setupGeminiTestHome(t *testing.T, repoDir string) {
 	homeDir := geminiTestHomeDir(repoDir)
 	t.Cleanup(func() {
 		if err := os.RemoveAll(homeDir); err != nil {
-			t.Fatalf("remove gemini test home: %v", err)
+			t.Errorf("remove gemini test home: %v", err)
 		}
 	})
 
