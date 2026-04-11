@@ -154,10 +154,12 @@ func (c *CursorAgent) PrepareTranscript(ctx context.Context, sessionRef string) 
 
 	logCtx := logging.WithComponent(ctx, "agent.cursor")
 
-	deadline := time.Now().Add(maxWait)
+	start := time.Now()
+	deadline := start.Add(maxWait)
 	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
 		deadline = ctxDeadline
 	}
+	effectiveTimeout := deadline.Sub(start)
 
 	for time.Now().Before(deadline) {
 		if err := ctx.Err(); err != nil {
@@ -192,7 +194,7 @@ func (c *CursorAgent) PrepareTranscript(ctx context.Context, sessionRef string) 
 	}
 
 	logging.Warn(logCtx, "transcript file not ready within timeout, proceeding",
-		slog.Duration("timeout", maxWait),
+		slog.Duration("timeout", effectiveTimeout),
 		slog.String("path", sessionRef),
 	)
 	return nil
