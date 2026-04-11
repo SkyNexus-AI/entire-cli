@@ -5,9 +5,6 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
-	"fmt"
 	"io"
 
 	"github.com/entireio/cli/cmd/entire/cli/agent/types"
@@ -188,35 +185,6 @@ type TextGenerator interface {
 	// GenerateText sends a prompt to the agent's CLI and returns the raw text response.
 	// model is a hint (e.g., "haiku", "sonnet"). Implementations may ignore if not applicable.
 	GenerateText(ctx context.Context, prompt string, model string) (string, error)
-}
-
-type claudeResponseEnvelope struct {
-	Type   string `json:"type"`
-	Result string `json:"result"`
-}
-
-// ExtractClaudeCLIResult returns the Claude CLI result payload from either the
-// legacy single-object JSON response or the current array-shaped JSON response.
-func ExtractClaudeCLIResult(stdout []byte) (string, error) {
-	var response claudeResponseEnvelope
-	if err := json.Unmarshal(stdout, &response); err == nil {
-		if response.Result != "" {
-			return response.Result, nil
-		}
-	}
-
-	var responses []claudeResponseEnvelope
-	if err := json.Unmarshal(stdout, &responses); err != nil {
-		return "", fmt.Errorf("unsupported Claude CLI JSON response: %w", err)
-	}
-
-	for i := len(responses) - 1; i >= 0; i-- {
-		if responses[i].Type == "result" && responses[i].Result != "" {
-			return responses[i].Result, nil
-		}
-	}
-
-	return "", errors.New("unsupported Claude CLI JSON response: missing result item")
 }
 
 // HookResponseWriter is implemented by agents that support structured hook responses.

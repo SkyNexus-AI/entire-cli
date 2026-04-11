@@ -8,8 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"strings"
-
-	"github.com/entireio/cli/cmd/entire/cli/agent"
 )
 
 // GenerateText sends a prompt to the Claude CLI and returns the raw text response.
@@ -42,6 +40,12 @@ func (c *ClaudeCodeAgent) GenerateText(ctx context.Context, prompt string, model
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return "", context.DeadlineExceeded
+		}
+		if errors.Is(ctx.Err(), context.Canceled) {
+			return "", context.Canceled
+		}
 		var execErr *exec.Error
 		if errors.As(err, &execErr) {
 			return "", fmt.Errorf("claude CLI not found: %w", err)
@@ -53,7 +57,7 @@ func (c *ClaudeCodeAgent) GenerateText(ctx context.Context, prompt string, model
 		return "", fmt.Errorf("failed to run claude CLI: %w", err)
 	}
 
-	result, err := agent.ExtractClaudeCLIResult(stdout.Bytes())
+	result, err := parseGenerateTextResponse(stdout.Bytes())
 	if err != nil {
 		return "", fmt.Errorf("failed to parse claude CLI response: %w", err)
 	}
