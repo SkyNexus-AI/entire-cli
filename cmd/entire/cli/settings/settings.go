@@ -71,6 +71,10 @@ type EntireSettings struct {
 	// plugins (entire-agent-* binaries on $PATH). Defaults to false.
 	ExternalAgents bool `json:"external_agents,omitempty"`
 
+	// Vercel indicates that the repository uses Vercel and the metadata branch
+	// should include a vercel.json that disables deployments for Entire branches.
+	Vercel bool `json:"vercel,omitempty"`
+
 	// Deprecated: no longer used. Exists to tolerate old settings files
 	// that still contain "strategy": "auto-commit" or similar.
 	Strategy string `json:"strategy,omitempty"`
@@ -116,6 +120,18 @@ func Load(ctx context.Context) (*EntireSettings, error) {
 		localSettingsFileAbs = EntireSettingsLocalFile // Fallback to relative
 	}
 
+	return loadMergedSettings(settingsFileAbs, localSettingsFileAbs)
+}
+
+// LoadFromRepoRoot loads settings relative to a repository root path.
+func LoadFromRepoRoot(repoRoot string) (*EntireSettings, error) {
+	return loadMergedSettings(
+		filepath.Join(repoRoot, EntireSettingsFile),
+		filepath.Join(repoRoot, EntireSettingsLocalFile),
+	)
+}
+
+func loadMergedSettings(settingsFileAbs, localSettingsFileAbs string) (*EntireSettings, error) {
 	// Load base settings
 	settings, err := loadFromFile(settingsFileAbs)
 	if err != nil {
@@ -286,6 +302,15 @@ func mergeJSON(settings *EntireSettings, data []byte) error {
 			return fmt.Errorf("parsing external_agents field: %w", err)
 		}
 		settings.ExternalAgents = ea
+	}
+
+	// Override vercel if present
+	if vercelRaw, ok := raw["vercel"]; ok {
+		var vercel bool
+		if err := json.Unmarshal(vercelRaw, &vercel); err != nil {
+			return fmt.Errorf("parsing vercel field: %w", err)
+		}
+		settings.Vercel = vercel
 	}
 
 	return nil

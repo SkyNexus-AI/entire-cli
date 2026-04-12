@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -18,6 +17,7 @@ import (
 	"github.com/entireio/cli/cmd/entire/cli/session"
 	"github.com/entireio/cli/cmd/entire/cli/settings"
 	"github.com/entireio/cli/cmd/entire/cli/strategy"
+	"github.com/entireio/cli/cmd/entire/cli/vercelconfig"
 
 	"github.com/charmbracelet/huh"
 	"github.com/spf13/cobra"
@@ -28,7 +28,6 @@ import (
 const (
 	configDisplayProject = ".entire/settings.json"
 	configDisplayLocal   = ".entire/settings.local.json"
-	vercelBranchPattern  = "entire/*"
 )
 
 // Flag names used across setup commands.
@@ -278,7 +277,13 @@ func runManageAgents(ctx context.Context, w io.Writer, opts EnableOptions, selec
 
 	// Nothing selected and nothing installed — no-op.
 	if len(selectedAgentNames) == 0 && len(installedNames) == 0 {
-		fmt.Fprintln(w, "No changes made.")
+		changed, err := maybePromptVercelDeploymentDisable(ctx, w, nil)
+		if err != nil {
+			return err
+		}
+		if !changed {
+			fmt.Fprintln(w, "No changes made.")
+		}
 		return nil
 	}
 
@@ -332,7 +337,13 @@ func applyAgentChanges(ctx context.Context, w io.Writer, selectedAgentNames []st
 	}
 
 	if len(addedAgents) == 0 && len(removedAgents) == 0 && len(errs) == 0 {
-		fmt.Fprintln(w, "No changes made.")
+		changed, err := maybePromptVercelDeploymentDisable(ctx, w, nil)
+		if err != nil {
+			return err
+		}
+		if !changed {
+			fmt.Fprintln(w, "No changes made.")
+		}
 		return nil
 	}
 	var installedAgents []agent.Agent
@@ -402,10 +413,8 @@ func applyAgentChanges(ctx context.Context, w io.Writer, selectedAgentNames []st
 		}
 	}
 
-	if len(installedAgents) > 0 {
-		if err := maybePromptVercelDeploymentDisable(ctx, w, nil); err != nil {
-			errs = append(errs, err)
-		}
+	if _, err := maybePromptVercelDeploymentDisable(ctx, w, nil); err != nil {
+		errs = append(errs, err)
 	}
 
 	return errors.Join(errs...)
@@ -647,14 +656,10 @@ func runEnableInteractive(ctx context.Context, w io.Writer, agents []agent.Agent
 	}
 
 	// Setup agent hooks for all selected agents
-	enabledAnyAgent := false
 	for _, ag := range agents {
-		installedHooks, err := setupAgentHooks(ctx, ag, opts.LocalDev, opts.ForceHooks)
+		_, err := setupAgentHooks(ctx, ag, opts.LocalDev, opts.ForceHooks)
 		if err != nil {
 			return fmt.Errorf("failed to setup %s hooks: %w", ag.Type(), err)
-		}
-		if installedHooks > 0 {
-			enabledAnyAgent = true
 		}
 	}
 
@@ -726,10 +731,8 @@ func runEnableInteractive(ctx context.Context, w io.Writer, agents []agent.Agent
 	}
 	fmt.Fprintf(w, "✓ Project configured (%s)\n", configDisplay)
 
-	if enabledAnyAgent {
-		if err := maybePromptVercelDeploymentDisable(ctx, w, nil); err != nil {
-			return err
-		}
+	if _, err := maybePromptVercelDeploymentDisable(ctx, w, nil); err != nil {
+		return err
 	}
 
 	// Ask about telemetry consent (only if not already asked)
@@ -1218,10 +1221,8 @@ func setupAgentHooksNonInteractive(ctx context.Context, w io.Writer, ag agent.Ag
 
 	fmt.Fprintf(w, "✓ Project configured (%s)\n", configDisplayProject)
 
-	if installedHooks > 0 {
-		if err := maybePromptVercelDeploymentDisable(ctx, w, nil); err != nil {
-			return err
-		}
+	if _, err := maybePromptVercelDeploymentDisable(ctx, w, nil); err != nil {
+		return err
 	}
 
 	if err := strategy.EnsureSetup(ctx); err != nil {
@@ -1504,10 +1505,10 @@ func promptTelemetryConsent(settings *EntireSettings, telemetryFlag bool) error 
 	return nil
 }
 
-func maybePromptVercelDeploymentDisable(ctx context.Context, w io.Writer, promptFn func() (bool, error)) error {
+func maybePromptVercelDeploymentDisable(ctx context.Context, w io.Writer, promptFn func() (bool, error)) (bool, error) {
 	repoRoot, err := paths.WorktreeRoot(ctx)
 	if err != nil {
-		return nil
+		return false, nil
 	}
 
 	vercelJSONPath := filepath.Join(repoRoot, "vercel.json")
@@ -1516,7 +1517,7 @@ func maybePromptVercelDeploymentDisable(ctx context.Context, w io.Writer, prompt
 		hasVercelJSON = true
 	} else if !os.IsNotExist(err) {
 		fmt.Fprintf(w, "Note: Skipping Vercel deployment update: could not check vercel.json: %v\n", err)
-		return nil
+		return false, nil
 	}
 
 	hasVercelProject := hasVercelJSON
@@ -1530,125 +1531,57 @@ func maybePromptVercelDeploymentDisable(ctx context.Context, w io.Writer, prompt
 				break
 			} else if !os.IsNotExist(err) {
 				fmt.Fprintf(w, "Note: Skipping Vercel deployment update: could not check %s: %v\n", path, err)
-				return nil
+				return false, nil
 			}
 		}
 	}
 
 	if !hasVercelProject {
-		return nil
+		return false, nil
 	}
 
-	config, alreadyDisabled, err := loadVercelConfig(vercelJSONPath, hasVercelJSON)
+	projectSettingsPath := filepath.Join(repoRoot, settings.EntireSettingsFile)
+	projectSettings, err := settings.LoadFromFile(projectSettingsPath)
 	if err != nil {
-		fmt.Fprintf(w, "Note: Skipping Vercel branch deployment update: %v\n", err)
-		return nil
+		return false, fmt.Errorf("load project settings: %w", err)
 	}
-	if alreadyDisabled {
-		return nil
+	if projectSettings.Vercel {
+		return false, nil
+	}
+
+	if config, alreadyDisabled, loadErr := vercelconfig.Load(vercelJSONPath, hasVercelJSON); loadErr == nil &&
+		config != nil && alreadyDisabled {
+		projectSettings.Vercel = true
+		if err := settings.Save(ctx, projectSettings); err != nil {
+			return false, fmt.Errorf("save project settings: %w", err)
+		}
+		fmt.Fprintf(w, "✓ Updated %s to manage Vercel deployment blocking on `%s`\n", configDisplayProject, vercelconfig.BranchPattern)
+		return true, nil
 	}
 
 	if promptFn == nil {
 		if !canPromptInteractively() {
-			fmt.Fprintf(
-				w,
-				"Note: Vercel detected. To disable deployments for `%s` branches, manually update `vercel.json` to ignore those branches.\n",
-				vercelBranchPattern,
-			)
-			return nil
+			fmt.Fprintf(w, "Note: Vercel detected. Run `entire configure` interactively to disable deployments for `%s` branches.\n", vercelconfig.BranchPattern)
+			return false, nil
 		}
 		promptFn = promptVercelDeploymentDisable
 	}
 
 	disableDeployments, err := promptFn()
 	if err != nil {
-		return fmt.Errorf("vercel prompt: %w", err)
+		return false, fmt.Errorf("vercel prompt: %w", err)
 	}
 	if !disableDeployments {
-		return nil
+		return false, nil
 	}
 
-	if err := mergeVercelDeploymentDisabled(config); err != nil {
-		fmt.Fprintf(w, "Note: Skipping Vercel branch deployment update: %v\n", err)
-		return nil
+	projectSettings.Vercel = true
+	if err := settings.Save(ctx, projectSettings); err != nil {
+		return false, fmt.Errorf("save project settings: %w", err)
 	}
 
-	output, err := json.MarshalIndent(config, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal vercel.json: %w", err)
-	}
-	output = append(output, '\n')
-
-	if err := os.WriteFile(vercelJSONPath, output, 0o644); err != nil {
-		return fmt.Errorf("write vercel.json: %w", err)
-	}
-
-	fmt.Fprintf(w, "✓ Updated vercel.json to disable deployments for `%s` branches\n", vercelBranchPattern)
-	return nil
-}
-
-func loadVercelConfig(vercelJSONPath string, hasVercelJSON bool) (map[string]any, bool, error) {
-	if !hasVercelJSON {
-		return make(map[string]any), false, nil
-	}
-
-	data, err := os.ReadFile(vercelJSONPath) //nolint:gosec // path is repo-root relative, not user input
-	if err != nil {
-		return nil, false, fmt.Errorf("read vercel.json: %w", err)
-	}
-
-	var config map[string]any
-	if err := json.Unmarshal(data, &config); err != nil {
-		return nil, false, fmt.Errorf("parse vercel.json: %w", err)
-	}
-	if config == nil {
-		config = make(map[string]any)
-	}
-
-	return config, vercelDeploymentDisabled(config), nil
-}
-
-func vercelDeploymentDisabled(config map[string]any) bool {
-	gitConfig, ok := config["git"].(map[string]any)
-	if !ok {
-		return false
-	}
-	deploymentEnabled, ok := gitConfig["deploymentEnabled"].(map[string]any)
-	if !ok {
-		return false
-	}
-	enabled, ok := deploymentEnabled[vercelBranchPattern].(bool)
-	return ok && !enabled
-}
-
-func mergeVercelDeploymentDisabled(config map[string]any) error {
-	var gitConfig map[string]any
-	if existingGitConfig, exists := config["git"]; exists {
-		var ok bool
-		gitConfig, ok = existingGitConfig.(map[string]any)
-		if !ok {
-			return fmt.Errorf("vercel.json git config must be an object")
-		}
-	} else {
-		gitConfig = make(map[string]any)
-		config["git"] = gitConfig
-	}
-
-	var deploymentEnabled map[string]any
-	if existingDeploymentEnabled, exists := gitConfig["deploymentEnabled"]; exists {
-		var ok bool
-		deploymentEnabled, ok = existingDeploymentEnabled.(map[string]any)
-		if !ok {
-			return fmt.Errorf("vercel.json git.deploymentEnabled config must be an object")
-		}
-	} else {
-		deploymentEnabled = make(map[string]any)
-		gitConfig["deploymentEnabled"] = deploymentEnabled
-	}
-
-	deploymentEnabled[vercelBranchPattern] = false
-
-	return nil
+	fmt.Fprintf(w, "✓ Updated %s to manage Vercel deployment blocking on `%s`\n", configDisplayProject, vercelconfig.BranchPattern)
+	return true, nil
 }
 
 func promptVercelDeploymentDisable() (bool, error) {
@@ -1657,7 +1590,7 @@ func promptVercelDeploymentDisable() (bool, error) {
 		huh.NewGroup(
 			huh.NewConfirm().
 				Title("Disable Vercel deployments for Entire branches?").
-				Description("Prevent preview deployments for `entire/*` branches by writing to vercel.json.").
+				Description("Prevent preview deployments for `entire/**` branches by writing to the metadata branch vercel.json.").
 				Affirmative("Yes").
 				Negative("No").
 				Value(&disableDeployments),

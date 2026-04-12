@@ -23,6 +23,7 @@ import (
 	"github.com/entireio/cli/cmd/entire/cli/paths"
 	"github.com/entireio/cli/cmd/entire/cli/settings"
 	"github.com/entireio/cli/cmd/entire/cli/trailers"
+	"github.com/entireio/cli/cmd/entire/cli/vercelconfig"
 	"github.com/entireio/cli/redact"
 
 	"github.com/go-git/go-git/v6"
@@ -377,6 +378,10 @@ func EnsureMetadataBranch(repo *git.Repository) error {
 	if err != nil {
 		return fmt.Errorf("failed to store empty tree: %w", err)
 	}
+	emptyTreeHash, err = maybeAddVercelConfigToMetadataBranch(repo, emptyTreeHash)
+	if err != nil {
+		return fmt.Errorf("failed to initialize metadata branch vercel config: %w", err)
+	}
 
 	// Create orphan commit (no parent)
 	now := time.Now()
@@ -412,6 +417,34 @@ func EnsureMetadataBranch(repo *git.Repository) error {
 
 	fmt.Fprintf(os.Stderr, "✓ Created orphan branch '%s' for session metadata\n", paths.MetadataBranchName)
 	return nil
+}
+
+func maybeAddVercelConfigToMetadataBranch(repo *git.Repository, rootTreeHash plumbing.Hash) (plumbing.Hash, error) {
+	worktree, err := repo.Worktree()
+	if err != nil {
+		return rootTreeHash, nil
+	}
+
+	projectSettings, err := settings.LoadFromRepoRoot(worktree.Filesystem.Root())
+	if err != nil || !projectSettings.Vercel {
+		return rootTreeHash, nil
+	}
+
+	config := map[string]any{}
+	vercelconfig.MergeDeploymentDisabled(config)
+	output, err := vercelconfig.Marshal(config)
+	if err != nil {
+		return plumbing.ZeroHash, err
+	}
+
+	blobHash, err := checkpoint.CreateBlobFromContent(repo, output)
+	if err != nil {
+		return plumbing.ZeroHash, fmt.Errorf("create %s blob: %w", vercelconfig.FileName, err)
+	}
+
+	return checkpoint.UpdateSubtree(repo, rootTreeHash, nil, []object.TreeEntry{
+		{Name: vercelconfig.FileName, Mode: filemode.Regular, Hash: blobHash},
+	}, checkpoint.UpdateSubtreeOptions{MergeMode: checkpoint.MergeKeepExisting})
 }
 
 // isEmptyMetadataBranch returns true if the branch ref points to a commit with an empty tree.

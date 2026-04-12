@@ -21,8 +21,10 @@ import (
 	"github.com/entireio/cli/cmd/entire/cli/jsonutil"
 	"github.com/entireio/cli/cmd/entire/cli/logging"
 	"github.com/entireio/cli/cmd/entire/cli/paths"
+	"github.com/entireio/cli/cmd/entire/cli/settings"
 	"github.com/entireio/cli/cmd/entire/cli/trailers"
 	"github.com/entireio/cli/cmd/entire/cli/validation"
+	"github.com/entireio/cli/cmd/entire/cli/vercelconfig"
 	"github.com/entireio/cli/cmd/entire/cli/versioninfo"
 	"github.com/entireio/cli/redact"
 
@@ -59,7 +61,7 @@ func (s *GitStore) WriteCommitted(ctx context.Context, opts WriteCommittedOption
 	}
 
 	// Ensure sessions branch exists
-	if err := s.ensureSessionsBranch(); err != nil {
+	if err := s.ensureSessionsBranch(ctx); err != nil {
 		return fmt.Errorf("failed to ensure sessions branch: %w", err)
 	}
 
@@ -97,6 +99,10 @@ func (s *GitStore) WriteCommitted(ctx context.Context, opts WriteCommittedOption
 
 	// Build checkpoint subtree and splice into root (O(depth) tree surgery)
 	newTreeHash, err := s.spliceCheckpointSubtree(rootTreeHash, opts.CheckpointID, basePath, entries)
+	if err != nil {
+		return err
+	}
+	newTreeHash, err = s.maybeMergeVercelConfig(ctx, newTreeHash)
 	if err != nil {
 		return err
 	}
@@ -459,7 +465,7 @@ func (s *GitStore) UpdateCheckpointSummary(ctx context.Context, checkpointID id.
 		return err //nolint:wrapcheck // Propagating context cancellation
 	}
 
-	if err := s.ensureSessionsBranch(); err != nil {
+	if err := s.ensureSessionsBranch(ctx); err != nil {
 		return fmt.Errorf("failed to ensure sessions branch: %w", err)
 	}
 
@@ -1112,7 +1118,7 @@ func (s *GitStore) UpdateSummary(ctx context.Context, checkpointID id.Checkpoint
 	}
 
 	// Ensure sessions branch exists
-	if err := s.ensureSessionsBranch(); err != nil {
+	if err := s.ensureSessionsBranch(ctx); err != nil {
 		return fmt.Errorf("failed to ensure sessions branch: %w", err)
 	}
 
@@ -1210,7 +1216,7 @@ func (s *GitStore) UpdateCommitted(ctx context.Context, opts UpdateCommittedOpti
 	}
 
 	// Ensure sessions branch exists
-	if err := s.ensureSessionsBranch(); err != nil {
+	if err := s.ensureSessionsBranch(ctx); err != nil {
 		return fmt.Errorf("failed to ensure sessions branch: %w", err)
 	}
 
@@ -1298,6 +1304,10 @@ func (s *GitStore) UpdateCommitted(ctx context.Context, opts UpdateCommittedOpti
 	if err != nil {
 		return err
 	}
+	newTreeHash, err = s.maybeMergeVercelConfig(ctx, newTreeHash)
+	if err != nil {
+		return err
+	}
 
 	authorName, authorEmail := GetGitAuthorFromRepo(s.repo)
 	commitMsg := fmt.Sprintf("Finalize transcript for Checkpoint: %s", opts.CheckpointID)
@@ -1363,7 +1373,7 @@ func (s *GitStore) replaceTranscript(ctx context.Context, transcript []byte, age
 }
 
 // ensureSessionsBranch ensures the entire/checkpoints/v1 branch exists.
-func (s *GitStore) ensureSessionsBranch() error {
+func (s *GitStore) ensureSessionsBranch(ctx context.Context) error {
 	refName := plumbing.NewBranchReferenceName(paths.MetadataBranchName)
 	_, err := s.repo.Reference(refName, true)
 	if err == nil {
@@ -1372,6 +1382,10 @@ func (s *GitStore) ensureSessionsBranch() error {
 
 	// Create orphan branch with empty tree
 	emptyTreeHash, err := BuildTreeFromEntries(s.repo, make(map[string]object.TreeEntry))
+	if err != nil {
+		return err
+	}
+	emptyTreeHash, err = s.maybeMergeVercelConfig(ctx, emptyTreeHash)
 	if err != nil {
 		return err
 	}
@@ -1387,6 +1401,66 @@ func (s *GitStore) ensureSessionsBranch() error {
 		return fmt.Errorf("failed to set branch reference: %w", err)
 	}
 	return nil
+}
+
+func (s *GitStore) maybeMergeVercelConfig(ctx context.Context, rootTreeHash plumbing.Hash) (plumbing.Hash, error) {
+	repoRoot, err := repositoryRoot(s.repo)
+	if err != nil {
+		return rootTreeHash, nil
+	}
+
+	projectSettings, err := settings.LoadFromRepoRoot(repoRoot)
+	if err != nil || !projectSettings.Vercel {
+		return rootTreeHash, nil
+	}
+
+	config := make(map[string]any)
+	var existingContents string
+	if rootTreeHash != plumbing.ZeroHash {
+		tree, treeErr := s.repo.TreeObject(rootTreeHash)
+		if treeErr != nil && !errors.Is(treeErr, plumbing.ErrObjectNotFound) {
+			return plumbing.ZeroHash, fmt.Errorf("read metadata tree: %w", treeErr)
+		}
+		if treeErr == nil {
+			file, fileErr := tree.File(vercelconfig.FileName)
+			if fileErr == nil {
+				contents, contentsErr := file.Contents()
+				if contentsErr != nil {
+					return plumbing.ZeroHash, fmt.Errorf("read %s from metadata branch: %w", vercelconfig.FileName, contentsErr)
+				}
+				existingContents = contents
+				if unmarshalErr := json.Unmarshal([]byte(contents), &config); unmarshalErr != nil {
+					config = make(map[string]any)
+				}
+			}
+		}
+	}
+
+	vercelconfig.MergeDeploymentDisabled(config)
+	output, err := vercelconfig.Marshal(config)
+	if err != nil {
+		return plumbing.ZeroHash, err
+	}
+	if string(output) == existingContents {
+		return rootTreeHash, nil
+	}
+
+	blobHash, err := CreateBlobFromContent(s.repo, output)
+	if err != nil {
+		return plumbing.ZeroHash, fmt.Errorf("create %s blob: %w", vercelconfig.FileName, err)
+	}
+
+	return UpdateSubtree(s.repo, rootTreeHash, nil, []object.TreeEntry{
+		{Name: vercelconfig.FileName, Mode: filemode.Regular, Hash: blobHash},
+	}, UpdateSubtreeOptions{MergeMode: MergeKeepExisting})
+}
+
+func repositoryRoot(repo *git.Repository) (string, error) {
+	worktree, err := repo.Worktree()
+	if err != nil {
+		return "", err
+	}
+	return worktree.Filesystem.Root(), nil
 }
 
 // getFetchingTree returns a FetchingTree for the metadata branch.

@@ -2,6 +2,7 @@ package strategy
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint/id"
 	"github.com/entireio/cli/cmd/entire/cli/paths"
 	"github.com/entireio/cli/cmd/entire/cli/testutil"
+	"github.com/entireio/cli/cmd/entire/cli/vercelconfig"
 
 	"github.com/go-git/go-git/v6"
 	"github.com/go-git/go-git/v6/plumbing"
@@ -1160,6 +1162,55 @@ func TestEnsureMetadataBranch(t *testing.T) {
 		}
 		if len(tree.Entries) != 0 {
 			t.Errorf("expected empty tree, got %d entries", len(tree.Entries))
+		}
+	})
+
+	t.Run("creates orphan with vercel config when enabled", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		initTestRepo(t, dir)
+		if err := os.MkdirAll(filepath.Join(dir, ".entire"), 0o755); err != nil {
+			t.Fatalf("mkdir .entire: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, ".entire", "settings.json"), []byte(`{"enabled":true,"vercel":true}`), 0o644); err != nil {
+			t.Fatalf("write settings.json: %v", err)
+		}
+
+		repo, err := git.PlainOpen(dir)
+		if err != nil {
+			t.Fatalf("failed to open repo: %v", err)
+		}
+
+		if err := EnsureMetadataBranch(repo); err != nil {
+			t.Fatalf("EnsureMetadataBranch() failed: %v", err)
+		}
+
+		ref, err := repo.Reference(plumbing.NewBranchReferenceName(paths.MetadataBranchName), true)
+		if err != nil {
+			t.Fatalf("branch not found: %v", err)
+		}
+		commit, err := repo.CommitObject(ref.Hash())
+		if err != nil {
+			t.Fatalf("failed to get commit: %v", err)
+		}
+		tree, err := commit.Tree()
+		if err != nil {
+			t.Fatalf("failed to get tree: %v", err)
+		}
+		file, err := tree.File(vercelconfig.FileName)
+		if err != nil {
+			t.Fatalf("expected %s on metadata branch: %v", vercelconfig.FileName, err)
+		}
+		content, err := file.Contents()
+		if err != nil {
+			t.Fatalf("read %s: %v", vercelconfig.FileName, err)
+		}
+		var config map[string]any
+		if err := json.Unmarshal([]byte(content), &config); err != nil {
+			t.Fatalf("parse %s: %v", vercelconfig.FileName, err)
+		}
+		if !vercelconfig.DeploymentDisabled(config) {
+			t.Fatalf("expected %s to disable %s, got %s", vercelconfig.FileName, vercelconfig.BranchPattern, content)
 		}
 	})
 }

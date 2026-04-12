@@ -61,7 +61,8 @@ func TestLoad_AcceptsValidKeys(t *testing.T) {
 		"strategy_options": {"key": "value"},
 		"telemetry": true,
 		"redaction": {"pii": {"enabled": true, "email": true, "phone": false}},
-		"external_agents": true
+		"external_agents": true,
+		"vercel": true
 	}`
 	if err := os.WriteFile(settingsFile, []byte(settingsContent), 0644); err != nil {
 		t.Fatalf("failed to write settings file: %v", err)
@@ -105,6 +106,9 @@ func TestLoad_AcceptsValidKeys(t *testing.T) {
 	}
 	if settings.Redaction.PII.Phone == nil || *settings.Redaction.PII.Phone {
 		t.Error("expected redaction.pii.phone to be false")
+	}
+	if !settings.Vercel {
+		t.Error("expected vercel to be true")
 	}
 }
 
@@ -409,6 +413,32 @@ func TestLoad_ExternalAgentsField(t *testing.T) {
 	}
 	if !s.ExternalAgents {
 		t.Error("expected ExternalAgents to be true")
+	}
+}
+
+func TestLoadFromRepoRoot_MergesLocalOverrides(t *testing.T) {
+	tmpDir := t.TempDir()
+	entireDir := filepath.Join(tmpDir, ".entire")
+	if err := os.MkdirAll(entireDir, 0o755); err != nil {
+		t.Fatalf("failed to create .entire directory: %v", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(entireDir, "settings.json"), []byte(`{"enabled": true, "vercel": true}`), 0o644); err != nil {
+		t.Fatalf("failed to write settings.json: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(entireDir, "settings.local.json"), []byte(`{"log_level": "debug"}`), 0o644); err != nil {
+		t.Fatalf("failed to write settings.local.json: %v", err)
+	}
+
+	s, err := LoadFromRepoRoot(tmpDir)
+	if err != nil {
+		t.Fatalf("LoadFromRepoRoot() error = %v", err)
+	}
+	if !s.Vercel {
+		t.Error("expected vercel to be true")
+	}
+	if s.LogLevel != "debug" {
+		t.Errorf("LogLevel = %q, want %q", s.LogLevel, "debug")
 	}
 }
 

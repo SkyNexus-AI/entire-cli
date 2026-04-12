@@ -1626,6 +1626,48 @@ func TestManageAgents_NoChanges(t *testing.T) {
 	}
 }
 
+func TestManageAgents_NoChanges_StillPersistsVercelSetting(t *testing.T) {
+	setupTestRepo(t)
+	t.Setenv("ENTIRE_TEST_TTY", "1")
+	writeSettings(t, testSettingsEnabled)
+	writeClaudeHooksFixture(t)
+
+	if err := os.WriteFile("vercel.json", []byte(`{
+  "git": {
+    "deploymentEnabled": {
+      "entire/**": false
+    }
+  }
+}`), 0o644); err != nil {
+		t.Fatalf("write vercel.json: %v", err)
+	}
+
+	selectFn := func(_ []string) ([]string, error) {
+		return []string{string(agent.AgentNameClaudeCode)}, nil
+	}
+
+	var buf bytes.Buffer
+	err := runManageAgents(context.Background(), &buf, EnableOptions{}, selectFn)
+	if err != nil {
+		t.Fatalf("runManageAgents() error = %v", err)
+	}
+
+	if strings.Contains(buf.String(), "No changes made.") {
+		t.Fatalf("did not expect no-op output when settings changed, got: %s", buf.String())
+	}
+	if !strings.Contains(buf.String(), ".entire/settings.json") {
+		t.Fatalf("expected settings update output, got: %s", buf.String())
+	}
+
+	s, err := settings.Load(context.Background())
+	if err != nil {
+		t.Fatalf("load settings: %v", err)
+	}
+	if !s.Vercel {
+		t.Fatal("expected vercel setting to be enabled")
+	}
+}
+
 func TestManageAgents_AddAndRemove(t *testing.T) {
 	// Cannot use t.Parallel() because we use t.Chdir and t.Setenv
 	setupTestRepo(t)
@@ -1684,44 +1726,26 @@ func TestMaybePromptVercelDeploymentDisable_MergesExistingConfig(t *testing.T) {
 
 	var prompted bool
 	var buf bytes.Buffer
-	err := maybePromptVercelDeploymentDisable(context.Background(), &buf, func() (bool, error) {
+	changed, err := maybePromptVercelDeploymentDisable(context.Background(), &buf, func() (bool, error) {
 		prompted = true
 		return true, nil
 	})
 	if err != nil {
 		t.Fatalf("maybePromptVercelDeploymentDisable() error = %v", err)
 	}
+	if !changed {
+		t.Fatal("expected Vercel setting change")
+	}
 	if !prompted {
 		t.Fatal("expected Vercel prompt to run")
 	}
 
-	data, err := os.ReadFile("vercel.json")
+	projectSettings, err := settings.Load(context.Background())
 	if err != nil {
-		t.Fatalf("read vercel.json: %v", err)
+		t.Fatalf("load settings: %v", err)
 	}
-
-	var config map[string]any
-	if err := json.Unmarshal(data, &config); err != nil {
-		t.Fatalf("parse vercel.json: %v", err)
-	}
-
-	if config["cleanUrls"] != true {
-		t.Fatalf("expected cleanUrls to be preserved, got %#v", config["cleanUrls"])
-	}
-
-	gitConfig, ok := config["git"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected git object, got %#v", config["git"])
-	}
-	deploymentEnabled, ok := gitConfig["deploymentEnabled"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected deploymentEnabled object, got %#v", gitConfig["deploymentEnabled"])
-	}
-	if deploymentEnabled["main"] != true {
-		t.Fatalf("expected existing main rule to be preserved, got %#v", deploymentEnabled["main"])
-	}
-	if deploymentEnabled[vercelBranchPattern] != false {
-		t.Fatalf("expected %s to be disabled, got %#v", vercelBranchPattern, deploymentEnabled[vercelBranchPattern])
+	if !projectSettings.Vercel {
+		t.Fatal("expected vercel setting to be enabled")
 	}
 }
 
@@ -1733,35 +1757,32 @@ func TestMaybePromptVercelDeploymentDisable_CreatesConfigWhenVercelDetected(t *t
 	}
 
 	var buf bytes.Buffer
-	err := maybePromptVercelDeploymentDisable(context.Background(), &buf, func() (bool, error) {
+	changed, err := maybePromptVercelDeploymentDisable(context.Background(), &buf, func() (bool, error) {
 		return true, nil
 	})
 	if err != nil {
 		t.Fatalf("maybePromptVercelDeploymentDisable() error = %v", err)
 	}
+	if !changed {
+		t.Fatal("expected Vercel setting change")
+	}
 
-	data, err := os.ReadFile("vercel.json")
+	projectSettings, err := settings.Load(context.Background())
 	if err != nil {
-		t.Fatalf("read vercel.json: %v", err)
+		t.Fatalf("load settings: %v", err)
 	}
-
-	var config map[string]any
-	if err := json.Unmarshal(data, &config); err != nil {
-		t.Fatalf("parse vercel.json: %v", err)
-	}
-
-	if !vercelDeploymentDisabled(config) {
-		t.Fatalf("expected generated vercel.json to disable %s branches: %s", vercelBranchPattern, string(data))
+	if !projectSettings.Vercel {
+		t.Fatal("expected vercel setting to be enabled")
 	}
 }
 
-func TestMaybePromptVercelDeploymentDisable_SkipsWhenAlreadyDisabled(t *testing.T) {
+func TestMaybePromptVercelDeploymentDisable_SkipsPromptWhenAlreadyDisabledInVercelJSON(t *testing.T) {
 	setupTestRepo(t)
 
 	if err := os.WriteFile("vercel.json", []byte(`{
   "git": {
     "deploymentEnabled": {
-      "entire/*": false
+      "entire/**": false
     }
   }
 }`), 0o644); err != nil {
@@ -1770,18 +1791,29 @@ func TestMaybePromptVercelDeploymentDisable_SkipsWhenAlreadyDisabled(t *testing.
 
 	promptCalled := false
 	var buf bytes.Buffer
-	err := maybePromptVercelDeploymentDisable(context.Background(), &buf, func() (bool, error) {
+	changed, err := maybePromptVercelDeploymentDisable(context.Background(), &buf, func() (bool, error) {
 		promptCalled = true
 		return true, nil
 	})
 	if err != nil {
 		t.Fatalf("maybePromptVercelDeploymentDisable() error = %v", err)
 	}
+	if !changed {
+		t.Fatal("expected Vercel setting change from existing vercel.json")
+	}
 	if promptCalled {
 		t.Fatal("expected Vercel prompt to be skipped when already configured")
 	}
-	if buf.Len() != 0 {
-		t.Fatalf("expected no output when already configured, got %q", buf.String())
+	if !strings.Contains(buf.String(), ".entire/settings.json") {
+		t.Fatalf("expected settings update output, got %q", buf.String())
+	}
+
+	projectSettings, err := settings.Load(context.Background())
+	if err != nil {
+		t.Fatalf("load settings: %v", err)
+	}
+	if !projectSettings.Vercel {
+		t.Fatal("expected vercel setting to be enabled from existing vercel.json")
 	}
 }
 
