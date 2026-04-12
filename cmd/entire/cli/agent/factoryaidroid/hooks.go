@@ -132,7 +132,7 @@ func (f *FactoryAIDroidAgent) InstallHooks(ctx context.Context, localDev bool, f
 	} else {
 		sessionStartCmd = agent.WrapProductionSilentHookCommand("entire hooks factoryai-droid session-start")
 		sessionEndCmd = agent.WrapProductionSilentHookCommand("entire hooks factoryai-droid session-end")
-		stopCmd = agent.WrapProductionPlainTextSessionStartHookCommand("entire hooks factoryai-droid stop", agent.WarningFormatSingleLine)
+		stopCmd = agent.WrapProductionPlainTextWarningHookCommand("entire hooks factoryai-droid stop", agent.WarningFormatSingleLine)
 		userPromptSubmitCmd = agent.WrapProductionSilentHookCommand("entire hooks factoryai-droid user-prompt-submit")
 		preTaskCmd = agent.WrapProductionSilentHookCommand("entire hooks factoryai-droid pre-tool-use")
 		postTaskCmd = agent.WrapProductionSilentHookCommand("entire hooks factoryai-droid post-tool-use")

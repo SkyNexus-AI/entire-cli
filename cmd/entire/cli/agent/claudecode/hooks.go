@@ -123,7 +123,7 @@ func (c *ClaudeCodeAgent) InstallHooks(ctx context.Context, localDev bool, force
 		postTaskCmd = "go run ${CLAUDE_PROJECT_DIR}/cmd/entire/main.go hooks claude-code post-task"
 		postTodoCmd = "go run ${CLAUDE_PROJECT_DIR}/cmd/entire/main.go hooks claude-code post-todo"
 	} else {
-		sessionStartCmd = agent.WrapProductionJSONSessionStartHookCommand("entire hooks claude-code session-start", agent.WarningFormatMultiLine)
+		sessionStartCmd = agent.WrapProductionJSONWarningHookCommand("entire hooks claude-code session-start", agent.WarningFormatMultiLine)
 		sessionEndCmd = agent.WrapProductionSilentHookCommand("entire hooks claude-code session-end")
 		stopCmd = agent.WrapProductionSilentHookCommand("entire hooks claude-code stop")
 		userPromptSubmitCmd = agent.WrapProductionSilentHookCommand("entire hooks claude-code user-prompt-submit")

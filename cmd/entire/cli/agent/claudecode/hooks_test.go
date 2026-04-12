@@ -489,7 +489,7 @@ func TestInstallHooks_PreservesUserHooksOnSameType(t *testing.T) {
 			t.Fatalf("failed to parse SessionStart hooks: %v", err)
 		}
 		assertHookExists(t, matchers, "", "echo user session start", "user SessionStart hook")
-		assertHookExists(t, matchers, "", agentpkg.WrapProductionJSONSessionStartHookCommand("entire hooks claude-code session-start", agentpkg.WarningFormatMultiLine), "Entire SessionStart hook")
+		assertHookExists(t, matchers, "", agentpkg.WrapProductionJSONWarningHookCommand("entire hooks claude-code session-start", agentpkg.WarningFormatMultiLine), "Entire SessionStart hook")
 	})
 
 	t.Run("PostToolUse", func(t *testing.T) {

@@ -132,7 +132,7 @@ func (g *GeminiCLIAgent) InstallHooks(ctx context.Context, localDev bool, force 
 		existingCmd := getFirstEntireHookCommand(sessionStart)
 		expectedCmd := cmdPrefix + "session-start"
 		if !localDev {
-			expectedCmd = agent.WrapProductionJSONSessionStartHookCommand(expectedCmd, agent.WarningFormatSingleLine)
+			expectedCmd = agent.WrapProductionJSONWarningHookCommand(expectedCmd, agent.WarningFormatSingleLine)
 		}
 		if existingCmd == expectedCmd {
 			if !cleanupDone {
@@ -161,7 +161,7 @@ func (g *GeminiCLIAgent) InstallHooks(ctx context.Context, localDev bool, force 
 	// Session lifecycle hooks
 	sessionStartCmd := cmdPrefix + "session-start"
 	if !localDev {
-		sessionStartCmd = agent.WrapProductionJSONSessionStartHookCommand(sessionStartCmd, agent.WarningFormatSingleLine)
+		sessionStartCmd = agent.WrapProductionJSONWarningHookCommand(sessionStartCmd, agent.WarningFormatSingleLine)
 	}
 	sessionStart = addGeminiHook(sessionStart, "", "entire-session-start", sessionStartCmd)
 	// SessionEnd fires on both "exit" and "logout" - install hooks for both matchers

@@ -80,7 +80,7 @@ func (c *CodexAgent) InstallHooks(ctx context.Context, localDev bool, force bool
 	}
 	sessionStartCmd := cmdPrefix + "session-start"
 	if !localDev {
-		sessionStartCmd = agent.WrapProductionJSONSessionStartHookCommand(sessionStartCmd, agent.WarningFormatSingleLine)
+		sessionStartCmd = agent.WrapProductionJSONWarningHookCommand(sessionStartCmd, agent.WarningFormatSingleLine)
 	}
 	userPromptSubmitCmd := cmdPrefix + "user-prompt-submit"
 	stopCmd := cmdPrefix + "stop"

@@ -33,9 +33,9 @@ func WrapProductionSilentHookCommand(command string) string {
 	)
 }
 
-// WrapProductionJSONSessionStartHookCommand emits a JSON hook response with a
+// WrapProductionJSONWarningHookCommand emits a JSON hook response with a
 // systemMessage field on stdout when the Entire CLI is missing from PATH.
-func WrapProductionJSONSessionStartHookCommand(command string, format WarningFormat) string {
+func WrapProductionJSONWarningHookCommand(command string, format WarningFormat) string {
 	payload, err := jsonutil.MarshalWithNoHTMLEscape(struct {
 		SystemMessage string `json:"systemMessage,omitempty"`
 	}{
@@ -43,7 +43,7 @@ func WrapProductionJSONSessionStartHookCommand(command string, format WarningFor
 	})
 	if err != nil {
 		// Fallback to plain text on stdout if JSON payload construction somehow fails.
-		return WrapProductionPlainTextSessionStartHookCommand(command, format)
+		return WrapProductionPlainTextWarningHookCommand(command, format)
 	}
 
 	return fmt.Sprintf(
@@ -53,9 +53,9 @@ func WrapProductionJSONSessionStartHookCommand(command string, format WarningFor
 	)
 }
 
-// WrapProductionPlainTextSessionStartHookCommand emits the warning as plain
+// WrapProductionPlainTextWarningHookCommand emits the warning as plain
 // text to stdout when the Entire CLI is missing from PATH.
-func WrapProductionPlainTextSessionStartHookCommand(command string, format WarningFormat) string {
+func WrapProductionPlainTextWarningHookCommand(command string, format WarningFormat) string {
 	return fmt.Sprintf(
 		`sh -c 'if ! command -v entire >/dev/null 2>&1; then printf "%%s\n" %q; exit 0; fi; exec %s'`,
 		MissingEntireWarning(format),

@@ -76,7 +76,7 @@ func TestInstallHooks_FreshInstall(t *testing.T) {
 	}
 
 	// Verify hook commands (localDev=false, so use entire binary)
-	verifyHookCommand(t, settings.Hooks.SessionStart, "", agentpkg.WrapProductionJSONSessionStartHookCommand("entire hooks gemini session-start", agentpkg.WarningFormatSingleLine))
+	verifyHookCommand(t, settings.Hooks.SessionStart, "", agentpkg.WrapProductionJSONWarningHookCommand("entire hooks gemini session-start", agentpkg.WarningFormatSingleLine))
 	verifyHookCommand(t, settings.Hooks.SessionEnd, "exit", agentpkg.WrapProductionSilentHookCommand("entire hooks gemini session-end"))
 	verifyHookCommand(t, settings.Hooks.SessionEnd, "logout", agentpkg.WrapProductionSilentHookCommand("entire hooks gemini session-end"))
 	verifyHookCommand(t, settings.Hooks.BeforeAgent, "", agentpkg.WrapProductionSilentHookCommand("entire hooks gemini before-agent"))
@@ -562,7 +562,7 @@ func TestInstallHooks_RemovesLegacyEnabledField_WhenAlreadyInstalled(t *testing.
       }
     ]
   }
-}`, agentpkg.WrapProductionJSONSessionStartHookCommand("entire hooks gemini session-start", agentpkg.WarningFormatSingleLine)))
+}`, agentpkg.WrapProductionJSONWarningHookCommand("entire hooks gemini session-start", agentpkg.WarningFormatSingleLine)))
 
 	agent := &GeminiCLIAgent{}
 	n, err := agent.InstallHooks(context.Background(), false, false)

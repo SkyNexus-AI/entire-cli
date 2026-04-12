@@ -5,10 +5,10 @@ import (
 	"testing"
 )
 
-func TestWrapProductionJSONSessionStartHookCommand(t *testing.T) {
+func TestWrapProductionJSONWarningHookCommand(t *testing.T) {
 	t.Parallel()
 
-	command := WrapProductionJSONSessionStartHookCommand("entire hooks claude-code session-start", WarningFormatMultiLine)
+	command := WrapProductionJSONWarningHookCommand("entire hooks claude-code session-start", WarningFormatMultiLine)
 
 	if command == "entire hooks claude-code session-start" {
 		t.Fatal("expected wrapped command, got raw command")
@@ -27,10 +27,10 @@ func TestWrapProductionJSONSessionStartHookCommand(t *testing.T) {
 	}
 }
 
-func TestWrapProductionPlainTextSessionStartHookCommand(t *testing.T) {
+func TestWrapProductionPlainTextWarningHookCommand(t *testing.T) {
 	t.Parallel()
 
-	command := WrapProductionPlainTextSessionStartHookCommand("entire hooks factoryai-droid session-start", WarningFormatSingleLine)
+	command := WrapProductionPlainTextWarningHookCommand("entire hooks factoryai-droid session-start", WarningFormatSingleLine)
 
 	if command == "entire hooks factoryai-droid session-start" {
 		t.Fatal("expected wrapped command, got raw command")
