@@ -41,11 +41,12 @@ func TestFetchDoesNotPolluteOriginConfig(t *testing.T) {
 	runGit(t, localDir, "branch", paths.MetadataBranchName)
 	runGit(t, localDir, "update-ref", paths.V2MainRefName, "HEAD")
 	runGit(t, localDir, "push", "origin", "HEAD:refs/heads/main", paths.MetadataBranchName, paths.V2MainRefName)
+	runGit(t, bareDir, "symbolic-ref", "HEAD", "refs/heads/main")
 
 	// Clone fresh so local has no metadata branch yet — this is the scenario
 	// the fetch helpers in git_operations.go are designed for.
 	clonedDir := filepath.Join(tmpDir, "cloned")
-	runGit(t, tmpDir, "clone", bareDir, clonedDir)
+	runGit(t, tmpDir, "clone", "--branch", "main", bareDir, clonedDir)
 	// git clone writes a global git config in some environments; configure
 	// user identity so any subsequent ops here don't fail.
 	runGit(t, clonedDir, "config", "user.email", "test@example.com")
