@@ -8,5 +8,3 @@ cd "${REPO_ROOT}"
 
 mise trust --yes
 mise install
-mise exec -- go install github.com/entireio/roger-roger/cmd/roger-roger@latest
-mise exec -- go install github.com/entireio/roger-roger/cmd/entire-agent-roger-roger@latest
