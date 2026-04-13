@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strconv"
 	"time"
 
 	"github.com/charmbracelet/huh"
@@ -359,6 +360,79 @@ func checkDisconnectedMetadata(cmd *cobra.Command, force bool) error {
 	}
 
 	fmt.Fprintln(w, "  ✓ Fixed: metadata branches reconciled")
+	return nil
+}
+
+// checkV2GenerationHealth verifies that archived /full/* generations are well-formed.
+// Checks: generation.json exists and is valid, timestamps are sane, generation has checkpoints,
+// and generation sequence numbers are contiguous.
+func checkV2GenerationHealth(cmd *cobra.Command, repo *git.Repository) error {
+	w := cmd.OutOrStdout()
+
+	v2Store := checkpoint.NewV2GitStore(repo, "origin")
+
+	archived, err := v2Store.ListArchivedGenerations()
+	if err != nil {
+		return fmt.Errorf("failed to list archived generations: %w", err)
+	}
+
+	if len(archived) == 0 {
+		fmt.Fprintln(w, "✓ v2 generations: OK (no archived generations)")
+		return nil
+	}
+
+	var warnings []string
+
+	for _, genName := range archived {
+		refName := plumbing.ReferenceName(paths.V2FullRefPrefix + genName)
+
+		_, treeHash, refErr := v2Store.GetRefState(refName)
+		if refErr != nil {
+			warnings = append(warnings, fmt.Sprintf("generation %s: cannot read ref", genName))
+			continue
+		}
+
+		gen, genErr := v2Store.ReadGenerationFromRef(refName)
+		if genErr != nil {
+			warnings = append(warnings, fmt.Sprintf("generation %s: failed to read generation.json: %v", genName, genErr))
+			continue
+		}
+
+		if gen.OldestCheckpointAt.IsZero() && gen.NewestCheckpointAt.IsZero() {
+			warnings = append(warnings, fmt.Sprintf("generation %s: WARNING — missing generation.json", genName))
+		} else if gen.OldestCheckpointAt.After(gen.NewestCheckpointAt) {
+			warnings = append(warnings, fmt.Sprintf("generation %s: WARNING — invalid timestamps (oldest > newest)", genName))
+		}
+
+		cpCount, countErr := v2Store.CountCheckpointsInTree(treeHash)
+		if countErr != nil {
+			warnings = append(warnings, fmt.Sprintf("generation %s: failed to count checkpoints: %v", genName, countErr))
+			continue
+		}
+		if cpCount == 0 {
+			warnings = append(warnings, fmt.Sprintf("generation %s: WARNING — empty (no checkpoint shards)", genName))
+		}
+	}
+
+	if len(archived) > 1 {
+		for i := 1; i < len(archived); i++ {
+			prev, _ := strconv.ParseInt(archived[i-1], 10, 64)
+			curr, _ := strconv.ParseInt(archived[i], 10, 64)
+			if curr-prev > 1 {
+				warnings = append(warnings, fmt.Sprintf("INFO — gap in generation sequence (%013d missing)", prev+1))
+			}
+		}
+	}
+
+	if len(warnings) > 0 {
+		fmt.Fprintf(w, "v2 generations: %d issue(s) found in %d archived generation(s):\n", len(warnings), len(archived))
+		for _, warning := range warnings {
+			fmt.Fprintf(w, "  %s\n", warning)
+		}
+	} else {
+		fmt.Fprintf(w, "✓ v2 generations: OK (%d archived)\n", len(archived))
+	}
+
 	return nil
 }
 

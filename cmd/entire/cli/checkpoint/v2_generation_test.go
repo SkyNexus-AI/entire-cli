@@ -113,7 +113,7 @@ func TestReadGenerationFromRef(t *testing.T) {
 	require.NoError(t, repo.Storer.SetReference(plumbing.NewHashReference(refName, commitHash)))
 
 	// Read back via ref
-	result, err := store.readGenerationFromRef(refName)
+	result, err := store.ReadGenerationFromRef(refName)
 	require.NoError(t, err)
 
 	assert.True(t, result.OldestCheckpointAt.Equal(now))
@@ -460,7 +460,7 @@ func TestRotateGeneration_SequentialNumbering(t *testing.T) {
 	// Verify each archived ref has generation.json with timestamps
 	for _, name := range archived {
 		refName := plumbing.ReferenceName(paths.V2FullRefPrefix + name)
-		gen, readErr := store.readGenerationFromRef(refName)
+		gen, readErr := store.ReadGenerationFromRef(refName)
 		require.NoError(t, readErr)
 		assert.False(t, gen.OldestCheckpointAt.IsZero(), "archive %s should have oldest timestamp", name)
 		assert.False(t, gen.NewestCheckpointAt.IsZero(), "archive %s should have newest timestamp", name)

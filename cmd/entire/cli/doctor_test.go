@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -505,6 +506,196 @@ func TestCheckV2CheckpointCounts_SkipsWhenRefsMissing(t *testing.T) {
 	err = checkV2CheckpointCounts(cmd, repo)
 	require.NoError(t, err)
 	assert.Empty(t, stdout.String())
+}
+
+// createArchivedGeneration creates an archived generation ref with the given generation.json
+// and checkpoint count. generationNum is the sequence number (e.g., 1 -> "0000000000001").
+func createArchivedGeneration(t *testing.T, repo *git.Repository, generationNum int, gen *checkpoint.GenerationMetadata, checkpointCount int) {
+	t.Helper()
+
+	entries := make(map[string]object.TreeEntry)
+
+	for i := range checkpointCount {
+		cpID := fmt.Sprintf("%02x%010x", i%256, i)
+		path := cpID[:2] + "/" + cpID[2:] + "/0/" + paths.TranscriptFileName
+		blobHash := createBlob(t, repo, `{"transcript":"data"}`)
+		entries[path] = object.TreeEntry{
+			Name: paths.TranscriptFileName,
+			Mode: filemode.Regular,
+			Hash: blobHash,
+		}
+	}
+
+	if gen != nil {
+		genJSON, err := json.Marshal(gen)
+		require.NoError(t, err)
+		blobHash := createBlob(t, repo, string(genJSON))
+		entries[paths.GenerationFileName] = object.TreeEntry{
+			Name: paths.GenerationFileName,
+			Mode: filemode.Regular,
+			Hash: blobHash,
+		}
+	}
+
+	treeHash, err := checkpoint.BuildTreeFromEntries(context.Background(), repo, entries)
+	require.NoError(t, err)
+
+	commitObj := &object.Commit{
+		Author:    object.Signature{Name: "test", Email: "test@test.com", When: time.Now()},
+		Committer: object.Signature{Name: "test", Email: "test@test.com", When: time.Now()},
+		Message:   "archived generation",
+		TreeHash:  treeHash,
+	}
+	enc := repo.Storer.NewEncodedObject()
+	require.NoError(t, commitObj.Encode(enc))
+	commitHash, err := repo.Storer.SetEncodedObject(enc)
+	require.NoError(t, err)
+
+	refName := fmt.Sprintf("%s%013d", paths.V2FullRefPrefix, generationNum)
+	ref := plumbing.NewHashReference(plumbing.ReferenceName(refName), commitHash)
+	require.NoError(t, repo.Storer.SetReference(ref))
+}
+
+func TestCheckV2GenerationHealth_NoArchives(t *testing.T) {
+	t.Parallel()
+	dir := setupGitRepoForPhaseTest(t)
+	repo, err := git.PlainOpen(dir)
+	require.NoError(t, err)
+
+	cmd := &cobra.Command{}
+	cmd.SetContext(context.Background())
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&bytes.Buffer{})
+
+	err = checkV2GenerationHealth(cmd, repo)
+	require.NoError(t, err)
+	assert.Contains(t, stdout.String(), "no archived generations")
+}
+
+func TestCheckV2GenerationHealth_HealthyGeneration(t *testing.T) {
+	t.Parallel()
+	dir := setupGitRepoForPhaseTest(t)
+	repo, err := git.PlainOpen(dir)
+	require.NoError(t, err)
+
+	now := time.Now().UTC()
+	gen := &checkpoint.GenerationMetadata{
+		OldestCheckpointAt: now.Add(-24 * time.Hour),
+		NewestCheckpointAt: now,
+	}
+	createArchivedGeneration(t, repo, 1, gen, 5)
+
+	cmd := &cobra.Command{}
+	cmd.SetContext(context.Background())
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&bytes.Buffer{})
+
+	err = checkV2GenerationHealth(cmd, repo)
+	require.NoError(t, err)
+	assert.Contains(t, stdout.String(), "v2 generations: OK (1 archived)")
+}
+
+func TestCheckV2GenerationHealth_MissingGenerationJSON(t *testing.T) {
+	t.Parallel()
+	dir := setupGitRepoForPhaseTest(t)
+	repo, err := git.PlainOpen(dir)
+	require.NoError(t, err)
+
+	createArchivedGeneration(t, repo, 1, nil, 5)
+
+	cmd := &cobra.Command{}
+	cmd.SetContext(context.Background())
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&bytes.Buffer{})
+
+	err = checkV2GenerationHealth(cmd, repo)
+	require.NoError(t, err)
+	assert.Contains(t, stdout.String(), "WARNING")
+	assert.Contains(t, stdout.String(), "missing generation.json")
+}
+
+func TestCheckV2GenerationHealth_InvalidTimestamps(t *testing.T) {
+	t.Parallel()
+	dir := setupGitRepoForPhaseTest(t)
+	repo, err := git.PlainOpen(dir)
+	require.NoError(t, err)
+
+	now := time.Now().UTC()
+	gen := &checkpoint.GenerationMetadata{
+		OldestCheckpointAt: now,
+		NewestCheckpointAt: now.Add(-24 * time.Hour),
+	}
+	createArchivedGeneration(t, repo, 1, gen, 5)
+
+	cmd := &cobra.Command{}
+	cmd.SetContext(context.Background())
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&bytes.Buffer{})
+
+	err = checkV2GenerationHealth(cmd, repo)
+	require.NoError(t, err)
+	assert.Contains(t, stdout.String(), "WARNING")
+	assert.Contains(t, stdout.String(), "invalid timestamps")
+}
+
+func TestCheckV2GenerationHealth_EmptyGeneration(t *testing.T) {
+	t.Parallel()
+	dir := setupGitRepoForPhaseTest(t)
+	repo, err := git.PlainOpen(dir)
+	require.NoError(t, err)
+
+	now := time.Now().UTC()
+	gen := &checkpoint.GenerationMetadata{
+		OldestCheckpointAt: now.Add(-24 * time.Hour),
+		NewestCheckpointAt: now,
+	}
+	createArchivedGeneration(t, repo, 1, gen, 0)
+
+	cmd := &cobra.Command{}
+	cmd.SetContext(context.Background())
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&bytes.Buffer{})
+
+	err = checkV2GenerationHealth(cmd, repo)
+	require.NoError(t, err)
+	assert.Contains(t, stdout.String(), "WARNING")
+	assert.Contains(t, stdout.String(), "empty")
+}
+
+func TestCheckV2GenerationHealth_SequenceGap(t *testing.T) {
+	t.Parallel()
+	dir := setupGitRepoForPhaseTest(t)
+	repo, err := git.PlainOpen(dir)
+	require.NoError(t, err)
+
+	now := time.Now().UTC()
+	gen1 := &checkpoint.GenerationMetadata{
+		OldestCheckpointAt: now.Add(-48 * time.Hour),
+		NewestCheckpointAt: now.Add(-24 * time.Hour),
+	}
+	createArchivedGeneration(t, repo, 1, gen1, 3)
+
+	gen3 := &checkpoint.GenerationMetadata{
+		OldestCheckpointAt: now.Add(-12 * time.Hour),
+		NewestCheckpointAt: now,
+	}
+	createArchivedGeneration(t, repo, 3, gen3, 3)
+
+	cmd := &cobra.Command{}
+	cmd.SetContext(context.Background())
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&bytes.Buffer{})
+
+	err = checkV2GenerationHealth(cmd, repo)
+	require.NoError(t, err)
+	assert.Contains(t, stdout.String(), "INFO")
+	assert.Contains(t, stdout.String(), "gap")
 }
 
 // TestRunSessionsFix_MetadataCheckFailure_PropagatesError verifies that when
