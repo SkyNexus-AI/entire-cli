@@ -577,7 +577,7 @@ func TestV2GitStore_WriteCommittedFull_ExcludesMetadata(t *testing.T) {
 			"prompt.txt must not be on /full/current ref")
 	}
 
-	// content_hash.txt SHOULD be on /full/current (co-located with the transcript it hashes)
+	// raw_transcript_hash.txt SHOULD be on /full/current (co-located with the transcript it hashes)
 	hashContent := v2ReadFile(t, tree, cpPath+"/0/"+paths.V2RawTranscriptHashFileName)
 	assert.True(t, strings.HasPrefix(hashContent, "sha256:"), "content hash should be sha256 prefixed")
 }
