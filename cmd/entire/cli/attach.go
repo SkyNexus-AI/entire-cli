@@ -172,7 +172,9 @@ func runAttach(ctx context.Context, w io.Writer, sessionID string, agentName typ
 	if err := store.WriteCommitted(ctx, writeOpts); err != nil {
 		return fmt.Errorf("failed to write checkpoint: %w", err)
 	}
-	writeAttachCheckpointV2IfEnabled(logCtx, repo, store, writeOpts, isExistingCheckpoint)
+	if settings.IsCheckpointsV2Enabled(logCtx) {
+		writeAttachCheckpointV2(logCtx, repo, store, writeOpts, isExistingCheckpoint)
+	}
 
 	// Create or update session state.
 	if err := saveAttachSessionState(logCtx, existingState, sessionID, ag.Type(), transcriptPath, checkpointID, meta, tokenUsage); err != nil {
@@ -195,14 +197,10 @@ func runAttach(ctx context.Context, w io.Writer, sessionID string, agentName typ
 	return nil
 }
 
-// writeAttachCheckpointV2IfEnabled mirrors attach-created checkpoints into the
-// v2 refs when checkpoints_v2 is enabled. The v1 write remains authoritative;
+// writeAttachCheckpointV2 mirrors attach-created checkpoints into the v2 refs.
+// The caller is responsible for checking whether checkpoints_v2 is enabled.
 // v2 failures are logged and do not fail attach.
-func writeAttachCheckpointV2IfEnabled(ctx context.Context, repo *git.Repository, v1Store *cpkg.GitStore, opts cpkg.WriteCommittedOptions, isExistingCheckpoint bool) {
-	if !settings.IsCheckpointsV2Enabled(ctx) {
-		return
-	}
-
+func writeAttachCheckpointV2(ctx context.Context, repo *git.Repository, v1Store *cpkg.GitStore, opts cpkg.WriteCommittedOptions, isExistingCheckpoint bool) {
 	v2Store := cpkg.NewV2GitStore(repo, strategy.ResolveCheckpointURL(ctx, "origin"))
 	var err error
 	if isExistingCheckpoint {
