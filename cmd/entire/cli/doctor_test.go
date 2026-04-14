@@ -605,6 +605,27 @@ func TestCheckV2GenerationHealth_InvalidTimestamps(t *testing.T) {
 	assert.Contains(t, stdout.String(), "invalid timestamps")
 }
 
+func TestCheckV2GenerationHealth_PartialMissingTimestamp(t *testing.T) {
+	t.Parallel()
+	dir := setupGitRepoForPhaseTest(t)
+	repo, err := git.PlainOpen(dir)
+	require.NoError(t, err)
+
+	now := time.Now().UTC()
+	gen := &checkpoint.GenerationMetadata{
+		OldestCheckpointAt: time.Time{},
+		NewestCheckpointAt: now,
+	}
+	createArchivedGeneration(t, repo, 1, gen, 5)
+
+	cmd, stdout, _ := newTestCmd(t)
+
+	err = checkV2GenerationHealth(cmd, repo)
+	require.NoError(t, err)
+	assert.Contains(t, stdout.String(), "WARNING")
+	assert.Contains(t, stdout.String(), "missing generation.json")
+}
+
 func TestCheckV2GenerationHealth_EmptyGeneration(t *testing.T) {
 	t.Parallel()
 	dir := setupGitRepoForPhaseTest(t)

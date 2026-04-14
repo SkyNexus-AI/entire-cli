@@ -505,7 +505,7 @@ func checkV2GenerationHealth(cmd *cobra.Command, repo *git.Repository) error {
 			continue
 		}
 
-		if gen.OldestCheckpointAt.IsZero() && gen.NewestCheckpointAt.IsZero() {
+		if gen.OldestCheckpointAt.IsZero() || gen.NewestCheckpointAt.IsZero() {
 			warnings = append(warnings, fmt.Sprintf("generation %s: WARNING — missing generation.json", genName))
 		} else if gen.OldestCheckpointAt.After(gen.NewestCheckpointAt) {
 			warnings = append(warnings, fmt.Sprintf("generation %s: WARNING — invalid timestamps (oldest > newest)", genName))
