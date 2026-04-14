@@ -22,10 +22,8 @@ import (
 	"github.com/entireio/cli/cmd/entire/cli/jsonutil"
 	"github.com/entireio/cli/cmd/entire/cli/logging"
 	"github.com/entireio/cli/cmd/entire/cli/paths"
-	"github.com/entireio/cli/cmd/entire/cli/settings"
 	"github.com/entireio/cli/cmd/entire/cli/trailers"
 	"github.com/entireio/cli/cmd/entire/cli/validation"
-	"github.com/entireio/cli/cmd/entire/cli/vercelconfig"
 	"github.com/entireio/cli/cmd/entire/cli/versioninfo"
 	"github.com/entireio/cli/perf"
 	"github.com/entireio/cli/redact"
@@ -1440,66 +1438,7 @@ func (s *GitStore) ensureSessionsBranch(ctx context.Context) error {
 }
 
 func (s *GitStore) maybeMergeVercelConfig(_ context.Context, rootTreeHash plumbing.Hash) (plumbing.Hash, error) {
-	repoRoot, rootErr := repositoryRoot(s.repo)
-	if rootErr == nil {
-		projectSettings, settingsErr := settings.LoadFromRepoRoot(repoRoot)
-		if settingsErr == nil && projectSettings.Vercel {
-			config := make(map[string]any)
-			var existingContents string
-			if rootTreeHash != plumbing.ZeroHash {
-				tree, treeErr := s.repo.TreeObject(rootTreeHash)
-				if treeErr != nil && !errors.Is(treeErr, plumbing.ErrObjectNotFound) {
-					return plumbing.ZeroHash, fmt.Errorf("read metadata tree: %w", treeErr)
-				}
-				if treeErr == nil {
-					file, fileErr := tree.File(vercelconfig.FileName)
-					if fileErr == nil {
-						contents, contentsErr := file.Contents()
-						if contentsErr != nil {
-							return plumbing.ZeroHash, fmt.Errorf("read %s from metadata branch: %w", vercelconfig.FileName, contentsErr)
-						}
-						existingContents = contents
-						if unmarshalErr := json.Unmarshal([]byte(contents), &config); unmarshalErr != nil {
-							config = make(map[string]any)
-						}
-					}
-				}
-			}
-
-			vercelconfig.MergeDeploymentDisabled(config)
-			output, err := vercelconfig.Marshal(config)
-			if err != nil {
-				return plumbing.ZeroHash, fmt.Errorf("marshal %s: %w", vercelconfig.FileName, err)
-			}
-			if string(output) == existingContents {
-				return rootTreeHash, nil
-			}
-
-			blobHash, err := CreateBlobFromContent(s.repo, output)
-			if err != nil {
-				return plumbing.ZeroHash, fmt.Errorf("create %s blob: %w", vercelconfig.FileName, err)
-			}
-
-			newTreeHash, err := UpdateSubtree(s.repo, rootTreeHash, nil, []object.TreeEntry{
-				{Name: vercelconfig.FileName, Mode: filemode.Regular, Hash: blobHash},
-			}, UpdateSubtreeOptions{MergeMode: MergeKeepExisting})
-			if err != nil {
-				return plumbing.ZeroHash, fmt.Errorf("update metadata subtree with %s: %w", vercelconfig.FileName, err)
-			}
-
-			return newTreeHash, nil
-		}
-	}
-
-	return rootTreeHash, nil
-}
-
-func repositoryRoot(repo *git.Repository) (string, error) {
-	worktree, err := repo.Worktree()
-	if err != nil {
-		return "", fmt.Errorf("open worktree: %w", err)
-	}
-	return worktree.Filesystem.Root(), nil
+	return MaybeMergeMetadataBranchVercelConfig(s.repo, rootTreeHash)
 }
 
 // getFetchingTree returns a FetchingTree for the metadata branch.
