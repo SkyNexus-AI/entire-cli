@@ -470,6 +470,64 @@ func TestExplain_BranchListingShowsCheckpointsAndPrompts(t *testing.T) {
 	}
 }
 
+// TestExplain_CheckpointFetchesFromRemoteWhenMissingLocally verifies that
+// explain --checkpoint fetches metadata from the remote when the
+// entire/checkpoints/v1 branch doesn't exist locally (e.g., reviewing
+// someone else's PR).
+func TestExplain_CheckpointFetchesFromRemoteWhenMissingLocally(t *testing.T) {
+	t.Parallel()
+	env := NewFeatureBranchEnv(t)
+
+	// Set up bare remote
+	env.SetupBareRemote()
+
+	// Create a session, make changes, checkpoint, and commit (triggers condensation)
+	session := env.NewSession()
+	transcriptPath := session.CreateTranscript("Add feature module", []FileChange{
+		{Path: "feature.go", Content: "package feature"},
+	})
+
+	if err := env.SimulateUserPromptSubmitWithPromptAndTranscriptPath(session.ID, "Add feature module", transcriptPath); err != nil {
+		t.Fatalf("SimulateUserPromptSubmit failed: %v", err)
+	}
+
+	env.WriteFile("feature.go", "package feature")
+	env.GitAdd("feature.go")
+
+	if err := env.SimulateStop(session.ID, transcriptPath); err != nil {
+		t.Fatalf("SimulateStop failed: %v", err)
+	}
+
+	// Commit with hooks (triggers prepare-commit-msg + post-commit = condensation)
+	env.GitCommitWithShadowHooks("Add feature module", "feature.go")
+
+	// Get the checkpoint ID before we delete the local branch
+	checkpointID := env.GetLatestCheckpointID()
+	if checkpointID == "" {
+		t.Fatal("should have a checkpoint ID after condensation")
+	}
+
+	// Push checkpoint data to remote
+	env.RunPrePush("origin")
+
+	// Delete local metadata branch and remote-tracking ref to simulate
+	// a collaborator's repo that has never fetched the metadata branch
+	repo, err := git.PlainOpen(env.RepoDir)
+	if err != nil {
+		t.Fatalf("failed to open repo: %v", err)
+	}
+	_ = repo.Storer.RemoveReference(plumbing.NewBranchReferenceName(paths.MetadataBranchName))
+	_ = repo.Storer.RemoveReference(plumbing.NewRemoteReferenceName("origin", paths.MetadataBranchName))
+
+	// This should succeed by fetching metadata from the remote
+	output := env.RunCLI("explain", "--checkpoint", checkpointID)
+
+	// Verify the output contains checkpoint content (prompt text)
+	if !strings.Contains(output, "Add feature module") {
+		t.Errorf("expected output to contain prompt text, got:\n%s", output)
+	}
+}
+
 // TestExplain_BranchListingV2OnlyAfterV1Deleted verifies that the branch listing
 // works when only v2 data exists (v1 metadata branch deleted after dual-write).
 func TestExplain_BranchListingV2OnlyAfterV1Deleted(t *testing.T) {
