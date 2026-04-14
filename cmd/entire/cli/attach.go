@@ -17,6 +17,7 @@ import (
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint/id"
 	"github.com/entireio/cli/cmd/entire/cli/logging"
 	"github.com/entireio/cli/cmd/entire/cli/session"
+	"github.com/entireio/cli/cmd/entire/cli/settings"
 	"github.com/entireio/cli/cmd/entire/cli/strategy"
 	"github.com/entireio/cli/cmd/entire/cli/trailers"
 	"github.com/entireio/cli/cmd/entire/cli/validation"
@@ -148,7 +149,7 @@ func runAttach(ctx context.Context, w io.Writer, sessionID string, agentName typ
 		return fmt.Errorf("failed to redact transcript: %w", redactErr)
 	}
 
-	if err := store.WriteCommitted(ctx, cpkg.WriteCommittedOptions{
+	writeOpts := cpkg.WriteCommittedOptions{
 		CheckpointID: checkpointID,
 		SessionID:    sessionID,
 		Strategy:     strategy.StrategyNameManualCommit,
@@ -159,9 +160,19 @@ func runAttach(ctx context.Context, w io.Writer, sessionID string, agentName typ
 		Agent:        ag.Type(),
 		Model:        meta.Model,
 		TokenUsage:   tokenUsage,
-	}); err != nil {
+	}
+
+	if compacted := compactTranscriptForStartLine(logCtx, redactedTranscript.Bytes(), cpkg.CommittedMetadata{
+		CheckpointID: checkpointID,
+		Agent:        ag.Type(),
+	}, 0); compacted != nil {
+		writeOpts.CompactTranscript = compacted
+	}
+
+	if err := store.WriteCommitted(ctx, writeOpts); err != nil {
 		return fmt.Errorf("failed to write checkpoint: %w", err)
 	}
+	writeAttachCheckpointV2IfEnabled(logCtx, repo, store, writeOpts, isExistingCheckpoint)
 
 	// Create or update session state.
 	if err := saveAttachSessionState(logCtx, existingState, sessionID, ag.Type(), transcriptPath, checkpointID, meta, tokenUsage); err != nil {
@@ -179,6 +190,79 @@ func runAttach(ctx context.Context, w io.Writer, sessionID string, agentName typ
 	if err := promptAmendCommit(logCtx, w, headCommit, cpIDStr, force); err != nil {
 		logging.Warn(logCtx, "failed to amend commit", "error", err)
 		fmt.Fprintf(w, "\nCopy to your commit message to attach:\n\n  Entire-Checkpoint: %s\n", cpIDStr)
+	}
+
+	return nil
+}
+
+// writeAttachCheckpointV2IfEnabled mirrors attach-created checkpoints into the
+// v2 refs when checkpoints_v2 is enabled. The v1 write remains authoritative;
+// v2 failures are logged and do not fail attach.
+func writeAttachCheckpointV2IfEnabled(ctx context.Context, repo *git.Repository, v1Store *cpkg.GitStore, opts cpkg.WriteCommittedOptions, isExistingCheckpoint bool) {
+	if !settings.IsCheckpointsV2Enabled(ctx) {
+		return
+	}
+
+	v2Store := cpkg.NewV2GitStore(repo, strategy.ResolveCheckpointURL(ctx, "origin"))
+	var err error
+	if isExistingCheckpoint {
+		err = backfillAttachCheckpointToV2(ctx, repo, v1Store, v2Store, opts.CheckpointID, opts.AuthorName, opts.AuthorEmail)
+	} else {
+		err = v2Store.WriteCommitted(ctx, opts)
+	}
+	if err != nil {
+		logging.Warn(ctx, "attach v2 dual-write failed",
+			"checkpoint_id", opts.CheckpointID.String(),
+			"error", err,
+		)
+	}
+}
+
+// backfillAttachCheckpointToV2 rewrites the full checkpoint from v1 into v2.
+// This avoids creating a partial v2 shadow when attach adds a session to a
+// legacy v1-only checkpoint.
+func backfillAttachCheckpointToV2(ctx context.Context, repo *git.Repository, v1Store *cpkg.GitStore, v2Store *cpkg.V2GitStore, checkpointID id.CheckpointID, authorName, authorEmail string) error {
+	summary, err := v1Store.ReadCommitted(ctx, checkpointID)
+	if err != nil {
+		return fmt.Errorf("read v1 checkpoint: %w", err)
+	}
+	if summary == nil {
+		return fmt.Errorf("v1 checkpoint %s has no summary", checkpointID)
+	}
+
+	info := cpkg.CommittedInfo{CheckpointID: checkpointID}
+	shouldCopyTaskMetadata := false
+
+	for sessionIdx := range len(summary.Sessions) {
+		content, readErr := v1Store.ReadSessionContent(ctx, checkpointID, sessionIdx)
+		if readErr != nil {
+			return fmt.Errorf("read v1 session %d: %w", sessionIdx, readErr)
+		}
+		if content.Metadata.IsTask {
+			shouldCopyTaskMetadata = true
+		}
+
+		writeOpts := buildMigrateWriteOpts(content, info)
+		writeOpts.AuthorName = authorName
+		writeOpts.AuthorEmail = authorEmail
+
+		if compacted := tryCompactTranscript(ctx, content.Transcript, content.Metadata); compacted != nil {
+			writeOpts.CompactTranscript = compacted
+			writeOpts.CompactTranscriptStart = computeCompactOffset(ctx, content.Transcript, compacted, content.Metadata)
+		}
+
+		if writeErr := v2Store.WriteCommitted(ctx, writeOpts); writeErr != nil {
+			return fmt.Errorf("write v2 session %d: %w", sessionIdx, writeErr)
+		}
+	}
+
+	if shouldCopyTaskMetadata {
+		if taskErr := copyTaskMetadataToV2(repo, v1Store, v2Store, checkpointID, summary); taskErr != nil {
+			logging.Warn(ctx, "attach v2 task metadata copy failed",
+				"checkpoint_id", checkpointID.String(),
+				"error", taskErr,
+			)
+		}
 	}
 
 	return nil

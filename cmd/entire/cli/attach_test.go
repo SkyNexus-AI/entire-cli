@@ -16,8 +16,13 @@ import (
 	_ "github.com/entireio/cli/cmd/entire/cli/agent/cursor"         // register agent
 	_ "github.com/entireio/cli/cmd/entire/cli/agent/factoryaidroid" // register agent
 	_ "github.com/entireio/cli/cmd/entire/cli/agent/geminicli"      // register agent
+	cpkg "github.com/entireio/cli/cmd/entire/cli/checkpoint"
+	"github.com/entireio/cli/cmd/entire/cli/paths"
 	"github.com/entireio/cli/cmd/entire/cli/session"
 	"github.com/entireio/cli/cmd/entire/cli/testutil"
+
+	"github.com/go-git/go-git/v6"
+	"github.com/go-git/go-git/v6/plumbing"
 )
 
 func TestAttach_MissingSessionID(t *testing.T) {
@@ -164,6 +169,141 @@ func TestAttach_OutputContainsCheckpointID(t *testing.T) {
 	re := regexp.MustCompile(`Entire-Checkpoint: [0-9a-f]{12}`)
 	if !re.MatchString(output) {
 		t.Errorf("expected 'Entire-Checkpoint: <12-hex-id>' in output, got:\n%s", output)
+	}
+}
+
+func TestAttach_V2DualWriteEnabled(t *testing.T) {
+	setupAttachTestRepo(t)
+
+	repoDir := mustGetwd(t)
+	setAttachCheckpointsV2Enabled(t, repoDir)
+
+	sessionID := "test-attach-v2-dual-write"
+	setupClaudeTranscript(t, sessionID, `{"type":"user","message":{"role":"user","content":"create hello.txt"},"uuid":"uuid-1"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tu_1","name":"Write","input":{"file_path":"hello.txt","content":"hello"}}]},"uuid":"uuid-2"}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tu_1","content":"wrote file"}]},"uuid":"uuid-3"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Done."}]},"uuid":"uuid-4"}
+`)
+
+	var out bytes.Buffer
+	if err := runAttach(context.Background(), &out, sessionID, agent.AgentNameClaudeCode, true); err != nil {
+		t.Fatalf("runAttach failed: %v", err)
+	}
+
+	store, err := session.NewStateStore(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := store.Load(context.Background(), sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state == nil || state.LastCheckpointID.IsEmpty() {
+		t.Fatal("expected attach to persist a checkpoint ID")
+	}
+
+	repo, err := git.PlainOpen(repoDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cpPath := state.LastCheckpointID.Path()
+	mainCompact, found := readFileFromRef(t, repo, paths.V2MainRefName, cpPath+"/0/"+paths.CompactTranscriptFileName)
+	if !found {
+		t.Fatalf("expected %s on %s", paths.CompactTranscriptFileName, paths.V2MainRefName)
+	}
+	if !strings.Contains(mainCompact, "create hello.txt") {
+		t.Errorf("compact transcript missing prompt, got:\n%s", mainCompact)
+	}
+
+	fullTranscript, found := readFileFromRef(t, repo, paths.V2FullCurrentRefName, cpPath+"/0/"+paths.V2RawTranscriptFileName)
+	if !found {
+		t.Fatalf("expected %s on %s", paths.V2RawTranscriptFileName, paths.V2FullCurrentRefName)
+	}
+	if !strings.Contains(fullTranscript, "hello.txt") {
+		t.Errorf("raw transcript missing file content, got:\n%s", fullTranscript)
+	}
+}
+
+func TestAttach_V2BackfillsExistingV1OnlyCheckpoint(t *testing.T) {
+	setupAttachTestRepo(t)
+
+	repoDir := mustGetwd(t)
+
+	session1ID := "test-attach-v1-only-session"
+	setupClaudeTranscript(t, session1ID, `{"type":"user","message":{"role":"user","content":"first prompt"},"uuid":"uuid-1"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"first answer"}]},"uuid":"uuid-2"}
+`)
+
+	var out bytes.Buffer
+	if err := runAttach(context.Background(), &out, session1ID, agent.AgentNameClaudeCode, true); err != nil {
+		t.Fatalf("first attach failed: %v", err)
+	}
+
+	repo, err := git.PlainOpen(repoDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.Reference(plumbing.ReferenceName(paths.V2MainRefName), true); err == nil {
+		t.Fatalf("did not expect %s before checkpoints_v2 is enabled", paths.V2MainRefName)
+	}
+	if _, err := repo.Reference(plumbing.ReferenceName(paths.V2FullCurrentRefName), true); err == nil {
+		t.Fatalf("did not expect %s before checkpoints_v2 is enabled", paths.V2FullCurrentRefName)
+	}
+
+	setAttachCheckpointsV2Enabled(t, repoDir)
+
+	session2ID := "test-attach-v2-backfill-session"
+	setupClaudeTranscript(t, session2ID, `{"type":"user","message":{"role":"user","content":"second prompt"},"uuid":"uuid-3"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"second answer"}]},"uuid":"uuid-4"}
+`)
+
+	out.Reset()
+	if err := runAttach(context.Background(), &out, session2ID, agent.AgentNameClaudeCode, true); err != nil {
+		t.Fatalf("second attach failed: %v", err)
+	}
+
+	stateStore, err := session.NewStateStore(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	state1, err := stateStore.Load(context.Background(), session1ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state2, err := stateStore.Load(context.Background(), session2ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state1 == nil || state2 == nil {
+		t.Fatal("expected both session states to exist")
+	}
+	if state1.LastCheckpointID != state2.LastCheckpointID {
+		t.Fatalf("expected both sessions to share a checkpoint, got %s and %s", state1.LastCheckpointID, state2.LastCheckpointID)
+	}
+
+	v2Store := cpkg.NewV2GitStore(repo, "origin")
+	summary, err := v2Store.ReadCommitted(context.Background(), state2.LastCheckpointID)
+	if err != nil {
+		t.Fatalf("expected checkpoint in v2 after backfill: %v", err)
+	}
+	if got := len(summary.Sessions); got != 2 {
+		t.Fatalf("len(summary.Sessions) = %d, want 2", got)
+	}
+
+	content0, err := v2Store.ReadSessionContent(context.Background(), state2.LastCheckpointID, 0)
+	if err != nil {
+		t.Fatalf("failed reading v2 session 0: %v", err)
+	}
+	content1, err := v2Store.ReadSessionContent(context.Background(), state2.LastCheckpointID, 1)
+	if err != nil {
+		t.Fatalf("failed reading v2 session 1: %v", err)
+	}
+
+	foundSession1 := content0.Metadata.SessionID == session1ID || content1.Metadata.SessionID == session1ID
+	foundSession2 := content0.Metadata.SessionID == session2ID || content1.Metadata.SessionID == session2ID
+	if !foundSession1 || !foundSession2 {
+		t.Fatalf("expected both session IDs in v2, got %q and %q", content0.Metadata.SessionID, content1.Metadata.SessionID)
 	}
 }
 
@@ -639,4 +779,51 @@ func enableEntire(t *testing.T, repoDir string) {
 	if err := os.WriteFile(filepath.Join(entireDir, "settings.json"), []byte(settingsContent), 0o600); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func setAttachCheckpointsV2Enabled(t *testing.T, repoDir string) {
+	t.Helper()
+	entireDir := filepath.Join(repoDir, ".entire")
+	if err := os.MkdirAll(entireDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	settingsContent := `{"enabled": true, "strategy_options": {"checkpoints_v2": true}}`
+	if err := os.WriteFile(filepath.Join(entireDir, "settings.json"), []byte(settingsContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func mustGetwd(t *testing.T) string {
+	t.Helper()
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+func readFileFromRef(t *testing.T, repo *git.Repository, refName, filePath string) (string, bool) {
+	t.Helper()
+
+	ref, err := repo.Reference(plumbing.ReferenceName(refName), true)
+	if err != nil {
+		return "", false
+	}
+	commit, err := repo.CommitObject(ref.Hash())
+	if err != nil {
+		return "", false
+	}
+	tree, err := commit.Tree()
+	if err != nil {
+		return "", false
+	}
+	file, err := tree.File(filePath)
+	if err != nil {
+		return "", false
+	}
+	content, err := file.Contents()
+	if err != nil {
+		return "", false
+	}
+	return content, true
 }
