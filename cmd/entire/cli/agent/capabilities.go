@@ -27,7 +27,7 @@ type DeclaredCaps struct {
 
 // AsHookSupport returns the agent as HookSupport if it both implements the
 // interface and (for CapabilityDeclarer agents) has declared the capability.
-func AsHookSupport(ag Agent) (HookSupport, bool) {
+func AsHookSupport(ag Agent) (HookSupport, bool) { //nolint:ireturn // type-assertion helper must return interface
 	if ag == nil {
 		return nil, false
 	}
@@ -43,7 +43,7 @@ func AsHookSupport(ag Agent) (HookSupport, bool) {
 
 // AsTranscriptAnalyzer returns the agent as TranscriptAnalyzer if it both
 // implements the interface and (for CapabilityDeclarer agents) has declared the capability.
-func AsTranscriptAnalyzer(ag Agent) (TranscriptAnalyzer, bool) {
+func AsTranscriptAnalyzer(ag Agent) (TranscriptAnalyzer, bool) { //nolint:ireturn // type-assertion helper must return interface
 	if ag == nil {
 		return nil, false
 	}
@@ -59,7 +59,7 @@ func AsTranscriptAnalyzer(ag Agent) (TranscriptAnalyzer, bool) {
 
 // AsTranscriptPreparer returns the agent as TranscriptPreparer if it both
 // implements the interface and (for CapabilityDeclarer agents) has declared the capability.
-func AsTranscriptPreparer(ag Agent) (TranscriptPreparer, bool) {
+func AsTranscriptPreparer(ag Agent) (TranscriptPreparer, bool) { //nolint:ireturn // type-assertion helper must return interface
 	if ag == nil {
 		return nil, false
 	}
@@ -75,7 +75,7 @@ func AsTranscriptPreparer(ag Agent) (TranscriptPreparer, bool) {
 
 // AsTokenCalculator returns the agent as TokenCalculator if it both
 // implements the interface and (for CapabilityDeclarer agents) has declared the capability.
-func AsTokenCalculator(ag Agent) (TokenCalculator, bool) {
+func AsTokenCalculator(ag Agent) (TokenCalculator, bool) { //nolint:ireturn // type-assertion helper must return interface
 	if ag == nil {
 		return nil, false
 	}
@@ -91,7 +91,7 @@ func AsTokenCalculator(ag Agent) (TokenCalculator, bool) {
 
 // AsTextGenerator returns the agent as TextGenerator if it both
 // implements the interface and (for CapabilityDeclarer agents) has declared the capability.
-func AsTextGenerator(ag Agent) (TextGenerator, bool) {
+func AsTextGenerator(ag Agent) (TextGenerator, bool) { //nolint:ireturn // type-assertion helper must return interface
 	if ag == nil {
 		return nil, false
 	}
@@ -107,7 +107,7 @@ func AsTextGenerator(ag Agent) (TextGenerator, bool) {
 
 // AsHookResponseWriter returns the agent as HookResponseWriter if it both
 // implements the interface and (for CapabilityDeclarer agents) has declared the capability.
-func AsHookResponseWriter(ag Agent) (HookResponseWriter, bool) {
+func AsHookResponseWriter(ag Agent) (HookResponseWriter, bool) { //nolint:ireturn // type-assertion helper must return interface
 	if ag == nil {
 		return nil, false
 	}
@@ -126,7 +126,7 @@ func AsHookResponseWriter(ag Agent) (HookResponseWriter, bool) {
 // ExtractPrompts is conceptually part of transcript analysis, so it shares the same
 // capability gate — this prevents calling extract-prompts on external agent binaries
 // that never declared transcript_analyzer support.
-func AsPromptExtractor(ag Agent) (PromptExtractor, bool) {
+func AsPromptExtractor(ag Agent) (PromptExtractor, bool) { //nolint:ireturn // type-assertion helper must return interface
 	if ag == nil {
 		return nil, false
 	}
@@ -143,7 +143,7 @@ func AsPromptExtractor(ag Agent) (PromptExtractor, bool) {
 // AsSessionBaseDirProvider returns the agent as SessionBaseDirProvider if it implements
 // the interface. No capability declaration is needed since this is a built-in-only feature
 // (external agents use the agent binary's own session resolution).
-func AsSessionBaseDirProvider(ag Agent) (SessionBaseDirProvider, bool) {
+func AsSessionBaseDirProvider(ag Agent) (SessionBaseDirProvider, bool) { //nolint:ireturn // type-assertion helper must return interface
 	if ag == nil {
 		return nil, false
 	}
@@ -156,7 +156,7 @@ func AsSessionBaseDirProvider(ag Agent) (SessionBaseDirProvider, bool) {
 
 // AsSubagentAwareExtractor returns the agent as SubagentAwareExtractor if it both
 // implements the interface and (for CapabilityDeclarer agents) has declared the capability.
-func AsSubagentAwareExtractor(ag Agent) (SubagentAwareExtractor, bool) {
+func AsSubagentAwareExtractor(ag Agent) (SubagentAwareExtractor, bool) { //nolint:ireturn // type-assertion helper must return interface
 	if ag == nil {
 		return nil, false
 	}
