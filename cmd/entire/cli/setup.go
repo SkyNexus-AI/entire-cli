@@ -288,7 +288,8 @@ func runManageAgents(ctx context.Context, w io.Writer, opts EnableOptions, selec
 
 	// Nothing selected and nothing installed — no-op.
 	if len(selectedAgentNames) == 0 && len(installedNames) == 0 {
-		changed, err := maybePromptVercelDeploymentDisable(ctx, w, "", nil)
+		targetFile, _ := settingsTargetFile(ctx, opts.UseLocalSettings, opts.UseProjectSettings)
+		changed, err := maybePromptVercelDeploymentDisable(ctx, w, targetFile, nil)
 		if err != nil {
 			return err
 		}
@@ -348,7 +349,8 @@ func applyAgentChanges(ctx context.Context, w io.Writer, selectedAgentNames []st
 	}
 
 	if len(addedAgents) == 0 && len(removedAgents) == 0 && len(errs) == 0 {
-		changed, err := maybePromptVercelDeploymentDisable(ctx, w, "", nil)
+		targetFile, _ := settingsTargetFile(ctx, opts.UseLocalSettings, opts.UseProjectSettings)
+		changed, err := maybePromptVercelDeploymentDisable(ctx, w, targetFile, nil)
 		if err != nil {
 			return err
 		}
