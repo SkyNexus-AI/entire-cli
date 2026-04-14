@@ -528,6 +528,72 @@ func TestExplain_CheckpointFetchesFromRemoteWhenMissingLocally(t *testing.T) {
 	}
 }
 
+// TestExplain_CheckpointV2FetchesFromRemoteWhenMissingLocally verifies that
+// explain --checkpoint fetches v2 metadata from the remote when the v2 refs
+// don't exist locally. Same scenario as the v1 test but with checkpoints_v2 enabled.
+func TestExplain_CheckpointV2FetchesFromRemoteWhenMissingLocally(t *testing.T) {
+	t.Parallel()
+	env := NewFeatureBranchEnv(t)
+
+	// Enable v2 checkpoints with push
+	env.PatchSettings(map[string]any{
+		"strategy_options": map[string]any{
+			"checkpoints_v2": true,
+			"push_v2_refs":   true,
+		},
+	})
+
+	// Set up bare remote
+	env.SetupBareRemote()
+
+	// Create a session, make changes, checkpoint, and commit
+	session := env.NewSession()
+	transcriptPath := session.CreateTranscript("Add v2 feature", []FileChange{
+		{Path: "v2feature.go", Content: "package v2feature"},
+	})
+
+	if err := env.SimulateUserPromptSubmitWithPromptAndTranscriptPath(session.ID, "Add v2 feature", transcriptPath); err != nil {
+		t.Fatalf("SimulateUserPromptSubmit failed: %v", err)
+	}
+
+	env.WriteFile("v2feature.go", "package v2feature")
+	env.GitAdd("v2feature.go")
+
+	if err := env.SimulateStop(session.ID, transcriptPath); err != nil {
+		t.Fatalf("SimulateStop failed: %v", err)
+	}
+
+	env.GitCommitWithShadowHooks("Add v2 feature", "v2feature.go")
+
+	checkpointID := env.GetLatestCheckpointID()
+	if checkpointID == "" {
+		t.Fatal("should have a checkpoint ID after condensation")
+	}
+
+	// Push checkpoint data (v1 + v2 refs) to remote
+	env.RunPrePush("origin")
+
+	// Delete ALL local metadata refs (v1 and v2) to simulate
+	// a collaborator's repo that has never fetched them
+	repo, err := git.PlainOpen(env.RepoDir)
+	if err != nil {
+		t.Fatalf("failed to open repo: %v", err)
+	}
+	// v1 refs
+	_ = repo.Storer.RemoveReference(plumbing.NewBranchReferenceName(paths.MetadataBranchName))
+	_ = repo.Storer.RemoveReference(plumbing.NewRemoteReferenceName("origin", paths.MetadataBranchName))
+	// v2 refs
+	_ = repo.Storer.RemoveReference(plumbing.ReferenceName(paths.V2MainRefName))
+	_ = repo.Storer.RemoveReference(plumbing.ReferenceName(paths.V2FullCurrentRefName))
+
+	// This should succeed by fetching metadata from the remote
+	output := env.RunCLI("explain", "--checkpoint", checkpointID)
+
+	if !strings.Contains(output, "Add v2 feature") {
+		t.Errorf("expected output to contain prompt text, got:\n%s", output)
+	}
+}
+
 // TestExplain_BranchListingV2OnlyAfterV1Deleted verifies that the branch listing
 // works when only v2 data exists (v1 metadata branch deleted after dual-write).
 func TestExplain_BranchListingV2OnlyAfterV1Deleted(t *testing.T) {
