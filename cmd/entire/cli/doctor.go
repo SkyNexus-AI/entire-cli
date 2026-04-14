@@ -420,7 +420,10 @@ func checkDisconnectedV2Main(cmd *cobra.Command, force bool) error {
 	}
 
 	ctx := cmd.Context()
-	remote := strategy.ResolveCheckpointURL(ctx, "origin")
+	remote, configured, resolveErr := strategy.ResolveCheckpointRemoteURL(ctx)
+	if configured && resolveErr != nil {
+		return fmt.Errorf("checkpoint_remote is configured but could not be resolved: %w", resolveErr)
+	}
 	if remote == "" {
 		remote = "origin"
 	}
