@@ -511,13 +511,22 @@ func TestExplain_CheckpointFetchesFromRemoteWhenMissingLocally(t *testing.T) {
 	env.RunPrePush("origin")
 
 	// Delete local metadata branch and remote-tracking ref to simulate
-	// a collaborator's repo that has never fetched the metadata branch
+	// a collaborator's repo that has never fetched the metadata branch.
+	// RemoveReference may fail if the remote-tracking ref was never
+	// populated; we tolerate that but assert absence below so the test
+	// actually exercises the "fetch from remote when missing" path.
 	repo, err := git.PlainOpen(env.RepoDir)
-	if err != nil {
-		t.Fatalf("failed to open repo: %v", err)
-	}
-	_ = repo.Storer.RemoveReference(plumbing.NewBranchReferenceName(paths.MetadataBranchName))
-	_ = repo.Storer.RemoveReference(plumbing.NewRemoteReferenceName("origin", paths.MetadataBranchName))
+	require.NoError(t, err)
+
+	localRef := plumbing.NewBranchReferenceName(paths.MetadataBranchName)
+	remoteRef := plumbing.NewRemoteReferenceName("origin", paths.MetadataBranchName)
+	_ = repo.Storer.RemoveReference(localRef)
+	_ = repo.Storer.RemoveReference(remoteRef)
+
+	_, err = repo.Storer.Reference(localRef)
+	require.ErrorIs(t, err, plumbing.ErrReferenceNotFound, "local metadata ref should be absent")
+	_, err = repo.Storer.Reference(remoteRef)
+	require.ErrorIs(t, err, plumbing.ErrReferenceNotFound, "remote-tracking metadata ref should be absent")
 
 	// This should succeed by fetching metadata from the remote
 	output := env.RunCLI("explain", "--checkpoint", checkpointID)
@@ -574,17 +583,26 @@ func TestExplain_CheckpointV2FetchesFromRemoteWhenMissingLocally(t *testing.T) {
 	env.RunPrePush("origin")
 
 	// Delete ALL local metadata refs (v1 and v2) to simulate
-	// a collaborator's repo that has never fetched them
+	// a collaborator's repo that has never fetched them.
+	// RemoveReference may fail if a remote-tracking ref was never
+	// populated; we tolerate that but assert absence below so the test
+	// actually exercises the "fetch from remote when missing" path.
 	repo, err := git.PlainOpen(env.RepoDir)
-	if err != nil {
-		t.Fatalf("failed to open repo: %v", err)
+	require.NoError(t, err)
+
+	refsToRemove := []plumbing.ReferenceName{
+		// v1 refs
+		plumbing.NewBranchReferenceName(paths.MetadataBranchName),
+		plumbing.NewRemoteReferenceName("origin", paths.MetadataBranchName),
+		// v2 refs
+		plumbing.ReferenceName(paths.V2MainRefName),
+		plumbing.ReferenceName(paths.V2FullCurrentRefName),
 	}
-	// v1 refs
-	_ = repo.Storer.RemoveReference(plumbing.NewBranchReferenceName(paths.MetadataBranchName))
-	_ = repo.Storer.RemoveReference(plumbing.NewRemoteReferenceName("origin", paths.MetadataBranchName))
-	// v2 refs
-	_ = repo.Storer.RemoveReference(plumbing.ReferenceName(paths.V2MainRefName))
-	_ = repo.Storer.RemoveReference(plumbing.ReferenceName(paths.V2FullCurrentRefName))
+	for _, ref := range refsToRemove {
+		_ = repo.Storer.RemoveReference(ref)
+		_, err := repo.Storer.Reference(ref)
+		require.ErrorIs(t, err, plumbing.ErrReferenceNotFound, "ref %s should be absent", ref)
+	}
 
 	// This should succeed by fetching metadata from the remote
 	output := env.RunCLI("explain", "--checkpoint", checkpointID)
