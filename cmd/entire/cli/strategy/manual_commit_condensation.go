@@ -160,10 +160,11 @@ func (s *ManualCommitStrategy) CondenseSession(ctx context.Context, repo *git.Re
 	// hooks don't include transcript_path) but the agent wrote a transcript to its
 	// own storage directory.
 	if len(sessionData.Transcript) == 0 && ag != nil {
-		if resolved := resolveTranscriptFromAgentStorage(ctx, ag, state); len(resolved) > 0 {
-			sessionData.Transcript = resolved
-			sessionData.FullTranscriptLines = countTranscriptItems(state.AgentType, string(resolved))
-			sessionData.TokenUsage = agent.CalculateTokenUsage(ctx, ag, resolved, state.CheckpointTranscriptStart, "")
+		if data, resolvedPath := resolveTranscriptFromAgentStorage(ctx, ag, state); len(data) > 0 {
+			sessionData.Transcript = data
+			sessionData.FullTranscriptLines = countTranscriptItems(state.AgentType, string(data))
+			sessionData.TokenUsage = agent.CalculateTokenUsage(ctx, ag, data, state.CheckpointTranscriptStart, "")
+			state.TranscriptPath = resolvedPath
 		}
 	}
 
@@ -412,9 +413,9 @@ func (s *ManualCommitStrategy) extractOrCreateSessionData(ctx context.Context, r
 // resolveTranscriptFromAgentStorage attempts to find and read a session transcript
 // from the agent's native storage when the normal extraction paths found nothing.
 // This covers agents that don't include transcript_path in hook payloads (e.g., Codex
-// running as a subagent). If the transcript is found, state.TranscriptPath is updated
-// so subsequent condensation attempts can use the fast path.
-func resolveTranscriptFromAgentStorage(ctx context.Context, ag agent.Agent, state *SessionState) []byte {
+// running as a subagent). Returns (transcript bytes, resolved path) on success;
+// the caller is responsible for updating state.TranscriptPath.
+func resolveTranscriptFromAgentStorage(ctx context.Context, ag agent.Agent, state *SessionState) ([]byte, string) {
 	logCtx := logging.WithComponent(ctx, "checkpoint")
 
 	repoRoot, err := paths.WorktreeRoot(ctx)
@@ -423,7 +424,7 @@ func resolveTranscriptFromAgentStorage(ctx context.Context, ag agent.Agent, stat
 			slog.String("session_id", state.SessionID),
 			slog.String("error", err.Error()),
 		)
-		return nil
+		return nil, ""
 	}
 
 	sessionDir, err := ag.GetSessionDir(repoRoot)
@@ -433,7 +434,7 @@ func resolveTranscriptFromAgentStorage(ctx context.Context, ag agent.Agent, stat
 			slog.String("agent_type", string(state.AgentType)),
 			slog.String("error", err.Error()),
 		)
-		return nil
+		return nil, ""
 	}
 
 	resolved := ag.ResolveSessionFile(sessionDir, state.SessionID)
@@ -443,7 +444,7 @@ func resolveTranscriptFromAgentStorage(ctx context.Context, ag agent.Agent, stat
 			slog.String("agent_type", string(state.AgentType)),
 			slog.String("session_dir", sessionDir),
 		)
-		return nil
+		return nil, ""
 	}
 
 	// Some agents (e.g., OpenCode) require an export command to produce the
@@ -458,11 +459,8 @@ func resolveTranscriptFromAgentStorage(ctx context.Context, ag agent.Agent, stat
 			slog.String("resolved_path", resolved),
 			slog.Any("error", readErr),
 		)
-		return nil
+		return nil, ""
 	}
-
-	// Update state so future condensation attempts use the resolved path directly.
-	state.TranscriptPath = resolved
 
 	logging.Info(logCtx, "transcript fallback: resolved transcript from agent storage",
 		slog.String("session_id", state.SessionID),
@@ -471,7 +469,7 @@ func resolveTranscriptFromAgentStorage(ctx context.Context, ag agent.Agent, stat
 		slog.Int("transcript_bytes", len(data)),
 	)
 
-	return data
+	return data, resolved
 }
 
 // buildCompactTranscript produces compact (v2) transcript forms when v2

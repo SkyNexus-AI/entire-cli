@@ -368,10 +368,10 @@ func TestResolveTranscriptFromAgentStorage_CallsPrepareTranscript(t *testing.T) 
 		AgentType: "Mock",
 	}
 
-	data := resolveTranscriptFromAgentStorage(context.Background(), ag, state)
+	data, resolvedPath := resolveTranscriptFromAgentStorage(context.Background(), ag, state)
 	assert.Equal(t, transcriptContent, data, "should return transcript produced by PrepareTranscript")
-	assert.Equal(t, filepath.Join(sessionDir, "test-prepare-session.jsonl"), state.TranscriptPath,
-		"should update TranscriptPath")
+	assert.Equal(t, filepath.Join(sessionDir, "test-prepare-session.jsonl"), resolvedPath,
+		"should return resolved path")
 }
 
 func TestResolveTranscriptFromAgentStorage_PrepareFailsButFileExists(t *testing.T) {
@@ -395,7 +395,7 @@ func TestResolveTranscriptFromAgentStorage_PrepareFailsButFileExists(t *testing.
 		AgentType: "Mock",
 	}
 
-	data := resolveTranscriptFromAgentStorage(context.Background(), ag, state)
+	data, _ := resolveTranscriptFromAgentStorage(context.Background(), ag, state)
 	assert.Equal(t, transcriptContent, data, "should read existing file even when PrepareTranscript fails")
 }
 
@@ -415,6 +415,7 @@ func TestResolveTranscriptFromAgentStorage_PrepareFailsNoFile(t *testing.T) {
 		AgentType: "Mock",
 	}
 
-	data := resolveTranscriptFromAgentStorage(context.Background(), ag, state)
+	data, resolvedPath := resolveTranscriptFromAgentStorage(context.Background(), ag, state)
 	assert.Nil(t, data, "should return nil when PrepareTranscript fails and no file exists")
+	assert.Empty(t, resolvedPath, "should return empty path on failure")
 }
