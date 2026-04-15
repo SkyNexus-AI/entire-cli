@@ -4295,19 +4295,14 @@ func TestCondenseSession_V2DualWrite(t *testing.T) {
 
 func TestCondenseSession_V2DualWrite_CopiesTaskMetadataToFullCurrent(t *testing.T) {
 	dir := t.TempDir()
-	repo, err := git.PlainInit(dir, false)
-	require.NoError(t, err)
+	testutil.InitRepo(t, dir)
+	testutil.WriteFile(t, dir, "main.go", "package main")
+	testutil.GitAdd(t, dir, "main.go")
+	testutil.GitCommit(t, dir, "Initial commit")
 
-	worktree, err := repo.Worktree()
+	repo, err := git.PlainOpen(dir)
 	require.NoError(t, err)
-
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main"), 0o644))
-	_, err = worktree.Add("main.go")
-	require.NoError(t, err)
-	commitHash, err := worktree.Commit("Initial commit", &git.CommitOptions{
-		Author: &object.Signature{Name: "Test", Email: "test@test.com", When: time.Now()},
-	})
-	require.NoError(t, err)
+	commitHash := testutil.GetHeadHash(t, dir)
 
 	t.Chdir(dir)
 
@@ -4363,7 +4358,7 @@ func TestCondenseSession_V2DualWrite_CopiesTaskMetadataToFullCurrent(t *testing.
 	state, err := s.loadSessionState(context.Background(), sessionID)
 	require.NoError(t, err)
 	state.TranscriptPath = transcriptPath
-	state.BaseCommit = commitHash.String()[:7]
+	state.BaseCommit = commitHash[:7]
 	state.AgentType = agent.AgentTypeClaudeCode
 
 	checkpointID := id.MustCheckpointID("ab11cd22ef33")
