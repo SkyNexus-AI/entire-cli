@@ -27,6 +27,8 @@ import (
 
 const testTrailerCheckpointID id.CheckpointID = "a1b2c3d4e5f6"
 
+const testCheckpointsV2SettingsJSON = `{"enabled": true, "strategy": "manual-commit", "strategy_options": {"checkpoints_v2": true}}`
+
 // testTranscriptPromptResponse is a minimal transcript used across strategy tests.
 const testTranscriptPromptResponse = "{\"type\":\"human\",\"message\":{\"content\":\"test prompt\"}}\n{\"type\":\"assistant\",\"message\":{\"content\":\"test response\"}}\n"
 
@@ -4202,8 +4204,7 @@ func TestCondenseSession_V2DualWrite(t *testing.T) {
 	// Enable checkpoints_v2 via settings
 	entireDir := filepath.Join(dir, ".entire")
 	require.NoError(t, os.MkdirAll(entireDir, 0o755))
-	settingsJSON := `{"enabled": true, "strategy": "manual-commit", "strategy_options": {"checkpoints_v2": true}}`
-	require.NoError(t, os.WriteFile(filepath.Join(entireDir, "settings.json"), []byte(settingsJSON), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(entireDir, "settings.json"), []byte(testCheckpointsV2SettingsJSON), 0o644))
 
 	s := &ManualCommitStrategy{}
 	sessionID := "2025-01-15-test-v2-dual-write"
@@ -4308,8 +4309,7 @@ func TestCondenseSession_V2DualWrite_CopiesTaskMetadataToFullCurrent(t *testing.
 
 	entireDir := filepath.Join(dir, ".entire")
 	require.NoError(t, os.MkdirAll(entireDir, 0o755))
-	settingsJSON := `{"enabled": true, "strategy": "manual-commit", "strategy_options": {"checkpoints_v2": true}}`
-	require.NoError(t, os.WriteFile(filepath.Join(entireDir, "settings.json"), []byte(settingsJSON), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(entireDir, "settings.json"), []byte(testCheckpointsV2SettingsJSON), 0o644))
 
 	s := &ManualCommitStrategy{}
 	sessionID := "2025-01-15-test-v2-task-dual-write"
@@ -4397,8 +4397,7 @@ func TestCondenseSession_V2CompactTranscriptStart(t *testing.T) {
 	// Enable checkpoints_v2 via settings
 	entireDir := filepath.Join(dir, ".entire")
 	require.NoError(t, os.MkdirAll(entireDir, 0o755))
-	settingsJSON := `{"enabled": true, "strategy": "manual-commit", "strategy_options": {"checkpoints_v2": true}}`
-	require.NoError(t, os.WriteFile(filepath.Join(entireDir, "settings.json"), []byte(settingsJSON), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(entireDir, "settings.json"), []byte(testCheckpointsV2SettingsJSON), 0o644))
 
 	s := &ManualCommitStrategy{}
 	sessionID := "2025-01-15-test-v2-compact-start"

@@ -1380,8 +1380,7 @@ func TestHandleTurnEnd_V2FullCurrent_PreservesTaskMetadata(t *testing.T) {
 	// Enable checkpoints_v2 dual-write so PostCommit/HandleTurnEnd update v2 refs.
 	entireDir := filepath.Join(dir, ".entire")
 	require.NoError(t, os.MkdirAll(entireDir, 0o755))
-	settingsJSON := `{"enabled": true, "strategy": "manual-commit", "strategy_options": {"checkpoints_v2": true}}`
-	require.NoError(t, os.WriteFile(filepath.Join(entireDir, "settings.json"), []byte(settingsJSON), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(entireDir, "settings.json"), []byte(testCheckpointsV2SettingsJSON), 0o644))
 
 	s := &ManualCommitStrategy{}
 	sessionID := "test-turn-end-v2-task-preserve"
