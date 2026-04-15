@@ -2,10 +2,12 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"os/exec"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestRunIsolatedTextGeneratorCLI_Success(t *testing.T) {
@@ -130,6 +132,73 @@ func TestRunIsolatedTextGeneratorCLI_StdinPassedToCommand(t *testing.T) {
 	}
 	if result != "input text" {
 		t.Fatalf("result = %q, want %q", result, "input text")
+	}
+}
+
+func TestRunIsolatedTextGeneratorCLI_CanceledContextPreservesSentinel(t *testing.T) {
+	t.Parallel()
+
+	if runtime.GOOS == "windows" {
+		t.Skip("uses POSIX shell command")
+	}
+
+	runner := func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
+		return exec.CommandContext(ctx, "sh", "-c", "sleep 10")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+		cancel()
+	}()
+
+	_, err := RunIsolatedTextGeneratorCLI(ctx, runner, "test", "test", nil, "")
+	if err == nil {
+		t.Fatal("expected cancellation error")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+}
+
+func TestRunIsolatedTextGeneratorCLI_DeadlineExceededPreservesSentinel(t *testing.T) {
+	t.Parallel()
+
+	if runtime.GOOS == "windows" {
+		t.Skip("uses POSIX shell command")
+	}
+
+	runner := func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
+		return exec.CommandContext(ctx, "sh", "-c", "sleep 10")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+
+	_, err := RunIsolatedTextGeneratorCLI(ctx, runner, "test", "test", nil, "")
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected context.DeadlineExceeded, got %v", err)
+	}
+}
+
+func TestValidateInlinePromptSize(t *testing.T) {
+	t.Parallel()
+
+	okPrompt := strings.Repeat("a", MaxInlinePromptBytes)
+	if err := ValidateInlinePromptSize("test", okPrompt); err != nil {
+		t.Fatalf("expected prompt at limit to pass, got %v", err)
+	}
+
+	tooLargePrompt := strings.Repeat("a", MaxInlinePromptBytes+1)
+	err := ValidateInlinePromptSize("test", tooLargePrompt)
+	if err == nil {
+		t.Fatal("expected oversized prompt error")
+	}
+	if !strings.Contains(err.Error(), "too large for CLI argument transport") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

@@ -13,6 +13,10 @@ var cursorCommandRunner = exec.CommandContext
 
 // GenerateText sends a prompt to the Cursor agent CLI and returns the raw text response.
 func (c *CursorAgent) GenerateText(ctx context.Context, prompt string, model string) (string, error) {
+	if err := agent.ValidateInlinePromptSize("cursor", prompt); err != nil {
+		return "", err
+	}
+
 	args := []string{"-p", prompt, "--force", "--trust", "--workspace", os.TempDir()}
 	if model != "" {
 		args = append(args, "--model", model)

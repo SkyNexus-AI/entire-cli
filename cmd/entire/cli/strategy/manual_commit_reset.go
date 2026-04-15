@@ -17,6 +17,21 @@ func isAccessibleMode() bool {
 	return os.Getenv("ACCESSIBLE") != ""
 }
 
+// canPromptInteractively checks whether interactive confirmation prompts can be shown.
+// Returns false in tests, CI, and other environments without a controlling TTY.
+func canPromptInteractively() bool {
+	if os.Getenv("ENTIRE_TEST_TTY") != "" {
+		return os.Getenv("ENTIRE_TEST_TTY") == "1"
+	}
+
+	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
+	if err != nil {
+		return false
+	}
+	_ = tty.Close()
+	return true
+}
+
 // Reset deletes the shadow branch and session state for the current HEAD.
 // This allows starting fresh without existing checkpoints.
 func (s *ManualCommitStrategy) Reset(ctx context.Context, w, errW io.Writer) error {
