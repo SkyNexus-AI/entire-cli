@@ -83,6 +83,33 @@ func EnsureSetup(ctx context.Context) error {
 	return nil
 }
 
+// SafelyAdvanceLocalRef updates localRefName to point at targetHash, but only
+// when doing so cannot rewind a locally-ahead ref. Specifically, when a local
+// ref exists and targetHash is reachable by walking back from the local hash,
+// the local ref is already at or ahead of the target — leaving it alone is
+// the safe choice. Otherwise (local missing, equal, or behind) the ref is
+// updated to targetHash.
+//
+// The ancestry check walks from the local ref (which has full history), so
+// callers that fetched with --depth=1 do not break the check.
+func SafelyAdvanceLocalRef(ctx context.Context, repo *git.Repository, localRefName plumbing.ReferenceName, targetHash plumbing.Hash) error {
+	currentLocal, localErr := repo.Reference(localRefName, true)
+	if localErr == nil {
+		if currentLocal.Hash() == targetHash {
+			return nil
+		}
+		if IsAncestorOf(ctx, repo, targetHash, currentLocal.Hash()) {
+			return nil
+		}
+	}
+
+	newRef := plumbing.NewHashReference(localRefName, targetHash)
+	if err := repo.Storer.SetReference(newRef); err != nil {
+		return fmt.Errorf("failed to update local ref %s: %w", localRefName, err)
+	}
+	return nil
+}
+
 // IsAncestorOf checks if commit is an ancestor of (or equal to) target.
 // Returns true if target can reach commit by following parent links.
 // Limits search to MaxCommitTraversalDepth commits to avoid excessive traversal.

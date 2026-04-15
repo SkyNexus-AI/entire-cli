@@ -404,9 +404,11 @@ func FetchMetadataBranch(ctx context.Context, remoteURL string) error {
 	}
 
 	branchRef := plumbing.NewBranchReferenceName(branchName)
-	newRef := plumbing.NewHashReference(branchRef, fetchedRef.Hash())
-	if err := repo.Storer.SetReference(newRef); err != nil {
-		return fmt.Errorf("failed to create local branch from fetched ref: %w", err)
+	// Ancestry-safe advance: do not rewind a locally-ahead branch. Between
+	// condensation writing a local checkpoint commit and pre-push publishing
+	// it, a plain SetReference would orphan the unpushed checkpoint.
+	if err := SafelyAdvanceLocalRef(ctx, repo, branchRef, fetchedRef.Hash()); err != nil {
+		return fmt.Errorf("failed to advance local branch from fetched ref: %w", err)
 	}
 
 	_ = repo.Storer.RemoveReference(plumbing.ReferenceName(tmpRef)) //nolint:errcheck // cleanup is best-effort
@@ -414,13 +416,20 @@ func FetchMetadataBranch(ctx context.Context, remoteURL string) error {
 	return nil
 }
 
-// FetchV2MainFromURL fetches the v2 /main ref from a remote URL and updates the local ref.
+// v2MainFromURLTmpRef is the temporary ref that FetchV2MainFromURL uses to
+// land the fetched hash before safely promoting it to refs/entire/.../v2/main.
+// Fetching directly into the destination via `+src:dst` would force-overwrite
+// locally-ahead commits before Go could apply an ancestry check.
+const v2MainFromURLTmpRef = "refs/entire-fetch-tmp/v2-main"
+
+// FetchV2MainFromURL fetches the v2 /main ref from a remote URL and advances
+// the local ref only when doing so cannot rewind locally-ahead commits.
 // Uses explicit refspec since v2 refs are under refs/entire/, not refs/heads/.
 func FetchV2MainFromURL(ctx context.Context, remoteURL string) error {
 	fetchCtx, cancel := context.WithTimeout(ctx, checkpointRemoteFetchTimeout)
 	defer cancel()
 
-	refSpec := fmt.Sprintf("+%s:%s", paths.V2MainRefName, paths.V2MainRefName)
+	refSpec := fmt.Sprintf("+%s:%s", paths.V2MainRefName, v2MainFromURLTmpRef)
 	fetchArgs := AppendFetchFilterArgs(fetchCtx, []string{"fetch", "--no-tags", remoteURL, refSpec})
 	fetchCmd := CheckpointGitCommand(fetchCtx, remoteURL, fetchArgs...)
 	if fetchCmd.Env == nil {
@@ -436,6 +445,23 @@ func FetchV2MainFromURL(ctx context.Context, remoteURL string) error {
 		}
 		return fmt.Errorf("fetch v2 /main from %s failed: %w", redactedURL, fetchErr)
 	}
+
+	repo, err := OpenRepository(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to open repository: %w", err)
+	}
+
+	tmpRefName := plumbing.ReferenceName(v2MainFromURLTmpRef)
+	tmpRef, err := repo.Reference(tmpRefName, true)
+	if err != nil {
+		return fmt.Errorf("v2 /main not found after fetch (tmp ref %s missing): %w", v2MainFromURLTmpRef, err)
+	}
+
+	if err := SafelyAdvanceLocalRef(ctx, repo, plumbing.ReferenceName(paths.V2MainRefName), tmpRef.Hash()); err != nil {
+		return fmt.Errorf("failed to advance local v2 /main: %w", err)
+	}
+
+	_ = repo.Storer.RemoveReference(tmpRefName) //nolint:errcheck // cleanup is best-effort
 
 	return nil
 }

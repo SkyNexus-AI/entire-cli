@@ -430,12 +430,14 @@ func FetchMetadataBranch(ctx context.Context) error {
 		return fmt.Errorf("branch '%s' not found on origin: %w", branchName, err)
 	}
 
-	// Create or update local branch pointing to the same commit
-	localRef := plumbing.NewHashReference(plumbing.NewBranchReferenceName(branchName), remoteRef.Hash())
-	if err := repo.Storer.SetReference(localRef); err != nil {
-		return fmt.Errorf("failed to create local %s branch: %w", branchName, err)
+	// Advance the local branch only when doing so cannot rewind locally-ahead
+	// commits. The ancestry-safe helper is critical: there is a short window
+	// between condensation writing a commit to the local metadata branch and
+	// pre-push publishing it, during which naive "local := remote.tip" would
+	// orphan the unpushed checkpoint commit.
+	if err := strategy.SafelyAdvanceLocalRef(ctx, repo, plumbing.NewBranchReferenceName(branchName), remoteRef.Hash()); err != nil {
+		return fmt.Errorf("failed to advance local %s branch: %w", branchName, err)
 	}
-
 	return nil
 }
 
@@ -478,7 +480,10 @@ func FetchMetadataTreeOnly(ctx context.Context) error {
 		return fmt.Errorf("branch '%s' not found on origin: %w", branchName, err)
 	}
 
-	return safelyAdvanceLocalRef(ctx, repo, plumbing.NewBranchReferenceName(branchName), remoteRef.Hash())
+	if err := strategy.SafelyAdvanceLocalRef(ctx, repo, plumbing.NewBranchReferenceName(branchName), remoteRef.Hash()); err != nil {
+		return fmt.Errorf("failed to advance local %s branch: %w", branchName, err)
+	}
+	return nil
 }
 
 // v2MainFetchTmpRef is the temporary ref that FetchV2Main* functions use to
@@ -556,38 +561,11 @@ func applyV2MainFromTmpRef(ctx context.Context) error {
 	}
 	fetchedHash := tmpRef.Hash()
 
-	if err := safelyAdvanceLocalRef(ctx, repo, plumbing.ReferenceName(paths.V2MainRefName), fetchedHash); err != nil {
-		return err
+	if err := strategy.SafelyAdvanceLocalRef(ctx, repo, plumbing.ReferenceName(paths.V2MainRefName), fetchedHash); err != nil {
+		return fmt.Errorf("failed to advance local v2 /main: %w", err)
 	}
 
 	_ = repo.Storer.RemoveReference(tmpRefName) //nolint:errcheck // cleanup is best-effort
-	return nil
-}
-
-// safelyAdvanceLocalRef updates localRefName to point at targetHash, but only
-// when doing so cannot rewind a locally-ahead ref. Specifically, when a local
-// ref exists and targetHash is reachable by walking back from the local hash,
-// the local ref is already at or ahead of the target — leaving it alone is
-// the safe choice. Otherwise (local missing, equal, or behind) the ref is
-// updated to targetHash.
-//
-// The ancestry check walks from the local ref (which has full history), so
-// callers that fetched with --depth=1 do not break the check.
-func safelyAdvanceLocalRef(ctx context.Context, repo *git.Repository, localRefName plumbing.ReferenceName, targetHash plumbing.Hash) error {
-	currentLocal, localErr := repo.Reference(localRefName, true)
-	if localErr == nil {
-		if currentLocal.Hash() == targetHash {
-			return nil
-		}
-		if strategy.IsAncestorOf(ctx, repo, targetHash, currentLocal.Hash()) {
-			return nil
-		}
-	}
-
-	newRef := plumbing.NewHashReference(localRefName, targetHash)
-	if err := repo.Storer.SetReference(newRef); err != nil {
-		return fmt.Errorf("failed to update local ref %s: %w", localRefName, err)
-	}
 	return nil
 }
 
