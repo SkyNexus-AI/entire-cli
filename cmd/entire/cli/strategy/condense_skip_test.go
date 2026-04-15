@@ -211,6 +211,94 @@ func TestCondenseAndMarkFullyCondensed_SkippedMarksFullyCondensed(t *testing.T) 
 	assert.Equal(t, session.PhaseEnded, state.Phase, "Phase should remain ENDED")
 }
 
+func TestTryAgentCommitFastPath_SkipsEmptySession(t *testing.T) {
+	dir := setupGitRepo(t)
+	t.Chdir(dir)
+
+	s := &ManualCommitStrategy{}
+
+	// Create a commit message file
+	commitMsgFile := filepath.Join(dir, "COMMIT_EDITMSG")
+	require.NoError(t, os.WriteFile(commitMsgFile, []byte("test commit\n"), 0o644))
+
+	// Empty session: no transcript path, no files, no step count (Codex subagent pattern)
+	emptySession := &SessionState{
+		SessionID: "empty-codex-session",
+		AgentType: "Codex",
+		Phase:     session.PhaseActive,
+		// TranscriptPath: "" (not set by Codex hooks)
+		// FilesTouched:   nil
+		// StepCount:      0
+	}
+
+	// Fast path should NOT add a trailer for the empty session
+	result := s.tryAgentCommitFastPath(context.Background(), commitMsgFile, []*SessionState{emptySession}, "message")
+	assert.False(t, result, "fast path should not fire for empty session")
+
+	// Verify no trailer was added
+	content, err := os.ReadFile(commitMsgFile)
+	require.NoError(t, err)
+	assert.NotContains(t, string(content), "Entire-Checkpoint", "should not add trailer for empty session")
+}
+
+func TestTryAgentCommitFastPath_AcceptsSessionWithContent(t *testing.T) {
+	dir := setupGitRepo(t)
+	t.Chdir(dir)
+
+	s := &ManualCommitStrategy{}
+
+	commitMsgFile := filepath.Join(dir, "COMMIT_EDITMSG")
+	require.NoError(t, os.WriteFile(commitMsgFile, []byte("test commit\n"), 0o644))
+
+	// Session with content: has transcript path and step count
+	contentSession := &SessionState{
+		SessionID:      "claude-session",
+		AgentType:      "Claude Code",
+		Phase:          session.PhaseActive,
+		TranscriptPath: "/some/path/to/transcript.jsonl",
+		StepCount:      1,
+	}
+
+	result := s.tryAgentCommitFastPath(context.Background(), commitMsgFile, []*SessionState{contentSession}, "message")
+	assert.True(t, result, "fast path should fire for session with content")
+
+	// Verify trailer was added
+	content, err := os.ReadFile(commitMsgFile)
+	require.NoError(t, err)
+	assert.Contains(t, string(content), "Entire-Checkpoint", "should add trailer for session with content")
+}
+
+func TestTryAgentCommitFastPath_SkipsEmptyButAcceptsContentSession(t *testing.T) {
+	dir := setupGitRepo(t)
+	t.Chdir(dir)
+
+	s := &ManualCommitStrategy{}
+
+	commitMsgFile := filepath.Join(dir, "COMMIT_EDITMSG")
+	require.NoError(t, os.WriteFile(commitMsgFile, []byte("test commit\n"), 0o644))
+
+	// Two sessions: empty Codex subagent + Claude Code with content
+	emptySession := &SessionState{
+		SessionID: "empty-codex-session",
+		AgentType: "Codex",
+		Phase:     session.PhaseActive,
+	}
+	contentSession := &SessionState{
+		SessionID:      "claude-session",
+		AgentType:      "Claude Code",
+		Phase:          session.PhaseActive,
+		TranscriptPath: "/some/path/to/transcript.jsonl",
+		StepCount:      1,
+	}
+
+	result := s.tryAgentCommitFastPath(context.Background(), commitMsgFile, []*SessionState{emptySession, contentSession}, "message")
+	assert.True(t, result, "fast path should fire for the content session")
+
+	content, err := os.ReadFile(commitMsgFile)
+	require.NoError(t, err)
+	assert.Contains(t, string(content), "Entire-Checkpoint", "should add trailer from the content session")
+}
+
 // getHeadHash returns the HEAD commit hash as a string.
 func getHeadHash(t *testing.T, repo *git.Repository) string {
 	t.Helper()

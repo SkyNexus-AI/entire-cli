@@ -1938,10 +1938,22 @@ func (s *ManualCommitStrategy) tryAgentCommitFastPath(ctx context.Context, commi
 	}
 	logCtx := logging.WithComponent(ctx, "checkpoint")
 	for _, state := range sessions {
-		if state.Phase.IsActive() {
-			_ = s.addTrailerForAgentCommit(logCtx, commitMsgFile, state, source) //nolint:errcheck // always returns nil; kept for signature stability
-			return true
+		if !state.Phase.IsActive() {
+			continue
 		}
+		// Skip sessions that have no condensable content: no transcript path,
+		// no tracked files, and no shadow branch data (StepCount == 0). These
+		// would produce a Skipped result in CondenseSession, leaving the
+		// Entire-Checkpoint trailer pointing to nothing on the metadata branch.
+		if state.TranscriptPath == "" && len(state.FilesTouched) == 0 && state.StepCount == 0 {
+			logging.Debug(logCtx, "prepare-commit-msg: fast path skipping empty session",
+				slog.String("session_id", state.SessionID),
+				slog.String("agent_type", string(state.AgentType)),
+			)
+			continue
+		}
+		_ = s.addTrailerForAgentCommit(logCtx, commitMsgFile, state, source) //nolint:errcheck // always returns nil; kept for signature stability
+		return true
 	}
 	// Log why fast path didn't fire — collect session phases for diagnostics.
 	phases := make([]string, 0, len(sessions))
