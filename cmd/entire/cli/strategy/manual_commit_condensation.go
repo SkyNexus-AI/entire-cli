@@ -131,7 +131,11 @@ func (s *ManualCommitStrategy) CondenseSession(ctx context.Context, repo *git.Re
 
 	extractStart := time.Now()
 	_, extractSessionDataSpan := perf.Start(ctx, "extract_session_data")
-	sessionData, extractErr := s.extractOrCreateSessionData(ctx, repo, ag, ref, hasShadowBranch, state)
+	var shadowHash plumbing.Hash
+	if hasShadowBranch {
+		shadowHash = ref.Hash()
+	}
+	sessionData, extractErr := s.extractOrCreateSessionData(ctx, repo, ag, shadowHash, hasShadowBranch, state)
 	if extractErr != nil {
 		extractSessionDataSpan.RecordError(extractErr)
 		extractSessionDataSpan.End()
@@ -367,12 +371,12 @@ func filterFilesTouched(sessionData *ExtractedSessionData, committedFiles map[st
 // extractOrCreateSessionData tries to extract session data from the shadow branch,
 // live transcript, or creates empty session data as a fallback. The empty case is
 // handled by the transcript resolution fallback and skip gate in CondenseSession.
-func (s *ManualCommitStrategy) extractOrCreateSessionData(ctx context.Context, repo *git.Repository, ag agent.Agent, ref *plumbing.Reference, hasShadowBranch bool, state *SessionState) (*ExtractedSessionData, error) {
+func (s *ManualCommitStrategy) extractOrCreateSessionData(ctx context.Context, repo *git.Repository, ag agent.Agent, shadowHash plumbing.Hash, hasShadowBranch bool, state *SessionState) (*ExtractedSessionData, error) {
 	switch {
 	case hasShadowBranch:
 		// Shadow branch exists (from SaveStep commits) — extract transcript and
 		// metadata from the branch tree, preferring the live transcript if fresher.
-		data, err := s.extractSessionData(ctx, repo, ref.Hash(), state.SessionID, state.FilesTouched, state.AgentType, state.TranscriptPath, state.CheckpointTranscriptStart, state.Phase.IsActive())
+		data, err := s.extractSessionData(ctx, repo, shadowHash, state.SessionID, state.FilesTouched, state.AgentType, state.TranscriptPath, state.CheckpointTranscriptStart, state.Phase.IsActive())
 		if err != nil {
 			return nil, fmt.Errorf("failed to extract session data: %w", err)
 		}
