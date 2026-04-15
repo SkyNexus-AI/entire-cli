@@ -152,10 +152,14 @@ func (s *ManualCommitStrategy) CondenseSession(ctx context.Context, repo *git.Re
 		state.TokenUsage = backfillUsage
 	}
 
-	filterFilesTouched(sessionData, committedFiles)
-
 	// Skip gate: if there is no transcript AND no files touched, there is nothing
 	// meaningful to condense. Return early to avoid writing metadata-only stubs.
+	//
+	// This check MUST run before filterFilesTouched. That function's fallback
+	// assigns all committed files to sessions with empty FilesTouched (designed
+	// for mid-turn commits where SaveStep hasn't run yet). Without this ordering,
+	// genuinely empty sessions (no transcript, no shadow branch, no tracked files)
+	// would acquire committed files from the fallback and bypass this gate.
 	if len(sessionData.Transcript) == 0 && len(sessionData.FilesTouched) == 0 {
 		logging.Info(logCtx, "session skipped: no transcript or files to condense",
 			slog.String("session_id", state.SessionID),
@@ -170,6 +174,8 @@ func (s *ManualCommitStrategy) CondenseSession(ctx context.Context, repo *git.Re
 			Skipped:      true,
 		}, nil
 	}
+
+	filterFilesTouched(sessionData, committedFiles)
 
 	// On failure: drop transcript, continue with metadata (no retry path in hooks).
 	redactedTranscript, redactDuration, err := redactSessionTranscript(ctx, sessionData.Transcript)

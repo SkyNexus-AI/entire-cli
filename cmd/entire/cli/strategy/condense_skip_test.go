@@ -43,6 +43,40 @@ func TestCondenseSession_SkipsWhenNoTranscriptAndNoFiles(t *testing.T) {
 	assert.Equal(t, "test-skip-session", result.SessionID)
 }
 
+// Regression test: empty sessions must be skipped even when committedFiles is
+// non-empty. Before the fix, filterFilesTouched's fallback assigned all committed
+// files to sessions with empty FilesTouched, which made the skip gate think the
+// session had meaningful data (checkpoint 12a9a7e2ffbe).
+func TestCondenseSession_SkipsEmptySessionEvenWithCommittedFiles(t *testing.T) {
+	dir := setupGitRepo(t)
+	t.Chdir(dir)
+
+	repo, err := git.PlainOpen(dir)
+	require.NoError(t, err)
+
+	s := &ManualCommitStrategy{}
+	checkpointID := id.MustCheckpointID("b2c3d4e5f6a1")
+
+	// Session with no transcript path, no shadow branch, no FilesTouched (empty Codex companion)
+	state := &SessionState{
+		SessionID:  "empty-codex-with-committed-files",
+		AgentType:  "Codex",
+		BaseCommit: getHeadHash(t, repo),
+		Phase:      session.PhaseActive,
+	}
+
+	// Non-nil committedFiles simulates PostCommit passing the committed file set.
+	// Before the fix, filterFilesTouched's fallback would assign these to the
+	// session, defeating the skip gate.
+	committedFiles := map[string]struct{}{
+		"cmd/entire/cli/strategy/manual_commit_condensation.go": {},
+	}
+
+	result, err := s.CondenseSession(context.Background(), repo, checkpointID, state, committedFiles)
+	require.NoError(t, err)
+	assert.True(t, result.Skipped, "should skip empty session even when committedFiles is non-empty")
+}
+
 func TestCondenseSession_DoesNotSkipWhenFilesTouchedButNoTranscript(t *testing.T) {
 	dir := setupGitRepo(t)
 	t.Chdir(dir)
