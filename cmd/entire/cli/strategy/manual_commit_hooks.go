@@ -633,6 +633,9 @@ type postCommitActionHandler struct {
 	allAgentFiles map[string]struct{} // Union of all sessions' FilesTouched for cross-session attribution
 
 	// Output: set by handler methods, read by caller after TransitionAndLog.
+	// condensed is true only when CondenseSession wrote data to the metadata branch.
+	// Both failures and skips (no transcript/files) leave condensed=false, which
+	// correctly preserves shadow branches and defers FullyCondensed marking.
 	condensed bool
 }
 
