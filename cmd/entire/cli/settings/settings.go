@@ -74,7 +74,9 @@ type EntireSettings struct {
 
 	// SummaryTimeoutSeconds is an optional hard deadline (in seconds) for
 	// `entire explain --generate` summary generation. Zero or negative means
-	// "unset" -- the caller picks the default (no deadline interactive, 5 min in CI).
+	// "unset" -- the caller picks the default. Not yet consumed by the
+	// generate path; present so settings round-trip for a follow-up change
+	// that wires it into the deadline selection.
 	SummaryTimeoutSeconds int `json:"summary_timeout_seconds,omitempty"`
 
 	// Deprecated: no longer used. Exists to tolerate old settings files
@@ -109,8 +111,7 @@ func (s *EntireSettings) GetCommitLinking() string {
 
 // SummaryTimeoutValue returns the configured hard deadline for
 // `entire explain --generate` summary generation. Zero means "unset" --
-// the caller picks the default (no deadline interactive, 5 min in CI).
-// Negative values are treated as unset.
+// the caller picks the default. Negative values are treated as unset.
 func (s *EntireSettings) SummaryTimeoutValue() time.Duration {
 	if s.SummaryTimeoutSeconds < 1 {
 		return 0

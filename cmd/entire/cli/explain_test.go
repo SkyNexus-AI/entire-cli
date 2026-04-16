@@ -111,7 +111,7 @@ func TestFormatCheckpointSummaryError_DeadlineExceeded(t *testing.T) {
 	t.Parallel()
 	err := formatCheckpointSummaryError(fmt.Errorf("wrapped: %w", context.DeadlineExceeded), 5*time.Minute)
 	msg := err.Error()
-	for _, want := range []string{"5m", "summary_timeout_seconds", "status.anthropic.com"} {
+	for _, want := range []string{"5m", "safety deadline", "status.anthropic.com"} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("missing %q in %q", want, msg)
 		}

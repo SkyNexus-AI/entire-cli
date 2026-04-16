@@ -563,7 +563,6 @@ func formatCheckpointSummaryError(err error, deadline time.Duration) error {
 		return fmt.Errorf( //nolint:staticcheck // ST1005
 			"Claude did not return a summary within the %s safety deadline. This usually means one of:\n"+
 				"  - sonnet is taking longer than expected on a large transcript\n"+
-				"    Try: set summary_timeout_seconds: 600 in .entire/settings.local.json (or 0 to disable)\n"+
 				"  - the Claude CLI cannot reach Anthropic's API (network, VPN, firewall)\n"+
 				"    Try: run `claude --print \"hi\"` from a shell to confirm the CLI works\n"+
 				"  - Anthropic's API is degraded\n"+
