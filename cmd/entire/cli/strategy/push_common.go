@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/entireio/cli/cmd/entire/cli/checkpoint"
 	"github.com/entireio/cli/cmd/entire/cli/settings"
 
 	"github.com/go-git/go-git/v6"
@@ -143,16 +144,50 @@ func printSettingsCommitHint(ctx context.Context, target string) {
 }
 
 // printCheckpointsV2OnlyMigrationHint prints a hint when the committed project
-// settings enable checkpoints_v2_only. That mode disables v1 dual-write, so
-// existing v1 checkpoints should be migrated to v2.
+// settings enable checkpoints_v2_only AND there are v1 checkpoints that have
+// not yet been mirrored into v2. Suppressed when v2 already has every v1
+// checkpoint (nothing to migrate) so the hint does not become noise once the
+// migration is done.
 func printCheckpointsV2OnlyMigrationHint(ctx context.Context) {
 	v2OnlyMigrationHintOnce.Do(func() {
 		if !isCheckpointsV2OnlyCommitted(ctx) {
 			return
 		}
+		if !hasUnmigratedV1Checkpoints(ctx) {
+			return
+		}
 		fmt.Fprintln(os.Stderr, "[entire] Note: .entire/settings.json enables checkpoints_v2_only. Run 'entire migrate --checkpoints v2' to migrate existing checkpoints to v2.")
 		fmt.Fprintln(os.Stderr, "[entire] Use 'entire migrate --checkpoints v2 --force' to rewrite all checkpoints in v2.")
 	})
+}
+
+// hasUnmigratedV1Checkpoints reports whether any v1 checkpoint has no matching
+// entry in v2. Any failure opening the repo or listing either store is treated
+// as "no migration needed" so we stay silent instead of printing a speculative
+// hint — the hint is advisory and should never be the reason a push gets noisy.
+func hasUnmigratedV1Checkpoints(ctx context.Context) bool {
+	repo, err := OpenRepository(ctx)
+	if err != nil {
+		return false
+	}
+	v1List, err := checkpoint.NewGitStore(repo).ListCommitted(ctx)
+	if err != nil || len(v1List) == 0 {
+		return false
+	}
+	v2List, err := checkpoint.NewV2GitStore(repo, "").ListCommitted(ctx)
+	if err != nil {
+		return false
+	}
+	v2Set := make(map[string]struct{}, len(v2List))
+	for _, info := range v2List {
+		v2Set[info.CheckpointID.String()] = struct{}{}
+	}
+	for _, info := range v1List {
+		if _, ok := v2Set[info.CheckpointID.String()]; !ok {
+			return true
+		}
+	}
+	return false
 }
 
 // isCheckpointRemoteCommitted returns true if the committed .entire/settings.json
