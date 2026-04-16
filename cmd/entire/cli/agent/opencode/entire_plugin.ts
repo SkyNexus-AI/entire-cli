@@ -47,10 +47,10 @@ export const EntirePlugin: Plugin = async ({ directory }) => {
   }
 
   /**
-   * Synchronous variant for hooks that fire near process exit (turn-end, session-end).
-   * `opencode run` breaks its event loop on the same session.status idle event that
-   * triggers turn-end. The async callHook would be killed before completing.
-   * Bun.spawnSync blocks the event loop, preventing exit until the hook finishes.
+   * Synchronous variant for hooks that must complete before subsequent agent work
+   * or process exit. `turn-start` must finish initializing session state before a
+   * fast mid-turn commit can hit git hooks, and `turn-end` / `session-end` must
+   * finish before `opencode run` tears down its event loop.
    */
   function callHookSync(hookName: string, payload: Record<string, unknown>) {
     try {
@@ -115,7 +115,7 @@ export const EntirePlugin: Plugin = async ({ directory }) => {
               seenUserMessages.add(msg.id)
               const sessionID = msg.sessionID ?? currentSessionID
               if (sessionID) {
-                await callHook("turn-start", {
+                callHookSync("turn-start", {
                   session_id: sessionID,
                   prompt: part.text ?? "",
                   model: currentModel ?? "",

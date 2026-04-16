@@ -143,6 +143,30 @@ func TestInstallHooks_SessionStartIsGuardedBySessionSwitch(t *testing.T) {
 	}
 }
 
+func TestInstallHooks_TurnStartUsesSyncHook(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	ag := &OpenCodeAgent{}
+
+	if _, err := ag.InstallHooks(context.Background(), false, false); err != nil {
+		t.Fatalf("install failed: %v", err)
+	}
+
+	pluginPath := filepath.Join(dir, ".opencode", "plugins", "entire.ts")
+	data, err := os.ReadFile(pluginPath)
+	if err != nil {
+		t.Fatalf("plugin file not created: %v", err)
+	}
+
+	content := string(data)
+	if !strings.Contains(content, `callHookSync("turn-start", {`) {
+		t.Fatal("plugin file should dispatch turn-start via callHookSync")
+	}
+	if strings.Contains(content, `await callHook("turn-start", {`) {
+		t.Fatal("plugin file should not dispatch turn-start via async callHook")
+	}
+}
+
 func TestInstallHooks_ForceReinstall(t *testing.T) {
 	dir := t.TempDir()
 	t.Chdir(dir)
