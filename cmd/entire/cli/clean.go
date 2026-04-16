@@ -266,11 +266,14 @@ func runCleanAll(ctx context.Context, cmd *cobra.Command, force, dryRun bool) er
 	}
 
 	if settings.IsCheckpointsV2Enabled(ctx) {
-		v2Items, err := strategy.ListEligibleV2Generations(ctx)
+		v2Items, warnings, err := strategy.ListEligibleV2Generations(ctx)
 		if err != nil {
 			return fmt.Errorf("failed to list v2 generations: %w", err)
 		}
 		items = append(items, v2Items...)
+		for _, warning := range warnings {
+			fmt.Fprintf(cmd.ErrOrStderr(), "Warning: %s\n", warning)
+		}
 	}
 
 	// List temp files — skip active-session filter since --all deletes those sessions

@@ -340,42 +340,54 @@ func DeleteOrphanedCheckpoints(ctx context.Context, checkpointIDs []string) (del
 }
 
 // ListEligibleV2Generations returns archived checkpoints v2 /full/* generations
-// eligible for deletion based on the configured retention window.
-func ListEligibleV2Generations(ctx context.Context) ([]CleanupItem, error) {
+// eligible for deletion based on the configured retention window, along with
+// warnings for malformed generations that were skipped.
+func ListEligibleV2Generations(ctx context.Context) ([]CleanupItem, []string, error) {
 	s, err := settings.Load(ctx)
 	if err != nil {
-		return []CleanupItem{}, nil
+		return []CleanupItem{}, nil, nil
 	}
 
 	repo, err := OpenRepository(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to open git repository: %w", err)
+		return nil, nil, fmt.Errorf("failed to open git repository: %w", err)
 	}
 
 	store := checkpoint.NewV2GitStore(repo, "origin")
 	archived, err := store.ListArchivedGenerations()
 	if err != nil {
-		return nil, fmt.Errorf("failed to list archived generations: %w", err)
+		return nil, nil, fmt.Errorf("failed to list archived generations: %w", err)
 	}
 
 	cutoff := time.Now().AddDate(0, 0, -s.GetFullTranscriptGenerationRetentionDays())
 	cleanupItems := make([]CleanupItem, 0, len(archived))
+	warnings := make([]string, 0)
 
 	for _, name := range archived {
 		refName := plumbing.ReferenceName(paths.V2FullRefPrefix + name)
 		_, treeHash, refErr := store.GetRefState(refName)
 		if refErr != nil {
+			warnings = append(warnings, fmt.Sprintf("generation %s: cannot read ref", name))
 			continue
 		}
 
 		gen, genErr := store.ReadGeneration(treeHash)
 		if genErr != nil {
+			warnings = append(warnings, fmt.Sprintf("generation %s: failed to read generation.json", name))
 			continue
 		}
-		if gen.OldestCheckpointAt.IsZero() || gen.NewestCheckpointAt.IsZero() {
+
+		hasOldest := !gen.OldestCheckpointAt.IsZero()
+		hasNewest := !gen.NewestCheckpointAt.IsZero()
+		switch {
+		case !hasOldest && !hasNewest:
+			warnings = append(warnings, fmt.Sprintf("generation %s: missing generation.json", name))
 			continue
-		}
-		if gen.OldestCheckpointAt.After(gen.NewestCheckpointAt) {
+		case hasOldest != hasNewest:
+			warnings = append(warnings, fmt.Sprintf("generation %s: incomplete generation.json", name))
+			continue
+		case gen.OldestCheckpointAt.After(gen.NewestCheckpointAt):
+			warnings = append(warnings, fmt.Sprintf("generation %s: invalid timestamps", name))
 			continue
 		}
 		if !gen.NewestCheckpointAt.Before(cutoff) {
@@ -389,7 +401,7 @@ func ListEligibleV2Generations(ctx context.Context) ([]CleanupItem, error) {
 		})
 	}
 
-	return cleanupItems, nil
+	return cleanupItems, warnings, nil
 }
 
 // DeleteV2Generations deletes archived checkpoints v2 /full/* generation refs.
