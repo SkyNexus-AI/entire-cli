@@ -2,6 +2,7 @@ package strategy
 
 import (
 	"context"
+	"errors"
 	"os/exec"
 	"strings"
 	"testing"
@@ -170,13 +171,59 @@ func TestDeleteRefCLI_DeletesPackedCustomRef(t *testing.T) {
 		t.Fatalf("failed to pack refs: %s: %v", strings.TrimSpace(string(output)), err)
 	}
 
-	if err := DeleteRefCLI(context.Background(), refName); err != nil {
+	if err := DeleteRefCLI(context.Background(), refName, ""); err != nil {
 		t.Fatalf("DeleteRefCLI() error = %v", err)
 	}
 
 	showRefCmd := exec.CommandContext(context.Background(), "git", "show-ref", "--verify", "--quiet", refName)
 	if err := showRefCmd.Run(); err == nil {
 		t.Fatalf("ref %s should be deleted", refName)
+	}
+}
+
+func TestDeleteRefCLI_RejectsOIDMismatch(t *testing.T) {
+	dir := t.TempDir()
+	repo, err := git.PlainInit(dir, false)
+	if err != nil {
+		t.Fatalf("failed to init git repo: %v", err)
+	}
+
+	t.Chdir(dir)
+
+	emptyTreeHash := plumbing.NewHash("4b825dc642cb6eb9a060e54bf8d69288fbee4904")
+	commitHash, err := createCommit(repo, emptyTreeHash, plumbing.ZeroHash, "initial commit", "test", "test@test.com")
+	if err != nil {
+		t.Fatalf("failed to create initial commit: %v", err)
+	}
+
+	headRef := plumbing.NewSymbolicReference(plumbing.HEAD, plumbing.NewBranchReferenceName("master"))
+	if err := repo.Storer.SetReference(headRef); err != nil {
+		t.Fatalf("failed to set HEAD: %v", err)
+	}
+	masterRef := plumbing.NewHashReference(plumbing.NewBranchReferenceName("master"), commitHash)
+	if err := repo.Storer.SetReference(masterRef); err != nil {
+		t.Fatalf("failed to set master: %v", err)
+	}
+
+	refName := paths.V2FullRefPrefix + "0000000000099"
+	ref := plumbing.NewHashReference(plumbing.ReferenceName(refName), commitHash)
+	if err := repo.Storer.SetReference(ref); err != nil {
+		t.Fatalf("failed to create custom ref: %v", err)
+	}
+
+	staleOID := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	err = DeleteRefCLI(context.Background(), refName, staleOID)
+	if err == nil {
+		t.Fatal("expected error from DeleteRefCLI with stale OID, got nil")
+	}
+	if !errors.Is(err, ErrRefChanged) {
+		t.Fatalf("expected ErrRefChanged, got: %v", err)
+	}
+
+	// Ref must still exist after the rejected deletion.
+	showRefCmd := exec.CommandContext(context.Background(), "git", "show-ref", "--verify", "--quiet", refName)
+	if err := showRefCmd.Run(); err != nil {
+		t.Fatalf("ref %s should still exist after rejected deletion", refName)
 	}
 }
 

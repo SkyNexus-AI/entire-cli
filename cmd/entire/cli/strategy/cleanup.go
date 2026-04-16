@@ -412,7 +412,7 @@ func DeleteV2Generations(ctx context.Context, generationNames []string) (deleted
 
 	for _, name := range generationNames {
 		refName := plumbing.ReferenceName(paths.V2FullRefPrefix + name)
-		if err := DeleteRefCLI(ctx, refName.String()); err != nil {
+		if err := DeleteRefCLI(ctx, refName.String(), ""); err != nil {
 			failed = append(failed, name)
 			continue
 		}

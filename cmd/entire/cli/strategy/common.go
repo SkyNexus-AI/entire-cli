@@ -1391,6 +1391,9 @@ var ErrBranchNotFound = errors.New("branch not found")
 // ErrRefNotFound is returned by DeleteRefCLI when the ref does not exist.
 var ErrRefNotFound = errors.New("ref not found")
 
+// ErrRefChanged is returned by DeleteRefCLI when the ref no longer points to the expected OID.
+var ErrRefChanged = errors.New("ref changed since inspection")
+
 // DeleteBranchCLI deletes a git branch using the git CLI.
 // Uses `git branch -D` instead of go-git's RemoveReference because go-git v5
 // doesn't properly persist deletions when refs are packed (.git/packed-refs)
@@ -1425,9 +1428,13 @@ func DeleteBranchCLI(ctx context.Context, branchName string) error {
 // Uses `git update-ref -d` instead of go-git's RemoveReference because go-git
 // ref deletion is unreliable with packed refs and worktrees.
 //
+// When expectedOID is non-empty, it is passed to `git update-ref -d <ref> <old-oid>`
+// as a compare-and-swap guard: git will refuse the deletion if the ref no longer
+// points to expectedOID, and ErrRefChanged is returned.
+//
 // Returns ErrRefNotFound if the ref does not exist, allowing callers to use
 // errors.Is for idempotent deletion patterns.
-func DeleteRefCLI(ctx context.Context, refName string) error {
+func DeleteRefCLI(ctx context.Context, refName string, expectedOID string) error {
 	check := exec.CommandContext(ctx, "git", "show-ref", "--verify", "--quiet", refName)
 	if err := check.Run(); err != nil {
 		var exitErr *exec.ExitError
@@ -1437,8 +1444,15 @@ func DeleteRefCLI(ctx context.Context, refName string) error {
 		return fmt.Errorf("failed to check ref %s: %w", refName, err)
 	}
 
-	cmd := exec.CommandContext(ctx, "git", "update-ref", "-d", refName)
+	args := []string{"update-ref", "-d", refName}
+	if expectedOID != "" {
+		args = append(args, expectedOID)
+	}
+	cmd := exec.CommandContext(ctx, "git", args...)
 	if output, err := cmd.CombinedOutput(); err != nil {
+		if expectedOID != "" && (strings.Contains(string(output), "unexpected old") || strings.Contains(string(output), "but expected")) {
+			return fmt.Errorf("%w: %s (expected %s)", ErrRefChanged, refName, expectedOID)
+		}
 		return fmt.Errorf("failed to delete ref %s: %s: %w", refName, strings.TrimSpace(string(output)), err)
 	}
 	return nil
