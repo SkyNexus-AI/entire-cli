@@ -172,15 +172,7 @@ func updateSummaryGenerationSettings(ctx context.Context, w io.Writer, provider,
 		return errors.New("--summarize-model requires an existing summary provider or --summarize-provider")
 	}
 
-	if provider != "" {
-		if s.SummaryGeneration.Provider != "" && s.SummaryGeneration.Provider != provider && model == "" {
-			s.SummaryGeneration.Model = ""
-		}
-		s.SummaryGeneration.Provider = provider
-	}
-	if model != "" {
-		s.SummaryGeneration.Model = model
-	}
+	s.SummaryGeneration.SetProvider(provider, model)
 
 	if targetFile == settings.EntireSettingsLocalFile {
 		if err := SaveEntireSettingsLocal(ctx, s); err != nil {

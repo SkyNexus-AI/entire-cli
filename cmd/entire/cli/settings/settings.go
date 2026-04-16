@@ -94,8 +94,8 @@ type SummaryGenerationSettings struct {
 
 // Validate returns an error if the settings combination is semantically invalid.
 // A model without a provider is meaningless: the model hint needs a provider to
-// route to. Configure and merge paths enforce this at the command level, but
-// hand-edited settings files can still land in this state — we catch that here.
+// route to. The load path calls Validate() after merging, catching hand-edited
+// files that land in this state.
 func (s *SummaryGenerationSettings) Validate() error {
 	if s == nil {
 		return nil
@@ -104,6 +104,26 @@ func (s *SummaryGenerationSettings) Validate() error {
 		return fmt.Errorf("summary_generation.model %q set without summary_generation.provider", s.Model)
 	}
 	return nil
+}
+
+// SetProvider updates the provider and optionally the model, clearing any stale
+// model from the previous provider when switching without a replacement.
+// An empty newProvider preserves the current provider; an empty newModel
+// preserves the current model unless the provider is changing, in which case
+// the old model is cleared to avoid passing (say) a Claude model to Codex.
+func (s *SummaryGenerationSettings) SetProvider(newProvider, newModel string) {
+	if s == nil {
+		return
+	}
+	if newProvider != "" && s.Provider != "" && s.Provider != newProvider && newModel == "" {
+		s.Model = ""
+	}
+	if newProvider != "" {
+		s.Provider = newProvider
+	}
+	if newModel != "" {
+		s.Model = newModel
+	}
 }
 
 // RedactionSettings configures redaction behavior beyond the default secret detection.

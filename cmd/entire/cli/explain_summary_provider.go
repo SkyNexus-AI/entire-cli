@@ -28,11 +28,10 @@ var (
 )
 
 type checkpointSummaryProvider struct {
-	Name         types.AgentName
-	DisplayName  string
-	Model        string
-	DisplayModel string
-	Generator    summarize.Generator
+	Name        types.AgentName
+	DisplayName string
+	Model       string
+	Generator   summarize.Generator
 }
 
 func resolveCheckpointSummaryProvider(ctx context.Context, w io.Writer) (*checkpointSummaryProvider, error) {
@@ -43,12 +42,6 @@ func resolveCheckpointSummaryProvider(ctx context.Context, w io.Writer) (*checkp
 
 	if s.SummaryGeneration != nil && s.SummaryGeneration.Provider != "" {
 		providerName := types.AgentName(s.SummaryGeneration.Provider)
-		// Verify the CLI is actually installed before handing it to the
-		// generation pipeline. Without this the user hits a confusing
-		// shell-out failure at summary time instead of a clear "not
-		// installed" error at resolution time — and settings files shared
-		// across machines (repo-level settings.json) cannot assume every
-		// machine has the same CLIs installed.
 		if err := ensureSummaryProviderPresent(ctx, providerName); err != nil {
 			return nil, err
 		}
@@ -59,19 +52,11 @@ func resolveCheckpointSummaryProvider(ctx context.Context, w io.Writer) (*checkp
 
 	switch len(candidates) {
 	case 0:
-		// Previously silently fell back to Claude Code even when Claude
-		// itself wasn't installed, producing a later confusing CLI error.
-		// Fail loudly with actionable guidance instead.
 		return nil, errors.New("no summary-capable agent CLI is installed on this machine; install one of claude, codex, gemini, cursor, or copilot, or set summary_generation.provider in settings")
 	case 1:
 		return autoSelectSummaryProvider(ctx, w, candidates[0].Name, "non-interactive auto-select: single installed provider")
 	default:
 		if !interactive.CanPromptInteractively() {
-			// Prior behavior forced Claude here, even when Claude was not
-			// among the installed candidates — leading to a runtime failure
-			// on headless boxes. Pick the first detected candidate
-			// deterministically (registry order); that ensures we select
-			// something that's actually installed.
 			return autoSelectSummaryProvider(ctx, w, candidates[0].Name, "non-interactive auto-select: first detected of multiple")
 		}
 
@@ -79,15 +64,9 @@ func resolveCheckpointSummaryProvider(ctx context.Context, w io.Writer) (*checkp
 		if err != nil {
 			return nil, err
 		}
-
-		provider, err := buildCheckpointSummaryProvider(selected, "")
+		provider, err := autoSelectSummaryProvider(ctx, w, selected, "interactive prompt selection")
 		if err != nil {
 			return nil, err
-		}
-		if saveErr := persistSummaryProviderSelection(ctx, provider.Name, provider.Model); saveErr != nil {
-			logging.Warn(ctx, "failed to save summary provider selection, continuing without persistence",
-				"error", saveErr.Error())
-			fmt.Fprintf(w, "Warning: could not save provider selection: %v\nUse `entire configure --summarize-provider %s` to set it manually.\n", saveErr, provider.Name)
 		}
 		fmt.Fprintf(w, "Using %s for summary generation.\n", provider.DisplayName)
 		return provider, nil
@@ -178,16 +157,11 @@ func buildCheckpointSummaryProvider(name types.AgentName, model string) (*checkp
 	}
 
 	effectiveModel := summarize.ResolveModel(name, model)
-	displayModel := effectiveModel
-	if displayModel == "" {
-		displayModel = "provider default"
-	}
 
 	return &checkpointSummaryProvider{
-		Name:         name,
-		DisplayName:  string(ag.Type()),
-		Model:        effectiveModel,
-		DisplayModel: displayModel,
+		Name:        name,
+		DisplayName: string(ag.Type()),
+		Model:       effectiveModel,
 		Generator: &summarize.TextGeneratorAdapter{
 			TextGenerator: textGenerator,
 			Model:         effectiveModel,
@@ -239,13 +213,7 @@ func persistSummaryProviderSelection(ctx context.Context, provider types.AgentNa
 	if s.SummaryGeneration == nil {
 		s.SummaryGeneration = &settings.SummaryGenerationSettings{}
 	}
-	if s.SummaryGeneration.Provider != "" && s.SummaryGeneration.Provider != string(provider) && model == "" {
-		s.SummaryGeneration.Model = ""
-	}
-	s.SummaryGeneration.Provider = string(provider)
-	if model != "" {
-		s.SummaryGeneration.Model = model
-	}
+	s.SummaryGeneration.SetProvider(string(provider), model)
 
 	if targetFile == settings.EntireSettingsLocalFile {
 		if err := saveLocalSummarySettings(ctx, s); err != nil {
@@ -263,9 +231,12 @@ func formatSummaryProviderDetails(provider *checkpointSummaryProvider) string {
 	if provider == nil {
 		return ""
 	}
-
+	displayModel := provider.Model
+	if displayModel == "" {
+		displayModel = "provider default"
+	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "Provider: %s\n", provider.DisplayName)
-	fmt.Fprintf(&b, "Model: %s\n", provider.DisplayModel)
+	fmt.Fprintf(&b, "Model: %s\n", displayModel)
 	return b.String()
 }

@@ -14,9 +14,9 @@ import (
 )
 
 type stubTextAgent struct {
-	name       types.AgentName
-	kind       types.AgentType
-	notPresent bool
+	name   types.AgentName
+	kind   types.AgentType
+	absent bool
 }
 
 func (s *stubTextAgent) Name() types.AgentName { return s.name }
@@ -24,7 +24,7 @@ func (s *stubTextAgent) Type() types.AgentType { return s.kind }
 func (s *stubTextAgent) Description() string   { return "stub" }
 func (s *stubTextAgent) IsPreview() bool       { return false }
 func (s *stubTextAgent) DetectPresence(context.Context) (bool, error) {
-	return !s.notPresent, nil
+	return !s.absent, nil
 }
 func (s *stubTextAgent) ProtectedDirs() []string               { return nil }
 func (s *stubTextAgent) ReadTranscript(string) ([]byte, error) { return nil, nil }
@@ -82,8 +82,8 @@ func TestResolveCheckpointSummaryProvider_UsesConfiguredProvider(t *testing.T) {
 	if provider.Name != agent.AgentNameClaudeCode {
 		t.Fatalf("provider.Name = %q, want %q", provider.Name, agent.AgentNameClaudeCode)
 	}
-	if provider.DisplayModel != "haiku" {
-		t.Fatalf("provider.DisplayModel = %q, want %q", provider.DisplayModel, "haiku")
+	if provider.Model != "haiku" {
+		t.Fatalf("provider.Model = %q, want %q", provider.Model, "haiku")
 	}
 }
 
@@ -235,9 +235,9 @@ func TestResolveCheckpointSummaryProvider_ConfiguredProviderNotInstalledReturnsE
 	}
 	getSummaryAgent = func(name types.AgentName) (agent.Agent, error) {
 		return &stubTextAgent{
-			name:       name,
-			kind:       agent.AgentTypeCodex,
-			notPresent: true,
+			name:   name,
+			kind:   agent.AgentTypeCodex,
+			absent: true,
 		}, nil
 	}
 
@@ -254,8 +254,8 @@ func TestFormatSummaryProviderDetails(t *testing.T) {
 	t.Parallel()
 
 	details := formatSummaryProviderDetails(&checkpointSummaryProvider{
-		DisplayName:  "Codex",
-		DisplayModel: "gpt-5",
+		DisplayName: "Codex",
+		Model:       "gpt-5",
 	})
 
 	if details != "Provider: Codex\nModel: gpt-5\n" {

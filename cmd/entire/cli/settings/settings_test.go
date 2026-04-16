@@ -13,6 +13,33 @@ const (
 	providerCodex            = "codex"
 )
 
+// setupSettingsDir creates a temp repo directory with the provided settings
+// contents and chdirs into it. Pass empty strings to skip the base or local
+// file. DRYs up the merge/load integration tests that otherwise all repeat
+// the same ~12 lines of tmpdir + .entire + .git + chdir boilerplate.
+func setupSettingsDir(t *testing.T, base, local string) {
+	t.Helper()
+	tmpDir := t.TempDir()
+	entireDir := filepath.Join(tmpDir, ".entire")
+	if err := os.MkdirAll(entireDir, 0o755); err != nil {
+		t.Fatalf("failed to create .entire directory: %v", err)
+	}
+	if base != "" {
+		if err := os.WriteFile(filepath.Join(entireDir, "settings.json"), []byte(base), 0o644); err != nil {
+			t.Fatalf("failed to write settings file: %v", err)
+		}
+	}
+	if local != "" {
+		if err := os.WriteFile(filepath.Join(entireDir, "settings.local.json"), []byte(local), 0o644); err != nil {
+			t.Fatalf("failed to write local settings file: %v", err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(tmpDir, ".git"), 0o755); err != nil {
+		t.Fatalf("failed to create .git directory: %v", err)
+	}
+	t.Chdir(tmpDir)
+}
+
 func TestLoad_RejectsUnknownKeys(t *testing.T) {
 	// Create a temporary directory
 	tmpDir := t.TempDir()
@@ -463,23 +490,7 @@ func TestMergeJSON_ExternalAgents(t *testing.T) {
 }
 
 func TestLoad_SummaryGenerationField(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	entireDir := filepath.Join(tmpDir, ".entire")
-	if err := os.MkdirAll(entireDir, 0o755); err != nil {
-		t.Fatalf("failed to create .entire directory: %v", err)
-	}
-
-	settingsFile := filepath.Join(entireDir, "settings.json")
-	if err := os.WriteFile(settingsFile, []byte(`{"enabled": true, "summary_generation": {"provider": "codex", "model": "gpt-5"}}`), 0o644); err != nil {
-		t.Fatalf("failed to write settings file: %v", err)
-	}
-
-	if err := os.MkdirAll(filepath.Join(tmpDir, ".git"), 0o755); err != nil {
-		t.Fatalf("failed to create .git directory: %v", err)
-	}
-
-	t.Chdir(tmpDir)
+	setupSettingsDir(t, `{"enabled": true, "summary_generation": {"provider": "codex", "model": "gpt-5"}}`, "")
 
 	s, err := Load(context.Background())
 	if err != nil {
@@ -497,23 +508,7 @@ func TestLoad_SummaryGenerationField(t *testing.T) {
 }
 
 func TestLoad_SummaryGenerationModelWithoutProviderRejected(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	entireDir := filepath.Join(tmpDir, ".entire")
-	if err := os.MkdirAll(entireDir, 0o755); err != nil {
-		t.Fatalf("failed to create .entire directory: %v", err)
-	}
-
-	settingsFile := filepath.Join(entireDir, "settings.json")
-	if err := os.WriteFile(settingsFile, []byte(`{"enabled": true, "summary_generation": {"model": "sonnet"}}`), 0o644); err != nil {
-		t.Fatalf("failed to write settings file: %v", err)
-	}
-
-	if err := os.MkdirAll(filepath.Join(tmpDir, ".git"), 0o755); err != nil {
-		t.Fatalf("failed to create .git directory: %v", err)
-	}
-
-	t.Chdir(tmpDir)
+	setupSettingsDir(t, `{"enabled": true, "summary_generation": {"model": "sonnet"}}`, "")
 
 	_, err := Load(context.Background())
 	if err == nil {
@@ -531,30 +526,7 @@ func TestLoad_SummaryGenerationModelWithoutProviderRejected(t *testing.T) {
 // per SummaryGenerationSettings.Validate(), and the load path must reject
 // it rather than letting it reach the provider-resolution code.
 func TestLoad_MergedSettingsRejectsInvalidCombination(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	entireDir := filepath.Join(tmpDir, ".entire")
-	if err := os.MkdirAll(entireDir, 0o755); err != nil {
-		t.Fatalf("failed to create .entire directory: %v", err)
-	}
-
-	// Base has no summary_generation at all.
-	settingsFile := filepath.Join(entireDir, "settings.json")
-	if err := os.WriteFile(settingsFile, []byte(`{"enabled": true}`), 0o644); err != nil {
-		t.Fatalf("failed to write settings file: %v", err)
-	}
-
-	// Local override sets only a model — invalid combination after merge.
-	localFile := filepath.Join(entireDir, "settings.local.json")
-	if err := os.WriteFile(localFile, []byte(`{"summary_generation": {"model": "sonnet"}}`), 0o644); err != nil {
-		t.Fatalf("failed to write local settings file: %v", err)
-	}
-
-	if err := os.MkdirAll(filepath.Join(tmpDir, ".git"), 0o755); err != nil {
-		t.Fatalf("failed to create .git directory: %v", err)
-	}
-
-	t.Chdir(tmpDir)
+	setupSettingsDir(t, `{"enabled": true}`, `{"summary_generation": {"model": "sonnet"}}`)
 
 	_, err := Load(context.Background())
 	if err == nil {
@@ -599,30 +571,7 @@ func TestSummaryGenerationSettings_Validate(t *testing.T) {
 // on base `{"provider":"claude-code","model":"sonnet"}` would produce
 // `provider=codex, model=sonnet`, which codex would reject at CLI time.
 func TestMergeJSON_SummaryGeneration_ProviderSwitchClearsStaleModel(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	entireDir := filepath.Join(tmpDir, ".entire")
-	if err := os.MkdirAll(entireDir, 0o755); err != nil {
-		t.Fatalf("failed to create .entire directory: %v", err)
-	}
-
-	settingsFile := filepath.Join(entireDir, "settings.json")
-	base := baseSettingsClaudeSonnet
-	if err := os.WriteFile(settingsFile, []byte(base), 0o644); err != nil {
-		t.Fatalf("failed to write settings file: %v", err)
-	}
-
-	localFile := filepath.Join(entireDir, "settings.local.json")
-	local := `{"summary_generation": {"provider": "codex"}}`
-	if err := os.WriteFile(localFile, []byte(local), 0o644); err != nil {
-		t.Fatalf("failed to write local settings file: %v", err)
-	}
-
-	if err := os.MkdirAll(filepath.Join(tmpDir, ".git"), 0o755); err != nil {
-		t.Fatalf("failed to create .git directory: %v", err)
-	}
-
-	t.Chdir(tmpDir)
+	setupSettingsDir(t, baseSettingsClaudeSonnet, `{"summary_generation": {"provider": "codex"}}`)
 
 	s, err := Load(context.Background())
 	if err != nil {
@@ -643,30 +592,7 @@ func TestMergeJSON_SummaryGeneration_ProviderSwitchClearsStaleModel(t *testing.T
 // checks the complementary case: if the override sets BOTH provider and model,
 // we preserve the explicit model rather than clearing it.
 func TestMergeJSON_SummaryGeneration_ProviderSwitchWithExplicitModelPreserved(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	entireDir := filepath.Join(tmpDir, ".entire")
-	if err := os.MkdirAll(entireDir, 0o755); err != nil {
-		t.Fatalf("failed to create .entire directory: %v", err)
-	}
-
-	settingsFile := filepath.Join(entireDir, "settings.json")
-	base := baseSettingsClaudeSonnet
-	if err := os.WriteFile(settingsFile, []byte(base), 0o644); err != nil {
-		t.Fatalf("failed to write settings file: %v", err)
-	}
-
-	localFile := filepath.Join(entireDir, "settings.local.json")
-	local := `{"summary_generation": {"provider": "codex", "model": "gpt-5"}}`
-	if err := os.WriteFile(localFile, []byte(local), 0o644); err != nil {
-		t.Fatalf("failed to write local settings file: %v", err)
-	}
-
-	if err := os.MkdirAll(filepath.Join(tmpDir, ".git"), 0o755); err != nil {
-		t.Fatalf("failed to create .git directory: %v", err)
-	}
-
-	t.Chdir(tmpDir)
+	setupSettingsDir(t, baseSettingsClaudeSonnet, `{"summary_generation": {"provider": "codex", "model": "gpt-5"}}`)
 
 	s, err := Load(context.Background())
 	if err != nil {
@@ -682,30 +608,7 @@ func TestMergeJSON_SummaryGeneration_ProviderSwitchWithExplicitModelPreserved(t 
 // override that pins the provider to the same value as the base must not
 // clobber the base's model.
 func TestMergeJSON_SummaryGeneration_SameProviderPreservesModel(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	entireDir := filepath.Join(tmpDir, ".entire")
-	if err := os.MkdirAll(entireDir, 0o755); err != nil {
-		t.Fatalf("failed to create .entire directory: %v", err)
-	}
-
-	settingsFile := filepath.Join(entireDir, "settings.json")
-	base := baseSettingsClaudeSonnet
-	if err := os.WriteFile(settingsFile, []byte(base), 0o644); err != nil {
-		t.Fatalf("failed to write settings file: %v", err)
-	}
-
-	localFile := filepath.Join(entireDir, "settings.local.json")
-	local := `{"summary_generation": {"provider": "claude-code"}}`
-	if err := os.WriteFile(localFile, []byte(local), 0o644); err != nil {
-		t.Fatalf("failed to write local settings file: %v", err)
-	}
-
-	if err := os.MkdirAll(filepath.Join(tmpDir, ".git"), 0o755); err != nil {
-		t.Fatalf("failed to create .git directory: %v", err)
-	}
-
-	t.Chdir(tmpDir)
+	setupSettingsDir(t, baseSettingsClaudeSonnet, `{"summary_generation": {"provider": "claude-code"}}`)
 
 	s, err := Load(context.Background())
 	if err != nil {
