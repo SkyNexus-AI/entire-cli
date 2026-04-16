@@ -2005,28 +2005,19 @@ func (s *ManualCommitStrategy) extractModifiedFilesFromLiveTranscript(ctx contex
 	return modifiedFiles
 }
 
-// tryAgentCommitFastPath skips content detection for mid-turn agent commits.
-// Returns true if the fast path was taken (trailer added or attempt made),
-// false if the caller should continue with normal content detection.
-//
-// The fast path activates when an ACTIVE session exists and either:
-//   - No TTY is available (agent subprocess, CI), or
-//   - commit_linking="always" (user opted into auto-linking — needed because
-//     some agents like Gemini subagents commit mid-turn from processes that
-//     have /dev/tty but can't respond to prompts, and content detection fails
-//     since the shadow branch doesn't exist yet).
-//
 // warnIfAttributionDiverged prints a show-once stderr warning when a session's
-// AttributionBaseCommit has diverged from BaseCommit (set by the migrate path
-// after history movement like git reset). The warning is visible in the user's
-// terminal during prepare-commit-msg, not in the agent's context.
+// AttributionBaseCommit has diverged from BaseCommit. This divergence arises
+// when the migrate path advances BaseCommit to a new HEAD but intentionally
+// leaves AttributionBaseCommit pinned (e.g., after a pull or git reset to an
+// unrelated commit). The warning is visible in the user's terminal during
+// prepare-commit-msg, not in the agent's context.
 func (s *ManualCommitStrategy) warnIfAttributionDiverged(ctx context.Context, sessions []*SessionState) {
 	logCtx := logging.WithComponent(ctx, "checkpoint")
 	for _, sess := range sessions {
 		if sess.AttributionBaseCommit != "" &&
 			sess.AttributionBaseCommit != sess.BaseCommit &&
 			!sess.DivergenceNoticeShown {
-			fmt.Fprintln(os.Stderr, "entire: session attribution diverged after recent history movement; figures may be off until next checkpoint")
+			fmt.Fprintln(stderrWriter, "entire: session attribution diverged after recent history movement; figures may be off until next checkpoint")
 			sess.DivergenceNoticeShown = true
 			if err := s.saveSessionState(ctx, sess); err != nil {
 				logging.Warn(logCtx, "failed to save divergence notice flag",
@@ -2038,6 +2029,16 @@ func (s *ManualCommitStrategy) warnIfAttributionDiverged(ctx context.Context, se
 	}
 }
 
+// tryAgentCommitFastPath skips content detection for mid-turn agent commits.
+// Returns true if the fast path was taken (trailer added or attempt made),
+// false if the caller should continue with normal content detection.
+//
+// The fast path activates when an ACTIVE session exists and either:
+//   - No TTY is available (agent subprocess, CI), or
+//   - commit_linking="always" (user opted into auto-linking — needed because
+//     some agents like Gemini subagents commit mid-turn from processes that
+//     have /dev/tty but can't respond to prompts, and content detection fails
+//     since the shadow branch doesn't exist yet).
 func (s *ManualCommitStrategy) tryAgentCommitFastPath(ctx context.Context, commitMsgFile string, sessions []*SessionState, source string) bool {
 	noTTY := !hasTTY()
 	skipContentDetection := noTTY

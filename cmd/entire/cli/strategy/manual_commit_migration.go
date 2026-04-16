@@ -60,6 +60,10 @@ func (s *ManualCommitStrategy) migrateShadowBranchIfNeeded(ctx context.Context, 
 					return true, nil
 				}
 			}
+		} else {
+			logging.Warn(logging.WithComponent(ctx, "migration"), "could not load HEAD commit for reconcile check, falling through to migrate",
+				slog.String("head", currentHead[:7]),
+				slog.String("error", commitErr.Error()))
 		}
 		// If CommitObject failed or no trailer matched, fall through to the
 		// existing migrate path below.
