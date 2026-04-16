@@ -26,6 +26,32 @@ func TestParseGenerateTextResponse_IsErrorEnvelope(t *testing.T) {
 	}
 }
 
+func TestParseGenerateTextResponse_IsErrorEnvelopeNullResult(t *testing.T) {
+	t.Parallel()
+	// Claude CLI can emit is_error:true with result:null on internal failures.
+	// The envelope's IsError / APIErrorStatus signal must survive even though
+	// Result is absent — otherwise classification falls through to a generic
+	// "missing result item" parse error and the upstream typed-error path
+	// loses the api_error_status.
+	stdout := `{"type":"result","subtype":"error_during_execution","is_error":true,"api_error_status":500,"result":null}`
+	result, env, err := parseGenerateTextResponse([]byte(stdout))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result != "" {
+		t.Errorf("result = %q; want empty string", result)
+	}
+	if env == nil {
+		t.Fatal("envelope = nil; want non-nil")
+	}
+	if !env.IsError {
+		t.Error("IsError = false; want true")
+	}
+	if env.APIErrorStatus == nil || *env.APIErrorStatus != 500 {
+		t.Errorf("APIErrorStatus = %v; want *500", env.APIErrorStatus)
+	}
+}
+
 func TestParseGenerateTextResponse(t *testing.T) {
 	t.Parallel()
 

@@ -19,8 +19,15 @@ type responseEnvelope struct {
 // The returned envelope allows callers to check IsError and APIErrorStatus.
 func parseGenerateTextResponse(stdout []byte) (string, *responseEnvelope, error) {
 	var response responseEnvelope
-	if err := json.Unmarshal(stdout, &response); err == nil && response.Result != nil {
-		return *response.Result, &response, nil
+	if err := json.Unmarshal(stdout, &response); err == nil {
+		if response.Result != nil {
+			return *response.Result, &response, nil
+		}
+		// is_error:true with null result is a structured CLI failure; callers
+		// need the envelope (IsError, APIErrorStatus) for classification.
+		if response.IsError {
+			return "", &response, nil
+		}
 	}
 
 	var responses []responseEnvelope
