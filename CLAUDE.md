@@ -140,9 +140,17 @@ t.Chdir(tmpDir)                                 // redirect CWD-based git resolu
 mise run fmt && mise run lint
 ```
 
+`mise run fmt` can rewrite files. Treat `mise run fmt && mise run lint` as a single verification sequence: if formatting changes anything, run lint again on the formatted tree rather than assuming a previous lint result still applies.
+
 ### Before Every Commit (REQUIRED)
 
 **CI will fail if you skip these steps:**
+
+```bash
+mise run check
+```
+
+Equivalent expanded form:
 
 ```bash
 mise run fmt      # Format code (CI enforces gofmt)
@@ -150,7 +158,9 @@ mise run lint     # Lint check (CI enforces golangci-lint)
 mise run test:ci  # Run all tests (unit + integration)
 ```
 
-Or combined: `mise run fmt && mise run lint && mise run test:ci`
+`mise run check` runs the three commands above.
+
+Safety note: do not treat a clean `mise run lint` result as final unless it was run after the most recent `mise run fmt` pass.
 
 **Common CI failures from skipping this:**
 
@@ -351,6 +361,7 @@ The manual-commit strategy (`manual_commit*.go`) does not modify the active bran
 - **Worktree-specific branches** - each git worktree gets its own shadow branch namespace, preventing conflicts
 - **Supports multiple concurrent sessions** - checkpoints from different sessions in the same directory interleave on the same shadow branch
 - Condenses session logs to permanent `entire/checkpoints/v1` branch on user commits
+- Uses the `post-rewrite` Git hook to keep local session linkage aligned after amend/rebase rewrites
 - Builds git trees in-memory using go-git plumbing APIs
 - Rewind restores files from shadow branch commit tree (does not use `git reset`)
 - **Location-independent transcript resolution** - transcript paths are always computed dynamically from the current repo location (via `agent.GetSessionDir` + `agent.ResolveSessionFile`), never stored in checkpoint metadata. This ensures restore/rewind works after repo relocation or across machines.
@@ -374,7 +385,7 @@ The manual-commit strategy (`manual_commit*.go`) does not modify the active bran
 - `manual_commit_rewind.go` - Rewind implementation: file restoration from checkpoint trees
 - `manual_commit_git.go` - Git operations: checkpoint commits, tree building
 - `manual_commit_logs.go` - Session log retrieval and session listing
-- `manual_commit_hooks.go` - Git hook handlers (prepare-commit-msg, post-commit, pre-push)
+- `manual_commit_hooks.go` - Git hook handlers (prepare-commit-msg, post-commit, post-rewrite, pre-push)
 - `manual_commit_reset.go` - Shadow branch reset/cleanup functionality
 - `session_state.go` - Package-level session state functions (`LoadSessionState`, `SaveSessionState`, `ListSessionStates`, `FindMostRecentSession`)
 - `hooks.go` - Git hook installation
