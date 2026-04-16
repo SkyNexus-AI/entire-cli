@@ -560,17 +560,6 @@ func IsPushV2RefsEnabled(ctx context.Context) bool {
 	return s.IsPushV2RefsEnabled()
 }
 
-// IsCheckpointsV1WriteEnabled reports whether v1 checkpoint writes should still
-// happen. Defaults to true (fail-safe: keep writing v1) when settings cannot be
-// loaded, so a misconfigured settings file does not silently drop checkpoints.
-func IsCheckpointsV1WriteEnabled(ctx context.Context) bool {
-	s, err := Load(ctx)
-	if err != nil {
-		return true
-	}
-	return s.IsCheckpointsV1WriteEnabled()
-}
-
 // IsFilteredFetchesEnabled checks if filtered fetches should be used.
 // When enabled, filtered fetches always resolve remote names to URLs first so
 // git does not persist promisor settings onto named remotes in local config.
@@ -689,12 +678,6 @@ func (s *EntireSettings) IsPushV2RefsEnabled() bool {
 	}
 	val, ok := s.StrategyOptions["push_v2_refs"].(bool)
 	return ok && val
-}
-
-// IsCheckpointsV1WriteEnabled reports whether v1 checkpoint writes should still
-// happen. checkpoints_v2_only disables the v1 path entirely.
-func (s *EntireSettings) IsCheckpointsV1WriteEnabled() bool {
-	return !s.IsCheckpointsV2OnlyEnabled()
 }
 
 // IsFilteredFetchesEnabled checks if fetches should use --filter=blob:none.

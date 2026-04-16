@@ -31,7 +31,7 @@ func (s *ManualCommitStrategy) PrePush(ctx context.Context, remote string) error
 	}
 
 	var err error
-	if settings.IsCheckpointsV1WriteEnabled(ctx) {
+	if !settings.IsCheckpointsV2OnlyEnabled(ctx) {
 		_, pushCheckpointsSpan := perf.Start(ctx, "push_checkpoints_branch")
 		err = pushBranchIfNeeded(ctx, ps.pushTarget(), paths.MetadataBranchName)
 		if err != nil {
