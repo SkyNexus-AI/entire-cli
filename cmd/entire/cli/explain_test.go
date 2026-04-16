@@ -134,6 +134,54 @@ func TestFormatCheckpointSummaryError_Passthrough(t *testing.T) {
 	}
 }
 
+// TestFormatCheckpointSummaryError_UnknownEmptyMessage guards against users
+// seeing "Claude failed to generate the summary:" with nothing after the
+// colon. Happens when Claude returns is_error:true with result:null (the
+// envelope is preserved per fix #8) or when the subprocess crashes with
+// no stderr output (OOM / SIGKILL).
+func TestFormatCheckpointSummaryError_UnknownEmptyMessageWithAPIStatus(t *testing.T) {
+	t.Parallel()
+	err := formatCheckpointSummaryError(
+		&claudecode.ClaudeError{Kind: claudecode.ClaudeErrorUnknown, APIStatus: 500},
+		0,
+	)
+	msg := err.Error()
+	if strings.HasSuffix(strings.TrimSpace(msg), ":") {
+		t.Errorf("user-facing message ends with bare colon: %q", msg)
+	}
+	if !strings.Contains(msg, "500") {
+		t.Errorf("missing HTTP 500 in %q", msg)
+	}
+}
+
+func TestFormatCheckpointSummaryError_UnknownEmptyMessageWithExitCode(t *testing.T) {
+	t.Parallel()
+	err := formatCheckpointSummaryError(
+		&claudecode.ClaudeError{Kind: claudecode.ClaudeErrorUnknown, ExitCode: 137},
+		0,
+	)
+	msg := err.Error()
+	if strings.HasSuffix(strings.TrimSpace(msg), ":") {
+		t.Errorf("user-facing message ends with bare colon: %q", msg)
+	}
+	if !strings.Contains(msg, "137") {
+		t.Errorf("missing exit code 137 in %q", msg)
+	}
+}
+
+func TestFormatCheckpointSummaryError_UnknownWithMessageUnchanged(t *testing.T) {
+	t.Parallel()
+	// Original behavior: when Message is present, it's appended after a colon.
+	err := formatCheckpointSummaryError(
+		&claudecode.ClaudeError{Kind: claudecode.ClaudeErrorUnknown, Message: "something weird"},
+		0,
+	)
+	msg := err.Error()
+	if !strings.Contains(msg, "something weird") {
+		t.Errorf("Message not included: %q", msg)
+	}
+}
+
 func TestExplainCmd_RejectsPositionalArgs(t *testing.T) {
 	tests := []struct {
 		name string

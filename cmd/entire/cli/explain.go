@@ -556,7 +556,7 @@ func formatCheckpointSummaryError(err error, deadline time.Duration) error {
 		case claudecode.ClaudeErrorCLIMissing:
 			return errors.New("Claude CLI is not installed or not on PATH") //nolint:staticcheck // ST1005
 		default:
-			return fmt.Errorf("Claude failed to generate the summary: %s", claudeErr.Message) //nolint:staticcheck // ST1005
+			return fmt.Errorf("Claude failed to generate the summary%s", formatClaudeErrorSuffix(claudeErr)) //nolint:staticcheck // ST1005
 		}
 	case errors.Is(err, context.DeadlineExceeded):
 		return fmt.Errorf( //nolint:staticcheck // ST1005
@@ -571,6 +571,27 @@ func formatCheckpointSummaryError(err error, deadline time.Duration) error {
 		return errors.New("summary generation canceled")
 	default:
 		return fmt.Errorf("failed to generate summary: %w", err)
+	}
+}
+
+// formatClaudeErrorSuffix builds a diagnostic suffix for user-facing output
+// when we fall through to the default "failed to generate the summary" path.
+// Prefers the envelope Message, falls back to HTTP status, then exit code,
+// so the user never sees a bare "Claude failed to generate the summary:"
+// with nothing after the colon (which happens when Claude returns
+// is_error:true with result:null, or when the subprocess crashes with no
+// stderr output).
+func formatClaudeErrorSuffix(e *claudecode.ClaudeError) string {
+	if e.Message != "" {
+		return ": " + e.Message
+	}
+	switch {
+	case e.APIStatus != 0:
+		return fmt.Sprintf(" (Anthropic API returned HTTP %d)", e.APIStatus)
+	case e.ExitCode != 0:
+		return fmt.Sprintf(" (claude CLI exited with code %d)", e.ExitCode)
+	default:
+		return ""
 	}
 }
 
