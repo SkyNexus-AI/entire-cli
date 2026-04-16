@@ -23,6 +23,7 @@ import (
 	"github.com/entireio/cli/cmd/entire/cli/paths"
 	"github.com/entireio/cli/cmd/entire/cli/settings"
 	"github.com/entireio/cli/cmd/entire/cli/trailers"
+	"github.com/entireio/cli/cmd/entire/cli/vercelconfig"
 	"github.com/entireio/cli/redact"
 
 	"github.com/go-git/go-git/v6"
@@ -68,6 +69,9 @@ func EnsureSetup(ctx context.Context) error {
 	repo, err := OpenRepository(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to open git repository: %w", err)
+	}
+	if err := vercelconfig.InitSettings(ctx); err != nil {
+		return fmt.Errorf("failed to initialize vercel settings: %w", err)
 	}
 	if err := EnsureMetadataBranch(repo); err != nil {
 		return fmt.Errorf("failed to ensure metadata branch: %w", err)
@@ -441,6 +445,10 @@ func EnsureMetadataBranch(repo *git.Repository) error {
 	emptyTreeHash, err := repo.Storer.SetEncodedObject(obj)
 	if err != nil {
 		return fmt.Errorf("failed to store empty tree: %w", err)
+	}
+	emptyTreeHash, err = vercelconfig.MaybeMergeMetadataBranchConfig(repo, emptyTreeHash)
+	if err != nil {
+		return fmt.Errorf("failed to initialize metadata branch vercel config: %w", err)
 	}
 
 	// Create orphan commit (no parent)
