@@ -242,6 +242,20 @@ func classifySession(state *strategy.SessionState, repo *git.Repository, now tim
 	_, refErr := repo.Reference(refName, true)
 	hasShadowBranch := refErr == nil
 
+	// Check for attribution divergence (any phase). This fires when the migrate
+	// path advanced BaseCommit without a reconcile, leaving AttributionBaseCommit
+	// stale. Not stuck, but worth surfacing diagnostically.
+	if state.AttributionBaseCommit != "" && state.AttributionBaseCommit != state.BaseCommit {
+		return &stuckSession{
+			State:             state,
+			Reason:            "attribution base diverged from tracking base after history movement; next condensation will realign",
+			ShadowBranch:      shadowBranch,
+			HasShadowBranch:   hasShadowBranch,
+			CheckpointCount:   state.StepCount,
+			FilesTouchedCount: len(state.FilesTouched),
+		}
+	}
+
 	switch {
 	case state.Phase.IsActive():
 		if !state.IsStuckActive() {
