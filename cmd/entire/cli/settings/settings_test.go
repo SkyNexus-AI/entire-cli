@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestLoad_RejectsUnknownKeys(t *testing.T) {
@@ -624,6 +625,38 @@ func TestIsFilteredFetchesEnabled_WrongType(t *testing.T) {
 	}
 	if s.IsFilteredFetchesEnabled() {
 		t.Error("expected IsFilteredFetchesEnabled to be false for non-bool value")
+	}
+}
+
+func TestSummaryTimeout_UnsetReturnsZero(t *testing.T) {
+	t.Parallel()
+	s := EntireSettings{}
+	if got := s.SummaryTimeoutValue(); got != 0 {
+		t.Fatalf("SummaryTimeoutValue() = %v, want 0", got)
+	}
+}
+
+func TestSummaryTimeout_ZeroReturnsZero(t *testing.T) {
+	t.Parallel()
+	s := EntireSettings{SummaryTimeoutSeconds: 0}
+	if got := s.SummaryTimeoutValue(); got != 0 {
+		t.Fatalf("SummaryTimeoutValue() = %v, want 0", got)
+	}
+}
+
+func TestSummaryTimeout_NegativeReturnsZero(t *testing.T) {
+	t.Parallel()
+	s := EntireSettings{SummaryTimeoutSeconds: -5}
+	if got := s.SummaryTimeoutValue(); got != 0 {
+		t.Fatalf("SummaryTimeoutValue() = %v, want 0 for negative input", got)
+	}
+}
+
+func TestSummaryTimeout_PositiveReturnsDuration(t *testing.T) {
+	t.Parallel()
+	s := EntireSettings{SummaryTimeoutSeconds: 90}
+	if got := s.SummaryTimeoutValue(); got != 90*time.Second {
+		t.Fatalf("SummaryTimeoutValue() = %v, want 90s", got)
 	}
 }
 
