@@ -21,7 +21,6 @@ import (
 var (
 	loadSummarySettings         = LoadEntireSettings
 	loadSummarySettingsFromFile = settings.LoadFromFile
-	saveProjectSummarySettings  = SaveEntireSettings
 	saveLocalSummarySettings    = SaveEntireSettingsLocal
 	getSummaryAgent             = agent.Get
 	listRegisteredAgents        = agent.List
@@ -188,16 +187,18 @@ func validateSummaryProvider(provider string) error {
 		return fmt.Errorf("agent %q does not support summary generation", provider)
 	}
 	if !isSummaryCLIAvailable(name) {
-		return fmt.Errorf("agent %q supports summary generation but is not a recognized summary provider; supported providers: claude-code, codex, gemini, cursor, copilot-cli", provider)
+		return fmt.Errorf("summary provider %q is configured but its CLI binary is not on PATH; install it or choose another provider", provider)
 	}
 	return nil
 }
 
 func persistSummaryProviderSelection(ctx context.Context, provider types.AgentName, model string) error {
-	targetFile, _ := settingsTargetFile(ctx, false, false)
-	targetFileAbs, err := paths.AbsPath(ctx, targetFile)
+	// Always write to settings.local.json: the provider choice is based on
+	// which CLI binaries are on the local PATH, so it is machine-specific
+	// and should not dirty the tracked settings.json.
+	targetFileAbs, err := paths.AbsPath(ctx, settings.EntireSettingsLocalFile)
 	if err != nil {
-		targetFileAbs = targetFile
+		targetFileAbs = settings.EntireSettingsLocalFile
 	}
 
 	s, err := loadSummarySettingsFromFile(targetFileAbs)
@@ -209,13 +210,7 @@ func persistSummaryProviderSelection(ctx context.Context, provider types.AgentNa
 	}
 	s.SummaryGeneration.SetProvider(string(provider), model)
 
-	if targetFile == settings.EntireSettingsLocalFile {
-		if err := saveLocalSummarySettings(ctx, s); err != nil {
-			return fmt.Errorf("saving summary provider selection: %w", err)
-		}
-		return nil
-	}
-	if err := saveProjectSummarySettings(ctx, s); err != nil {
+	if err := saveLocalSummarySettings(ctx, s); err != nil {
 		return fmt.Errorf("saving summary provider selection: %w", err)
 	}
 	return nil

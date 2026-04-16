@@ -2235,6 +2235,42 @@ func TestConfigureCmd_SummarizeModel_RequiresProvider(t *testing.T) {
 	}
 }
 
+func TestConfigureCmd_SummarizeModel_LocalInheritsProviderFromProject(t *testing.T) {
+	setupTestRepo(t)
+	stubCLIAvailable(t)
+	// Project settings define the provider; local override only sets the model.
+	writeSettings(t, `{"enabled": true, "summary_generation": {"provider": "claude-code"}}`)
+
+	cmd := newSetupCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--local", "--summarize-model", "sonnet"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("configure --local --summarize-model failed: %v", err)
+	}
+
+	localS, err := settings.LoadFromFile(EntireSettingsLocalFile)
+	if err != nil {
+		t.Fatalf("failed to load local settings: %v", err)
+	}
+	if localS.SummaryGeneration == nil {
+		t.Fatal("expected local summary_generation to be set")
+	}
+	if localS.SummaryGeneration.Model != "sonnet" {
+		t.Fatalf("local summary model = %q, want %q", localS.SummaryGeneration.Model, "sonnet")
+	}
+
+	// Project settings must not be modified.
+	projectS, err := settings.LoadFromFile(EntireSettingsFile)
+	if err != nil {
+		t.Fatalf("failed to load project settings: %v", err)
+	}
+	if projectS.SummaryGeneration.Model != "" {
+		t.Fatalf("project model = %q, should remain empty", projectS.SummaryGeneration.Model)
+	}
+}
+
 func TestConfigureCmd_SummarizeModel_UsesExistingProvider(t *testing.T) {
 	setupTestRepo(t)
 	stubCLIAvailable(t)

@@ -130,7 +130,7 @@ func TestLoad_AcceptsValidKeys(t *testing.T) {
 	if settings.SummaryGeneration.Provider != "claude-code" {
 		t.Errorf("expected summary_generation.provider 'claude-code', got %q", settings.SummaryGeneration.Provider)
 	}
-	if settings.SummaryGeneration.Model != "sonnet" {
+	if settings.SummaryGeneration.Model != "sonnet" { //nolint:goconst // test literal
 		t.Errorf("expected summary_generation.model 'sonnet', got %q", settings.SummaryGeneration.Model)
 	}
 	if settings.Redaction == nil {
@@ -519,6 +519,31 @@ func TestLoad_MergedSettingsRejectsInvalidCombination(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "summary_generation.model") {
 		t.Fatalf("expected inner error to mention summary_generation.model, got: %v", err)
+	}
+}
+
+func TestLoadFromFile_AcceptsModelWithoutProvider(t *testing.T) {
+	t.Parallel()
+
+	// A local override file may legitimately contain only a model; the
+	// provider comes from the project settings after merge. LoadFromFile
+	// must not reject this — validation happens post-merge in Load().
+	tmpDir := t.TempDir()
+	entireDir := filepath.Join(tmpDir, ".entire")
+	if err := os.MkdirAll(entireDir, 0o755); err != nil {
+		t.Fatalf("failed to create .entire directory: %v", err)
+	}
+	localFile := filepath.Join(entireDir, "settings.local.json")
+	if err := os.WriteFile(localFile, []byte(`{"summary_generation": {"model": "sonnet"}}`), 0o644); err != nil {
+		t.Fatalf("failed to write local settings: %v", err)
+	}
+
+	s, err := LoadFromFile(localFile)
+	if err != nil {
+		t.Fatalf("LoadFromFile should accept model-only file, got error: %v", err)
+	}
+	if s.SummaryGeneration == nil || s.SummaryGeneration.Model != "sonnet" {
+		t.Fatalf("expected model 'sonnet', got %+v", s.SummaryGeneration)
 	}
 }
 

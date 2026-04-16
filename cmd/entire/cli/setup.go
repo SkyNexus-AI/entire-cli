@@ -169,7 +169,13 @@ func updateSummaryGenerationSettings(ctx context.Context, w io.Writer, provider,
 		}
 	}
 	if model != "" && provider == "" && s.SummaryGeneration.Provider == "" {
-		return errors.New("--summarize-model requires an existing summary provider or --summarize-provider")
+		// The target file alone has no provider, but the merged runtime
+		// settings might (e.g. provider in project, model override in local).
+		// Check the full merged view before rejecting.
+		merged, mergeErr := settings.Load(ctx)
+		if mergeErr != nil || merged.SummaryGeneration == nil || merged.SummaryGeneration.Provider == "" {
+			return errors.New("--summarize-model requires an existing summary provider or --summarize-provider")
+		}
 	}
 
 	s.SummaryGeneration.SetProvider(provider, model)

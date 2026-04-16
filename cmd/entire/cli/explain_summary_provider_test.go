@@ -124,16 +124,28 @@ func TestResolveCheckpointSummaryProvider_SavesSingleInstalledProvider(t *testin
 		t.Fatalf("provider.Name = %q, want %q", provider.Name, agent.AgentNameCodex)
 	}
 
-	settingsPath := filepath.Join(tmpDir, ".entire", "settings.json")
-	s, err := settings.LoadFromFile(settingsPath)
+	// Auto-persist writes to settings.local.json (not tracked settings.json)
+	// because provider selection is based on local PATH.
+	localPath := filepath.Join(tmpDir, ".entire", "settings.local.json")
+	s, err := settings.LoadFromFile(localPath)
 	if err != nil {
 		t.Fatalf("LoadFromFile() error = %v", err)
 	}
 	if s.SummaryGeneration == nil {
-		t.Fatal("expected summary_generation to be persisted")
+		t.Fatal("expected summary_generation to be persisted in settings.local.json")
 	}
 	if s.SummaryGeneration.Provider != string(agent.AgentNameCodex) {
 		t.Fatalf("persisted provider = %q, want %q", s.SummaryGeneration.Provider, agent.AgentNameCodex)
+	}
+
+	// Tracked settings.json must not be dirtied.
+	projectPath := filepath.Join(tmpDir, ".entire", "settings.json")
+	projectS, err := settings.LoadFromFile(projectPath)
+	if err != nil {
+		t.Fatalf("LoadFromFile(project) error = %v", err)
+	}
+	if projectS.SummaryGeneration != nil {
+		t.Fatal("auto-persist should not write to tracked settings.json")
 	}
 }
 

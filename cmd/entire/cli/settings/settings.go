@@ -241,9 +241,9 @@ func loadFromFile(filePath string) (*EntireSettings, error) {
 		return nil, fmt.Errorf("invalid commit_linking value %q: must be %q or %q", settings.CommitLinking, CommitLinkingAlways, CommitLinkingPrompt)
 	}
 
-	if err := settings.SummaryGeneration.Validate(); err != nil {
-		return nil, err
-	}
+	// SummaryGeneration is NOT validated here — individual files may
+	// legitimately contain only a model (provider comes from another file).
+	// Validation happens after merge in Load().
 
 	return settings, nil
 }
