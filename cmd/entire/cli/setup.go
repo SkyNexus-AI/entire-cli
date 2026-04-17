@@ -640,6 +640,7 @@ func newEnableCmd() *cobra.Command {
 	var opts EnableOptions
 	var ignoreUntracked bool
 	var agentName string
+	var bootstrapOpts GitHubBootstrapOptions
 
 	cmd := &cobra.Command{
 		Use:   "enable",
@@ -647,15 +648,28 @@ func newEnableCmd() *cobra.Command {
 		Long: `Enable Entire with session tracking for your AI agent workflows.
 
 If Entire is not yet configured, this runs the full configuration flow.
-If Entire is already configured but disabled, this re-enables it.`,
+If Entire is already configured but disabled, this re-enables it.
+
+If the current directory is not a git repository, Entire can initialize one
+for you and (optionally) create a matching GitHub repository via the gh CLI.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
-			// Check if we're in a git repository first - this is a prerequisite error,
-			// not a usage error, so we silence Cobra's output and use SilentError
-			// to prevent duplicate error output in main.go
+			// Check if we're in a git repository first. If not, offer to
+			// bootstrap one (git init + optional GitHub repo). If the user
+			// declines, fall back to the legacy prerequisite error.
 			if _, err := paths.WorktreeRoot(ctx); err != nil {
-				fmt.Fprintln(cmd.ErrOrStderr(), "Not a git repository. Please run 'entire enable' from within a git repository.")
-				return NewSilentError(errors.New("not a git repository"))
+				bootstrapErr := runGitHubBootstrap(ctx, cmd.OutOrStdout(), cmd.ErrOrStderr(), bootstrapOpts)
+				if errors.Is(bootstrapErr, errBootstrapDeclined) {
+					fmt.Fprintln(cmd.ErrOrStderr(), "Not a git repository. Please run 'entire enable' from within a git repository.")
+					return NewSilentError(errors.New("not a git repository"))
+				}
+				if bootstrapErr != nil {
+					return bootstrapErr
+				}
+				// Re-check after bootstrap.
+				if _, err := paths.WorktreeRoot(ctx); err != nil {
+					return fmt.Errorf("bootstrap finished but no git repository detected: %w", err)
+				}
 			}
 
 			if err := validateSetupFlags(opts.UseLocalSettings, opts.UseProjectSettings); err != nil {
@@ -731,6 +745,15 @@ If Entire is already configured but disabled, this re-enables it.`,
 	cmd.Flags().StringVar(&opts.CheckpointRemote, flagCheckpointRemote, "", "Checkpoint remote in provider:owner/repo format (e.g., github:org/checkpoints-repo)")
 	cmd.Flags().BoolVar(&opts.Telemetry, "telemetry", true, "Enable anonymous usage analytics")
 	cmd.Flags().BoolVar(&opts.AbsoluteGitHookPath, "absolute-git-hook-path", false, "Embed full binary path in git hooks (for GUI git clients that don't source shell profiles)")
+
+	// Bootstrap flags for non-git-repo folders.
+	cmd.Flags().BoolVar(&bootstrapOpts.InitRepo, "init-repo", false, "If not a git repo, initialize one non-interactively")
+	cmd.Flags().BoolVar(&bootstrapOpts.NoInitRepo, "no-init-repo", false, "If not a git repo, exit instead of prompting to initialize one")
+	cmd.Flags().StringVar(&bootstrapOpts.RepoName, "repo-name", "", "GitHub repository name for the new repo (used when bootstrapping)")
+	cmd.Flags().StringVar(&bootstrapOpts.RepoOwner, "repo-owner", "", "GitHub user or organization login for the new repo")
+	cmd.Flags().StringVar(&bootstrapOpts.RepoVisibility, "repo-visibility", "", "GitHub repository visibility: public, private, or internal")
+	cmd.Flags().BoolVar(&bootstrapOpts.NoGitHub, "no-github", false, "Initialize local git repo only; skip creating a GitHub remote")
+	cmd.Flags().StringVar(&bootstrapOpts.InitialCommitMessage, "initial-commit-message", "", "Commit message for the initial commit when bootstrapping a new repo")
 
 	// Provide a helpful error when --agent is used without a value
 	defaultFlagErr := cmd.FlagErrorFunc()
