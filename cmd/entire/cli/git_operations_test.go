@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/entireio/cli/cmd/entire/cli/testutil"
 	"github.com/go-git/go-git/v6"
 	"github.com/go-git/go-git/v6/plumbing"
 	"github.com/go-git/go-git/v6/plumbing/object"
@@ -24,16 +25,21 @@ func gitCheckout(t *testing.T, dir, ref string) {
 	}
 }
 
+func initOpenedTestRepo(t *testing.T, dir string) *git.Repository {
+	t.Helper()
+	testutil.InitRepo(t, dir)
+	repo, err := git.PlainOpen(dir)
+	require.NoError(t, err)
+	return repo
+}
+
 func TestGetCurrentBranch(t *testing.T) {
 	// Create temp directory for test repo
 	tmpDir := t.TempDir()
 	t.Chdir(tmpDir)
 
 	// Initialize repo
-	repo, err := git.PlainInit(tmpDir, false)
-	if err != nil {
-		t.Fatalf("Failed to init repo: %v", err)
-	}
+	repo := initOpenedTestRepo(t, tmpDir)
 
 	// Create initial commit
 	w, err := repo.Worktree()
@@ -82,10 +88,7 @@ func TestGetCurrentBranchDetachedHead(t *testing.T) {
 	t.Chdir(tmpDir)
 
 	// Initialize repo
-	repo, err := git.PlainInit(tmpDir, false)
-	if err != nil {
-		t.Fatalf("Failed to init repo: %v", err)
-	}
+	repo := initOpenedTestRepo(t, tmpDir)
 
 	// Create initial commit
 	w, err := repo.Worktree()
@@ -125,10 +128,7 @@ func TestGetMergeBase(t *testing.T) {
 	t.Chdir(tmpDir)
 
 	// Initialize repo
-	repo, err := git.PlainInit(tmpDir, false)
-	if err != nil {
-		t.Fatalf("Failed to init repo: %v", err)
-	}
+	repo := initOpenedTestRepo(t, tmpDir)
 
 	w, err := repo.Worktree()
 	if err != nil {
@@ -198,10 +198,7 @@ func TestGetMergeBaseNonExistentBranch(t *testing.T) {
 	t.Chdir(tmpDir)
 
 	// Initialize repo with commit
-	repo, err := git.PlainInit(tmpDir, false)
-	if err != nil {
-		t.Fatalf("Failed to init repo: %v", err)
-	}
+	repo := initOpenedTestRepo(t, tmpDir)
 
 	w, err := repo.Worktree()
 	if err != nil {
@@ -236,10 +233,7 @@ func TestHasUncommittedChanges(t *testing.T) {
 	t.Chdir(tmpDir)
 
 	// Initialize repo
-	repo, err := git.PlainInit(tmpDir, false)
-	if err != nil {
-		t.Fatalf("Failed to init repo: %v", err)
-	}
+	repo := initOpenedTestRepo(t, tmpDir)
 
 	w, err := repo.Worktree()
 	if err != nil {
@@ -491,10 +485,7 @@ func TestGetGitAuthorReturnsAuthor(t *testing.T) {
 	t.Chdir(tmpDir)
 
 	// Initialize repo with user config
-	repo, err := git.PlainInit(tmpDir, false)
-	if err != nil {
-		t.Fatalf("Failed to init repo: %v", err)
-	}
+	repo := initOpenedTestRepo(t, tmpDir)
 
 	// Set local user config
 	cfg, err := repo.Config()
@@ -582,10 +573,7 @@ func TestBranchExistsOnRemote(t *testing.T) {
 	t.Chdir(tmpDir)
 
 	// Initialize repo
-	repo, err := git.PlainInit(tmpDir, false)
-	if err != nil {
-		t.Fatalf("Failed to init repo: %v", err)
-	}
+	repo := initOpenedTestRepo(t, tmpDir)
 
 	w, err := repo.Worktree()
 	if err != nil {

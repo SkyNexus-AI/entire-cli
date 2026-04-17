@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-git/go-git/v6"
+	"github.com/entireio/cli/cmd/entire/cli/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -493,8 +493,7 @@ func initTestRepo(t *testing.T) string {
 	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
 		dir = resolved
 	}
-	_, err := git.PlainInit(dir, false)
-	require.NoError(t, err)
+	testutil.InitRepo(t, dir)
 	t.Chdir(dir)
 	ClearGitCommonDirCache()
 	return dir
@@ -558,15 +557,13 @@ func TestGetGitCommonDir_InvalidatesOnCwdChange(t *testing.T) {
 	if resolved, err := filepath.EvalSymlinks(dir1); err == nil {
 		dir1 = resolved
 	}
-	_, err := git.PlainInit(dir1, false)
-	require.NoError(t, err)
+	testutil.InitRepo(t, dir1)
 
 	dir2 := t.TempDir()
 	if resolved, err := filepath.EvalSymlinks(dir2); err == nil {
 		dir2 = resolved
 	}
-	_, err = git.PlainInit(dir2, false)
-	require.NoError(t, err)
+	testutil.InitRepo(t, dir2)
 
 	ClearGitCommonDirCache()
 

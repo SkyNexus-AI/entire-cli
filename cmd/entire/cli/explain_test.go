@@ -455,9 +455,7 @@ func TestExplainCommit_NotFound(t *testing.T) {
 	t.Chdir(tmpDir)
 
 	// Initialize git repo
-	if _, err := git.PlainInit(tmpDir, false); err != nil {
-		t.Fatalf("failed to init git repo: %v", err)
-	}
+	testutil.InitRepo(t, tmpDir)
 
 	var stdout bytes.Buffer
 	err := runExplainCommit(context.Background(), &stdout, "nonexistent", false, false, false, false)
@@ -475,10 +473,9 @@ func TestExplainCommit_NoEntireData(t *testing.T) {
 	t.Chdir(tmpDir)
 
 	// Initialize git repo
-	repo, err := git.PlainInit(tmpDir, false)
-	if err != nil {
-		t.Fatalf("failed to init git repo: %v", err)
-	}
+	testutil.InitRepo(t, tmpDir)
+	repo, err := git.PlainOpen(tmpDir)
+	require.NoError(t, err)
 
 	w, err := repo.Worktree()
 	if err != nil {
@@ -528,10 +525,9 @@ func TestExplainCommit_WithMetadataTrailerButNoCheckpoint(t *testing.T) {
 	t.Chdir(tmpDir)
 
 	// Initialize git repo
-	repo, err := git.PlainInit(tmpDir, false)
-	if err != nil {
-		t.Fatalf("failed to init git repo: %v", err)
-	}
+	testutil.InitRepo(t, tmpDir)
+	repo, err := git.PlainOpen(tmpDir)
+	require.NoError(t, err)
 
 	w, err := repo.Worktree()
 	if err != nil {
@@ -596,10 +592,9 @@ func TestExplainDefault_ShowsBranchView(t *testing.T) {
 	t.Chdir(tmpDir)
 
 	// Initialize git repo
-	repo, err := git.PlainInit(tmpDir, false)
-	if err != nil {
-		t.Fatalf("failed to init git repo: %v", err)
-	}
+	testutil.InitRepo(t, tmpDir)
+	repo, err := git.PlainOpen(tmpDir)
+	require.NoError(t, err)
 
 	// Create initial commit so HEAD exists (required for branch view)
 	w, err := repo.Worktree()
@@ -652,10 +647,9 @@ func TestExplainDefault_NoCheckpoints_ShowsHelpfulMessage(t *testing.T) {
 	t.Chdir(tmpDir)
 
 	// Initialize git repo
-	repo, err := git.PlainInit(tmpDir, false)
-	if err != nil {
-		t.Fatalf("failed to init git repo: %v", err)
-	}
+	testutil.InitRepo(t, tmpDir)
+	repo, err := git.PlainOpen(tmpDir)
+	require.NoError(t, err)
 
 	// Create initial commit so HEAD exists (required for branch view)
 	w, err := repo.Worktree()
@@ -1174,10 +1168,9 @@ func TestRunExplainCheckpoint_NotFound(t *testing.T) {
 	t.Chdir(tmpDir)
 
 	// Initialize git repo with an initial commit (required for checkpoint lookup)
-	repo, err := git.PlainInit(tmpDir, false)
-	if err != nil {
-		t.Fatalf("failed to init git repo: %v", err)
-	}
+	testutil.InitRepo(t, tmpDir)
+	repo, err := git.PlainOpen(tmpDir)
+	require.NoError(t, err)
 
 	w, err := repo.Worktree()
 	if err != nil {
@@ -2424,10 +2417,9 @@ func TestGetBranchCheckpoints_ReadsPromptFromShadowBranch(t *testing.T) {
 	t.Chdir(tmpDir)
 
 	// Initialize git repo with an initial commit
-	repo, err := git.PlainInit(tmpDir, false)
-	if err != nil {
-		t.Fatalf("failed to init git repo: %v", err)
-	}
+	testutil.InitRepo(t, tmpDir)
+	repo, err := git.PlainOpen(tmpDir)
+	require.NoError(t, err)
 
 	w, err := repo.Worktree()
 	if err != nil {
@@ -2538,9 +2530,7 @@ func TestGetCurrentWorktreeHash_MainWorktree(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Chdir(tmpDir)
 
-	if _, err := git.PlainInit(tmpDir, false); err != nil {
-		t.Fatalf("failed to init git repo: %v", err)
-	}
+	testutil.InitRepo(t, tmpDir)
 
 	hash := getCurrentWorktreeHash(context.Background())
 	expected := checkpoint.HashWorktreeID("") // Main worktree has empty ID
@@ -2555,10 +2545,9 @@ func TestGetReachableTemporaryCheckpoints_FiltersByWorktree(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Chdir(tmpDir)
 
-	repo, err := git.PlainInit(tmpDir, false)
-	if err != nil {
-		t.Fatalf("failed to init git repo: %v", err)
-	}
+	testutil.InitRepo(t, tmpDir)
+	repo, err := git.PlainOpen(tmpDir)
+	require.NoError(t, err)
 
 	w, err := repo.Worktree()
 	if err != nil {
@@ -2658,10 +2647,9 @@ func TestRunExplainBranchDefault_DetachedHead(t *testing.T) {
 	t.Chdir(tmpDir)
 
 	// Initialize git repo with a commit
-	repo, err := git.PlainInit(tmpDir, false)
-	if err != nil {
-		t.Fatalf("failed to init git repo: %v", err)
-	}
+	testutil.InitRepo(t, tmpDir)
+	repo, err := git.PlainOpen(tmpDir)
+	require.NoError(t, err)
 
 	w, err := repo.Worktree()
 	if err != nil {
@@ -2715,10 +2703,9 @@ func TestIsAncestorOf(t *testing.T) {
 	t.Chdir(tmpDir)
 
 	// Initialize git repo
-	repo, err := git.PlainInit(tmpDir, false)
-	if err != nil {
-		t.Fatalf("failed to init git repo: %v", err)
-	}
+	testutil.InitRepo(t, tmpDir)
+	repo, err := git.PlainOpen(tmpDir)
+	require.NoError(t, err)
 
 	w, err := repo.Worktree()
 	if err != nil {
@@ -2781,10 +2768,9 @@ func TestGetBranchCheckpoints_OnFeatureBranch(t *testing.T) {
 	t.Chdir(tmpDir)
 
 	// Initialize git repo
-	repo, err := git.PlainInit(tmpDir, false)
-	if err != nil {
-		t.Fatalf("failed to init git repo: %v", err)
-	}
+	testutil.InitRepo(t, tmpDir)
+	repo, err := git.PlainOpen(tmpDir)
+	require.NoError(t, err)
 
 	w, err := repo.Worktree()
 	if err != nil {
@@ -2829,10 +2815,9 @@ func TestHasCodeChanges_FirstCommitReturnsTrue(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Chdir(tmpDir)
 
-	repo, err := git.PlainInit(tmpDir, false)
-	if err != nil {
-		t.Fatalf("failed to init git repo: %v", err)
-	}
+	testutil.InitRepo(t, tmpDir)
+	repo, err := git.PlainOpen(tmpDir)
+	require.NoError(t, err)
 
 	w, err := repo.Worktree()
 	if err != nil {
@@ -2869,10 +2854,9 @@ func TestHasCodeChanges_OnlyMetadataChanges(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Chdir(tmpDir)
 
-	repo, err := git.PlainInit(tmpDir, false)
-	if err != nil {
-		t.Fatalf("failed to init git repo: %v", err)
-	}
+	testutil.InitRepo(t, tmpDir)
+	repo, err := git.PlainOpen(tmpDir)
+	require.NoError(t, err)
 
 	w, err := repo.Worktree()
 	if err != nil {
@@ -2927,10 +2911,9 @@ func TestHasCodeChanges_WithCodeChanges(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Chdir(tmpDir)
 
-	repo, err := git.PlainInit(tmpDir, false)
-	if err != nil {
-		t.Fatalf("failed to init git repo: %v", err)
-	}
+	testutil.InitRepo(t, tmpDir)
+	repo, err := git.PlainOpen(tmpDir)
+	require.NoError(t, err)
 
 	w, err := repo.Worktree()
 	if err != nil {
@@ -2981,10 +2964,9 @@ func TestHasCodeChanges_MixedChanges(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Chdir(tmpDir)
 
-	repo, err := git.PlainInit(tmpDir, false)
-	if err != nil {
-		t.Fatalf("failed to init git repo: %v", err)
-	}
+	testutil.InitRepo(t, tmpDir)
+	repo, err := git.PlainOpen(tmpDir)
+	require.NoError(t, err)
 
 	w, err := repo.Worktree()
 	if err != nil {
@@ -3046,10 +3028,9 @@ func TestGetBranchCheckpoints_FiltersMainCommits(t *testing.T) {
 	t.Chdir(tmpDir)
 
 	// Initialize git repo
-	repo, err := git.PlainInit(tmpDir, false)
-	if err != nil {
-		t.Fatalf("failed to init git repo: %v", err)
-	}
+	testutil.InitRepo(t, tmpDir)
+	repo, err := git.PlainOpen(tmpDir)
+	require.NoError(t, err)
 
 	w, err := repo.Worktree()
 	if err != nil {
