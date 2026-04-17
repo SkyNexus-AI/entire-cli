@@ -36,8 +36,17 @@ func parseGenerateTextResponse(stdout []byte) (string, *responseEnvelope, error)
 	}
 
 	for i := len(responses) - 1; i >= 0; i-- {
-		if responses[i].Type == "result" && responses[i].Result != nil {
+		if responses[i].Type != "result" {
+			continue
+		}
+		if responses[i].Result != nil {
 			return *responses[i].Result, &responses[i], nil
+		}
+		// Mirror the object-path behavior: is_error:true with null result is
+		// a structured failure whose envelope (IsError, APIErrorStatus) must
+		// reach classifyEnvelopeError.
+		if responses[i].IsError {
+			return "", &responses[i], nil
 		}
 	}
 
