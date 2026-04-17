@@ -20,6 +20,33 @@ import (
 	"github.com/spf13/cobra"
 )
 
+func cleanLongDescription(ctx context.Context) string {
+	description := `Clean up Entire session data for the current HEAD commit.
+
+By default, cleans session state and shadow branches for the current HEAD:
+  - Session state files (.git/entire-sessions/<session-id>.json)
+  - Shadow branch (entire/<commit-hash>-<worktree-hash>)
+
+Use --all to clean all Entire session data across the repository:
+  - All session state files (.git/entire-sessions/)
+  - All shadow branches
+  - Temporary files (.entire/tmp/)`
+
+	if settings.IsCheckpointsV2Enabled(ctx) {
+		description += `
+  - Eligible archived checkpoints v2 full-transcript generations`
+	}
+
+	description += `
+
+Use --session <id> to clean a specific session only.
+
+Without --force, prompts for confirmation before deleting.
+Use --dry-run to preview what would be deleted without prompting.`
+
+	return description
+}
+
 func newCleanCmd() *cobra.Command {
 	var forceFlag bool
 	var allFlag bool
@@ -29,22 +56,7 @@ func newCleanCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "clean",
 		Short: "Clean up Entire session data",
-		Long: `Clean up Entire session data for the current HEAD commit.
-
-By default, cleans session state and shadow branches for the current HEAD:
-  - Session state files (.git/entire-sessions/<session-id>.json)
-  - Shadow branch (entire/<commit-hash>-<worktree-hash>)
-
-Use --all to clean all Entire session data across the repository:
-  - All session state files (.git/entire-sessions/)
-  - All shadow branches
-  - Temporary files (.entire/tmp/)
-The entire/checkpoints/v1 branch itself is preserved.
-
-Use --session <id> to clean a specific session only.
-
-Without --force, prompts for confirmation before deleting.
-Use --dry-run to preview what would be deleted without prompting.`,
+		Long:  cleanLongDescription(context.Background()),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
 
