@@ -602,13 +602,16 @@ func formatCheckpointSummaryError(err error, deadline time.Duration) error {
 			return fmt.Errorf("Claude failed to generate the summary%s", formatClaudeErrorSuffix(claudeErr)) //nolint:staticcheck // ST1005
 		}
 	case errors.Is(err, context.DeadlineExceeded):
-		return fmt.Errorf( //nolint:staticcheck // ST1005
-			"Claude did not return a summary within the %s safety deadline. This usually means one of:\n"+
-				"  - sonnet is taking longer than expected on a large transcript\n"+
-				"  - the Claude CLI cannot reach Anthropic's API (network, VPN, firewall)\n"+
-				"    Try: run `claude --print \"hi\"` from a shell to confirm the CLI works\n"+
-				"  - Anthropic's API is degraded\n"+
-				"    Check: https://status.anthropic.com",
+		// Deliberately provider-neutral: explain --generate supports multiple
+		// summary providers (claude-code, codex, gemini, ...), so hardcoding
+		// "Claude" / "sonnet" / "Anthropic" here would misdirect users who
+		// selected a different provider in .entire/settings.json.
+		return fmt.Errorf(
+			"summary generation did not return within the %s safety deadline. This usually means one of:\n"+
+				"  - the selected model is taking longer than expected on a large transcript\n"+
+				"  - the summary provider's CLI cannot reach its API (network, VPN, firewall)\n"+
+				"    Try: run the provider CLI directly to confirm it works\n"+
+				"  - the provider's API is degraded",
 			formatSummaryTimeout(deadline))
 	case errors.Is(err, context.Canceled):
 		return errors.New("summary generation canceled")

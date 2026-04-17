@@ -111,9 +111,19 @@ func TestFormatCheckpointSummaryError_DeadlineExceeded(t *testing.T) {
 	t.Parallel()
 	err := formatCheckpointSummaryError(fmt.Errorf("wrapped: %w", context.DeadlineExceeded), 5*time.Minute)
 	msg := err.Error()
-	for _, want := range []string{"5m", "safety deadline", "status.anthropic.com"} {
+	for _, want := range []string{"5m", "safety deadline"} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("missing %q in %q", want, msg)
+		}
+	}
+	// Negative guards against regressions:
+	//   - summary_timeout_seconds advice was removed because the setting is
+	//     not wired yet (follow-up PR). Reintroducing it would re-mislead users.
+	//   - Hardcoded "Claude" / "sonnet" / "Anthropic" would misdirect users of
+	//     alternate summary providers (codex, gemini).
+	for _, unwanted := range []string{"summary_timeout_seconds", "Claude", "sonnet", "Anthropic", "anthropic.com"} {
+		if strings.Contains(msg, unwanted) {
+			t.Errorf("unexpected %q in provider-neutral timeout message: %q", unwanted, msg)
 		}
 	}
 }
