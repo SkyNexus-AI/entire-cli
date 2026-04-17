@@ -368,13 +368,13 @@ func ListEligibleV2Generations(ctx context.Context) ([]CleanupItem, []string, er
 		refName := plumbing.ReferenceName(paths.V2FullRefPrefix + name)
 		commitHash, treeHash, refErr := store.GetRefState(refName)
 		if refErr != nil {
-			warnings = append(warnings, fmt.Sprintf("generation %s: cannot read ref", name))
+			warnings = append(warnings, fmt.Sprintf("generation %s: cannot read ref: %v", name, refErr))
 			continue
 		}
 
 		gen, genErr := store.ReadGeneration(treeHash)
 		if genErr != nil {
-			warnings = append(warnings, fmt.Sprintf("generation %s: failed to read generation.json", name))
+			warnings = append(warnings, fmt.Sprintf("generation %s: failed to read generation.json: %v", name, genErr))
 			continue
 		}
 

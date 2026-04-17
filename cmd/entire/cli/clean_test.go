@@ -952,6 +952,40 @@ func TestCleanCmd_All_ForceSkipsV2GenerationWithInvalidTimestamps(t *testing.T) 
 	}
 }
 
+func TestCleanCmd_All_ForceWarnsWithErrorDetailsForUnreadableV2Ref(t *testing.T) {
+	repo, _ := setupCleanTestRepo(t)
+
+	wt, err := repo.Worktree()
+	if err != nil {
+		t.Fatalf("failed to get worktree: %v", err)
+	}
+	repoRoot := wt.Filesystem.Root()
+
+	writeCleanSettingsFile(t, repoRoot, `{"enabled": true, "strategy_options": {"checkpoints_v2": true, "full_transcript_generation_retention_days": 14}}`)
+
+	genName := "0000000000010"
+	refName := plumbing.ReferenceName(paths.V2FullRefPrefix + genName)
+	brokenHash := plumbing.NewHash("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	if err := repo.Storer.SetReference(plumbing.NewHashReference(refName, brokenHash)); err != nil {
+		t.Fatalf("failed to create broken archived generation ref: %v", err)
+	}
+
+	cmd := newCleanCmd()
+	var stdout, stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{"--all", "--force"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("clean --all --force error = %v", err)
+	}
+
+	warningText := stderr.String()
+	if !strings.Contains(warningText, "generation "+genName+": cannot read ref:") {
+		t.Fatalf("expected warning with ref error details, got stdout=%q stderr=%q", stdout.String(), warningText)
+	}
+}
+
 // --- runCleanAllWithItems unit tests ---
 
 func TestRunCleanAllWithItems_PartialFailure(t *testing.T) {
