@@ -6,13 +6,17 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 )
 
-const testUser = "octocat"
+const (
+	testUser = "octocat"
+	cmdGit   = "git"
+)
 
 func TestSlugifyRepoName(t *testing.T) {
 	t.Parallel()
@@ -127,6 +131,13 @@ func (f *fakeRunner) RunInteractive(_ context.Context, dir, name string, args ..
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.interactive[f.key(name, args)]
+}
+
+// setIdentityConfigured simulates `git config --get user.name/email` returning
+// non-empty values, so ensureGitIdentity treats identity as already set.
+func (f *fakeRunner) setIdentityConfigured() {
+	f.set("git", []string{"config", "--get", "user.name"}, "Test User\n", nil)
+	f.set("git", []string{"config", "--get", "user.email"}, "test@example.com\n", nil)
 }
 
 // hasCall returns whether any recorded call matches the predicate.
@@ -307,7 +318,7 @@ func TestDoInitialCommit_WithFiles(t *testing.T) {
 	r := newFakeRunner()
 	r.set("git", []string{"add", "-A"}, "", nil)
 	r.set("git", []string{"status", "--porcelain"}, " M README.md\n", nil)
-	r.set("git", []string{"commit", "-m", "msg"}, "", nil)
+	r.set("git", []string{"-c", "commit.gpgsign=false", "commit", "-m", "msg"}, "", nil)
 
 	committed, err := doInitialCommit(context.Background(), r, dir, "msg")
 	if err != nil {
@@ -315,6 +326,12 @@ func TestDoInitialCommit_WithFiles(t *testing.T) {
 	}
 	if !committed {
 		t.Fatal("expected committed=true")
+	}
+	// Verify gpgsign=false was passed to the commit.
+	if !r.hasCall(func(c fakeCall) bool {
+		return c.name == cmdGit && len(c.args) >= 3 && c.args[0] == "-c" && c.args[1] == "commit.gpgsign=false" && c.args[2] == "commit"
+	}) {
+		t.Fatal("expected commit to pass -c commit.gpgsign=false")
 	}
 }
 
@@ -335,10 +352,11 @@ func TestRunGitHubBootstrap_NoGitHubFlow(t *testing.T) {
 	restoreCwd(t, dir)
 
 	r := newFakeRunner()
+	r.setIdentityConfigured()
 	r.set("git", []string{"init"}, "", nil)
 	r.set("git", []string{"add", "-A"}, "", nil)
 	r.set("git", []string{"status", "--porcelain"}, " M file\n", nil)
-	r.set("git", []string{"commit", "-m", "First!"}, "", nil)
+	r.set("git", []string{"-c", "commit.gpgsign=false", "commit", "-m", "First!"}, "", nil)
 
 	opts := GitHubBootstrapOptions{
 		InitRepo:             true,
@@ -352,7 +370,7 @@ func TestRunGitHubBootstrap_NoGitHubFlow(t *testing.T) {
 
 	// Verify git init ran in the cwd.
 	if !r.hasCall(func(c fakeCall) bool {
-		return c.name == "git" && len(c.args) == 1 && c.args[0] == "init"
+		return c.name == cmdGit && len(c.args) == 1 && c.args[0] == "init"
 	}) {
 		t.Fatal("expected git init call")
 	}
@@ -368,6 +386,7 @@ func TestRunGitHubBootstrap_GhMissingFallsBackToLocal(t *testing.T) {
 	restoreCwd(t, dir)
 
 	r := newFakeRunner()
+	r.setIdentityConfigured()
 	r.set("gh", []string{"--version"}, "", errors.New("not found"))
 	r.set("git", []string{"init"}, "", nil)
 	r.set("git", []string{"add", "-A"}, "", nil)
@@ -390,6 +409,7 @@ func TestRunGitHubBootstrap_FullNonInteractive(t *testing.T) {
 	restoreCwd(t, dir)
 
 	r := newFakeRunner()
+	r.setIdentityConfigured()
 	r.set("gh", []string{"--version"}, "gh 2.81.0", nil)
 	r.set("gh", []string{"auth", "status"}, "Logged in", nil)
 	r.set("gh", []string{"api", "user", "--jq", ".login"}, "octocat\n", nil)
@@ -399,7 +419,7 @@ func TestRunGitHubBootstrap_FullNonInteractive(t *testing.T) {
 	r.set("git", []string{"init"}, "", nil)
 	r.set("git", []string{"add", "-A"}, "", nil)
 	r.set("git", []string{"status", "--porcelain"}, " M f\n", nil)
-	r.set("git", []string{"commit", "-m", "Seed"}, "", nil)
+	r.set("git", []string{"-c", "commit.gpgsign=false", "commit", "-m", "Seed"}, "", nil)
 	r.setInteractive("gh", []string{
 		"repo", "create", "octocat/my-new",
 		"--private",
@@ -453,6 +473,196 @@ func TestRunGitHubBootstrap_RepoExistsFails(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "already exists") {
 		t.Fatalf("expected 'already exists' error, got %v", err)
+	}
+}
+
+func TestEnsureGitIdentity_AlreadyConfigured(t *testing.T) {
+	t.Parallel()
+	r := newFakeRunner()
+	r.setIdentityConfigured()
+
+	err := ensureGitIdentity(context.Background(), io.Discard, io.Discard, r, t.TempDir())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// No git config writes should have occurred.
+	if r.hasCall(func(c fakeCall) bool {
+		return c.name == cmdGit && len(c.args) >= 2 && c.args[0] == "config" && (c.args[1] == "user.name" || c.args[1] == "user.email")
+	}) {
+		t.Fatal("did not expect identity writes when already configured")
+	}
+}
+
+func TestEnsureGitIdentity_SourcedFromGh(t *testing.T) {
+	t.Parallel()
+	r := newFakeRunner()
+	// Identity missing locally (empty stdout).
+	r.set("git", []string{"config", "--get", "user.name"}, "", errors.New("not set"))
+	r.set("git", []string{"config", "--get", "user.email"}, "", errors.New("not set"))
+	// gh available and authenticated.
+	r.set("gh", []string{"--version"}, "gh", nil)
+	r.set("gh", []string{"auth", "status"}, "ok", nil)
+	r.set("gh", []string{"api", "user"}, `{"id":42,"login":"octo","name":"Octo Cat","email":"octo@example.com"}`, nil)
+	// Expect writes with values from gh.
+	r.set("git", []string{"config", "user.name", "Octo Cat"}, "", nil)
+	r.set("git", []string{"config", "user.email", "octo@example.com"}, "", nil)
+
+	err := ensureGitIdentity(context.Background(), io.Discard, io.Discard, r, t.TempDir())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestEnsureGitIdentity_GhNoreplyFallback(t *testing.T) {
+	t.Parallel()
+	r := newFakeRunner()
+	r.set("git", []string{"config", "--get", "user.name"}, "", errors.New("not set"))
+	r.set("git", []string{"config", "--get", "user.email"}, "", errors.New("not set"))
+	r.set("gh", []string{"--version"}, "gh", nil)
+	r.set("gh", []string{"auth", "status"}, "ok", nil)
+	// email is null/missing: should fall back to id+login noreply.
+	r.set("gh", []string{"api", "user"}, `{"id":42,"login":"octo","name":"","email":null}`, nil)
+	r.set("git", []string{"config", "user.name", "octo"}, "", nil)
+	r.set("git", []string{"config", "user.email", "42+octo@users.noreply.github.com"}, "", nil)
+
+	err := ensureGitIdentity(context.Background(), io.Discard, io.Discard, r, t.TempDir())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestEnsureGitIdentity_NonInteractiveNoGh_Errors(t *testing.T) {
+	t.Setenv("ENTIRE_TEST_TTY", "0")
+	r := newFakeRunner()
+	r.set("git", []string{"config", "--get", "user.name"}, "", errors.New("not set"))
+	r.set("git", []string{"config", "--get", "user.email"}, "", errors.New("not set"))
+	r.set("gh", []string{"--version"}, "", errors.New("not found"))
+
+	err := ensureGitIdentity(context.Background(), io.Discard, io.Discard, r, t.TempDir())
+	if err == nil {
+		t.Fatal("expected error when identity missing and gh unavailable")
+	}
+	if !strings.Contains(err.Error(), "git config --global user.name") {
+		t.Fatalf("expected guidance to set git config, got %v", err)
+	}
+}
+
+func TestGhUserIdentity_NameFallsBackToLogin(t *testing.T) {
+	t.Parallel()
+	r := newFakeRunner()
+	r.set("gh", []string{"api", "user"}, `{"id":7,"login":"dev","name":"","email":"dev@example.com"}`, nil)
+	name, email, err := ghUserIdentity(context.Background(), r)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if name != "dev" {
+		t.Fatalf("name = %q", name)
+	}
+	if email != "dev@example.com" {
+		t.Fatalf("email = %q", email)
+	}
+}
+
+// TestBootstrap_FreshMachine_RealGit is an integration-style test that runs
+// real git via execRunner on a temp dir isolated from the user's global git
+// config. Regression guard for the issue where bootstrap commits failed
+// without a configured identity or because of commit.gpgsign=true.
+func TestBootstrap_FreshMachine_RealGit(t *testing.T) {
+	t.Setenv("ENTIRE_TEST_TTY", "0")
+
+	// Isolate from any global git config: point HOME + GIT_CONFIG_* at
+	// empty/missing locations, and force a broken GPG signing config that
+	// would fail any commit if we did not pass -c commit.gpgsign=false.
+	emptyHome := t.TempDir()
+	t.Setenv("HOME", emptyHome)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	// A global config that demands signing with a non-existent program. If
+	// our bootstrap did not override gpgsign for its commit, git would
+	// error out here.
+	globalCfg := filepath.Join(emptyHome, ".gitconfig")
+	globalContent := "[user]\n\tname = Fresh User\n\temail = fresh@example.com\n[commit]\n\tgpgsign = true\n[gpg]\n\tprogram = /does/not/exist\n"
+	if err := writeTempFile(globalCfg, globalContent); err != nil {
+		t.Fatalf("write global gitconfig: %v", err)
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", globalCfg)
+	// Ensure no system config interferes.
+	t.Setenv("GIT_CONFIG_SYSTEM", "/dev/null")
+
+	projectDir := t.TempDir()
+	restoreCwd(t, projectDir)
+	// Create a file to commit.
+	if err := writeTempFile(filepath.Join(projectDir, "README.md"), "hello\n"); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	opts := GitHubBootstrapOptions{
+		InitRepo:             true,
+		NoGitHub:             true,
+		InitialCommitMessage: "Initial",
+	}
+	err := runGitHubBootstrapWith(context.Background(), io.Discard, io.Discard, opts, execRunner{})
+	if err != nil {
+		t.Fatalf("bootstrap failed: %v", err)
+	}
+
+	// Verify a commit actually landed on HEAD.
+	out, err := execRunner{}.RunInDir(context.Background(), projectDir, "git", "log", "--oneline")
+	if err != nil {
+		t.Fatalf("git log failed: %v", err)
+	}
+	if !strings.Contains(out, "Initial") {
+		t.Fatalf("expected 'Initial' commit in log, got: %q", out)
+	}
+}
+
+func writeTempFile(path, content string) error {
+	return os.WriteFile(path, []byte(content), 0o600)
+}
+
+// TestBootstrap_FreshMachine_NoIdentity_RealGit verifies that a fresh machine
+// without any git identity configured fails cleanly in non-interactive mode
+// with a helpful error message, instead of letting git commit fail with a
+// confusing "please tell me who you are" stderr.
+func TestBootstrap_FreshMachine_NoIdentity_RealGit(t *testing.T) {
+	t.Setenv("ENTIRE_TEST_TTY", "0")
+
+	emptyHome := t.TempDir()
+	t.Setenv("HOME", emptyHome)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	// Empty global config: no user.name/user.email.
+	globalCfg := filepath.Join(emptyHome, ".gitconfig")
+	if err := writeTempFile(globalCfg, ""); err != nil {
+		t.Fatalf("write global gitconfig: %v", err)
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", globalCfg)
+	t.Setenv("GIT_CONFIG_SYSTEM", "/dev/null")
+	// Ensure gh isn't authenticated for the purpose of this test — point
+	// PATH at an empty directory so `gh` resolves to "not found".
+	emptyBin := t.TempDir()
+	t.Setenv("PATH", emptyBin)
+
+	projectDir := t.TempDir()
+	restoreCwd(t, projectDir)
+	if err := writeTempFile(filepath.Join(projectDir, "README.md"), "hi\n"); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	opts := GitHubBootstrapOptions{
+		InitRepo:             true,
+		NoGitHub:             true,
+		InitialCommitMessage: "x",
+	}
+	// With PATH wiped, execRunner can't find git either — so use a runner
+	// that keeps git on the original PATH but points gh to nowhere. The
+	// simplest portable way: re-extend PATH with common git locations.
+	t.Setenv("PATH", "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin")
+
+	err := runGitHubBootstrapWith(context.Background(), io.Discard, io.Discard, opts, execRunner{})
+	if err == nil {
+		t.Fatal("expected error when identity missing and gh unavailable")
+	}
+	if !strings.Contains(err.Error(), "git config --global user.name") {
+		t.Fatalf("expected guidance to set git config, got: %v", err)
 	}
 }
 

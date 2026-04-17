@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -155,9 +156,15 @@ func runGitHubBootstrapWith(ctx context.Context, w, errW io.Writer, opts GitHubB
 		visibility = vis
 	}
 
-	// Step 5: initial commit.
+	// Step 5: initial commit. First ensure the repo has a git identity
+	// configured, then stage+commit with signing disabled so the bootstrap
+	// doesn't fail on fresh machines without a global git config or a
+	// working GPG signer.
 	message, err := resolveCommitMessage(w, opts)
 	if err != nil {
+		return err
+	}
+	if err := ensureGitIdentity(ctx, w, errW, runner, cwd); err != nil {
 		return err
 	}
 	committed, err := doInitialCommit(ctx, runner, cwd, message)
@@ -442,10 +449,116 @@ func doInitialCommit(ctx context.Context, runner bootstrapRunner, dir, message s
 	if strings.TrimSpace(out) == "" {
 		return false, nil
 	}
-	if _, err := runner.RunInDir(ctx, dir, "git", "commit", "-m", message); err != nil {
+	// Disable GPG signing for this commit only. Fresh environments often
+	// have commit.gpgsign=true inherited from a global config but no
+	// working signer; passing -c keeps the user's global config intact.
+	if _, err := runner.RunInDir(ctx, dir, "git", "-c", "commit.gpgsign=false", "commit", "-m", message); err != nil {
 		return false, fmt.Errorf("git commit: %w", err)
 	}
 	return true, nil
+}
+
+// ensureGitIdentity guarantees the repo has a user.name/user.email set at
+// some scope. If neither is configured, we source values from `gh api user`
+// when available, otherwise prompt (interactive) or fail with a helpful
+// message (non-interactive). Values are written to the local repo config
+// only, so the user's global state is never mutated.
+func ensureGitIdentity(ctx context.Context, w, errW io.Writer, runner bootstrapRunner, dir string) error {
+	// `git config --get` exits non-zero when the key isn't set. Treat any
+	// error as "unset" rather than fatal so we can fall through to sourcing
+	// the identity from elsewhere.
+	existingName, nameErr := runner.RunInDir(ctx, dir, "git", "config", "--get", "user.name")
+	existingEmail, emailErr := runner.RunInDir(ctx, dir, "git", "config", "--get", "user.email")
+	if nameErr == nil && emailErr == nil && strings.TrimSpace(existingName) != "" && strings.TrimSpace(existingEmail) != "" {
+		return nil
+	}
+
+	var ghName, ghEmail string
+	if ghAvailable(ctx, runner) && ghAuthenticated(ctx, runner) {
+		if n, e, err := ghUserIdentity(ctx, runner); err == nil {
+			ghName, ghEmail = n, e
+		}
+	}
+
+	name, email, err := resolveGitIdentity(w, errW, ghName, ghEmail)
+	if err != nil {
+		return err
+	}
+
+	if _, err := runner.RunInDir(ctx, dir, "git", "config", "user.name", name); err != nil {
+		return fmt.Errorf("git config user.name: %w", err)
+	}
+	if _, err := runner.RunInDir(ctx, dir, "git", "config", "user.email", email); err != nil {
+		return fmt.Errorf("git config user.email: %w", err)
+	}
+	return nil
+}
+
+// resolveGitIdentity returns the name/email to use, prompting interactively
+// when values aren't already provided by gh.
+func resolveGitIdentity(w, _ io.Writer, ghName, ghEmail string) (string, string, error) {
+	if ghName != "" && ghEmail != "" {
+		fmt.Fprintf(w, "Using git identity from gh: %s <%s>\n", ghName, ghEmail)
+		return ghName, ghEmail, nil
+	}
+	if !interactive.CanPromptInteractively() {
+		return "", "", errors.New(`git identity not configured. Set it with:
+  git config --global user.name "Your Name"
+  git config --global user.email "you@example.com"`)
+	}
+
+	name := ghName
+	email := ghEmail
+	form := NewAccessibleForm(
+		huh.NewGroup(
+			huh.NewInput().Title("Git user.name").Value(&name),
+			huh.NewInput().Title("Git user.email").Value(&email),
+		),
+	)
+	if err := form.Run(); err != nil {
+		if errors.Is(err, huh.ErrUserAborted) {
+			return "", "", errBootstrapDeclined
+		}
+		return "", "", fmt.Errorf("git identity prompt: %w", err)
+	}
+	if strings.TrimSpace(name) == "" || strings.TrimSpace(email) == "" {
+		return "", "", errors.New("git user.name and user.email are both required")
+	}
+	return strings.TrimSpace(name), strings.TrimSpace(email), nil
+}
+
+// ghUserResponse is the subset of `gh api user` fields we care about.
+type ghUserResponse struct {
+	ID    int64  `json:"id"`
+	Login string `json:"login"`
+	Name  string `json:"name"`
+	Email string `json:"email"`
+}
+
+// ghUserIdentity returns a best-effort (name, email) from `gh api user`.
+// Missing name falls back to login; missing email falls back to the GitHub
+// no-reply address, which is always accepted by GitHub.
+func ghUserIdentity(ctx context.Context, runner bootstrapRunner) (string, string, error) {
+	out, err := runner.Run(ctx, "gh", "api", "user")
+	if err != nil {
+		return "", "", fmt.Errorf("gh api user: %w", err)
+	}
+	var resp ghUserResponse
+	if err := json.Unmarshal([]byte(out), &resp); err != nil {
+		return "", "", fmt.Errorf("parse gh user response: %w", err)
+	}
+	name := resp.Name
+	if name == "" {
+		name = resp.Login
+	}
+	email := resp.Email
+	if email == "" && resp.ID != 0 && resp.Login != "" {
+		email = fmt.Sprintf("%d+%s@users.noreply.github.com", resp.ID, resp.Login)
+	}
+	if name == "" || email == "" {
+		return "", "", errors.New("gh user response missing identity fields")
+	}
+	return name, email, nil
 }
 
 // ghAvailable reports whether the gh CLI is installed.
