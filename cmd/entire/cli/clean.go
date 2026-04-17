@@ -278,7 +278,8 @@ func runCleanSession(ctx context.Context, cmd *cobra.Command, strat *strategy.Ma
 func runCleanAll(ctx context.Context, cmd *cobra.Command, force, dryRun bool) error {
 	s, err := settings.Load(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to load settings: %w", err)
+		fmt.Fprintf(cmd.ErrOrStderr(), "Warning: failed to load settings: %v\n", err)
+		s = &settings.EntireSettings{}
 	}
 
 	// List all items (sessions, shadow branches) — not just orphaned ones

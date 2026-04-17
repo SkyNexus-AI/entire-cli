@@ -703,7 +703,7 @@ func TestCleanCmd_All_NotGitRepository(t *testing.T) {
 	}
 }
 
-func TestCleanCmd_All_InvalidSettingsReturnsError(t *testing.T) {
+func TestCleanCmd_All_InvalidSettingsWarnsAndContinues(t *testing.T) {
 	repo, _ := setupCleanTestRepo(t)
 
 	wt, err := repo.Worktree()
@@ -715,16 +715,20 @@ func TestCleanCmd_All_InvalidSettingsReturnsError(t *testing.T) {
 	writeCleanSettingsFile(t, repoRoot, `{"enabled": true,`)
 
 	cmd := newCleanCmd()
-	var stdout bytes.Buffer
+	var stdout, stderr bytes.Buffer
 	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
 	cmd.SetArgs([]string{"--all", "--dry-run"})
 
-	err = cmd.Execute()
-	if err == nil {
-		t.Fatal("clean --all --dry-run should return error for invalid settings")
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("clean --all --dry-run error = %v", err)
 	}
-	if !strings.Contains(err.Error(), "failed to load settings") {
-		t.Fatalf("expected failed to load settings error, got: %v", err)
+
+	if !strings.Contains(stderr.String(), "Warning: failed to load settings") {
+		t.Fatalf("expected settings warning, got stderr=%q", stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "No items to clean up.") {
+		t.Fatalf("expected command to continue cleanup flow, got stdout=%q", stdout.String())
 	}
 }
 
