@@ -259,6 +259,24 @@ func (s *State) NormalizeAfterLoad(ctx context.Context) {
 	if s.AttributionBaseCommit == "" && s.BaseCommit != "" {
 		s.AttributionBaseCommit = s.BaseCommit
 	}
+
+	// DivergenceNoticeShown is only meaningful while attribution is actually
+	// diverged. Self-heal any state file where the flag outlived the divergence
+	// — otherwise a future legitimate divergence would be silently suppressed.
+	if s.DivergenceNoticeShown && s.AttributionBaseCommit == s.BaseCommit {
+		s.DivergenceNoticeShown = false
+	}
+}
+
+// RealignAttributionBase sets AttributionBaseCommit to newBase and clears any
+// bookkeeping whose meaning depends on attribution being diverged from the
+// shadow-branch base. Call this every time a code path intentionally brings
+// AttributionBaseCommit back in line with BaseCommit (condensation, reconcile,
+// post-commit base advance) so a stale DivergenceNoticeShown cannot suppress
+// the next legitimate divergence warning.
+func (s *State) RealignAttributionBase(newBase string) {
+	s.AttributionBaseCommit = newBase
+	s.DivergenceNoticeShown = false
 }
 
 // IsStale returns true when a session hasn't seen interaction for longer than

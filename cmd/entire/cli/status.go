@@ -497,8 +497,16 @@ func computeSessionDivergenceWarnings(
 			continue
 		}
 
-		if st.BaseCommit == "" || st.BaseCommit == head.commitHash {
-			// BaseCommit matches HEAD — check for attribution divergence
+		if st.BaseCommit == "" {
+			// Session linkage is incomplete (migration refuses to run and save-step
+			// must reinitialize). Surface this explicitly rather than skipping silently,
+			// so operators don't see a false-clean status for a session that cannot
+			// be attributed until the next prompt reinitializes it.
+			warnings[st.SessionID] = "session linkage incomplete; awaiting reinitialization"
+			continue
+		}
+
+		if st.BaseCommit == head.commitHash {
 			if st.AttributionBaseCommit != "" && st.AttributionBaseCommit != st.BaseCommit {
 				warnings[st.SessionID] = "attribution base diverged after history movement; figures may be off until next checkpoint"
 			}

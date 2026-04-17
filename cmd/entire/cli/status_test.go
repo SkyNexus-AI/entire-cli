@@ -739,6 +739,43 @@ func TestWriteActiveSessions_ShowsSoftWarningWhenAttributionDiverged(t *testing.
 	}
 }
 
+// TestComputeSessionDivergenceWarnings_EmptyBaseCommit_EmitsLinkageWarning verifies
+// that a partially-initialized session (BaseCommit == "") produces an explicit
+// "linkage incomplete" warning rather than silently disappearing from status.
+// Silently skipping such sessions was flagged as an observability regression:
+// operators lose the clearest signal that the session cannot be migrated or
+// attributed until reinitialization.
+func TestComputeSessionDivergenceWarnings_EmptyBaseCommit_EmitsLinkageWarning(t *testing.T) {
+	t.Parallel()
+
+	repoRoot := t.TempDir()
+	head := headLinkage{commitHash: strings.Repeat("e", 40)}
+
+	active := []*session.State{
+		{
+			SessionID:             "partially-initialized",
+			WorktreePath:          repoRoot,
+			BaseCommit:            "",
+			AttributionBaseCommit: strings.Repeat("a", 40),
+		},
+	}
+
+	warnings := computeSessionDivergenceWarnings(repoRoot, active, head)
+
+	msg, ok := warnings["partially-initialized"]
+	if !ok {
+		t.Fatal("expected a linkage-incomplete warning for session with empty BaseCommit, got none")
+	}
+	if !strings.Contains(msg, "linkage incomplete") {
+		t.Fatalf("expected warning to mention linkage incomplete, got %q", msg)
+	}
+	// Must NOT be the attribution-divergence message — that would be misleading
+	// since the session isn't diverged; it's un-initialized.
+	if strings.Contains(msg, "attribution base diverged") {
+		t.Fatalf("empty-BaseCommit session should not produce attribution-divergence wording, got %q", msg)
+	}
+}
+
 func TestFormatTokenCount(t *testing.T) {
 	t.Parallel()
 

@@ -1418,8 +1418,7 @@ func (s *ManualCommitStrategy) condenseAndUpdateState(
 	// Update session state for the new base commit
 	newHead := head.Hash().String()
 	state.BaseCommit = newHead
-	state.AttributionBaseCommit = newHead
-	state.DivergenceNoticeShown = false
+	state.RealignAttributionBase(newHead)
 	state.StepCount = 0
 	state.CheckpointTranscriptStart = result.TotalTranscriptLines
 	state.CompactTranscriptStart += result.CompactTranscriptLines
@@ -1468,7 +1467,7 @@ func (s *ManualCommitStrategy) updateBaseCommitIfChanged(ctx context.Context, st
 		// Keep AttributionBaseCommit in sync to prevent stale base drift.
 		// Without this, a subsequent condensation would diff from the old base,
 		// inflating human_added with lines from unrelated prior commits.
-		state.AttributionBaseCommit = newHead
+		state.RealignAttributionBase(newHead)
 		logging.Debug(logCtx, "post-commit: updated BaseCommit and AttributionBaseCommit",
 			slog.String("session_id", state.SessionID),
 			slog.String("new_head", truncateHash(newHead)),
@@ -1512,7 +1511,7 @@ func (s *ManualCommitStrategy) postCommitUpdateBaseCommitOnly(ctx context.Contex
 			// Keep AttributionBaseCommit in sync to prevent stale base drift.
 			// Without this, a subsequent condensation would diff from the old base,
 			// inflating human_added with lines from unrelated prior commits.
-			state.AttributionBaseCommit = newHead
+			state.RealignAttributionBase(newHead)
 			if err := s.saveSessionState(ctx, state); err != nil {
 				logging.Warn(logCtx, "failed to update session state",
 					slog.String("session_id", state.SessionID),
@@ -2005,26 +2004,34 @@ func (s *ManualCommitStrategy) extractModifiedFilesFromLiveTranscript(ctx contex
 	return modifiedFiles
 }
 
-// warnIfAttributionDiverged prints a show-once stderr warning when a session's
-// AttributionBaseCommit has diverged from BaseCommit. This divergence arises
-// when the migrate path advances BaseCommit to a new HEAD but intentionally
-// leaves AttributionBaseCommit pinned (e.g., after a pull or git reset to an
-// unrelated commit). The warning is visible in the user's terminal during
-// prepare-commit-msg, not in the agent's context.
+// warnIfAttributionDiverged prints at most one stderr warning per call and
+// marks every divergent session as notified so subsequent invocations stay
+// silent until the next successful condensation (or reconcile) realigns
+// attribution and clears the flag via State.RealignAttributionBase.
+//
+// Divergence arises when the migrate path advances BaseCommit to a new HEAD
+// but intentionally leaves AttributionBaseCommit pinned (e.g., after a pull
+// or git reset to an unrelated commit). Writing to stderrWriter surfaces the
+// message in the user's terminal during prepare-commit-msg, not the agent's
+// transcript — stderr from the hook is TTY-bound to the invoking process.
 func (s *ManualCommitStrategy) warnIfAttributionDiverged(ctx context.Context, sessions []*SessionState) {
 	logCtx := logging.WithComponent(ctx, "checkpoint")
+	printed := false
 	for _, sess := range sessions {
-		if sess.AttributionBaseCommit != "" &&
-			sess.AttributionBaseCommit != sess.BaseCommit &&
-			!sess.DivergenceNoticeShown {
+		if sess.AttributionBaseCommit == "" ||
+			sess.AttributionBaseCommit == sess.BaseCommit ||
+			sess.DivergenceNoticeShown {
+			continue
+		}
+		if !printed {
 			fmt.Fprintln(stderrWriter, "entire: session attribution diverged after recent history movement; figures may be off until next checkpoint")
-			sess.DivergenceNoticeShown = true
-			if err := s.saveSessionState(ctx, sess); err != nil {
-				logging.Warn(logCtx, "failed to save divergence notice flag",
-					slog.String("session_id", sess.SessionID),
-					slog.String("error", err.Error()))
-			}
-			break // One warning is enough even with multiple sessions
+			printed = true
+		}
+		sess.DivergenceNoticeShown = true
+		if err := s.saveSessionState(ctx, sess); err != nil {
+			logging.Warn(logCtx, "failed to save divergence notice flag",
+				slog.String("session_id", sess.SessionID),
+				slog.String("error", err.Error()))
 		}
 	}
 }
@@ -2265,8 +2272,18 @@ func (s *ManualCommitStrategy) InitializeSession(ctx context.Context, sessionID 
 
 		// Check if HEAD has moved (user pulled/rebased or committed)
 		// migrateShadowBranchIfNeeded handles renaming the shadow branch and updating state.BaseCommit
-		if _, err := s.migrateShadowBranchIfNeeded(ctx, repo, state); err != nil {
+		_, reconciled, err := s.migrateShadowBranchIfNeeded(ctx, repo, state)
+		if err != nil {
 			return fmt.Errorf("failed to check/migrate shadow branch: %w", err)
+		}
+		if reconciled {
+			// Reconcile advanced BaseCommit + AttributionBaseCommit to HEAD (the
+			// known checkpoint we reset to). The attribution just computed is
+			// against the stale pre-reset base and would count discarded-history
+			// edits as churn. Recompute against the new base so the next
+			// checkpoint sees accurate user-delta.
+			recomputed := s.calculatePromptAttributionAtStart(ctx, repo, state)
+			state.PendingPromptAttribution = &recomputed
 		}
 
 		// Clear checkpoint IDs on every new prompt.

@@ -56,7 +56,7 @@ func TestMigrateShadowBranch_ReconcilePath(t *testing.T) {
 	}
 
 	s := &ManualCommitStrategy{}
-	migrated, err := s.migrateShadowBranchIfNeeded(context.Background(), repo, state)
+	migrated, _, err := s.migrateShadowBranchIfNeeded(context.Background(), repo, state)
 	require.NoError(t, err)
 
 	assert.True(t, migrated, "reconcile path should report migrated=true")
@@ -65,6 +65,40 @@ func TestMigrateShadowBranch_ReconcilePath(t *testing.T) {
 
 	// Old shadow branch must still exist (not renamed or deleted).
 	assert.True(t, testutil.BranchExists(t, dir, oldShadowName), "old shadow branch should be preserved")
+}
+
+// TestMigrateShadowBranch_ReconcileClearsDivergenceFlag verifies that the reconcile
+// path also clears DivergenceNoticeShown. Without this, a session that warned about
+// divergence, got reset back to a known checkpoint, and later diverged again would
+// stay silent — defeating the show-once-per-divergence semantics.
+func TestMigrateShadowBranch_ReconcileClearsDivergenceFlag(t *testing.T) {
+	dir, initHash := setupMigrationRepo(t)
+	t.Chdir(dir)
+
+	cpID := checkpointID.MustCheckpointID("abc123def456")
+
+	testutil.WriteFile(t, dir, "file.txt", "content")
+	testutil.GitAdd(t, dir, "file.txt")
+	testutil.GitCommit(t, dir, "add feature\n\nEntire-Checkpoint: abc123def456")
+
+	repo, err := git.PlainOpen(dir)
+	require.NoError(t, err)
+
+	state := &SessionState{
+		SessionID:             "test-session-reconcile-flag",
+		BaseCommit:            initHash,
+		AttributionBaseCommit: "some-older-commit",
+		LastCheckpointID:      cpID,
+		DivergenceNoticeShown: true, // was warned about divergence previously
+	}
+
+	s := &ManualCommitStrategy{}
+	migrated, _, err := s.migrateShadowBranchIfNeeded(context.Background(), repo, state)
+	require.NoError(t, err)
+	require.True(t, migrated)
+
+	assert.False(t, state.DivergenceNoticeShown,
+		"reconcile must clear DivergenceNoticeShown so future divergence can warn again")
 }
 
 // TestMigrateShadowBranch_MigratePathPinsAttribution verifies the existing
@@ -93,7 +127,7 @@ func TestMigrateShadowBranch_MigratePathPinsAttribution(t *testing.T) {
 	}
 
 	s := &ManualCommitStrategy{}
-	migrated, err := s.migrateShadowBranchIfNeeded(context.Background(), repo, state)
+	migrated, _, err := s.migrateShadowBranchIfNeeded(context.Background(), repo, state)
 	require.NoError(t, err)
 
 	assert.True(t, migrated, "migrate path should report migrated=true")
@@ -127,7 +161,7 @@ func TestMigrateShadowBranch_DifferentTrailerFromSameSession(t *testing.T) {
 	}
 
 	s := &ManualCommitStrategy{}
-	migrated, err := s.migrateShadowBranchIfNeeded(context.Background(), repo, state)
+	migrated, _, err := s.migrateShadowBranchIfNeeded(context.Background(), repo, state)
 	require.NoError(t, err)
 
 	assert.True(t, migrated, "migrate path should fire")
@@ -159,7 +193,7 @@ func TestMigrateShadowBranch_EmptyLastCheckpointID(t *testing.T) {
 	}
 
 	s := &ManualCommitStrategy{}
-	migrated, err := s.migrateShadowBranchIfNeeded(context.Background(), repo, state)
+	migrated, _, err := s.migrateShadowBranchIfNeeded(context.Background(), repo, state)
 	require.NoError(t, err)
 
 	assert.True(t, migrated, "migrate path should fire")
@@ -193,7 +227,7 @@ func TestMigrateShadowBranch_MultiTrailerHEAD(t *testing.T) {
 	}
 
 	s := &ManualCommitStrategy{}
-	migrated, err := s.migrateShadowBranchIfNeeded(context.Background(), repo, state)
+	migrated, _, err := s.migrateShadowBranchIfNeeded(context.Background(), repo, state)
 	require.NoError(t, err)
 
 	assert.True(t, migrated, "reconcile should fire on multi-trailer match")
@@ -227,7 +261,7 @@ func TestMigrateShadowBranch_CommitObjectFailure(t *testing.T) {
 	}
 
 	s := &ManualCommitStrategy{}
-	migrated, err := s.migrateShadowBranchIfNeeded(context.Background(), repo, state)
+	migrated, _, err := s.migrateShadowBranchIfNeeded(context.Background(), repo, state)
 	require.NoError(t, err)
 
 	assert.True(t, migrated, "should fall through to migrate path")

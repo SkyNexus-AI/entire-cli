@@ -25,20 +25,24 @@ import (
 // the shadow branch is renamed to the new base and only BaseCommit is updated.
 // AttributionBaseCommit stays pinned for correct attribution.
 //
-// Returns true if reconciliation or migration occurred, false otherwise.
-func (s *ManualCommitStrategy) migrateShadowBranchIfNeeded(ctx context.Context, repo *git.Repository, state *SessionState) (bool, error) {
+// Returns (changed, reconciled, err):
+//   - changed: true if either path fired, false for no-op
+//   - reconciled: true only for the reconcile path; callers use this to know
+//     that attribution must be recomputed against the new base since the old
+//     base has been discarded (reconcile = reset-to-known-checkpoint)
+func (s *ManualCommitStrategy) migrateShadowBranchIfNeeded(ctx context.Context, repo *git.Repository, state *SessionState) (bool, bool, error) {
 	if state == nil || state.BaseCommit == "" {
-		return false, nil
+		return false, false, nil
 	}
 
 	head, err := repo.Head()
 	if err != nil {
-		return false, fmt.Errorf("failed to get HEAD: %w", err)
+		return false, false, fmt.Errorf("failed to get HEAD: %w", err)
 	}
 
 	currentHead := head.Hash().String()
 	if state.BaseCommit == currentHead {
-		return false, nil // No migration needed
+		return false, false, nil // No migration needed
 	}
 
 	// Reconcile path: if HEAD sits on a commit carrying this session's
@@ -53,11 +57,11 @@ func (s *ManualCommitStrategy) migrateShadowBranchIfNeeded(ctx context.Context, 
 			for _, cpID := range trailers.ParseAllCheckpoints(headCommit.Message) {
 				if cpID.String() == state.LastCheckpointID.String() {
 					state.BaseCommit = currentHead
-					state.AttributionBaseCommit = currentHead
+					state.RealignAttributionBase(currentHead)
 					logging.Info(logging.WithComponent(ctx, "migration"), "reconciled session to known checkpoint on HEAD",
 						slog.String("checkpoint_id", state.LastCheckpointID.String()),
 						slog.String("new_base", currentHead[:7]))
-					return true, nil
+					return true, true, nil
 				}
 			}
 		} else {
@@ -69,7 +73,8 @@ func (s *ManualCommitStrategy) migrateShadowBranchIfNeeded(ctx context.Context, 
 		// existing migrate path below.
 	}
 
-	return s.migrateShadowBranchToBaseCommit(ctx, repo, state, currentHead)
+	changed, err := s.migrateShadowBranchToBaseCommit(ctx, repo, state, currentHead)
+	return changed, false, err
 }
 
 // migrateShadowBranchToBaseCommit moves the current session's shadow branch to a
@@ -139,7 +144,7 @@ func (s *ManualCommitStrategy) migrateShadowBranchToBaseCommit(ctx context.Conte
 // migrateAndPersistIfNeeded checks for HEAD changes, migrates the shadow branch if needed,
 // and persists the updated session state. Used by SaveStep and SaveTaskStep.
 func (s *ManualCommitStrategy) migrateAndPersistIfNeeded(ctx context.Context, repo *git.Repository, state *SessionState) error {
-	migrated, err := s.migrateShadowBranchIfNeeded(ctx, repo, state)
+	migrated, _, err := s.migrateShadowBranchIfNeeded(ctx, repo, state)
 	if err != nil {
 		return fmt.Errorf("failed to check/migrate shadow branch: %w", err)
 	}
