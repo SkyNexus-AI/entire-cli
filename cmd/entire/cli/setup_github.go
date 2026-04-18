@@ -636,16 +636,26 @@ func doInitialCommit(ctx context.Context, runner bootstrapRunner, dir, message s
 // when available, otherwise prompt (interactive) or fail with a helpful
 // message (non-interactive). Values are written to the local repo config
 // only, so the user's global state is never mutated.
-func ensureGitIdentity(ctx context.Context, w, errW io.Writer, runner bootstrapRunner, dir string) error {
+func ensureGitIdentity(ctx context.Context, w, _ io.Writer, runner bootstrapRunner, dir string) error {
 	// `git config --get` exits non-zero when the key isn't set. Treat any
 	// error as "unset" rather than fatal so we can fall through to sourcing
 	// the identity from elsewhere.
-	existingName, nameErr := runner.RunInDir(ctx, dir, "git", "config", "--get", "user.name")
-	existingEmail, emailErr := runner.RunInDir(ctx, dir, "git", "config", "--get", "user.email")
-	if nameErr == nil && emailErr == nil && strings.TrimSpace(existingName) != "" && strings.TrimSpace(existingEmail) != "" {
+	nameOut, nameErr := runner.RunInDir(ctx, dir, "git", "config", "--get", "user.name")
+	emailOut, emailErr := runner.RunInDir(ctx, dir, "git", "config", "--get", "user.email")
+	var existingName, existingEmail string
+	if nameErr == nil {
+		existingName = strings.TrimSpace(nameOut)
+	}
+	if emailErr == nil {
+		existingEmail = strings.TrimSpace(emailOut)
+	}
+	if existingName != "" && existingEmail != "" {
 		return nil
 	}
 
+	// Only try to fill in what's missing. If the user has a name set
+	// globally but no email, we want to keep their name and just source
+	// the email.
 	var ghName, ghEmail string
 	if ghAvailable(ctx, runner) && ghAuthenticated(ctx, runner) {
 		if n, e, err := ghUserIdentity(ctx, runner); err == nil {
@@ -653,41 +663,64 @@ func ensureGitIdentity(ctx context.Context, w, errW io.Writer, runner bootstrapR
 		}
 	}
 
-	name, email, err := resolveGitIdentity(w, errW, ghName, ghEmail)
+	name, email, err := resolveGitIdentity(w, existingName, existingEmail, ghName, ghEmail)
 	if err != nil {
 		return err
 	}
 
-	if _, err := runner.RunInDir(ctx, dir, "git", "config", "user.name", name); err != nil {
-		return fmt.Errorf("git config user.name: %w", err)
+	// Write only the fields that were missing. Leaving the already-set
+	// field alone means we never silently replace the user's globally
+	// configured name/email.
+	if existingName == "" {
+		if _, err := runner.RunInDir(ctx, dir, "git", "config", "user.name", name); err != nil {
+			return fmt.Errorf("git config user.name: %w", err)
+		}
 	}
-	if _, err := runner.RunInDir(ctx, dir, "git", "config", "user.email", email); err != nil {
-		return fmt.Errorf("git config user.email: %w", err)
+	if existingEmail == "" {
+		if _, err := runner.RunInDir(ctx, dir, "git", "config", "user.email", email); err != nil {
+			return fmt.Errorf("git config user.email: %w", err)
+		}
 	}
 	return nil
 }
 
-// resolveGitIdentity returns the name/email to use, prompting interactively
-// when values aren't already provided by gh.
-func resolveGitIdentity(w, _ io.Writer, ghName, ghEmail string) (string, string, error) {
-	if ghName != "" && ghEmail != "" {
-		fmt.Fprintf(w, "Using git identity from gh: %s <%s>\n", ghName, ghEmail)
-		return ghName, ghEmail, nil
+// resolveGitIdentity returns the name/email to use, given any values
+// already configured at a wider scope and any values from `gh api user`.
+// Only prompts for fields that are still empty after those fallbacks.
+func resolveGitIdentity(w io.Writer, existingName, existingEmail, ghName, ghEmail string) (string, string, error) {
+	name := existingName
+	email := existingEmail
+	if name == "" {
+		name = ghName
 	}
+	if email == "" {
+		email = ghEmail
+	}
+
+	if name != "" && email != "" {
+		// Announce only when we had to fill something in from gh —
+		// silence is fine when the user's existing config covered both.
+		if (existingName == "" && ghName != "") || (existingEmail == "" && ghEmail != "") {
+			fmt.Fprintf(w, "Using git identity: %s <%s>\n", name, email)
+		}
+		return name, email, nil
+	}
+
 	if !interactive.CanPromptInteractively() {
 		return "", "", errors.New(`git identity not configured. Set it with:
   git config --global user.name "Your Name"
   git config --global user.email "you@example.com"`)
 	}
 
-	name := ghName
-	email := ghEmail
-	form := NewAccessibleForm(
-		huh.NewGroup(
-			huh.NewInput().Title("Git user.name").Value(&name),
-			huh.NewInput().Title("Git user.email").Value(&email),
-		),
-	)
+	// Prompt only for the still-missing fields.
+	var fields []huh.Field
+	if name == "" {
+		fields = append(fields, huh.NewInput().Title("Git user.name").Value(&name))
+	}
+	if email == "" {
+		fields = append(fields, huh.NewInput().Title("Git user.email").Value(&email))
+	}
+	form := NewAccessibleForm(huh.NewGroup(fields...))
 	if err := form.Run(); err != nil {
 		if errors.Is(err, huh.ErrUserAborted) {
 			return "", "", errBootstrapInterrupted

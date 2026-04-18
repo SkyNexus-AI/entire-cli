@@ -19,6 +19,7 @@ const (
 	ghSubcmdRepo = "repo"
 	ghActCreate  = "create"
 	gitCmdCommit = "commit"
+	gitCmdConfig = "config"
 )
 
 func TestSlugifyRepoName(t *testing.T) {
@@ -716,7 +717,7 @@ func TestEnsureGitIdentity_AlreadyConfigured(t *testing.T) {
 	}
 	// No git config writes should have occurred.
 	if r.hasCall(func(c fakeCall) bool {
-		return c.name == cmdGit && len(c.args) >= 2 && c.args[0] == "config" && (c.args[1] == "user.name" || c.args[1] == "user.email")
+		return c.name == cmdGit && len(c.args) >= 2 && c.args[0] == gitCmdConfig && (c.args[1] == "user.name" || c.args[1] == "user.email")
 	}) {
 		t.Fatal("did not expect identity writes when already configured")
 	}
@@ -757,6 +758,60 @@ func TestEnsureGitIdentity_GhNoreplyFallback(t *testing.T) {
 	err := ensureGitIdentity(context.Background(), io.Discard, io.Discard, r, t.TempDir())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestEnsureGitIdentity_PreservesExistingName covers the partial-config
+// case: `user.name` is set globally but `user.email` is missing. We must
+// source only the email (from gh) and leave the name untouched — we
+// never want to silently replace the user's configured name with a
+// gh-derived login.
+func TestEnsureGitIdentity_PreservesExistingName(t *testing.T) {
+	t.Parallel()
+	r := newFakeRunner()
+	// Name is set globally, email is not.
+	r.set("git", []string{"config", "--get", "user.name"}, "John Doe\n", nil)
+	r.set("git", []string{"config", "--get", "user.email"}, "", errors.New("not set"))
+	// gh available and returns both values.
+	r.set("gh", []string{"--version"}, "gh", nil)
+	r.set("gh", []string{"auth", "status"}, "ok", nil)
+	r.set("gh", []string{"api", "user"}, `{"id":42,"login":"johndoe","name":"Johnny Dough","email":"john@example.com"}`, nil)
+	// Only the email should be written locally — the name must stay
+	// at the user's global value.
+	r.set("git", []string{"config", "user.email", "john@example.com"}, "", nil)
+
+	err := ensureGitIdentity(context.Background(), io.Discard, io.Discard, r, t.TempDir())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// No `git config user.name ...` call should have been made.
+	if r.hasCall(func(c fakeCall) bool {
+		return c.name == cmdGit && len(c.args) >= 2 && c.args[0] == gitCmdConfig && c.args[1] == "user.name"
+	}) {
+		t.Fatal("ensureGitIdentity should not write user.name when it's already set globally")
+	}
+}
+
+// TestEnsureGitIdentity_PreservesExistingEmail mirrors the above for the
+// other direction: email set, name missing.
+func TestEnsureGitIdentity_PreservesExistingEmail(t *testing.T) {
+	t.Parallel()
+	r := newFakeRunner()
+	r.set("git", []string{"config", "--get", "user.name"}, "", errors.New("not set"))
+	r.set("git", []string{"config", "--get", "user.email"}, "john@example.com\n", nil)
+	r.set("gh", []string{"--version"}, "gh", nil)
+	r.set("gh", []string{"auth", "status"}, "ok", nil)
+	r.set("gh", []string{"api", "user"}, `{"id":42,"login":"johndoe","name":"Johnny","email":"other@example.com"}`, nil)
+	r.set("git", []string{"config", "user.name", "Johnny"}, "", nil)
+
+	err := ensureGitIdentity(context.Background(), io.Discard, io.Discard, r, t.TempDir())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if r.hasCall(func(c fakeCall) bool {
+		return c.name == cmdGit && len(c.args) >= 2 && c.args[0] == gitCmdConfig && c.args[1] == "user.email"
+	}) {
+		t.Fatal("ensureGitIdentity should not write user.email when it's already set globally")
 	}
 }
 
