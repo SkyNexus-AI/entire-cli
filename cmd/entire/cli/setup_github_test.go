@@ -60,10 +60,9 @@ func TestValidateRepoName(t *testing.T) {
 // fakeRunner is a test seam for bootstrapRunner. Each (name, args[0]) pair
 // maps to a response.
 type fakeRunner struct {
-	mu          sync.Mutex
-	responses   map[string]fakeResponse
-	interactive map[string]error
-	calls       []fakeCall
+	mu        sync.Mutex
+	responses map[string]fakeResponse
+	calls     []fakeCall
 }
 
 type fakeResponse struct {
@@ -79,8 +78,7 @@ type fakeCall struct {
 
 func newFakeRunner() *fakeRunner {
 	return &fakeRunner{
-		responses:   make(map[string]fakeResponse),
-		interactive: make(map[string]error),
+		responses: make(map[string]fakeResponse),
 	}
 }
 
@@ -121,13 +119,6 @@ func (f *fakeRunner) RunInDir(_ context.Context, dir, name string, args ...strin
 		return r.stdout, r.err
 	}
 	return "", fmt.Errorf("fakeRunner: unexpected call in %s: %s %v", dir, name, args)
-}
-
-func (f *fakeRunner) RunInteractive(_ context.Context, dir, name string, args ...string) error {
-	f.record(dir, name, args)
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.interactive[f.key(name, args)]
 }
 
 // setIdentityConfigured simulates `git config --get user.name/email` returning
@@ -223,7 +214,7 @@ func TestResolveOwner_SingleDefault(t *testing.T) {
 
 func TestResolveVisibility_FlagInternalRequiresOrg(t *testing.T) {
 	t.Parallel()
-	_, err := resolveVisibility(io.Discard, testUser, testUser, GitHubBootstrapOptions{RepoVisibility: "internal"})
+	_, err := resolveVisibility(testUser, testUser, GitHubBootstrapOptions{RepoVisibility: "internal"})
 	if err == nil {
 		t.Fatal("expected error for internal visibility on user repo")
 	}
@@ -237,7 +228,7 @@ func TestResolveVisibility_FlagValid(t *testing.T) {
 		if v == "internal" {
 			owner = "acme"
 		}
-		got, err := resolveVisibility(io.Discard, owner, current, GitHubBootstrapOptions{RepoVisibility: v})
+		got, err := resolveVisibility(owner, current, GitHubBootstrapOptions{RepoVisibility: v})
 		if err != nil {
 			t.Fatalf("%s: unexpected error: %v", v, err)
 		}
@@ -249,7 +240,7 @@ func TestResolveVisibility_FlagValid(t *testing.T) {
 
 func TestResolveVisibility_FlagInvalid(t *testing.T) {
 	t.Parallel()
-	_, err := resolveVisibility(io.Discard, testUser, testUser, GitHubBootstrapOptions{RepoVisibility: "weird"})
+	_, err := resolveVisibility(testUser, testUser, GitHubBootstrapOptions{RepoVisibility: "weird"})
 	if err == nil {
 		t.Fatal("expected error for invalid visibility")
 	}
@@ -479,7 +470,7 @@ func TestRunGitHubBootstrap_RepoExistsFails(t *testing.T) {
 
 func TestResolveCommitMessage_SkipFlag(t *testing.T) {
 	t.Parallel()
-	msg, commit, err := resolveCommitMessage(io.Discard, GitHubBootstrapOptions{SkipInitialCommit: true})
+	msg, commit, err := resolveCommitMessage(GitHubBootstrapOptions{SkipInitialCommit: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -493,7 +484,7 @@ func TestResolveCommitMessage_SkipFlag(t *testing.T) {
 
 func TestResolveCommitMessage_FlagTakesMessage(t *testing.T) {
 	t.Parallel()
-	msg, commit, err := resolveCommitMessage(io.Discard, GitHubBootstrapOptions{InitialCommitMessage: "custom"})
+	msg, commit, err := resolveCommitMessage(GitHubBootstrapOptions{InitialCommitMessage: "custom"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -507,7 +498,7 @@ func TestResolveCommitMessage_FlagTakesMessage(t *testing.T) {
 
 func TestResolveCommitMessage_NonInteractiveDefault(t *testing.T) {
 	t.Setenv("ENTIRE_TEST_TTY", "0")
-	msg, commit, err := resolveCommitMessage(io.Discard, GitHubBootstrapOptions{})
+	msg, commit, err := resolveCommitMessage(GitHubBootstrapOptions{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

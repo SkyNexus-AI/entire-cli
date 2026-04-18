@@ -46,13 +46,11 @@ type GitHubBootstrapOptions struct {
 // bootstrapRunner executes external commands. Tests override this to avoid
 // shelling out to git/gh.
 type bootstrapRunner interface {
-	// Run executes the command and returns stdout. Stderr is discarded.
+	// Run executes the command and returns stdout. Stderr is available on
+	// the returned *exec.ExitError for error reporting.
 	Run(ctx context.Context, name string, args ...string) (string, error)
 	// RunInDir is Run with an explicit working directory.
 	RunInDir(ctx context.Context, dir, name string, args ...string) (string, error)
-	// RunInteractive streams stdin/stdout/stderr so tools like `gh repo create`
-	// can print their own progress. Returns an error on non-zero exit.
-	RunInteractive(ctx context.Context, dir, name string, args ...string) error
 }
 
 type execRunner struct{}
@@ -67,20 +65,6 @@ func (execRunner) RunInDir(ctx context.Context, dir, name string, args ...string
 	cmd.Dir = dir
 	out, err := cmd.Output()
 	return string(out), err
-}
-
-func (execRunner) RunInteractive(ctx context.Context, dir, name string, args ...string) error {
-	cmd := exec.CommandContext(ctx, name, args...)
-	if dir != "" {
-		cmd.Dir = dir
-	}
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("run %s: %w", name, err)
-	}
-	return nil
 }
 
 // printBootstrapSection writes a small section header so the bootstrap
@@ -217,7 +201,7 @@ func runGitHubBootstrapInitWith(ctx context.Context, w, errW io.Writer, opts Git
 	// because gh may read local config; but we can skip the identity
 	// check when the user is fully opting out of both commit and
 	// remote to keep the flow minimal.
-	message, commit, err := resolveCommitMessage(w, opts)
+	message, commit, err := resolveCommitMessage(opts)
 	if err != nil {
 		return nil, err
 	}
@@ -393,7 +377,7 @@ func selectGitHubRepo(ctx context.Context, w, errW io.Writer, runner bootstrapRu
 		return "", "", "", err
 	}
 
-	visibility, err = resolveVisibility(w, owner, currentUser, opts)
+	visibility, err = resolveVisibility(owner, currentUser, opts)
 	if err != nil {
 		return "", "", "", err
 	}
@@ -501,7 +485,7 @@ func resolveRepoName(ctx context.Context, w, errW io.Writer, runner bootstrapRun
 	}
 }
 
-func resolveVisibility(w io.Writer, owner, currentUser string, opts GitHubBootstrapOptions) (string, error) {
+func resolveVisibility(owner, currentUser string, opts GitHubBootstrapOptions) (string, error) {
 	isOrg := owner != currentUser
 
 	if opts.RepoVisibility != "" {
@@ -544,7 +528,6 @@ func resolveVisibility(w io.Writer, owner, currentUser string, opts GitHubBootst
 		}
 		return "", fmt.Errorf("visibility prompt: %w", err)
 	}
-	_ = w
 	return selected, nil
 }
 
@@ -552,7 +535,7 @@ func resolveVisibility(w io.Writer, owner, currentUser string, opts GitHubBootst
 // commit. The second return value is false when the user chose to skip
 // the initial commit entirely; callers must skip `doInitialCommit` and
 // any subsequent push.
-func resolveCommitMessage(w io.Writer, opts GitHubBootstrapOptions) (string, bool, error) {
+func resolveCommitMessage(opts GitHubBootstrapOptions) (string, bool, error) {
 	const defaultMsg = "Initial commit"
 
 	if opts.SkipInitialCommit {
@@ -589,7 +572,6 @@ func resolveCommitMessage(w io.Writer, opts GitHubBootstrapOptions) (string, boo
 		}
 		return "", false, fmt.Errorf("commit message prompt: %w", err)
 	}
-	_ = w
 
 	switch choice {
 	case choiceSkip:
