@@ -83,6 +83,14 @@ func (execRunner) RunInteractive(ctx context.Context, dir, name string, args ...
 	return nil
 }
 
+// printBootstrapSection writes a small section header so the bootstrap
+// output has visual grouping between phases (git init → agent setup →
+// commit & push). Kept simple text so it renders correctly in accessible
+// mode and non-TTY captures.
+func printBootstrapSection(w io.Writer, title string) {
+	fmt.Fprintf(w, "\n━ %s\n", title)
+}
+
 // errBootstrapDeclined signals that the user chose not to initialize a
 // repo. Returned _before_ `git init` runs; callers fall back to the
 // legacy "Not a git repository" error.
@@ -151,13 +159,14 @@ func runGitHubBootstrapInitWith(ctx context.Context, w, errW io.Writer, opts Git
 	}
 
 	// Step 2: git init.
+	printBootstrapSection(w, "Setting up git repository")
 	if err := gitInit(ctx, runner, cwd); err != nil {
 		return nil, fmt.Errorf("git init: %w", err)
 	}
 	// Clear cached worktree root so subsequent paths.WorktreeRoot calls pick
 	// up the freshly created repo.
 	paths.ClearWorktreeRootCache()
-	fmt.Fprintln(w, "Initialized empty Git repository.")
+	fmt.Fprintln(w, "✓ Initialized empty git repository")
 
 	// Step 3: decide whether to create a GitHub repo. If gh is missing or the
 	// user passed --no-github, we skip that branch but still bootstrap the
@@ -250,6 +259,19 @@ func runGitHubBootstrapFinalize(ctx context.Context, w io.Writer, s *bootstrapSt
 	if s == nil {
 		return nil
 	}
+
+	// Pick a single section title for this phase based on what we'll do.
+	if s.useGitHub || s.commit {
+		switch {
+		case s.useGitHub && s.commit:
+			printBootstrapSection(w, "Publishing to GitHub")
+		case s.useGitHub:
+			printBootstrapSection(w, "Creating GitHub repository")
+		default:
+			printBootstrapSection(w, "Finalizing")
+		}
+	}
+
 	var committed bool
 	if s.commit {
 		c, err := doInitialCommit(ctx, s.runner, s.cwd, s.message)
@@ -257,23 +279,32 @@ func runGitHubBootstrapFinalize(ctx context.Context, w io.Writer, s *bootstrapSt
 			return fmt.Errorf("initial commit: %w", err)
 		}
 		committed = c
-		if !committed {
-			fmt.Fprintln(w, "No files to commit; skipping initial commit.")
+		if committed {
+			fmt.Fprintf(w, "✓ Created initial commit (%s)\n", s.message)
+		} else {
+			fmt.Fprintln(w, "✓ Nothing to commit — the folder has no files yet")
 		}
 	}
 	if s.useGitHub {
 		if err := ghRepoCreate(ctx, s.runner, s.cwd, s.fullName, s.visibility, committed); err != nil {
 			return fmt.Errorf("gh repo create: %w", err)
 		}
-		fmt.Fprintf(w, "Created GitHub repository %s.\n", s.fullName)
+		fmt.Fprintf(w, "✓ Created %s (%s)\n", s.fullName, s.visibility)
+		fmt.Fprintf(w, "  https://github.com/%s\n", s.fullName)
+		if committed {
+			fmt.Fprintln(w, "✓ Pushed initial commit to origin")
+		}
 	}
 	if !s.commit {
+		fmt.Fprintln(w)
 		fmt.Fprintln(w, "Skipped initial commit. When you're ready:")
 		fmt.Fprintln(w, "  git add -A && git commit -m \"Initial commit\"")
 		if s.useGitHub {
 			fmt.Fprintln(w, "  git push -u origin HEAD")
 		}
 	}
+
+	fmt.Fprintln(w, "\nDone.")
 	return nil
 }
 
@@ -784,21 +815,39 @@ func ghRepoCreate(ctx context.Context, runner bootstrapRunner, dir, fullName, vi
 	// on this first push: the entire/checkpoints/v1 branch has nothing to
 	// checkpoint (no sessions yet), and if it's pushed alongside the
 	// default branch GitHub can pick it as the default.
+	//
+	// Capture `gh repo create`'s stdout instead of streaming it — its own
+	// "✓ Created repository..." / "✓ Added remote..." lines would
+	// duplicate our own summary in runGitHubBootstrapFinalize.
 	args := []string{
 		"repo", "create", fullName,
 		"--" + visibility,
 		"--source=.",
 		"--remote=origin",
 	}
-	if err := runner.RunInteractive(ctx, dir, "gh", args...); err != nil {
-		return fmt.Errorf("gh repo create: %w", err)
+	if _, err := runner.RunInDir(ctx, dir, "gh", args...); err != nil {
+		return fmt.Errorf("gh repo create: %w", ghRunnerErr(err))
 	}
 	if hasCommits {
-		if err := runner.RunInteractive(ctx, dir, "git", "push", "--no-verify", "-u", "origin", "HEAD"); err != nil {
-			return fmt.Errorf("git push: %w", err)
+		// -q silences "Enumerating objects..." etc. --no-verify bypasses
+		// the pre-push hook so entire/checkpoints/v1 isn't pushed
+		// alongside the default branch.
+		if _, err := runner.RunInDir(ctx, dir, "git", "push", "-q", "--no-verify", "-u", "origin", "HEAD"); err != nil {
+			return fmt.Errorf("git push: %w", ghRunnerErr(err))
 		}
 	}
 	return nil
+}
+
+// ghRunnerErr extracts an exec.ExitError's stderr into the returned
+// error so the user sees a useful diagnostic when gh/git fail under a
+// captured-stdout call.
+func ghRunnerErr(err error) error {
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && len(exitErr.Stderr) > 0 {
+		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(exitErr.Stderr)))
+	}
+	return err
 }
 
 // slugifyRepoName turns a folder name into a GitHub-safe repo name. Invalid

@@ -51,6 +51,11 @@ type EnableOptions struct {
 	CheckpointRemote    string
 	Telemetry           bool
 	AbsoluteGitHookPath bool
+	// SuppressDoneMessage tells `runEnableInteractive` to skip its final
+	// "Ready." line and the "commit the configuration files" hint. Set
+	// when the caller is running the bootstrap flow, which takes over
+	// presentation of the final state (commit, push, done).
+	SuppressDoneMessage bool
 }
 
 // applyStrategyOptions sets strategy_options on settings from CLI flags.
@@ -678,10 +683,15 @@ for you and (optionally) create a matching GitHub repository via the gh CLI.`,
 					return bootstrapErr
 				}
 				bootstrap = state
+				// Let the enable flow know that we'll be handling the final
+				// "done" summary from the bootstrap finalize step.
+				opts.SuppressDoneMessage = true
 				// Re-check after bootstrap.
 				if _, err := paths.WorktreeRoot(ctx); err != nil {
 					return fmt.Errorf("bootstrap finished but no git repository detected: %w", err)
 				}
+				// Visual separator between bootstrap init and agent setup.
+				printBootstrapSection(cmd.OutOrStdout(), "Enabling Entire")
 				// On the way out (if setup succeeded), create the initial
 				// commit and push to the GitHub repo. If setup returned an
 				// error, skip the finalize — the user can fix the issue and
@@ -933,6 +943,12 @@ func runEnableInteractive(ctx context.Context, w io.Writer, agents []agent.Agent
 
 	if err := strategy.EnsureSetup(ctx); err != nil {
 		return fmt.Errorf("failed to setup strategy: %w", err)
+	}
+
+	if opts.SuppressDoneMessage {
+		// Bootstrap finalize will print its own completion summary after
+		// making the initial commit and pushing.
+		return nil
 	}
 
 	fmt.Fprintln(w, "\nReady.")
@@ -1403,6 +1419,11 @@ func setupAgentHooksNonInteractive(ctx context.Context, w io.Writer, ag agent.Ag
 
 	if err := strategy.EnsureSetup(ctx); err != nil {
 		return fmt.Errorf("failed to setup strategy: %w", err)
+	}
+
+	if opts.SuppressDoneMessage {
+		// Bootstrap finalize will print its own completion summary.
+		return nil
 	}
 
 	fmt.Fprintln(w, "\nReady.")

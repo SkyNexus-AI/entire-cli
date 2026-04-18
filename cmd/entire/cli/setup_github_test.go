@@ -94,13 +94,6 @@ func (f *fakeRunner) set(name string, args []string, stdout string, err error) {
 	f.responses[f.key(name, args)] = fakeResponse{stdout: stdout, err: err}
 }
 
-//nolint:unparam // err is always nil today; keep the parameter so tests can exercise interactive-call failures later without a signature change
-func (f *fakeRunner) setInteractive(name string, args []string, err error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.interactive[f.key(name, args)] = err
-}
-
 func (f *fakeRunner) lookup(name string, args []string) (fakeResponse, bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -424,13 +417,13 @@ func TestRunGitHubBootstrap_FullNonInteractive(t *testing.T) {
 	r.set("git", []string{"add", "-A"}, "", nil)
 	r.set("git", []string{"status", "--porcelain"}, " M f\n", nil)
 	r.set("git", []string{"-c", "commit.gpgsign=false", "commit", "-m", "Seed"}, "", nil)
-	r.setInteractive("gh", []string{
+	r.set("gh", []string{
 		"repo", "create", "octocat/my-new",
 		"--private",
 		"--source=.",
 		"--remote=origin",
-	}, nil)
-	r.setInteractive("git", []string{"push", "--no-verify", "-u", "origin", "HEAD"}, nil)
+	}, "", nil)
+	r.set("git", []string{"push", "-q", "--no-verify", "-u", "origin", "HEAD"}, "", nil)
 
 	opts := GitHubBootstrapOptions{
 		InitRepo:             true,
@@ -448,10 +441,9 @@ func TestRunGitHubBootstrap_FullNonInteractive(t *testing.T) {
 	}) {
 		t.Fatal("expected gh repo create call")
 	}
-	// The initial push must bypass hooks so entire/checkpoints/v1 isn't
-	// pushed alongside the default branch.
-	if !r.hasCall(argsMatch("git", []string{"push", "--no-verify", "-u", "origin", "HEAD"})) {
-		t.Fatal("expected git push --no-verify after repo create")
+	// The initial push must bypass hooks (--no-verify) and be quiet (-q).
+	if !r.hasCall(argsMatch("git", []string{"push", "-q", "--no-verify", "-u", "origin", "HEAD"})) {
+		t.Fatal("expected git push -q --no-verify after repo create")
 	}
 }
 
@@ -542,12 +534,12 @@ func TestRunGitHubBootstrap_SkipCommitKeepsGitHub(t *testing.T) {
 	r.set("gh", []string{"api", "user/orgs", "--jq", ".[].login"}, "", nil)
 	r.set("gh", []string{"repo", "view", "octocat/skipme", "--json", "name"}, "", errors.New("not found"))
 	r.set("git", []string{"init"}, "", nil)
-	r.setInteractive("gh", []string{
+	r.set("gh", []string{
 		"repo", "create", "octocat/skipme",
 		"--private",
 		"--source=.",
 		"--remote=origin",
-	}, nil)
+	}, "", nil)
 
 	opts := GitHubBootstrapOptions{
 		InitRepo:          true,
@@ -653,13 +645,13 @@ func TestRunGitHubBootstrap_InitBeforeFinalize(t *testing.T) {
 	r.set("git", []string{"add", "-A"}, "", nil)
 	r.set("git", []string{"status", "--porcelain"}, " A .entire/settings.json\n", nil)
 	r.set("git", []string{"-c", "commit.gpgsign=false", "commit", "-m", "First"}, "", nil)
-	r.setInteractive("gh", []string{
+	r.set("gh", []string{
 		"repo", "create", "octocat/phased",
 		"--private",
 		"--source=.",
 		"--remote=origin",
-	}, nil)
-	r.setInteractive("git", []string{"push", "--no-verify", "-u", "origin", "HEAD"}, nil)
+	}, "", nil)
+	r.set("git", []string{"push", "-q", "--no-verify", "-u", "origin", "HEAD"}, "", nil)
 
 	opts := GitHubBootstrapOptions{
 		InitRepo:             true,
