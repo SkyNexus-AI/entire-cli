@@ -1631,27 +1631,14 @@ func createRedactedBlobFromFile(repo *git.Repository, filePath, treePath string)
 // GetGitAuthorFromRepo retrieves the git user.name and user.email,
 // checking both the repository-local config and the global ~/.gitconfig.
 func GetGitAuthorFromRepo(repo *git.Repository) (name, email string) {
-	// Get repository config (includes local settings)
-	cfg, err := repo.Config()
-	if err == nil {
+	// ConfigScoped merges local + global (local wins), matching git's own resolution.
+	// Requires a ConfigLoader plugin to be registered; cmd/entire/main.go blank-imports
+	// go-git/v6/x/plugin to register the default Auto loader.
+	if cfg, err := repo.ConfigScoped(config.GlobalScope); err == nil {
 		name = cfg.User.Name
 		email = cfg.User.Email
 	}
 
-	// If not found in local config, try global config
-	if name == "" || email == "" {
-		globalCfg, err := config.LoadConfig(config.GlobalScope)
-		if err == nil {
-			if name == "" {
-				name = globalCfg.User.Name
-			}
-			if email == "" {
-				email = globalCfg.User.Email
-			}
-		}
-	}
-
-	// Provide sensible defaults if git user is not configured
 	if name == "" {
 		name = "Unknown"
 	}

@@ -425,6 +425,8 @@ func TestUpdateCommitted_UsesCorrectAuthor(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			useAutoConfigLoader(t)
+
 			// Isolate global git config by pointing HOME to a temp dir
 			home := t.TempDir()
 			t.Setenv("HOME", home)
@@ -531,6 +533,7 @@ func TestUpdateCommitted_UsesCorrectAuthor(t *testing.T) {
 // falls back to global git config when local config is empty.
 func TestGetGitAuthorFromRepo_GlobalFallback(t *testing.T) {
 	// Cannot use t.Parallel() because we use t.Setenv.
+	useAutoConfigLoader(t)
 
 	home := t.TempDir()
 	t.Setenv("HOME", home)
