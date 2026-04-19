@@ -74,11 +74,11 @@ func TestV2UpdateCommitted_PrecomputedBlobs_Roundtrip(t *testing.T) {
 	require.Equal(t, string(transcript.Bytes()), got)
 }
 
-// TestV2UpdateCommitted_ContentHashShortCircuit verifies that a second update
-// with identical transcript content preserves the existing transcript blob
-// (no rewrite, no new blob hash).
+// TestV2UpdateCommitted_ContentHashShortCircuit verifies that a second
+// identical update to /full/current skips chunking entirely and does not
+// advance the ref (no no-op commit).
 func TestV2UpdateCommitted_ContentHashShortCircuit(t *testing.T) {
-	t.Parallel()
+	// Cannot run in parallel: patches the package-level chunkTranscript hook.
 	repo, store, cpID := setupV2ForUpdate(t, []byte(`{"type":"assistant","message":"initial"}`))
 
 	transcript := redact.AlreadyRedacted([]byte(`{"type":"assistant","message":"stable content"}`))
@@ -91,10 +91,14 @@ func TestV2UpdateCommitted_ContentHashShortCircuit(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	blobBefore := readV2TranscriptBlobHash(t, repo, cpID)
+	fullRefName := plumbing.ReferenceName(paths.V2FullCurrentRefName)
+	refBefore, err := repo.Reference(fullRefName, true)
+	require.NoError(t, err)
 
-	// Second update with identical content — should short-circuit the
-	// /full/current transcript rewrite.
+	// Install a counter. The second UpdateCommitted with identical content
+	// should skip chunking and leave /full/current's ref unchanged.
+	calls := installChunkCounter(t)
+
 	err = store.UpdateCommitted(context.Background(), UpdateCommittedOptions{
 		CheckpointID: cpID,
 		SessionID:    "session-001",
@@ -103,9 +107,13 @@ func TestV2UpdateCommitted_ContentHashShortCircuit(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	blobAfter := readV2TranscriptBlobHash(t, repo, cpID)
-	require.Equal(t, blobBefore, blobAfter,
-		"short-circuit failed: /full/current transcript blob hash changed")
+	require.Equal(t, 0, *calls,
+		"short-circuit failed: chunkTranscript was called %d time(s) on a no-op re-update", *calls)
+
+	refAfter, err := repo.Reference(fullRefName, true)
+	require.NoError(t, err)
+	require.Equal(t, refBefore.Hash(), refAfter.Hash(),
+		"short-circuit should skip the ref advance on /full/current to avoid a no-op commit")
 }
 
 // TestV2UpdateCommitted_ContentChangedRewrites verifies the v2 short-circuit

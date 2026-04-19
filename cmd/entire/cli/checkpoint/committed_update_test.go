@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/entireio/cli/cmd/entire/cli/agent/types"
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint/id"
 	"github.com/entireio/cli/cmd/entire/cli/paths"
 	"github.com/entireio/cli/redact"
@@ -627,11 +628,11 @@ func TestUpdateCommitted_PrecomputedBlobs_Roundtrip(t *testing.T) {
 }
 
 // TestUpdateCommitted_ContentHashShortCircuit verifies that a second update
-// with identical transcript content does not create new transcript blob
-// entries — the existing chunk and content-hash entries are preserved.
+// with identical transcript content skips chunking entirely (short-circuit
+// fires before agent.ChunkTranscript is called).
 func TestUpdateCommitted_ContentHashShortCircuit(t *testing.T) {
-	t.Parallel()
-	repo, store, cpID := setupRepoForUpdate(t)
+	// Cannot run in parallel: patches the package-level chunkTranscript hook.
+	_, store, cpID := setupRepoForUpdate(t)
 
 	transcript := redact.AlreadyRedacted([]byte("stable transcript content\n"))
 
@@ -643,9 +644,10 @@ func TestUpdateCommitted_ContentHashShortCircuit(t *testing.T) {
 		t.Fatalf("UpdateCommitted(first) error = %v", err)
 	}
 
-	transcriptBlobHashBefore := readTranscriptBlobHash(t, repo, cpID)
+	// Install a counter. The second UpdateCommitted with identical content
+	// should never touch the chunking function.
+	calls := installChunkCounter(t)
 
-	// Second update with the same content — should short-circuit.
 	if err := store.UpdateCommitted(context.Background(), UpdateCommittedOptions{
 		CheckpointID: cpID,
 		SessionID:    "session-001",
@@ -654,12 +656,24 @@ func TestUpdateCommitted_ContentHashShortCircuit(t *testing.T) {
 		t.Fatalf("UpdateCommitted(second) error = %v", err)
 	}
 
-	transcriptBlobHashAfter := readTranscriptBlobHash(t, repo, cpID)
-
-	if transcriptBlobHashBefore != transcriptBlobHashAfter {
-		t.Errorf("short-circuit failed: transcript blob hash changed %v -> %v",
-			transcriptBlobHashBefore, transcriptBlobHashAfter)
+	if *calls != 0 {
+		t.Errorf("short-circuit failed: chunkTranscript was called %d time(s) on a no-op re-update; expected 0", *calls)
 	}
+}
+
+// installChunkCounter swaps the package-level chunkTranscript hook for a
+// counter and restores it when the test completes. Returns a pointer the
+// caller can dereference to read the running count.
+func installChunkCounter(t *testing.T) *int {
+	t.Helper()
+	original := chunkTranscript
+	t.Cleanup(func() { chunkTranscript = original })
+	var count int
+	chunkTranscript = func(ctx context.Context, content []byte, agentType types.AgentType) ([][]byte, error) {
+		count++
+		return original(ctx, content, agentType)
+	}
+	return &count
 }
 
 // TestUpdateCommitted_ContentChangedRewrites verifies the short-circuit does

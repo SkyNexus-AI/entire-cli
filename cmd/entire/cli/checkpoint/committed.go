@@ -41,6 +41,12 @@ import (
 // errStopIteration is used to stop commit iteration early in GetCheckpointAuthor.
 var errStopIteration = errors.New("stop iteration")
 
+// chunkTranscript is an indirection over agent.ChunkTranscript so tests can
+// count or intercept chunking calls (e.g., to verify the short-circuit avoids
+// re-chunking identical content). Production code paths always use the
+// unwrapped function.
+var chunkTranscript = agent.ChunkTranscript
+
 // WriteCommitted writes a committed checkpoint to the entire/checkpoints/v1 branch.
 // Checkpoints are stored at sharded paths: <id[:2]>/<id[2:]>/
 //
@@ -1372,6 +1378,11 @@ func (s *GitStore) UpdateCommitted(ctx context.Context, opts UpdateCommittedOpti
 // no chunking/zlib happens. Use precomputed (non-nil) to reuse blob hashes
 // computed once across multiple checkpoints.
 func (s *GitStore) replaceTranscript(ctx context.Context, transcript redact.RedactedBytes, agentType types.AgentType, precomputed *PrecomputedTranscriptBlobs, sessionPath string, entries map[string]object.TreeEntry) error {
+	// Ignore precompute if invariants are violated — fall back to fresh chunking.
+	if precomputed != nil && !precomputed.isUsable() {
+		precomputed = nil
+	}
+
 	// Compute the new content-hash string (cheap — SHA-256 over transcript bytes).
 	var newContentHash string
 	if precomputed != nil {
@@ -1409,7 +1420,7 @@ func (s *GitStore) replaceTranscript(ctx context.Context, transcript redact.Reda
 	if precomputed != nil {
 		chunkHashes = precomputed.ChunkHashes
 	} else {
-		chunks, err := agent.ChunkTranscript(ctx, transcript.Bytes(), agentType)
+		chunks, err := chunkTranscript(ctx, transcript.Bytes(), agentType)
 		if err != nil {
 			return fmt.Errorf("failed to chunk transcript: %w", err)
 		}
@@ -1464,7 +1475,7 @@ func (s *GitStore) replaceTranscript(ctx context.Context, transcript redact.Reda
 func PrecomputeTranscriptBlobs(ctx context.Context, repo *git.Repository, transcript redact.RedactedBytes, agentType types.AgentType) (*PrecomputedTranscriptBlobs, error) {
 	raw := transcript.Bytes()
 
-	chunks, err := agent.ChunkTranscript(ctx, raw, agentType)
+	chunks, err := chunkTranscript(ctx, raw, agentType)
 	if err != nil {
 		return nil, fmt.Errorf("failed to chunk transcript: %w", err)
 	}
