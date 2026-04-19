@@ -2729,6 +2729,22 @@ func (s *ManualCommitStrategy) finalizeAllTurnCheckpoints(ctx context.Context, s
 		v2Store = checkpoint.NewV2GitStore(repo, ResolveCheckpointURL(logCtx, "origin"))
 	}
 
+	// Chunk + zlib-compress the transcript ONCE. Every checkpoint in this turn
+	// receives the same transcript content, so each store.UpdateCommitted /
+	// v2Store.UpdateCommitted reuses these blob hashes instead of re-chunking
+	// and re-compressing. Blob hashes are content-addressed, so v1 and v2
+	// share the same hashes (only the tree-entry filename differs).
+	_, precomputeSpan := perf.Start(logCtx, "precompute_transcript_blobs")
+	precomputed, precomputeErr := checkpoint.PrecomputeTranscriptBlobs(logCtx, repo, redactedTranscript, state.AgentType)
+	precomputeSpan.End()
+	if precomputeErr != nil {
+		logging.Warn(logCtx, "finalize: precompute transcript blobs failed, falling back to per-checkpoint work",
+			slog.String("session_id", state.SessionID),
+			slog.String("error", precomputeErr.Error()),
+		)
+		precomputed = nil
+	}
+
 	// Update each checkpoint with the full transcript
 	for _, cpIDStr := range state.TurnCheckpointIDs {
 		cpID, parseErr := id.NewCheckpointID(cpIDStr)
@@ -2742,11 +2758,12 @@ func (s *ManualCommitStrategy) finalizeAllTurnCheckpoints(ctx context.Context, s
 		}
 
 		updateOpts := checkpoint.UpdateCommittedOptions{
-			CheckpointID: cpID,
-			SessionID:    state.SessionID,
-			Transcript:   redactedTranscript,
-			Prompts:      prompts,
-			Agent:        state.AgentType,
+			CheckpointID:     cpID,
+			SessionID:        state.SessionID,
+			Transcript:       redactedTranscript,
+			Prompts:          prompts,
+			Agent:            state.AgentType,
+			PrecomputedBlobs: precomputed,
 		}
 
 		// Generate compact transcript for v2 /main
