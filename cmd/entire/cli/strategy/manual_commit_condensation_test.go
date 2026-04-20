@@ -1,6 +1,7 @@
 package strategy
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
@@ -230,7 +231,8 @@ func TestCompactTranscriptForExternalAgent_AppendsTrailingNewline(t *testing.T) 
 
 	compacted := compactTranscriptForExternalAgent(context.Background(), ag, "sess-1", "/tmp/session.jsonl")
 	require.NotNil(t, compacted)
-	require.JSONEq(t, "{\"v\":1,\"type\":\"assistant\"}\n", string(compacted.Transcript))
+	require.True(t, bytes.HasSuffix(compacted.Transcript, []byte{'\n'}), "expected trailing newline")
+	require.JSONEq(t, "{\"v\":1,\"type\":\"assistant\"}", strings.TrimSpace(string(compacted.Transcript)))
 }
 
 func TestCalculateTokenUsage_EmptyData(t *testing.T) {
