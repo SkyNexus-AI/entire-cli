@@ -89,30 +89,31 @@ func newExplainCmd() *cobra.Command {
 	var searchAllFlag bool
 
 	cmd := &cobra.Command{
-		Use:   "explain",
+		Use:   "explain [checkpoint-id | commit-sha]",
 		Short: "Explain a session, commit, or checkpoint",
 		Long: `Explain provides human-readable context about sessions, commits, and checkpoints.
 
 Use this command to understand what happened during agent-driven development,
 either for self-review or to understand a teammate's work.
 
-By default, shows checkpoints on the current branch. Use flags to filter or
-explain specific items.
+By default, shows checkpoints on the current branch. Pass a checkpoint ID or
+commit SHA as a positional argument to explain a specific item, or use flags.
+
+Viewing specific items:
+  entire explain <id-or-sha>           Auto-detects checkpoint ID or commit SHA
+  entire explain --checkpoint <id>     Force interpretation as checkpoint ID
+  entire explain --commit <ref>        Force interpretation as commit ref
 
 Filtering the list view:
   --session      Filter checkpoints by session ID (or prefix)
 
-Viewing specific items:
-  --commit       Explain a specific commit (shows its associated checkpoint)
-  --checkpoint   Explain a specific checkpoint by ID
-
-Output verbosity levels (for --checkpoint):
+Output verbosity levels (when explaining a specific item):
   Default:         Detailed view with scoped prompts (ID, session, tokens, intent, prompts, files)
   --short          Summary only (ID, session, timestamp, tokens, intent)
   --full           Parsed full transcript (all prompts/responses from entire session)
   --raw-transcript Raw transcript file (JSONL format)
 
-Summary generation (for --checkpoint):
+Summary generation:
   --generate    Generate an AI summary for the checkpoint
   --force       Regenerate even if a summary already exists (requires --generate)
 
@@ -124,14 +125,9 @@ Checkpoint detail view shows:
   - Associated git commits that reference the checkpoint
   - Prompts and responses from the session
 
-Note: --session filters the list view; --commit and --checkpoint are mutually exclusive.`,
-		Args: func(_ *cobra.Command, args []string) error {
-			if len(args) > 0 {
-				return fmt.Errorf("unexpected argument %q\nHint: use --checkpoint, --session, or --commit to specify what to explain", args[0])
-			}
-			return nil
-		},
-		RunE: func(cmd *cobra.Command, _ []string) error {
+Note: --session filters the list view; the positional arg, --commit, and --checkpoint are mutually exclusive.`,
+		Args: cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
 			// Check if Entire is disabled
 			if checkDisabledGuard(cmd.Context(), cmd.OutOrStdout()) {
 				return nil
@@ -146,20 +142,31 @@ Note: --session filters the list view; --commit and --checkpoint are mutually ex
 				}
 			}
 
-			// Validate flag dependencies
-			if generateFlag && checkpointFlag == "" {
-				return errors.New("--generate requires --checkpoint/-c flag")
+			// Positional arg is mutually exclusive with --checkpoint, --commit, --session
+			var positional string
+			if len(args) > 0 {
+				positional = args[0]
+				if checkpointFlag != "" || commitFlag != "" || sessionFlag != "" {
+					return errors.New("cannot combine positional argument with --checkpoint, --commit, or --session")
+				}
+			}
+
+			// Validate flag dependencies. --generate/--raw-transcript need a specific
+			// checkpoint target, which can come from the positional arg or --checkpoint.
+			hasCheckpointTarget := checkpointFlag != "" || positional != ""
+			if generateFlag && !hasCheckpointTarget {
+				return errors.New("--generate requires a checkpoint ID (positional) or --checkpoint/-c flag")
 			}
 			if forceFlag && !generateFlag {
 				return errors.New("--force requires --generate flag")
 			}
-			if rawTranscriptFlag && checkpointFlag == "" {
-				return errors.New("--raw-transcript requires --checkpoint/-c flag")
+			if rawTranscriptFlag && !hasCheckpointTarget {
+				return errors.New("--raw-transcript requires a checkpoint ID (positional) or --checkpoint/-c flag")
 			}
 
 			// Convert short flag to verbose (verbose = !short)
 			verbose := !shortFlag
-			return runExplain(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), sessionFlag, commitFlag, checkpointFlag, noPagerFlag, verbose, fullFlag, rawTranscriptFlag, generateFlag, forceFlag, searchAllFlag)
+			return runExplain(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), sessionFlag, commitFlag, checkpointFlag, positional, noPagerFlag, verbose, fullFlag, rawTranscriptFlag, generateFlag, forceFlag, searchAllFlag)
 		},
 	}
 
@@ -182,8 +189,9 @@ Note: --session filters the list view; --commit and --checkpoint are mutually ex
 	return cmd
 }
 
-// runExplain routes to the appropriate explain function based on flags.
-func runExplain(ctx context.Context, w, errW io.Writer, sessionID, commitRef, checkpointID string, noPager, verbose, full, rawTranscript, generate, force, searchAll bool) error {
+// runExplain routes to the appropriate explain function based on flags and the
+// optional positional target.
+func runExplain(ctx context.Context, w, errW io.Writer, sessionID, commitRef, checkpointID, target string, noPager, verbose, full, rawTranscript, generate, force, searchAll bool) error {
 	// Count mutually exclusive flags (--commit and --checkpoint are mutually exclusive)
 	// --session is now a filter for the list view, not a separate mode
 	flagCount := 0
@@ -202,6 +210,9 @@ func runExplain(ctx context.Context, w, errW io.Writer, sessionID, commitRef, ch
 	}
 
 	// Route to appropriate handler
+	if target != "" {
+		return runExplainAuto(ctx, w, errW, target, noPager, verbose, full, rawTranscript, generate, force, searchAll)
+	}
 	if commitRef != "" {
 		return runExplainCommit(ctx, w, commitRef, noPager, verbose, full, searchAll)
 	}
@@ -211,6 +222,50 @@ func runExplain(ctx context.Context, w, errW io.Writer, sessionID, commitRef, ch
 
 	// Default or with session filter: show list view (optionally filtered by session)
 	return runExplainBranchWithFilter(ctx, w, noPager, sessionID)
+}
+
+// runExplainAuto resolves a target string as either a checkpoint ID (or prefix)
+// or a git commit ref, then delegates to the checkpoint detail view.
+//
+// Resolution order:
+//  1. Try the checkpoint path (committed checkpoints, then shadow-branch temporary
+//     checkpoints). This preserves short-prefix matching for checkpoint IDs.
+//  2. If the target matched nothing, try to resolve it as a git commit ref and
+//     follow its Entire-Checkpoint trailer.
+//
+// Only "not found" errors from the checkpoint path trigger the fallback; other
+// errors (ambiguous prefix, read failure) bubble up unchanged.
+func runExplainAuto(ctx context.Context, w, errW io.Writer, target string, noPager, verbose, full, rawTranscript, generate, force, searchAll bool) error {
+	checkpointErr := runExplainCheckpoint(ctx, w, errW, target, noPager, verbose, full, rawTranscript, generate, force, searchAll)
+	if checkpointErr == nil {
+		return nil
+	}
+	errStr := checkpointErr.Error()
+	if !strings.Contains(errStr, "checkpoint not found") &&
+		!strings.Contains(errStr, "cannot generate summary for temporary checkpoint") {
+		return checkpointErr
+	}
+
+	repo, repoErr := openRepository(ctx)
+	if repoErr != nil {
+		return checkpointErr
+	}
+	hash, resolveErr := repo.ResolveRevision(plumbing.Revision(target))
+	if resolveErr != nil {
+		return fmt.Errorf("no checkpoint or commit found matching %q", target)
+	}
+	commit, commitErr := repo.CommitObject(*hash)
+	if commitErr != nil {
+		return fmt.Errorf("failed to get commit: %w", commitErr)
+	}
+	cpID, hasCheckpoint := trailers.ParseCheckpoint(commit.Message)
+	if !hasCheckpoint {
+		fmt.Fprintln(w, "No associated Entire checkpoint")
+		fmt.Fprintf(w, "\nCommit %s does not have an Entire-Checkpoint trailer.\n", hash.String()[:7])
+		fmt.Fprintln(w, "This commit was not created during an Entire session, or the trailer was removed.")
+		return nil
+	}
+	return runExplainCheckpoint(ctx, w, errW, cpID.String(), noPager, verbose, full, rawTranscript, generate, force, searchAll)
 }
 
 // runExplainCheckpoint explains a specific checkpoint.

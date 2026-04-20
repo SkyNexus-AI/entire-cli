@@ -33,8 +33,8 @@ import (
 func TestNewExplainCmd(t *testing.T) {
 	cmd := newExplainCmd()
 
-	if cmd.Use != "explain" {
-		t.Errorf("expected Use to be 'explain', got %s", cmd.Use)
+	if cmd.Name() != "explain" {
+		t.Errorf("expected command name to be 'explain', got %s", cmd.Name())
 	}
 
 	// Verify flags exist
@@ -202,14 +202,20 @@ func TestFormatCheckpointSummaryError_Unknown(t *testing.T) {
 	}
 }
 
-func TestExplainCmd_RejectsPositionalArgs(t *testing.T) {
+// TestExplainCmd_PositionalArgConflictsWithFlags verifies that combining a
+// positional target with --checkpoint, --commit, or --session is rejected.
+// A bare positional arg (without conflicting flags) is accepted and routed to
+// the auto-detection path; that routing is covered by runExplainAuto tests
+// elsewhere and does not need a cmd-level reject test.
+func TestExplainCmd_PositionalArgConflictsWithFlags(t *testing.T) {
 	tests := []struct {
 		name string
 		args []string
 	}{
-		{"positional arg without flags", []string{"abc123"}},
-		{"positional arg with checkpoint flag", []string{"abc123", "--checkpoint", "def456"}},
-		{"positional arg after flags", []string{"--checkpoint", "def456", "abc123"}},
+		{"positional arg with --checkpoint", []string{"abc123", "--checkpoint", "def456"}},
+		{"positional arg with -c", []string{"abc123", "-c", "def456"}},
+		{"positional arg with --commit", []string{"abc123", "--commit", "HEAD"}},
+		{"positional arg with --session", []string{"abc123", "--session", "sess-1"}},
 	}
 
 	for _, tt := range tests {
@@ -222,15 +228,10 @@ func TestExplainCmd_RejectsPositionalArgs(t *testing.T) {
 
 			err := cmd.Execute()
 			if err == nil {
-				t.Fatalf("expected error for positional args, got nil")
+				t.Fatalf("expected error when combining positional arg with flags, got nil")
 			}
-
-			// Should show helpful error with hint
-			if !strings.Contains(err.Error(), "unexpected argument") {
-				t.Errorf("expected 'unexpected argument' error, got: %v", err)
-			}
-			if !strings.Contains(err.Error(), "Hint:") {
-				t.Errorf("expected hint in error message, got: %v", err)
+			if !strings.Contains(err.Error(), "cannot combine positional argument") {
+				t.Errorf("expected 'cannot combine positional argument' error, got: %v", err)
 			}
 		})
 	}
@@ -700,7 +701,7 @@ func TestExplainDefault_NoCheckpoints_ShowsHelpfulMessage(t *testing.T) {
 func TestExplainBothFlagsError(t *testing.T) {
 	// Test that providing both --session and --commit returns an error
 	var stdout, stderr bytes.Buffer
-	err := runExplain(context.Background(), &stdout, &stderr, "session-id", "commit-sha", "", false, false, false, false, false, false, false)
+	err := runExplain(context.Background(), &stdout, &stderr, "session-id", "commit-sha", "", "", false, false, false, false, false, false, false)
 
 	if err == nil {
 		t.Error("expected error when both flags provided, got nil")
@@ -1153,7 +1154,7 @@ func TestRunExplain_MutualExclusivityError(t *testing.T) {
 	var buf, errBuf bytes.Buffer
 
 	// Providing both --session and --checkpoint should error
-	err := runExplain(context.Background(), &buf, &errBuf, "session-id", "", "checkpoint-id", false, false, false, false, false, false, false)
+	err := runExplain(context.Background(), &buf, &errBuf, "session-id", "", "checkpoint-id", "", false, false, false, false, false, false, false)
 
 	if err == nil {
 		t.Error("expected error when multiple flags provided")
@@ -3509,7 +3510,7 @@ func TestRunExplain_SessionFlagFiltersListView(t *testing.T) {
 	// When session is specified alone, it should NOT error for mutual exclusivity
 	// It should route to the list view with a filter (which may fail for other reasons
 	// like not being in a git repo, but not for mutual exclusivity)
-	err := runExplain(context.Background(), &buf, &errBuf, "some-session", "", "", false, false, false, false, false, false, false)
+	err := runExplain(context.Background(), &buf, &errBuf, "some-session", "", "", "", false, false, false, false, false, false, false)
 
 	// Should NOT be a mutual exclusivity error
 	if err != nil && strings.Contains(err.Error(), "cannot specify multiple") {
@@ -3521,7 +3522,7 @@ func TestRunExplain_SessionWithCheckpointStillMutuallyExclusive(t *testing.T) {
 	// Test that --session with --checkpoint is still an error
 	var buf, errBuf bytes.Buffer
 
-	err := runExplain(context.Background(), &buf, &errBuf, "some-session", "", "some-checkpoint", false, false, false, false, false, false, false)
+	err := runExplain(context.Background(), &buf, &errBuf, "some-session", "", "some-checkpoint", "", false, false, false, false, false, false, false)
 
 	if err == nil {
 		t.Error("expected error when --session and --checkpoint both specified")
@@ -3535,7 +3536,7 @@ func TestRunExplain_SessionWithCommitStillMutuallyExclusive(t *testing.T) {
 	// Test that --session with --commit is still an error
 	var buf, errBuf bytes.Buffer
 
-	err := runExplain(context.Background(), &buf, &errBuf, "some-session", "some-commit", "", false, false, false, false, false, false, false)
+	err := runExplain(context.Background(), &buf, &errBuf, "some-session", "some-commit", "", "", false, false, false, false, false, false, false)
 
 	if err == nil {
 		t.Error("expected error when --session and --commit both specified")
