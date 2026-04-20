@@ -1519,7 +1519,7 @@ func TestHandleTurnEnd_V2UsesExternalTranscriptCompactor(t *testing.T) {
 	require.Equal(t, fakeAgent.fullCompact, finalCompact)
 }
 
-func TestHandleTurnEnd_V2ExternalTranscriptCompactor_SkipsNonZeroCompactOffset(t *testing.T) {
+func TestHandleTurnEnd_V2ExternalTranscriptCompactor_UpdatesAllTurnCheckpoints(t *testing.T) {
 	dir := setupGitRepo(t)
 	t.Chdir(dir)
 
@@ -1588,10 +1588,17 @@ func TestHandleTurnEnd_V2ExternalTranscriptCompactor_SkipsNonZeroCompactOffset(t
 	initialCompact1, err := v2Store.ReadSessionCompactTranscript(context.Background(), id.MustCheckpointID(cpID1), 0)
 	require.NoError(t, err)
 	require.JSONEq(t, "{\"v\":1,\"type\":\"assistant\",\"text\":\"checkpoint-1\"}\n", string(initialCompact1))
+	initialContent1, err := v2Store.ReadSessionContentByID(context.Background(), id.MustCheckpointID(cpID1), sessionID)
+	require.NoError(t, err)
+	initialStart1 := initialContent1.Metadata.CheckpointTranscriptStart
 
 	initialCompact2, err := v2Store.ReadSessionCompactTranscript(context.Background(), id.MustCheckpointID(cpID2), 0)
 	require.NoError(t, err)
 	require.JSONEq(t, "{\"v\":1,\"type\":\"assistant\",\"text\":\"checkpoint-2\"}\n", string(initialCompact2))
+	initialContent2, err := v2Store.ReadSessionContentByID(context.Background(), id.MustCheckpointID(cpID2), sessionID)
+	require.NoError(t, err)
+	initialStart2 := initialContent2.Metadata.CheckpointTranscriptStart
+	require.Greater(t, initialStart2, initialStart1, "later checkpoints should start later in transcript.jsonl")
 
 	updatedTranscript := `{"type":"human","message":{"content":"build something"}}
 {"type":"assistant","message":{"content":"done building"}}
@@ -1610,10 +1617,16 @@ func TestHandleTurnEnd_V2ExternalTranscriptCompactor_SkipsNonZeroCompactOffset(t
 	finalCompact1, err := v2Store.ReadSessionCompactTranscript(context.Background(), id.MustCheckpointID(cpID1), 0)
 	require.NoError(t, err)
 	require.Equal(t, fakeAgent.fullCompact, finalCompact1)
+	finalContent1, err := v2Store.ReadSessionContentByID(context.Background(), id.MustCheckpointID(cpID1), sessionID)
+	require.NoError(t, err)
+	require.Equal(t, initialStart1, finalContent1.Metadata.CheckpointTranscriptStart, "finalization must not rewrite checkpoint start offsets")
 
 	finalCompact2, err := v2Store.ReadSessionCompactTranscript(context.Background(), id.MustCheckpointID(cpID2), 0)
 	require.NoError(t, err)
-	require.Equal(t, initialCompact2, finalCompact2)
+	require.Equal(t, fakeAgent.fullCompact, finalCompact2)
+	finalContent2, err := v2Store.ReadSessionContentByID(context.Background(), id.MustCheckpointID(cpID2), sessionID)
+	require.NoError(t, err)
+	require.Equal(t, initialStart2, finalContent2.Metadata.CheckpointTranscriptStart, "finalization must preserve per-checkpoint line references")
 }
 
 // setupSessionWithCheckpoint initializes a session and creates one checkpoint
