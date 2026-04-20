@@ -357,17 +357,30 @@ Those bytes must be the compact **Entire Transcript Format** JSONL expected by c
 ```
 
 - Subsequent lines: normalized conversation entries, each also carrying `"v":1`
-- Supported entry types are currently:
+- Supported top-level entry types are currently:
   - `user`
-  - `user_tool_result`
   - `assistant`
+
+`user` entries use `content` as an array of user blocks, typically text and optionally images:
+
+```json
+{"v":1,"agent":"opencode","cli_version":"0.42.0","type":"user","ts":"2026-01-13T12:00:00Z","content":[{"text":"Fix the login bug"}]}
+```
+
+`assistant` entries use `content` as either a string or an array of assistant blocks. The structured array form supports at least:
+
+- `{"type":"text","text":"..."}`
+- `{"type":"tool_use","id":"...","name":"...","input":{...}}`
+
+Tool output is represented inline on the preceding `tool_use` block via an optional `result` object (there is no separate top-level `user_tool_result` entry):
+
+- `"result": {"output":"...","status":"success|error", ...}`
 
 Examples:
 
 ```json
-{"v":1,"type":"user","ts":"2026-01-13T12:00:00Z","content":"Fix the login bug"}
-{"v":1,"type":"user_tool_result","ts":"2026-01-13T12:00:01Z","tool_use_id":"toolu_123","result":{"type":"text","file":"src/main.go"}}
-{"v":1,"type":"assistant","ts":"2026-01-13T12:00:02Z","id":"msg_123","content":[{"type":"text","text":"I updated the file."},{"type":"tool_use","id":"toolu_123","name":"Read","input":{"file_path":"src/main.go"}}]}
+{"v":1,"agent":"opencode","cli_version":"0.42.0","type":"user","ts":"2026-01-13T12:00:00Z","content":[{"text":"Fix the login bug"}]}
+{"v":1,"agent":"opencode","cli_version":"0.42.0","type":"assistant","ts":"2026-01-13T12:00:02Z","id":"msg_123","content":[{"type":"text","text":"I updated the file."},{"type":"tool_use","id":"toolu_123","name":"Read","input":{"file_path":"src/main.go"},"result":{"output":"package main","status":"success","file":{"filePath":"src/main.go","numLines":1}}}]}
 ```
 
 The compact transcript should exclude agent-native envelope/progress/system noise and retain only the normalized content needed by Entire's checkpoint readers.
