@@ -1210,8 +1210,12 @@ func detectOrSelectAgent(ctx context.Context, w io.Writer, selectFn func(availab
 		switch {
 		case len(detected) == 1:
 			if isBuiltInAgent(detected[0]) {
-				fmt.Fprintf(w, "Detected agent: %s\n\n", detected[0].Type())
-				return detected, nil
+				// When a selectFn is provided (e.g. --yes), skip the single-agent
+				// shortcut so the caller's selection logic runs instead.
+				if selectFn == nil {
+					fmt.Fprintf(w, "Detected agent: %s\n\n", detected[0].Type())
+					return detected, nil
+				}
 			}
 
 		case len(detected) > 1:
@@ -1224,8 +1228,9 @@ func detectOrSelectAgent(ctx context.Context, w io.Writer, selectFn func(availab
 		}
 	}
 
-	// Check if we can prompt interactively
-	if !interactive.CanPromptInteractively() {
+	// When no selectFn is provided, check if we can prompt interactively.
+	// A selectFn (e.g. from --yes) bypasses the interactive prompt entirely.
+	if selectFn == nil && !interactive.CanPromptInteractively() {
 		if hasInstalledHooks {
 			// Re-run without TTY — keep currently installed agents
 			agents := make([]agent.Agent, 0, len(installedAgentNames))
