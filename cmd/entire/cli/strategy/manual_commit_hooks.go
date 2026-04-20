@@ -2625,6 +2625,29 @@ func (s *ManualCommitStrategy) HandleTurnEnd(ctx context.Context, state *Session
 	return nil
 }
 
+// precomputeTranscriptBlobsForFinalize chunks + zlib-compresses the redacted
+// transcript once for reuse across every checkpoint in the turn. Returns nil
+// (without error) when the transcript is empty — downstream stores skip
+// transcript updates in that case, so precompute would only write a wasted
+// empty-chunk blob to the object store. On failure, logs a warning and
+// returns nil so the loop falls back to per-checkpoint chunking.
+func precomputeTranscriptBlobsForFinalize(ctx context.Context, repo *git.Repository, transcript redact.RedactedBytes, state *SessionState) *checkpoint.PrecomputedTranscriptBlobs {
+	if transcript.Len() == 0 {
+		return nil
+	}
+	_, span := perf.Start(ctx, "precompute_transcript_blobs")
+	defer span.End()
+	precomputed, err := checkpoint.PrecomputeTranscriptBlobs(ctx, repo, transcript, state.AgentType)
+	if err != nil {
+		logging.Warn(ctx, "finalize: precompute transcript blobs failed, falling back to per-checkpoint work",
+			slog.String("session_id", state.SessionID),
+			slog.String("error", err.Error()),
+		)
+		return nil
+	}
+	return precomputed
+}
+
 // finalizeAllTurnCheckpoints replaces the provisional transcript in each checkpoint
 // created during this turn with the full session transcript.
 //
@@ -2729,6 +2752,8 @@ func (s *ManualCommitStrategy) finalizeAllTurnCheckpoints(ctx context.Context, s
 		v2Store = checkpoint.NewV2GitStore(repo, ResolveCheckpointURL(logCtx, "origin"))
 	}
 
+	precomputed := precomputeTranscriptBlobsForFinalize(logCtx, repo, redactedTranscript, state)
+
 	// Update each checkpoint with the full transcript
 	for _, cpIDStr := range state.TurnCheckpointIDs {
 		cpID, parseErr := id.NewCheckpointID(cpIDStr)
@@ -2742,11 +2767,12 @@ func (s *ManualCommitStrategy) finalizeAllTurnCheckpoints(ctx context.Context, s
 		}
 
 		updateOpts := checkpoint.UpdateCommittedOptions{
-			CheckpointID: cpID,
-			SessionID:    state.SessionID,
-			Transcript:   redactedTranscript,
-			Prompts:      prompts,
-			Agent:        state.AgentType,
+			CheckpointID:     cpID,
+			SessionID:        state.SessionID,
+			Transcript:       redactedTranscript,
+			Prompts:          prompts,
+			Agent:            state.AgentType,
+			PrecomputedBlobs: precomputed,
 		}
 
 		// Generate compact transcript for v2 /main
