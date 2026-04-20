@@ -2669,6 +2669,10 @@ func (s *ManualCommitStrategy) finalizeAllTurnCheckpoints(ctx context.Context, s
 		v2Store = checkpoint.NewV2GitStore(repo, ResolveCheckpointURL(logCtx, "origin"))
 	}
 
+	// Pre-compute external compact transcript once if available — the result is
+	// the same for every checkpoint (same transcript path, same session).
+	externalCompact, useExternalCompact := resolveExternalCompactTranscript(logCtx, v2Store, redactedTranscript, state)
+
 	// Update each checkpoint with the full transcript
 	for _, cpIDStr := range state.TurnCheckpointIDs {
 		cpID, parseErr := id.NewCheckpointID(cpIDStr)
@@ -2691,35 +2695,33 @@ func (s *ManualCommitStrategy) finalizeAllTurnCheckpoints(ctx context.Context, s
 
 		// Generate compact transcript for v2 /main
 		if v2Store != nil && redactedTranscript.Len() > 0 {
-			finalAg, _ := agent.GetByAgentType(state.AgentType) //nolint:errcheck // ag may be nil for unknown agent types; compactTranscriptForV2 handles nil
-			var (
-				content *checkpoint.SessionContent
-				readErr error
-			)
-			if v2Only {
-				content, readErr = v2Store.ReadSessionContentByID(ctx, cpID, state.SessionID)
+			if useExternalCompact {
+				updateOpts.CompactTranscript = externalCompact
 			} else {
-				content, readErr = store.ReadSessionContentByID(ctx, cpID, state.SessionID)
-			}
-			startLine := 0
-			if readErr == nil && content != nil {
-				startLine = content.Metadata.GetTranscriptStart()
-			} else {
-				errMsg := "unknown"
-				if readErr != nil {
-					errMsg = readErr.Error()
-				}
-				logging.Debug(logCtx, "finalize: failed to read checkpoint metadata, using full transcript for compact output",
-					slog.String("checkpoint_id", cpIDStr),
-					slog.String("session_id", state.SessionID),
-					slog.String("error", errMsg),
+				finalAg, _ := agent.GetByAgentType(state.AgentType) //nolint:errcheck // ag may be nil for unknown agent types; compactTranscriptForV2 handles nil
+				var (
+					content *checkpoint.SessionContent
+					readErr error
 				)
-			}
-			if compactor, ok := agent.AsTranscriptCompactor(finalAg); ok {
-				if compacted := compactTranscriptForExternalAgent(logCtx, compactor, finalAg, state.SessionID, state.TranscriptPath); compacted != nil {
-					updateOpts.CompactTranscript = compacted.Transcript
+				if v2Only {
+					content, readErr = v2Store.ReadSessionContentByID(ctx, cpID, state.SessionID)
+				} else {
+					content, readErr = store.ReadSessionContentByID(ctx, cpID, state.SessionID)
 				}
-			} else {
+				startLine := 0
+				if readErr == nil && content != nil {
+					startLine = content.Metadata.GetTranscriptStart()
+				} else {
+					errMsg := "unknown"
+					if readErr != nil {
+						errMsg = readErr.Error()
+					}
+					logging.Debug(logCtx, "finalize: failed to read checkpoint metadata, using full transcript for compact output",
+						slog.String("checkpoint_id", cpIDStr),
+						slog.String("session_id", state.SessionID),
+						slog.String("error", errMsg),
+					)
+				}
 				updateOpts.CompactTranscript = compactTranscriptForV2(logCtx, finalAg, redactedTranscript, startLine)
 			}
 		}
@@ -2765,6 +2767,33 @@ func (s *ManualCommitStrategy) finalizeAllTurnCheckpoints(ctx context.Context, s
 	state.TurnCheckpointIDs = nil
 
 	return errCount
+}
+
+// resolveExternalCompactTranscript checks whether the agent supports external transcript
+// compaction and, if so, runs it once. Returns the compact bytes and whether the external
+// path was used (so callers skip in-process compaction for external agents).
+func resolveExternalCompactTranscript(ctx context.Context, v2Store *checkpoint.V2GitStore, redactedTranscript redact.RedactedBytes, state *SessionState) ([]byte, bool) {
+	if v2Store == nil || redactedTranscript.Len() == 0 {
+		return nil, false
+	}
+	finalAg, _ := agent.GetByAgentType(state.AgentType) //nolint:errcheck // ag may be nil for unknown agent types; compactTranscriptForV2 handles nil
+	if compactor, ok := agent.AsTranscriptCompactor(finalAg); ok {
+		compacted := compactTranscriptForExternalAgent(ctx, compactor, state.SessionID, state.TranscriptPath)
+		if compacted != nil {
+			return compacted.Transcript, true
+		}
+		return nil, true
+	}
+	if _, ok := finalAg.(agent.CapabilityDeclarer); ok {
+		// External agent without compact_transcript — skip in-process
+		// compaction since the transcript format is agent-specific.
+		logging.Warn(ctx, "external transcript compaction unavailable, skipping transcript.jsonl finalization",
+			slog.String("session_id", state.SessionID),
+			slog.String("agent", string(finalAg.Name())),
+		)
+		return nil, true
+	}
+	return nil, false
 }
 
 // filesChangedInCommit returns the set of files changed in a commit using git diff-tree.

@@ -29,23 +29,32 @@ type fakeMigrateTranscriptCompactorAgent struct {
 	name        types.AgentName
 	agentType   types.AgentType
 	fullCompact []byte
+	compactErr  error
 	caps        agent.DeclaredCaps
 }
 
-func (f *fakeMigrateTranscriptCompactorAgent) Name() types.AgentName                          { return f.name }
-func (f *fakeMigrateTranscriptCompactorAgent) Type() types.AgentType                          { return f.agentType }
-func (f *fakeMigrateTranscriptCompactorAgent) Description() string                            { return "fake migrate transcript compactor" }
-func (f *fakeMigrateTranscriptCompactorAgent) IsPreview() bool                                { return false }
-func (f *fakeMigrateTranscriptCompactorAgent) DetectPresence(context.Context) (bool, error)   { return true, nil }
-func (f *fakeMigrateTranscriptCompactorAgent) ProtectedDirs() []string                        { return nil }
-func (f *fakeMigrateTranscriptCompactorAgent) ReadTranscript(string) ([]byte, error)          { return nil, nil }
+func (f *fakeMigrateTranscriptCompactorAgent) Name() types.AgentName { return f.name }
+func (f *fakeMigrateTranscriptCompactorAgent) Type() types.AgentType { return f.agentType }
+func (f *fakeMigrateTranscriptCompactorAgent) Description() string {
+	return "fake migrate transcript compactor"
+}
+func (f *fakeMigrateTranscriptCompactorAgent) IsPreview() bool { return false }
+func (f *fakeMigrateTranscriptCompactorAgent) DetectPresence(context.Context) (bool, error) {
+	return true, nil
+}
+func (f *fakeMigrateTranscriptCompactorAgent) ProtectedDirs() []string               { return nil }
+func (f *fakeMigrateTranscriptCompactorAgent) ReadTranscript(string) ([]byte, error) { return nil, nil }
 func (f *fakeMigrateTranscriptCompactorAgent) ChunkTranscript(context.Context, []byte, int) ([][]byte, error) {
 	return nil, nil
 }
-func (f *fakeMigrateTranscriptCompactorAgent) ReassembleTranscript([][]byte) ([]byte, error) { return nil, nil }
-func (f *fakeMigrateTranscriptCompactorAgent) GetSessionID(*agent.HookInput) string           { return "" }
-func (f *fakeMigrateTranscriptCompactorAgent) GetSessionDir(string) (string, error)           { return "", nil }
-func (f *fakeMigrateTranscriptCompactorAgent) ResolveSessionFile(_, sessionID string) string  { return sessionID }
+func (f *fakeMigrateTranscriptCompactorAgent) ReassembleTranscript([][]byte) ([]byte, error) {
+	return nil, nil
+}
+func (f *fakeMigrateTranscriptCompactorAgent) GetSessionID(*agent.HookInput) string { return "" }
+func (f *fakeMigrateTranscriptCompactorAgent) GetSessionDir(string) (string, error) { return "", nil }
+func (f *fakeMigrateTranscriptCompactorAgent) ResolveSessionFile(_, sessionID string) string {
+	return sessionID
+}
 func (f *fakeMigrateTranscriptCompactorAgent) ReadSession(*agent.HookInput) (*agent.AgentSession, error) {
 	return nil, nil //nolint:nilnil // test stub
 }
@@ -57,6 +66,9 @@ func (f *fakeMigrateTranscriptCompactorAgent) DeclaredCapabilities() agent.Decla
 	return f.caps
 }
 func (f *fakeMigrateTranscriptCompactorAgent) CompactTranscript(context.Context, string) (*agent.CompactedTranscript, error) {
+	if f.compactErr != nil {
+		return nil, f.compactErr
+	}
 	return &agent.CompactedTranscript{Transcript: f.fullCompact}, nil
 }
 

@@ -443,7 +443,7 @@ func compactTranscriptForStartLine(ctx context.Context, transcript []byte, m che
 
 	if ag, err := agent.GetByAgentType(m.Agent); err == nil {
 		if compactor, ok := agent.AsTranscriptCompactor(ag); ok {
-			return compactTranscriptForMigrationExternalAgent(ctx, compactor, ag, transcript, m)
+			return compactTranscriptForMigrationExternalAgent(ctx, compactor, transcript, m)
 		}
 		if _, ok := ag.(agent.CapabilityDeclarer); ok {
 			logging.Warn(ctx, "compact transcript skipped during migration: external agent does not declare compact_transcript",
@@ -482,7 +482,6 @@ func compactTranscriptForStartLine(ctx context.Context, transcript []byte, m che
 func compactTranscriptForMigrationExternalAgent(
 	ctx context.Context,
 	compactor agent.TranscriptCompactor,
-	ag agent.Agent,
 	transcript []byte,
 	m checkpoint.CommittedMetadata,
 ) []byte {
@@ -528,7 +527,7 @@ func compactTranscriptForMigrationExternalAgent(
 	if len(compacted.Assets) > 0 {
 		logging.Warn(ctx, "external transcript compaction returned assets that are not yet persisted",
 			slog.String("checkpoint_id", string(m.CheckpointID)),
-			slog.String("agent", string(ag.Name())),
+			slog.String("agent", string(compactor.Name())),
 			slog.Int("asset_count", len(compacted.Assets)),
 		)
 	}

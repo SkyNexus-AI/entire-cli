@@ -421,22 +421,19 @@ func (s *ManualCommitStrategy) extractOrCreateSessionData(ctx context.Context, r
 func buildCompactTranscript(ctx context.Context, ag agent.Agent, redacted redact.RedactedBytes, state *SessionState, writeOpts *cpkg.WriteCommittedOptions) time.Duration {
 	compactStart := time.Now()
 	compactCtx, compactSpan := perf.Start(ctx, "compact_transcript_v2")
+	defer compactSpan.End()
 	if settings.IsCheckpointsV2Enabled(ctx) {
 		if compactor, ok := agent.AsTranscriptCompactor(ag); ok {
-			if compacted := compactTranscriptForExternalAgent(compactCtx, compactor, ag, state.SessionID, state.TranscriptPath); compacted != nil {
+			if compacted := compactTranscriptForExternalAgent(compactCtx, compactor, state.SessionID, state.TranscriptPath); compacted != nil {
 				writeOpts.CompactTranscript = compacted.Transcript
 				writeOpts.CompactTranscriptStart = state.CompactTranscriptStart
-				compactSpan.End()
-				return time.Since(compactStart)
 			}
-			compactSpan.End()
 			return time.Since(compactStart)
-		} else if _, ok := ag.(agent.CapabilityDeclarer); ok && ag != nil {
+		} else if _, ok := ag.(agent.CapabilityDeclarer); ok {
 			logging.Warn(compactCtx, "external transcript compaction unavailable, skipping transcript.jsonl on /main",
 				slog.String("session_id", state.SessionID),
 				slog.String("agent", string(ag.Name())),
 			)
-			compactSpan.End()
 			return time.Since(compactStart)
 		}
 
@@ -448,21 +445,19 @@ func buildCompactTranscript(ctx context.Context, ag agent.Agent, redacted redact
 		writeOpts.CompactTranscript = compactTranscriptForV2(compactCtx, ag, redacted, 0)
 		writeOpts.CompactTranscriptStart = computeCompactTranscriptStart(compactCtx, ag, state, redacted.Bytes(), scopedCompact)
 	}
-	compactSpan.End()
 	return time.Since(compactStart)
 }
 
 func compactTranscriptForExternalAgent(
 	ctx context.Context,
 	compactor agent.TranscriptCompactor,
-	ag agent.Agent,
 	sessionID string,
 	transcriptPath string,
 ) *agent.CompactedTranscript {
 	if transcriptPath == "" {
 		logging.Warn(ctx, "external transcript compaction skipped: missing session transcript path",
 			slog.String("session_id", sessionID),
-			slog.String("agent", string(ag.Name())),
+			slog.String("agent", string(compactor.Name())),
 		)
 		return nil
 	}
@@ -471,7 +466,7 @@ func compactTranscriptForExternalAgent(
 	if err != nil {
 		logging.Warn(ctx, "external transcript compaction failed, skipping transcript.jsonl on /main",
 			slog.String("session_id", sessionID),
-			slog.String("agent", string(ag.Name())),
+			slog.String("agent", string(compactor.Name())),
 			slog.String("error", err.Error()),
 		)
 		return nil
@@ -479,7 +474,7 @@ func compactTranscriptForExternalAgent(
 	if len(compacted.Assets) > 0 {
 		logging.Warn(ctx, "external transcript compaction returned assets that are not yet persisted",
 			slog.String("session_id", sessionID),
-			slog.String("agent", string(ag.Name())),
+			slog.String("agent", string(compactor.Name())),
 			slog.Int("asset_count", len(compacted.Assets)),
 		)
 	}

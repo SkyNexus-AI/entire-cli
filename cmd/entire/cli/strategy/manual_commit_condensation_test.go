@@ -30,20 +30,26 @@ type fakeTranscriptCompactorAgent struct {
 	caps         agent.DeclaredCaps
 }
 
-func (f *fakeTranscriptCompactorAgent) Name() types.AgentName                          { return f.name }
-func (f *fakeTranscriptCompactorAgent) Type() types.AgentType                          { return f.agentType }
-func (f *fakeTranscriptCompactorAgent) Description() string                            { return "fake transcript compactor" }
-func (f *fakeTranscriptCompactorAgent) IsPreview() bool                                { return false }
-func (f *fakeTranscriptCompactorAgent) DetectPresence(context.Context) (bool, error)   { return true, nil }
-func (f *fakeTranscriptCompactorAgent) ProtectedDirs() []string                        { return nil }
-func (f *fakeTranscriptCompactorAgent) ReadTranscript(string) ([]byte, error)          { return nil, nil }
+func (f *fakeTranscriptCompactorAgent) Name() types.AgentName { return f.name }
+func (f *fakeTranscriptCompactorAgent) Type() types.AgentType { return f.agentType }
+func (f *fakeTranscriptCompactorAgent) Description() string   { return "fake transcript compactor" }
+func (f *fakeTranscriptCompactorAgent) IsPreview() bool       { return false }
+func (f *fakeTranscriptCompactorAgent) DetectPresence(context.Context) (bool, error) {
+	return true, nil
+}
+func (f *fakeTranscriptCompactorAgent) ProtectedDirs() []string               { return nil }
+func (f *fakeTranscriptCompactorAgent) ReadTranscript(string) ([]byte, error) { return nil, nil }
 func (f *fakeTranscriptCompactorAgent) ChunkTranscript(context.Context, []byte, int) ([][]byte, error) {
 	return nil, nil
 }
-func (f *fakeTranscriptCompactorAgent) ReassembleTranscript([][]byte) ([]byte, error) { return nil, nil }
-func (f *fakeTranscriptCompactorAgent) GetSessionID(*agent.HookInput) string           { return "" }
-func (f *fakeTranscriptCompactorAgent) GetSessionDir(string) (string, error)           { return "", nil }
-func (f *fakeTranscriptCompactorAgent) ResolveSessionFile(_, sessionID string) string  { return sessionID }
+func (f *fakeTranscriptCompactorAgent) ReassembleTranscript([][]byte) ([]byte, error) {
+	return nil, nil
+}
+func (f *fakeTranscriptCompactorAgent) GetSessionID(*agent.HookInput) string { return "" }
+func (f *fakeTranscriptCompactorAgent) GetSessionDir(string) (string, error) { return "", nil }
+func (f *fakeTranscriptCompactorAgent) ResolveSessionFile(_, sessionID string) string {
+	return sessionID
+}
 func (f *fakeTranscriptCompactorAgent) ReadSession(*agent.HookInput) (*agent.AgentSession, error) {
 	return nil, nil //nolint:nilnil // test stub
 }
@@ -104,9 +110,9 @@ func TestBuildCompactTranscript_UsesAgentTranscriptCompactor(t *testing.T) {
 		caps:        agent.DeclaredCaps{CompactTranscript: true},
 	}
 	state := &SessionState{
-		SessionID:              "sess-1",
-		AgentType:              ag.agentType,
-		TranscriptPath:         "/tmp/session.jsonl",
+		SessionID:                 "sess-1",
+		AgentType:                 ag.agentType,
+		TranscriptPath:            "/tmp/session.jsonl",
 		CheckpointTranscriptStart: 0,
 	}
 	writeOpts := &cpkg.WriteCommittedOptions{}
@@ -130,11 +136,11 @@ func TestBuildCompactTranscript_UsesExistingCompactOffsetForAgentTranscriptCompa
 	}
 
 	state := &SessionState{
-		SessionID:              "sess-1",
-		AgentType:              ag.agentType,
-		TranscriptPath:         "/tmp/session.jsonl",
+		SessionID:                 "sess-1",
+		AgentType:                 ag.agentType,
+		TranscriptPath:            "/tmp/session.jsonl",
 		CheckpointTranscriptStart: 1,
-		CompactTranscriptStart: 1,
+		CompactTranscriptStart:    1,
 	}
 	writeOpts := &cpkg.WriteCommittedOptions{}
 

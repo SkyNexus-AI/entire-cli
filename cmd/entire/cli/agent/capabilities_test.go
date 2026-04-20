@@ -85,7 +85,7 @@ func (m *mockFullAgent) GenerateText(context.Context, string, string) (string, e
 
 // TranscriptCompactor
 func (m *mockFullAgent) CompactTranscript(context.Context, string) (*CompactedTranscript, error) {
-	return nil, nil
+	return &CompactedTranscript{}, nil
 }
 
 // HookResponseWriter

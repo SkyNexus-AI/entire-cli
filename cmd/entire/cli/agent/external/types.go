@@ -6,6 +6,7 @@ package external
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -107,8 +108,8 @@ type GenerateTextResponse struct {
 
 // CompactTranscriptResponse is the JSON returned by the "compact-transcript" subcommand.
 type CompactTranscriptResponse struct {
-	Transcript string                            `json:"transcript"`
-	Assets     []CompactTranscriptAssetResponse  `json:"assets,omitempty"`
+	Transcript string                           `json:"transcript"`
+	Assets     []CompactTranscriptAssetResponse `json:"assets,omitempty"`
 }
 
 // CompactTranscriptAssetResponse describes one extracted binary asset.
@@ -120,7 +121,7 @@ type CompactTranscriptAssetResponse struct {
 
 func (r *CompactTranscriptResponse) toCompactedTranscript() (*agent.CompactedTranscript, error) {
 	if r.Transcript == "" {
-		return nil, fmt.Errorf("compact-transcript: missing transcript")
+		return nil, errors.New("compact-transcript: missing transcript")
 	}
 
 	transcript, err := base64.StdEncoding.DecodeString(r.Transcript)
