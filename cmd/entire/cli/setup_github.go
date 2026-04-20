@@ -76,7 +76,7 @@ func (execRunner) RunInDir(ctx context.Context, dir, name string, args ...string
 // commit & push). Kept simple text so it renders correctly in accessible
 // mode and non-TTY captures.
 func printBootstrapSection(w io.Writer, title string) {
-	fmt.Fprintf(w, "\n── %s\n", title)
+	fmt.Fprintf(w, "\n%s\n", title)
 }
 
 // errBootstrapDeclined signals that the user chose not to initialize a
@@ -158,7 +158,7 @@ func runGitHubBootstrapInitWith(ctx context.Context, w, errW io.Writer, opts Git
 	// Clear cached worktree root so subsequent paths.WorktreeRoot calls pick
 	// up the freshly created repo.
 	paths.ClearWorktreeRootCache()
-	fmt.Fprintln(w, "✓ Initialized empty git repository")
+	fmt.Fprintln(w, "  ✓ Initialized empty git repository")
 
 	// Step 3: decide whether to create a GitHub repo. If gh is missing or the
 	// user passed --no-github, we skip that branch but still bootstrap the
@@ -272,27 +272,27 @@ func runGitHubBootstrapFinalize(ctx context.Context, w io.Writer, s *bootstrapSt
 		}
 		committed = c
 		if committed {
-			fmt.Fprintf(w, "✓ Created initial commit (%s)\n", s.message)
+			fmt.Fprintln(w, "  ✓ Created initial commit")
 		} else {
-			fmt.Fprintln(w, "✓ Nothing to commit — the folder has no files yet")
+			fmt.Fprintln(w, "  ✓ Nothing to commit — the folder has no files yet")
 		}
 	}
 	if s.useGitHub {
 		if err := ghRepoCreate(ctx, s.runner, s.cwd, s.fullName, s.visibility, committed); err != nil {
 			return fmt.Errorf("gh repo create: %w", err)
 		}
-		fmt.Fprintf(w, "✓ Created %s (%s)\n", s.fullName, s.visibility)
-		fmt.Fprintf(w, "  https://github.com/%s\n", s.fullName)
+		fmt.Fprintf(w, "  ✓ Created %s (%s)\n", s.fullName, s.visibility)
+		fmt.Fprintf(w, "    https://github.com/%s\n", s.fullName)
 		if committed {
-			fmt.Fprintln(w, "✓ Pushed initial commit to origin")
+			fmt.Fprintln(w, "  ✓ Pushed initial commit to origin")
 		}
 	}
 	if !s.commit {
 		fmt.Fprintln(w)
-		fmt.Fprintln(w, "Skipped initial commit. When you're ready:")
-		fmt.Fprintln(w, "  git add -A && git commit -m \"Initial commit\"")
+		fmt.Fprintln(w, "  Skipped initial commit. When you're ready:")
+		fmt.Fprintln(w, "    git add -A && git commit -m \"Initial commit\"")
 		if s.useGitHub {
-			fmt.Fprintln(w, "  git push -u origin HEAD")
+			fmt.Fprintln(w, "    git push -u origin HEAD")
 		}
 	}
 
@@ -409,7 +409,7 @@ func resolveOwner(w io.Writer, currentUser string, orgs []string, opts GitHubBoo
 		return opts.RepoOwner, nil
 	}
 	if len(owners) == 1 || opts.Yes {
-		fmt.Fprintf(w, "Using GitHub owner: %s\n", currentUser)
+		fmt.Fprintf(w, "  Using GitHub owner: %s\n", currentUser)
 		return currentUser, nil
 	}
 	if !interactive.CanPromptInteractively() {
@@ -469,7 +469,7 @@ func resolveRepoName(ctx context.Context, w, errW io.Writer, runner bootstrapRun
 		// Name taken. If a TTY is available, fall back to the interactive
 		// prompt so the user can pick a different name instead of failing.
 		if interactive.CanPromptInteractively() {
-			fmt.Fprintf(w, "%s/%s already exists on GitHub.\n", owner, suggested)
+			fmt.Fprintf(w, "  %s/%s already exists on GitHub.\n", owner, suggested)
 		} else {
 			return "", fmt.Errorf("repository %s/%s already exists on GitHub (use --repo-name to specify a different name)", owner, suggested)
 		}
@@ -731,7 +731,7 @@ func resolveGitIdentity(w io.Writer, existingName, existingEmail, ghName, ghEmai
 		// Announce only when we had to fill something in from gh —
 		// silence is fine when the user's existing config covered both.
 		if (existingName == "" && ghName != "") || (existingEmail == "" && ghEmail != "") {
-			fmt.Fprintf(w, "Using git identity: %s <%s>\n", name, email)
+			fmt.Fprintf(w, "  Using git identity: %s <%s>\n", name, email)
 		}
 		return name, email, nil
 	}

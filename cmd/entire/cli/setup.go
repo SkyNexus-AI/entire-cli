@@ -948,13 +948,14 @@ func runEnableInteractive(ctx context.Context, w io.Writer, agents []agent.Agent
 		return fmt.Errorf("failed to install git hooks: %w", err)
 	}
 	strategy.CheckAndWarnHookManagers(ctx, w, settings.LocalDev, settings.AbsoluteGitHookPath)
-	fmt.Fprintln(w, "✓ Hooks installed")
+	fmt.Fprintln(w, "  ✓ Installed hooks")
 
 	configDisplay := configDisplayProject
 	if shouldUseLocal {
 		configDisplay = configDisplayLocal
 	}
-	fmt.Fprintf(w, "✓ Project configured (%s)\n", configDisplay)
+	fmt.Fprintln(w, "  ✓ Configured project")
+	fmt.Fprintf(w, "    %s\n", configDisplay)
 
 	var vercelPromptFn func() (bool, error)
 	if opts.Yes {
@@ -1348,7 +1349,7 @@ func detectOrSelectAgent(ctx context.Context, w io.Writer, selectFn func(availab
 	for _, ag := range selectedAgents {
 		agentTypes = append(agentTypes, string(ag.Type()))
 	}
-	fmt.Fprintf(w, "\nSelected agents: %s\n\n", strings.Join(agentTypes, ", "))
+	fmt.Fprintf(w, "  Selected agents: %s\n", strings.Join(agentTypes, ", "))
 	return selectedAgents, nil
 }
 
@@ -1391,7 +1392,7 @@ func setupAgentHooksNonInteractive(ctx context.Context, w io.Writer, ag agent.Ag
 		return fmt.Errorf("agent %s does not support hooks", agentName)
 	}
 
-	fmt.Fprintf(w, "Agent: %s\n\n", ag.Type())
+	fmt.Fprintf(w, "  Agent: %s\n", ag.Type())
 
 	// Install agent hooks (agent hooks don't depend on settings)
 	installedHooks, err := setupAgentHooks(ctx, w, ag, opts.LocalDev, opts.ForceHooks)
@@ -1449,16 +1450,17 @@ func setupAgentHooksNonInteractive(ctx context.Context, w io.Writer, ag agent.Ag
 		if ag.IsPreview() {
 			msg += " (Preview)"
 		}
-		fmt.Fprintf(w, "%s\n", msg)
+		fmt.Fprintf(w, "  %s\n", msg)
 	} else {
 		msg := fmt.Sprintf("Installed %d hooks for %s", installedHooks, ag.Description())
 		if ag.IsPreview() {
 			msg += " (Preview)"
 		}
-		fmt.Fprintf(w, "%s\n", msg)
+		fmt.Fprintf(w, "  %s\n", msg)
 	}
 
-	fmt.Fprintf(w, "✓ Project configured (%s)\n", configDisplay)
+	fmt.Fprintln(w, "  ✓ Configured project")
+	fmt.Fprintf(w, "    %s\n", configDisplay)
 
 	if _, err := maybePromptVercelDeploymentDisable(ctx, w, targetFile, nil); err != nil {
 		return err
