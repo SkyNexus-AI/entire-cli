@@ -471,6 +471,13 @@ func compactTranscriptForExternalAgent(
 		)
 		return nil
 	}
+	if compacted == nil {
+		logging.Warn(ctx, "external transcript compaction returned nil transcript",
+			slog.String("session_id", sessionID),
+			slog.String("agent", string(compactor.Name())),
+		)
+		return nil
+	}
 	if len(compacted.Transcript) == 0 {
 		logging.Warn(ctx, "external transcript compaction returned empty transcript",
 			slog.String("session_id", sessionID),

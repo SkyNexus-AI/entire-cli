@@ -27,6 +27,7 @@ type fakeTranscriptCompactorAgent struct {
 	fullCompact  []byte
 	scopedByPath map[string][]byte
 	err          error
+	returnNil    bool
 	caps         agent.DeclaredCaps
 }
 
@@ -63,6 +64,9 @@ func (f *fakeTranscriptCompactorAgent) DeclaredCapabilities() agent.DeclaredCaps
 func (f *fakeTranscriptCompactorAgent) CompactTranscript(_ context.Context, sessionRef string) (*agent.CompactedTranscript, error) {
 	if f.err != nil {
 		return nil, f.err
+	}
+	if f.returnNil {
+		return nil, nil //nolint:nilnil // test stub for external agent bug path
 	}
 	if compacted, ok := f.scopedByPath[sessionRef]; ok {
 		return &agent.CompactedTranscript{Transcript: compacted}, nil
@@ -147,6 +151,31 @@ func TestBuildCompactTranscript_UsesExistingCompactOffsetForAgentTranscriptCompa
 	buildCompactTranscript(context.Background(), ag, redact.AlreadyRedacted([]byte("not-jsonl")), state, writeOpts)
 	require.Equal(t, ag.fullCompact, writeOpts.CompactTranscript)
 	require.Equal(t, 1, writeOpts.CompactTranscriptStart)
+}
+
+func TestBuildCompactTranscript_ExternalCompactorNilResultDoesNotPanic(t *testing.T) { //nolint:paralleltest // uses t.Chdir
+	dir := t.TempDir()
+	t.Chdir(dir)
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".entire"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".entire", "settings.json"), []byte(testCheckpointsV2SettingsJSON), 0o644))
+
+	ag := &fakeTranscriptCompactorAgent{
+		name:      types.AgentName("test-external-nil"),
+		agentType: types.AgentType("Test External Nil"),
+		returnNil: true,
+		caps:      agent.DeclaredCaps{CompactTranscript: true},
+	}
+	state := &SessionState{
+		SessionID:      "sess-1",
+		AgentType:      ag.agentType,
+		TranscriptPath: "/tmp/session.jsonl",
+	}
+	writeOpts := &cpkg.WriteCommittedOptions{}
+
+	require.NotPanics(t, func() {
+		buildCompactTranscript(context.Background(), ag, redact.AlreadyRedacted([]byte("not-jsonl")), state, writeOpts)
+	})
+	require.Nil(t, writeOpts.CompactTranscript)
 }
 
 func TestCalculateTokenUsage_EmptyData(t *testing.T) {
