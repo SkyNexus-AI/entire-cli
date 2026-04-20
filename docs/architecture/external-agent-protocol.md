@@ -349,6 +349,7 @@ The `transcript` field is required and must contain base64-encoded `transcript.j
 Those bytes must be the compact **Entire Transcript Format** JSONL expected by checkpoints v2:
 
 - UTF-8 JSONL, written byte-for-byte by the CLI to `transcript.jsonl`
+- Newline-terminated JSONL: each record must end with `\n`, including the final record
 - First line: a header object declaring the format version and source agent, for example:
 
 ```json
@@ -382,6 +383,7 @@ The optional `assets` field is reserved for externalized checkpoint assets. Each
 Current CLI behavior:
 - If `compact_transcript` is missing or `false`, the CLI will skip compact transcript generation for that external agent, fall back to raw transcript storage, and log a warning.
 - If `compact-transcript` fails or returns invalid output, the CLI will also fall back to raw transcript storage and log a warning.
+- The CLI normalizes `transcript` bytes by appending a trailing newline when missing, and treats whitespace-only transcript output as invalid.
 - If `assets` are returned, the CLI accepts them in the protocol shape but currently ignores them for storage and read paths.
 
 ### Capability: `token_calculator`
