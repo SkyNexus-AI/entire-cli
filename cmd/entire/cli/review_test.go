@@ -426,3 +426,103 @@ func TestPromptReviewFallback_NonTerminalIsNoop(t *testing.T) {
 		t.Fatalf("expected nil, got %v", err)
 	}
 }
+
+func TestFindMostRecentReviewCommit(t *testing.T) {
+	tmp := t.TempDir()
+	testutil.InitRepo(t, tmp)
+	testutil.WriteFile(t, tmp, "f.txt", "x")
+	testutil.GitAdd(t, tmp, "f.txt")
+	testutil.GitCommit(t, tmp, "init")
+	t.Chdir(tmp)
+
+	ctx := context.Background()
+	// Make a review commit with trailers.
+	md := trailers.ReviewMetadata{
+		By:         "peyton@entire.io",
+		Agent:      "claude-code",
+		Session:    "s1",
+		Checkpoint: "abcdef123456",
+		Status:     trailers.ReviewStatusClosed,
+	}
+	if _, err := createReviewCommit(ctx, md); err != nil {
+		t.Fatal(err)
+	}
+	// Add a non-review commit after.
+	testutil.WriteFile(t, tmp, "g.txt", "y")
+	testutil.GitAdd(t, tmp, "g.txt")
+	testutil.GitCommit(t, tmp, "more work")
+
+	info, ok, err := findMostRecentReview(ctx)
+	if err != nil || !ok {
+		t.Fatalf("expected review found: ok=%v err=%v", ok, err)
+	}
+	if info.By != "peyton@entire.io" {
+		t.Errorf("By = %q", info.By)
+	}
+	if info.Agent != testAgentName {
+		t.Errorf("Agent = %q", info.Agent)
+	}
+	if info.Checkpoint != "abcdef123456" {
+		t.Errorf("Checkpoint = %q", info.Checkpoint)
+	}
+	if info.CommitsSince != 1 {
+		t.Errorf("CommitsSince = %d, want 1", info.CommitsSince)
+	}
+}
+
+func TestBranchReviewedAtHead(t *testing.T) {
+	tmp := t.TempDir()
+	testutil.InitRepo(t, tmp)
+	testutil.WriteFile(t, tmp, "f.txt", "x")
+	testutil.GitAdd(t, tmp, "f.txt")
+	testutil.GitCommit(t, tmp, "init")
+	t.Chdir(tmp)
+
+	ctx := context.Background()
+
+	// No review yet → not reviewed at HEAD.
+	reviewed, _ := branchReviewedAtHead(ctx)
+	if reviewed {
+		t.Error("expected false before any review commit")
+	}
+
+	// Create a review commit. It IS at HEAD now (we just made it).
+	if _, err := createReviewCommit(ctx, trailers.ReviewMetadata{
+		By: "t@x.com", Status: trailers.ReviewStatusClosed,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	reviewed, meta := branchReviewedAtHead(ctx)
+	if !reviewed {
+		t.Error("expected true when review commit is HEAD")
+	}
+	if meta == "" {
+		t.Error("expected non-empty meta string")
+	}
+
+	// Add a non-review commit — review no longer at HEAD.
+	testutil.WriteFile(t, tmp, "g.txt", "y")
+	testutil.GitAdd(t, tmp, "g.txt")
+	testutil.GitCommit(t, tmp, "more")
+	reviewed, _ = branchReviewedAtHead(ctx)
+	if reviewed {
+		t.Error("expected false after a non-review commit on top")
+	}
+}
+
+func TestFindMostRecentReviewCommit_NoReview(t *testing.T) {
+	tmp := t.TempDir()
+	testutil.InitRepo(t, tmp)
+	testutil.WriteFile(t, tmp, "f.txt", "x")
+	testutil.GitAdd(t, tmp, "f.txt")
+	testutil.GitCommit(t, tmp, "init")
+	t.Chdir(tmp)
+
+	_, ok, err := findMostRecentReview(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ok {
+		t.Error("expected ok=false when no review commits exist")
+	}
+}

@@ -18,6 +18,7 @@ import (
 	git "github.com/go-git/go-git/v6"
 	"github.com/go-git/go-git/v6/plumbing"
 	"github.com/go-git/go-git/v6/plumbing/object"
+	"github.com/go-git/go-git/v6/plumbing/storer"
 	"golang.org/x/term"
 
 	"github.com/entireio/cli/cmd/entire/cli/agent"
@@ -375,12 +376,86 @@ func currentHeadSHA(ctx context.Context) (string, error) {
 	return strings.TrimSpace(string(output)), nil
 }
 
-// branchReviewedAtHead checks if the current branch already has a review
-// commit at HEAD. STUB: real implementation lands in Chunk 8.
-// TODO(chunk-8): scan commit history via trailers.ParseReviewMetadata.
+// reviewInfo summarizes the most recent review commit on the current branch.
+type reviewInfo struct {
+	CommitHash   plumbing.Hash
+	By           string
+	Agent        string
+	Session      string
+	Checkpoint   string
+	ReviewedUpTo string
+	Status       string
+	CommitsSince int // Number of commits between HEAD and the review commit (0 = HEAD is the review commit).
+}
+
+// findMostRecentReview walks HEAD's history backwards and returns the first
+// commit whose message parses as a review (has Entire-Review-* trailers).
+// Returns ok=false with err=nil when no review commit exists in history.
+func findMostRecentReview(ctx context.Context) (reviewInfo, bool, error) {
+	repoRoot, err := paths.WorktreeRoot(ctx)
+	if err != nil {
+		return reviewInfo{}, false, fmt.Errorf("resolve repo root: %w", err)
+	}
+	repo, err := git.PlainOpen(repoRoot)
+	if err != nil {
+		return reviewInfo{}, false, fmt.Errorf("open repo: %w", err)
+	}
+	head, err := repo.Head()
+	if err != nil {
+		return reviewInfo{}, false, fmt.Errorf("resolve HEAD: %w", err)
+	}
+	iter, err := repo.Log(&git.LogOptions{From: head.Hash()})
+	if err != nil {
+		return reviewInfo{}, false, fmt.Errorf("walk history: %w", err)
+	}
+	defer iter.Close()
+
+	var found reviewInfo
+	var ok bool
+	walked := 0
+	iterErr := iter.ForEach(func(c *object.Commit) error {
+		if md, isReview := trailers.ParseReviewMetadata(c.Message); isReview {
+			found = reviewInfo{
+				CommitHash:   c.Hash,
+				By:           md.By,
+				Agent:        md.Agent,
+				Session:      md.Session,
+				Checkpoint:   md.Checkpoint,
+				ReviewedUpTo: md.ReviewedUpTo,
+				Status:       md.Status,
+				CommitsSince: walked,
+			}
+			ok = true
+			return storer.ErrStop
+		}
+		walked++
+		return nil
+	})
+	if iterErr != nil && !errors.Is(iterErr, storer.ErrStop) {
+		return reviewInfo{}, false, fmt.Errorf("walk commits: %w", iterErr)
+	}
+	return found, ok, nil
+}
+
+// branchReviewedAtHead reports whether the current branch's HEAD commit is
+// itself a review commit (CommitsSince == 0 on the scanner). Returns a short
+// human-readable meta string for the re-run prompt.
 func branchReviewedAtHead(ctx context.Context) (bool, string) {
-	_ = ctx
-	return false, ""
+	info, ok, err := findMostRecentReview(ctx)
+	if err != nil || !ok {
+		return false, ""
+	}
+	if info.CommitsSince != 0 {
+		return false, ""
+	}
+	meta := info.By
+	if info.Agent != "" {
+		meta += " with " + info.Agent
+	}
+	if info.Checkpoint != "" {
+		meta += " (checkpoint " + info.Checkpoint + ")"
+	}
+	return true, meta
 }
 
 // confirmReRun prompts the user to confirm re-running review when the branch
