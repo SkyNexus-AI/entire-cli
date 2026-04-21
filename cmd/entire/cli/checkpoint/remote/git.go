@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 
@@ -96,7 +97,12 @@ type PushResult struct {
 // Push runs git push --no-verify --porcelain with token injection.
 // GIT_TERMINAL_PROMPT=0 is always set.
 func Push(ctx context.Context, remote, refSpec string) (PushResult, error) {
-	cmd := newCommand(ctx, "push", "--no-verify", "--porcelain", remote, refSpec)
+	pushTarget, err := resolvePushCommandTarget(ctx, remote)
+	if err != nil {
+		return PushResult{}, fmt.Errorf("resolve push target: %w", err)
+	}
+
+	cmd := newCommand(ctx, "push", "--no-verify", "--porcelain", pushTarget, refSpec)
 	disableTerminalPrompt(cmd)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -273,6 +279,25 @@ func resolveTargetProtocol(ctx context.Context, target string) string {
 		return ""
 	}
 	return info.Protocol
+}
+
+func resolvePushCommandTarget(ctx context.Context, target string) (string, error) {
+	if target == "" || IsURL(target) || isLocalPath(target) {
+		return target, nil
+	}
+
+	pushTarget, _, err := PushURL(ctx, target)
+	if err != nil {
+		return "", err
+	}
+	if pushTarget == "" {
+		return target, nil
+	}
+	return pushTarget, nil
+}
+
+func isLocalPath(target string) bool {
+	return filepath.IsAbs(target) || strings.HasPrefix(target, "./") || strings.HasPrefix(target, "../")
 }
 
 // disableTerminalPrompt sets GIT_TERMINAL_PROMPT=0 on the command,

@@ -113,6 +113,69 @@ func TestResolveTargetProtocol_SSHRemoteName(t *testing.T) {
 }
 
 // Not parallel: uses t.Chdir()
+func TestResolvePushCommandTarget(t *testing.T) {
+	ctx := context.Background()
+
+	tests := []struct {
+		name         string
+		originURL    string
+		settingsJSON string
+		token        string
+		target       string
+		want         string
+	}{
+		{
+			name:         "ssh origin without token stays ssh",
+			originURL:    "git@github.com:acme/app.git",
+			settingsJSON: `{"enabled":true}`,
+			target:       "origin",
+			want:         "git@github.com:acme/app.git",
+		},
+		{
+			name:         "ssh origin with token becomes https",
+			originURL:    "git@github.com:acme/app.git",
+			settingsJSON: `{"enabled":true}`,
+			token:        "push-token",
+			target:       "origin",
+			want:         "https://github.com/acme/app.git",
+		},
+		{
+			name:         "local path target stays unchanged",
+			settingsJSON: `{"enabled":true}`,
+			target:       "/tmp/bare-repo",
+			want:         "/tmp/bare-repo",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			testutil.InitRepo(t, tmpDir)
+			testutil.WriteFile(t, tmpDir, "f.txt", "init")
+			testutil.GitAdd(t, tmpDir, "f.txt")
+			testutil.GitCommit(t, tmpDir, "init")
+			if tt.originURL != "" {
+				cmd := exec.CommandContext(ctx, "git", "remote", "add", "origin", tt.originURL)
+				cmd.Dir = tmpDir
+				cmd.Env = testutil.GitIsolatedEnv()
+				require.NoError(t, cmd.Run())
+			}
+			if tt.settingsJSON != "" {
+				testutil.WriteFile(t, tmpDir, ".entire/settings.json", tt.settingsJSON)
+			}
+			t.Chdir(tmpDir)
+			if tt.token != "" {
+				t.Setenv(CheckpointTokenEnvVar, tt.token)
+			}
+
+			got, err := resolvePushCommandTarget(ctx, tt.target)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+// Not parallel: uses t.Chdir()
 func TestResolveFetchTarget(t *testing.T) {
 	ctx := context.Background()
 

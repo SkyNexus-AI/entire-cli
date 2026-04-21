@@ -216,6 +216,15 @@ func TestPushURL(t *testing.T) {
 			wantEnabled:  false,
 		},
 		{
+			name:         "token forces https for origin fallback when no checkpoint remote is configured",
+			originURL:    "git@github.com:acme/app.git",
+			pushRemote:   "origin",
+			settingsJSON: `{"enabled":true}`,
+			token:        "push-token",
+			wantURL:      "https://github.com/acme/app.git",
+			wantEnabled:  false,
+		},
+		{
 			name:         "configured checkpoint remote with https push remote uses https",
 			originURL:    "https://github.com/acme/app.git",
 			pushRemote:   "origin",

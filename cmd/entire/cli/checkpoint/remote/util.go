@@ -294,10 +294,24 @@ func logFallback(ctx context.Context, operation, fallbackURL, reason string, err
 
 func resolvePushFallbackURL(ctx context.Context, pushRemoteName, originURL string) (string, error) {
 	if originURL != "" {
+		if strings.TrimSpace(os.Getenv(checkpointTokenEnvVar)) != "" {
+			if tokenURL, ok := deriveTokenOriginURL(originURL); ok {
+				return tokenURL, nil
+			}
+		}
 		return originURL, nil
 	}
 	if pushRemoteName == "" || pushRemoteName == originRemote {
 		return "", fmt.Errorf("remote %q not found", originRemote)
 	}
-	return GetRemoteURL(ctx, pushRemoteName)
+	pushURL, err := GetRemoteURL(ctx, pushRemoteName)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(os.Getenv(checkpointTokenEnvVar)) != "" {
+		if tokenURL, ok := deriveTokenOriginURL(pushURL); ok {
+			return tokenURL, nil
+		}
+	}
+	return pushURL, nil
 }
