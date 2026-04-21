@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -35,6 +36,7 @@ import (
 	"github.com/go-git/go-git/v6/plumbing"
 	"github.com/go-git/go-git/v6/plumbing/object"
 	"github.com/go-git/go-git/v6/plumbing/storer"
+	"github.com/go-git/go-git/v6/storage/filesystem"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 )
@@ -61,11 +63,98 @@ func generateOrRawLabel(generate bool) string {
 }
 
 // printNoTrailerMessage renders the friendly message shown when a resolved
-// commit has no Entire-Checkpoint trailer in read-only modes.
-func printNoTrailerMessage(w io.Writer, shortSHA string) {
+// commit has no Entire-Checkpoint trailer in read-only modes. Takes the
+// repo so the hash can be abbreviated to the minimum unique length for
+// this repo's object set (matching git's --abbrev behavior).
+func printNoTrailerMessage(w io.Writer, repo *git.Repository, hash plumbing.Hash) {
 	fmt.Fprintln(w, "No associated Entire checkpoint")
-	fmt.Fprintf(w, "\nCommit %s does not have an Entire-Checkpoint trailer.\n", shortSHA)
+	fmt.Fprintf(w, "\nCommit %s does not have an Entire-Checkpoint trailer.\n", abbreviateCommitHash(repo, hash))
 	fmt.Fprintln(w, "This commit was not created during an Entire session, or the trailer was removed.")
+}
+
+// errAmbiguousCommitPrefix is returned by resolveCommitUnambiguous when a
+// hex prefix matches more than one commit. Callers use errors.Is to detect
+// this case and surface the full wrapped message verbatim.
+var errAmbiguousCommitPrefix = errors.New("ambiguous commit prefix")
+
+// commitHashesWithPrefix enumerates all commit hashes in the repo whose
+// SHA starts with the given hex prefix. Returns nil when the storer is not
+// a *filesystem.Storage or the prefix isn't decodable as hex.
+//
+// Per PR review (discussion_r3113804961): the reviewer specifically
+// suggested repo.Storer.(*filesystem.Storage).HashesWithPrefix followed by
+// commit filtering. Using this primitive both in resolution (detect
+// ambiguous user input) and in display (dynamically abbreviate shown
+// hashes to the minimum unique length).
+func commitHashesWithPrefix(repo *git.Repository, prefix string) []plumbing.Hash {
+	s, ok := repo.Storer.(*filesystem.Storage)
+	if !ok {
+		return nil
+	}
+	evenHex := prefix[:len(prefix)&^1]
+	decoded, err := hex.DecodeString(evenHex)
+	if err != nil || len(decoded) == 0 {
+		return nil
+	}
+	candidates, err := s.HashesWithPrefix(decoded)
+	if err != nil {
+		return nil
+	}
+	var commits []plumbing.Hash
+	for _, h := range candidates {
+		// HashesWithPrefix matches on even byte boundaries; filter the
+		// dangling nybble for odd-length prefixes.
+		if len(evenHex) != len(prefix) && !strings.HasPrefix(h.String(), prefix) {
+			continue
+		}
+		if _, err := repo.CommitObject(h); err != nil {
+			continue
+		}
+		commits = append(commits, h)
+	}
+	return commits
+}
+
+// resolveCommitUnambiguous resolves a ref to a commit hash, returning
+// errAmbiguousCommitPrefix (wrapped) when a hex-prefix input matches more
+// than one commit. go-git v6's ResolveRevision silently picks the first
+// candidate in ambiguous cases (its source explicitly says "for speed
+// purposes don't bother to detect the ambiguity"), which could pick the
+// wrong commit. Non-hex refs (HEAD, branch names, HEAD~1) bypass the
+// ambiguity check via commitHashesWithPrefix returning nil.
+func resolveCommitUnambiguous(repo *git.Repository, ref string) (plumbing.Hash, error) {
+	hash, err := repo.ResolveRevision(plumbing.Revision(ref))
+	if err != nil {
+		return plumbing.ZeroHash, err //nolint:wrapcheck // caller contextualizes
+	}
+	matches := commitHashesWithPrefix(repo, ref)
+	if len(matches) <= 1 {
+		return *hash, nil
+	}
+	examples := make([]string, 0, 5)
+	for i := 0; i < len(matches) && i < 5; i++ {
+		examples = append(examples, abbreviateCommitHash(repo, matches[i]))
+	}
+	return plumbing.ZeroHash, fmt.Errorf("%w %q matches %d commits: %s\nUse a longer prefix or a full SHA", errAmbiguousCommitPrefix, ref, len(matches), strings.Join(examples, ", "))
+}
+
+// abbreviateCommitHash returns the shortest prefix of hash unique among
+// commit objects in the repo, matching git's --abbrev-commit auto-growth
+// so displayed short SHAs stay unambiguous as the repo grows. Falls back
+// to a fixed 12-char prefix if the storer doesn't support fast prefix
+// lookup, or to the full hash if somehow never unique.
+func abbreviateCommitHash(repo *git.Repository, hash plumbing.Hash) string {
+	full := hash.String()
+	for length := 7; length < len(full); length++ {
+		matches := commitHashesWithPrefix(repo, full[:length])
+		if matches == nil {
+			return full[:12]
+		}
+		if len(matches) <= 1 {
+			return full[:length]
+		}
+	}
+	return full
 }
 
 // interaction holds a single prompt and its responses for display.
@@ -287,30 +376,33 @@ func runExplainAuto(ctx context.Context, w, errW io.Writer, target string, noPag
 		// two lines (one per error) and users act on the first/stale one.
 		return fmt.Errorf("no checkpoint matched %q, and commit fallback failed: %w", target, repoErr)
 	}
-	hash, resolveErr := repo.ResolveRevision(plumbing.Revision(target))
+	hash, resolveErr := resolveCommitUnambiguous(repo, target)
 	if resolveErr != nil {
+		if errors.Is(resolveErr, errAmbiguousCommitPrefix) {
+			return resolveErr
+		}
 		logging.Debug(ctx, "explain auto: git ref resolution failed",
 			slog.String("target", target),
 			slog.String("error", resolveErr.Error()))
 		return fmt.Errorf("no checkpoint or commit found matching %q", target)
 	}
-	commit, commitErr := repo.CommitObject(*hash)
+	commit, commitErr := repo.CommitObject(hash)
 	if commitErr != nil {
-		return fmt.Errorf("failed to get commit %s: %w", hash.String()[:7], commitErr)
+		return fmt.Errorf("failed to get commit %s: %w", abbreviateCommitHash(repo, hash), commitErr)
 	}
 	cpID, hasCheckpoint := trailers.ParseCheckpoint(commit.Message)
 	if !hasCheckpoint {
 		// Side-effect modes must error — silently succeeding would leave
 		// scripts unable to distinguish "done" from "didn't happen".
 		if generate || rawTranscript {
-			return fmt.Errorf("cannot %s: commit %s has no Entire-Checkpoint trailer", generateOrRawLabel(generate), hash.String()[:7])
+			return fmt.Errorf("cannot %s: commit %s has no Entire-Checkpoint trailer", generateOrRawLabel(generate), abbreviateCommitHash(repo, hash))
 		}
-		printNoTrailerMessage(w, hash.String()[:7])
+		printNoTrailerMessage(w, repo, hash)
 		return nil
 	}
 	logging.Debug(ctx, "explain auto: resolved commit to checkpoint via trailer",
 		slog.String("target", target),
-		slog.String("commit", hash.String()[:7]),
+		slog.String("commit", abbreviateCommitHash(repo, hash)),
 		slog.String("checkpoint_id", cpID.String()))
 	return runExplainCheckpoint(ctx, w, errW, cpID.String(), noPager, verbose, full, rawTranscript, generate, force, searchAll)
 }
@@ -343,7 +435,7 @@ func runExplainAutoAmbiguityGuard(ctx context.Context, target string) error {
 	}
 	for _, info := range committed {
 		if strings.HasPrefix(info.CheckpointID.String(), target) {
-			return fmt.Errorf("ambiguous target %q with --generate: matches both git revision %s and checkpoint prefix (e.g. %s)\nUse --commit <ref> or --checkpoint <id> to disambiguate", target, hash.String()[:7], info.CheckpointID)
+			return fmt.Errorf("ambiguous target %q with --generate: matches both git revision %s and checkpoint prefix (e.g. %s)\nUse --commit <ref> or --checkpoint <id> to disambiguate", target, abbreviateCommitHash(repo, *hash), info.CheckpointID)
 		}
 	}
 	return nil
@@ -1739,13 +1831,17 @@ func runExplainCommit(ctx context.Context, w, errW io.Writer, commitRef string, 
 		return fmt.Errorf("not a git repository: %w", err)
 	}
 
-	// Resolve the commit reference
-	hash, err := repo.ResolveRevision(plumbing.Revision(commitRef))
+	// Resolve the commit reference, erroring on hex-prefix ambiguity
+	// instead of silently picking the first matching commit.
+	hash, err := resolveCommitUnambiguous(repo, commitRef)
 	if err != nil {
+		if errors.Is(err, errAmbiguousCommitPrefix) {
+			return err
+		}
 		return fmt.Errorf("commit not found: %s", commitRef)
 	}
 
-	commit, err := repo.CommitObject(*hash)
+	commit, err := repo.CommitObject(hash)
 	if err != nil {
 		return fmt.Errorf("failed to get commit: %w", err)
 	}
@@ -1756,9 +1852,9 @@ func runExplainCommit(ctx context.Context, w, errW io.Writer, commitRef string, 
 		// Side-effect modes must error so scripts can distinguish "done"
 		// from "didn't happen"; read-only modes print a friendly message.
 		if generate || rawTranscript {
-			return fmt.Errorf("cannot %s: commit %s has no Entire-Checkpoint trailer", generateOrRawLabel(generate), hash.String()[:7])
+			return fmt.Errorf("cannot %s: commit %s has no Entire-Checkpoint trailer", generateOrRawLabel(generate), abbreviateCommitHash(repo, hash))
 		}
-		printNoTrailerMessage(w, hash.String()[:7])
+		printNoTrailerMessage(w, repo, hash)
 		return nil
 	}
 

@@ -362,6 +362,100 @@ func TestRunExplainCheckpoint_NotFoundSentinels(t *testing.T) {
 	}
 }
 
+// collidingShaPrefix creates commits until two share a 2-char SHA prefix
+// and returns that prefix. 2 chars is the smallest even-byte boundary
+// HashesWithPrefix uses, so a collision at this length reliably exercises
+// the ambiguity detection path without SHA mining.
+func collidingShaPrefix(t *testing.T, repo *git.Repository, tmpDir string) string {
+	t.Helper()
+	wt, err := repo.Worktree()
+	require.NoError(t, err)
+
+	seen := make(map[string]int)
+	for i := range 300 {
+		testutil.WriteFile(t, tmpDir, "f.txt", fmt.Sprintf("content-%d", i))
+		_, err = wt.Add("f.txt")
+		require.NoError(t, err)
+		h, err := wt.Commit(fmt.Sprintf("commit %d", i), &git.CommitOptions{
+			Author: &object.Signature{Name: "Test", Email: "t@e.com", When: time.Now().Add(time.Duration(i) * time.Second)},
+		})
+		require.NoError(t, err)
+		p := h.String()[:2]
+		seen[p]++
+		if seen[p] >= 2 {
+			return p
+		}
+	}
+	t.Skip("could not produce colliding 2-char SHA prefix in 300 iterations")
+	return ""
+}
+
+// TestResolveCommitUnambiguous_MultipleCommitMatches verifies the reviewer-
+// flagged bug: go-git v6's ResolveRevision silently returns the first
+// candidate when a hex prefix matches multiple commits. With the helper
+// wrapping it, ambiguity must surface as errAmbiguousCommitPrefix.
+func TestResolveCommitUnambiguous_MultipleCommitMatches(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Chdir(tmpDir)
+	testutil.InitRepo(t, tmpDir)
+	repo, err := git.PlainOpen(tmpDir)
+	require.NoError(t, err)
+
+	prefix := collidingShaPrefix(t, repo, tmpDir)
+
+	_, err = resolveCommitUnambiguous(repo, prefix)
+	require.Error(t, err)
+	require.ErrorIs(t, err, errAmbiguousCommitPrefix)
+	require.ErrorContains(t, err, prefix)
+}
+
+// TestResolveCommitUnambiguous_UniquePrefixSucceeds verifies a full SHA
+// resolves to the expected hash without triggering ambiguity detection.
+func TestResolveCommitUnambiguous_UniquePrefixSucceeds(t *testing.T) {
+	_, initial := runExplainAutoTestRepo(t)
+	repo, err := git.PlainOpen(".")
+	require.NoError(t, err)
+
+	got, err := resolveCommitUnambiguous(repo, initial.String())
+	require.NoError(t, err)
+	require.Equal(t, initial, got)
+}
+
+// TestAbbreviateCommitHash_GrowsOnCollision verifies the helper grows past
+// the default 7 chars when necessary — matching git's --abbrev auto-growth.
+// The same 2-char SHA collision we construct for resolution is enough to
+// force abbreviation beyond 2 chars (though in practice 7 still tends to
+// be unique for ~300 commits).
+func TestAbbreviateCommitHash_GrowsOnCollision(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Chdir(tmpDir)
+	testutil.InitRepo(t, tmpDir)
+	repo, err := git.PlainOpen(tmpDir)
+	require.NoError(t, err)
+
+	prefix := collidingShaPrefix(t, repo, tmpDir)
+
+	// Find a hash whose SHA starts with the colliding prefix.
+	hashes := commitHashesWithPrefix(repo, prefix)
+	require.GreaterOrEqual(t, len(hashes), 2)
+
+	abbrev := abbreviateCommitHash(repo, hashes[0])
+	require.True(t, strings.HasPrefix(hashes[0].String(), abbrev), "abbreviation must be a prefix of the full hash")
+	require.GreaterOrEqual(t, len(abbrev), 7, "abbreviation must be at least git's default of 7 chars")
+	require.LessOrEqual(t, len(abbrev), 40, "abbreviation cannot exceed full hash length")
+}
+
+// TestAbbreviateCommitHash_UsesSevenByDefault verifies the helper returns
+// the 7-char default when there's no collision, matching git's behavior.
+func TestAbbreviateCommitHash_UsesSevenByDefault(t *testing.T) {
+	_, initial := runExplainAutoTestRepo(t)
+	repo, err := git.PlainOpen(".")
+	require.NoError(t, err)
+
+	abbrev := abbreviateCommitHash(repo, initial)
+	require.Equal(t, initial.String()[:7], abbrev)
+}
+
 // TestRunExplainAuto_GenerateAmbiguousPrefixRefused guards the Codex finding
 // that a short positional arg matching both a committed-checkpoint prefix
 // and a git revision must not silently write a summary to the wrong
