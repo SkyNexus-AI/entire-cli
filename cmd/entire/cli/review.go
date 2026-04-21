@@ -22,6 +22,7 @@ import (
 	"github.com/entireio/cli/cmd/entire/cli/agent"
 	"github.com/entireio/cli/cmd/entire/cli/agent/types"
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint"
+	"github.com/entireio/cli/cmd/entire/cli/checkpoint/remote"
 	"github.com/entireio/cli/cmd/entire/cli/logging"
 	"github.com/entireio/cli/cmd/entire/cli/paths"
 	"github.com/entireio/cli/cmd/entire/cli/session"
@@ -498,14 +499,22 @@ func detectReviewScope(ctx context.Context) (reviewScope, error) {
 	return s, nil
 }
 
-// detectBaseBranch prefers origin/HEAD, then origin/main, then origin/master,
-// then local main/master. Returns "" if none match.
+// detectBaseBranch prefers origin/HEAD, then the origin/main or origin/master
+// remote-tracking branches, then local main/master. Returns "" if none match.
+//
+// Each step is an actual lookup, not just a best-effort hope: repos without
+// origin/HEAD (e.g., forks) still resolve to "main" when origin/main exists,
+// which matches how humans describe "what to review against."
 func detectBaseBranch(ctx context.Context, repoRoot string) string {
 	if target := gitString(ctx, repoRoot, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"); target != "" {
 		return strings.TrimPrefix(target, "origin/")
 	}
 	for _, candidate := range []string{defaultBaseBranch, "master"} {
-		if gitOK(ctx, repoRoot, "rev-parse", "--verify", "--quiet", candidate) {
+		// Check the remote-tracking branch first; falling back to local.
+		if gitOK(ctx, repoRoot, "rev-parse", "--verify", "--quiet", "refs/remotes/origin/"+candidate) {
+			return candidate
+		}
+		if gitOK(ctx, repoRoot, "rev-parse", "--verify", "--quiet", "refs/heads/"+candidate) {
 			return candidate
 		}
 	}
@@ -572,7 +581,8 @@ func formatReviewScope(s reviewScope) string {
 // headHasReviewCheckpoint checks whether HEAD's checkpoint metadata includes
 // a review session. Returns (true, infoString) if HasReview is set.
 // This is O(1): read the Entire-Checkpoint trailer from HEAD, then read the
-// CheckpointSummary from entire/checkpoints/v1.
+// CheckpointSummary via ResolveCommittedReaderForCheckpoint so v2-enabled
+// repos also resolve correctly (v1 on its own would miss v2-written summaries).
 func headHasReviewCheckpoint(ctx context.Context) (bool, string) {
 	repoRoot, err := paths.WorktreeRoot(ctx)
 	if err != nil {
@@ -592,8 +602,16 @@ func headHasReviewCheckpoint(ctx context.Context) (bool, string) {
 	if err != nil {
 		return false, ""
 	}
-	store := checkpoint.NewGitStore(repo)
-	summary, err := store.ReadCommitted(ctx, cpID)
+	v1Store := checkpoint.NewGitStore(repo)
+	v2URL, urlErr := remote.FetchURL(ctx)
+	if urlErr != nil {
+		// V2 store can still operate with "" as the URL — it falls back to
+		// local refs. Log at debug; this is the same pattern as explain.go.
+		logging.Debug(ctx, "head review check: no configured v2 fetch remote", slog.String("error", urlErr.Error()))
+		v2URL = ""
+	}
+	v2Store := checkpoint.NewV2GitStore(repo, v2URL)
+	_, summary, err := checkpoint.ResolveCommittedReaderForCheckpoint(ctx, cpID, v1Store, v2Store, settings.IsCheckpointsV2Enabled(ctx))
 	if err != nil || summary == nil {
 		return false, ""
 	}

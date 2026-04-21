@@ -283,3 +283,26 @@ func TestDetectReviewScope_OnDefaultBranchCleanRepo(t *testing.T) {
 		t.Errorf("expected zeros, got %+v", got)
 	}
 }
+
+// Simulates a fork-like layout: no local `main`, no origin/HEAD symref, but an
+// origin/main remote-tracking branch exists. Reproduces the bug where
+// detectBaseBranch previously skipped remote-tracking branches and returned "".
+func TestDetectBaseBranch_UsesOriginMainWhenNoLocalMain(t *testing.T) {
+	tmp := t.TempDir()
+	testutil.InitRepo(t, tmp)
+	testutil.WriteFile(t, tmp, "a.txt", "hello")
+	testutil.GitAdd(t, tmp, "a.txt")
+	testutil.GitCommit(t, tmp, "init")
+	// Fake an origin/main remote-tracking ref without configuring origin/HEAD
+	// or keeping a local `main` branch. After this: the only place `main`
+	// lives is refs/remotes/origin/main.
+	headSHA := testutil.GetHeadHash(t, tmp)
+	runGit(t, tmp, "update-ref", "refs/remotes/origin/main", headSHA)
+	testutil.GitCheckoutNewBranch(t, tmp, "feat/x")
+	runGit(t, tmp, "branch", "-D", "master") // go-git default branch
+
+	got := detectBaseBranch(context.Background(), tmp)
+	if got != testMainBranch {
+		t.Errorf("detectBaseBranch = %q, want %s (should resolve via refs/remotes/origin/main)", got, testMainBranch)
+	}
+}
