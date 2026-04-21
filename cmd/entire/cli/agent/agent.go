@@ -6,6 +6,7 @@ package agent
 import (
 	"context"
 	"io"
+	"os/exec"
 
 	"github.com/entireio/cli/cmd/entire/cli/agent/types"
 )
@@ -227,6 +228,20 @@ type RestoredSessionPathResolver interface {
 type TestOnly interface {
 	Agent
 	IsTestOnly() bool
+}
+
+// Launcher is implemented by agents that `entire` can subprocess-spawn.
+// This is used by `entire review` to start an agent with a pre-composed
+// initial prompt; other commands may use it later.
+//
+// Contract:
+//   - LaunchCmd builds an *exec.Cmd with stdin/stdout/stderr wired to the
+//     caller's TTY. The agent runs in the foreground and the call blocks.
+//   - The returned cmd is ready to Run() or Start(); it must NOT be modified
+//     by the caller except to set environment variables or working dir.
+//   - initialPrompt is the first user message to send to the agent.
+type Launcher interface {
+	LaunchCmd(ctx context.Context, initialPrompt string) (*exec.Cmd, error)
 }
 
 // SessionBaseDirProvider is implemented by agents that store transcripts in a
