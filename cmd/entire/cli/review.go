@@ -15,12 +15,17 @@ import (
 	"time"
 
 	"github.com/charmbracelet/huh"
+	git "github.com/go-git/go-git/v6"
+	"github.com/go-git/go-git/v6/plumbing"
+	"github.com/go-git/go-git/v6/plumbing/object"
+
 	"github.com/entireio/cli/cmd/entire/cli/agent"
 	"github.com/entireio/cli/cmd/entire/cli/agent/types"
 	"github.com/entireio/cli/cmd/entire/cli/logging"
 	"github.com/entireio/cli/cmd/entire/cli/paths"
 	"github.com/entireio/cli/cmd/entire/cli/session"
 	"github.com/entireio/cli/cmd/entire/cli/settings"
+	"github.com/entireio/cli/cmd/entire/cli/trailers"
 	"github.com/spf13/cobra"
 )
 
@@ -393,13 +398,211 @@ func confirmReRun(out io.Writer, meta string) bool {
 	return proceed
 }
 
-// Handler stubs — will be implemented in Chunk 6 (runPostReview, runFinalize).
-func runPostReview(_ context.Context, _ *cobra.Command, _ string) error {
-	return errors.New("not yet implemented")
+func runPostReview(ctx context.Context, cmd *cobra.Command, sessionID string) error {
+	if sessionID == "" {
+		return errors.New("--session required with --postreview")
+	}
+	store, err := session.NewStateStore(ctx)
+	if err != nil {
+		return fmt.Errorf("open session store: %w", err)
+	}
+	state, err := store.Load(ctx, sessionID)
+	if err != nil {
+		return fmt.Errorf("load session: %w", err)
+	}
+	if state == nil {
+		return fmt.Errorf("session %s not found", sessionID)
+	}
+	if state.Kind != session.KindReview {
+		return fmt.Errorf("session %s is not a review session", sessionID)
+	}
+	out := cmd.OutOrStdout()
+	checkpointID := mostRecentCheckpointID(ctx, sessionID)
+	if checkpointID != "" {
+		fmt.Fprintf(out, "Review complete. Transcript: entire explain %s\n\n", checkpointID)
+	} else {
+		fmt.Fprintln(out, "Review complete.")
+		fmt.Fprintln(out)
+	}
+	fmt.Fprintln(out, "Ask the user to choose:")
+	fmt.Fprintln(out, "  - Fix    → run: entire review --finalize fix --session "+sessionID)
+	fmt.Fprintln(out, "  - Close  → run: entire review --finalize close --session "+sessionID)
+	fmt.Fprintln(out, "  - Skip   → run: entire review --finalize skip --session "+sessionID)
+	return nil
 }
 
-func runFinalize(_ context.Context, _ *cobra.Command, _, _ string) error {
-	return errors.New("not yet implemented")
+// mostRecentCheckpointID returns the most recent checkpoint ID for the given
+// session, or "" if unavailable.
+// TODO(chunk-8): resolve actual checkpoint ID from strategy.
+func mostRecentCheckpointID(_ context.Context, _ string) string {
+	return ""
+}
+
+func runFinalize(ctx context.Context, cmd *cobra.Command, decision, sessionID string) error {
+	if sessionID == "" {
+		return errors.New("--session required with --finalize")
+	}
+	switch decision {
+	case "fix":
+		return finalizeFix(ctx, cmd, sessionID)
+	case "close":
+		return finalizeClose(ctx, cmd, sessionID)
+	case "skip":
+		return finalizeSkip(ctx, cmd, sessionID)
+	default:
+		return fmt.Errorf("unknown finalize decision: %s (expected fix|close|skip)", decision)
+	}
+}
+
+func finalizeFix(ctx context.Context, cmd *cobra.Command, sessionID string) error {
+	state, err := loadReviewSession(ctx, sessionID)
+	if err != nil {
+		return err
+	}
+	_ = state // no state change on fix
+	fmt.Fprintln(cmd.OutOrStdout(),
+		"Continue addressing the findings above. Run `entire review` again after your fixes to verify.")
+	return nil
+}
+
+// loadReviewSession is a small helper shared by the finalize handlers.
+func loadReviewSession(ctx context.Context, sessionID string) (*session.State, error) {
+	store, err := session.NewStateStore(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("open session store: %w", err)
+	}
+	state, err := store.Load(ctx, sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("load session: %w", err)
+	}
+	if state == nil {
+		return nil, fmt.Errorf("session %s not found", sessionID)
+	}
+	if state.Kind != session.KindReview {
+		return nil, fmt.Errorf("session %s is not a review session", sessionID)
+	}
+	return state, nil
+}
+
+func finalizeClose(ctx context.Context, cmd *cobra.Command, sessionID string) error {
+	state, err := loadReviewSession(ctx, sessionID)
+	if err != nil {
+		return err
+	}
+	out := cmd.OutOrStdout()
+	checkpointID := mostRecentCheckpointID(ctx, sessionID)
+	// Best-effort: author email used as review-by; omit if unavailable.
+	by := ""
+	if author, authErr := GetGitAuthor(ctx); authErr == nil && author != nil {
+		by = author.Email
+	}
+	// TODO(v2): detect clean reviews; for now default to closed.
+	status := trailers.ReviewStatusClosed
+	md := trailers.ReviewMetadata{
+		By:         by,
+		Agent:      pickAgentNameFromSession(state),
+		Skills:     state.ReviewSkills,
+		Session:    sessionID,
+		Checkpoint: checkpointID,
+		Status:     status,
+	}
+	hash, err := createReviewCommit(ctx, md)
+	if err != nil {
+		return err
+	}
+	// Record close in session state.
+	state.ReviewStatus = session.ReviewStatus(status)
+	store, err := session.NewStateStore(ctx)
+	if err != nil {
+		return fmt.Errorf("reopen session store: %w", err)
+	}
+	if err := store.Save(ctx, state); err != nil {
+		return fmt.Errorf("save session state: %w", err)
+	}
+	short := hash.String()
+	if len(short) > 12 {
+		short = short[:12]
+	}
+	fmt.Fprintf(out, "Review committed as %s. You may exit.\n", short)
+	return nil
+}
+
+// createReviewCommit writes an empty "Review" commit on the current branch
+// with review trailers. Reviewed-Up-To is set to HEAD (before the commit)
+// so it doesn't point at the new commit itself.
+func createReviewCommit(ctx context.Context, md trailers.ReviewMetadata) (plumbing.Hash, error) {
+	repoRoot, err := paths.WorktreeRoot(ctx)
+	if err != nil {
+		return plumbing.ZeroHash, fmt.Errorf("locate repo root: %w", err)
+	}
+	repo, err := git.PlainOpen(repoRoot)
+	if err != nil {
+		return plumbing.ZeroHash, fmt.Errorf("open repo: %w", err)
+	}
+	head, err := repo.Head()
+	if err != nil {
+		return plumbing.ZeroHash, fmt.Errorf("resolve HEAD: %w", err)
+	}
+	if !head.Name().IsBranch() {
+		return plumbing.ZeroHash, errors.New("cannot create review commit: not on a branch (detached HEAD)")
+	}
+	parent, err := repo.CommitObject(head.Hash())
+	if err != nil {
+		return plumbing.ZeroHash, fmt.Errorf("load parent commit: %w", err)
+	}
+	md.ReviewedUpTo = head.Hash().String()
+	message := trailers.AppendReviewTrailers("Review\n", md)
+
+	author, err := GetGitAuthor(ctx)
+	if err != nil {
+		return plumbing.ZeroHash, fmt.Errorf("resolve git author: %w", err)
+	}
+	now := time.Now()
+	commit := &object.Commit{
+		Author:       object.Signature{Name: author.Name, Email: author.Email, When: now},
+		Committer:    object.Signature{Name: author.Name, Email: author.Email, When: now},
+		Message:      message,
+		TreeHash:     parent.TreeHash,
+		ParentHashes: []plumbing.Hash{parent.Hash},
+	}
+	obj := repo.Storer.NewEncodedObject()
+	if err := commit.Encode(obj); err != nil {
+		return plumbing.ZeroHash, fmt.Errorf("encode commit: %w", err)
+	}
+	hash, err := repo.Storer.SetEncodedObject(obj)
+	if err != nil {
+		return plumbing.ZeroHash, fmt.Errorf("store commit: %w", err)
+	}
+	// Advance the current branch to point at the new commit.
+	ref := plumbing.NewHashReference(head.Name(), hash)
+	if err := repo.Storer.SetReference(ref); err != nil {
+		return plumbing.ZeroHash, fmt.Errorf("update branch ref: %w", err)
+	}
+	return hash, nil
+}
+
+// pickAgentNameFromSession extracts an agent name hint from session state.
+// v1: returns empty; agent name was recorded in the pending marker which is
+// cleared at adoption time. Future work: persist agent name on the session.
+func pickAgentNameFromSession(_ *session.State) string {
+	return ""
+}
+
+func finalizeSkip(ctx context.Context, cmd *cobra.Command, sessionID string) error {
+	state, err := loadReviewSession(ctx, sessionID)
+	if err != nil {
+		return err
+	}
+	state.ReviewStatus = session.ReviewStatusSkipped
+	store, err := session.NewStateStore(ctx)
+	if err != nil {
+		return fmt.Errorf("reopen session store: %w", err)
+	}
+	if err := store.Save(ctx, state); err != nil {
+		return fmt.Errorf("save session state: %w", err)
+	}
+	fmt.Fprintln(cmd.OutOrStdout(), "Review ended without commit. You may exit.")
+	return nil
 }
 
 // saveReviewConfig persists the review map into .entire/settings.json while
