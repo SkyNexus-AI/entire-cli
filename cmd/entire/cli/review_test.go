@@ -1,10 +1,12 @@
 package cli
 
 import (
+	"context"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/entireio/cli/cmd/entire/cli/settings"
 	"github.com/entireio/cli/cmd/entire/cli/testutil"
 )
 
@@ -53,4 +55,31 @@ func TestReviewMarker_RoundTrip(t *testing.T) {
 		t.Fatalf("glob sessions dir: %v", err)
 	}
 	_ = entries // sanity check only
+}
+
+func TestSaveReviewConfig_PersistsSettings(t *testing.T) {
+	// NOTE: uses t.Chdir, so no t.Parallel.
+	tmp := t.TempDir()
+	testutil.InitRepo(t, tmp)
+	// settings.Save writes to .entire/settings.json relative to CWD, so we need
+	// to ensure .entire/ exists. The Save helper should create it if not.
+	t.Chdir(tmp)
+
+	err := saveReviewConfig(context.Background(), map[string][]string{
+		"claude-code": {"/pr-review-toolkit:review-pr", "/test-auditor"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := settings.Load(context.Background())
+	if err != nil {
+		t.Fatalf("load settings: %v", err)
+	}
+	if len(s.Review["claude-code"]) != 2 {
+		t.Errorf("expected 2 skills saved, got %v", s.Review)
+	}
+	if s.Review["claude-code"][0] != "/pr-review-toolkit:review-pr" {
+		t.Errorf("first skill = %q", s.Review["claude-code"][0])
+	}
 }
