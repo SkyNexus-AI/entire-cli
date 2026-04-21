@@ -34,6 +34,28 @@ const (
 	StuckActiveThreshold = 1 * time.Hour
 )
 
+// Kind identifies the purpose of a session. Empty means "normal" (legacy
+// sessions + every session that isn't a review). Callers must not rely on
+// Kind being set unless they specifically want to branch on it.
+type Kind string
+
+const (
+	// KindReview tags a session created by `entire review`. Stop-hook
+	// fallback and status rendering key off this value.
+	KindReview Kind = "review"
+)
+
+// ReviewStatus values for session.State.ReviewStatus. Only meaningful when
+// Kind == KindReview.
+type ReviewStatus string
+
+const (
+	ReviewStatusInProgress ReviewStatus = "in-progress"
+	ReviewStatusClosed     ReviewStatus = "closed"
+	ReviewStatusClean      ReviewStatus = "clean"
+	ReviewStatusSkipped    ReviewStatus = "skipped"
+)
+
 // State represents the state of an active session.
 // This is stored in .git/entire-sessions/<session-id>.json
 type State struct {
@@ -71,6 +93,19 @@ type State struct {
 	// Phase is the lifecycle stage of this session (see phase.go).
 	// Empty means idle (backward compat with pre-state-machine files).
 	Phase Phase `json:"phase,omitempty"`
+
+	// Kind tags the session's purpose. Empty for normal agent sessions;
+	// set to KindReview when the session was started by `entire review`.
+	Kind Kind `json:"kind,omitempty"`
+
+	// ReviewStatus is the lifecycle stage of a review session. Only set when
+	// Kind == KindReview. Transitions: "" -> in-progress -> {closed,clean,skipped}.
+	ReviewStatus ReviewStatus `json:"review_status,omitempty"`
+
+	// ReviewSkills is the snapshot of configured review skills at session start.
+	// Used by the Stop-hook fallback to report "you ran these skills" even if
+	// the config changes mid-session.
+	ReviewSkills []string `json:"review_skills,omitempty"`
 
 	// TurnID is a unique identifier for the current agent turn.
 	// Lifecycle:

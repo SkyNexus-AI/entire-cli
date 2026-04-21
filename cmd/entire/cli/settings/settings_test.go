@@ -2,6 +2,7 @@ package settings
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -970,4 +971,38 @@ func TestSummaryTimeoutValue(t *testing.T) {
 func containsUnknownField(msg string) bool {
 	// Go's json package reports unknown fields with this message format
 	return strings.Contains(msg, "unknown field")
+}
+
+func TestEntireSettings_ReviewRoundTrip(t *testing.T) {
+	t.Parallel()
+	raw := []byte(`{
+      "enabled": true,
+      "review": {
+        "claude-code": ["/pr-review-toolkit:review-pr", "/test-auditor"],
+        "codex": ["/codex:adversarial-review"]
+      }
+    }`)
+	var s EntireSettings
+	if err := json.Unmarshal(raw, &s); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got := s.Review["claude-code"]; len(got) != 2 || got[0] != "/pr-review-toolkit:review-pr" {
+		t.Fatalf("unexpected claude skills: %v", got)
+	}
+	if got := s.Review["codex"]; len(got) != 1 {
+		t.Fatalf("unexpected codex skills: %v", got)
+	}
+}
+
+func TestEntireSettings_ReviewSkillsFor(t *testing.T) {
+	t.Parallel()
+	s := &EntireSettings{Review: map[string][]string{
+		"claude-code": {"/pr-review-toolkit:review-pr"},
+	}}
+	if got := s.ReviewSkillsFor("claude-code"); len(got) != 1 {
+		t.Fatalf("expected 1 skill, got %v", got)
+	}
+	if got := s.ReviewSkillsFor("codex"); len(got) != 0 {
+		t.Fatalf("expected 0 skills for unconfigured agent, got %v", got)
+	}
 }

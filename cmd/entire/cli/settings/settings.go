@@ -65,6 +65,11 @@ type EntireSettings struct {
 	// Redaction configures PII redaction behavior for transcripts and metadata.
 	Redaction *RedactionSettings `json:"redaction,omitempty"`
 
+	// Review maps agent name (e.g. "claude-code") to the list of review
+	// skills/commands that `entire review` should run for that agent.
+	// When empty, `entire review` triggers the first-run picker.
+	Review map[string][]string `json:"review,omitempty"`
+
 	// CommitLinking controls how commits are linked to agent sessions.
 	// "always" = auto-link without prompting, "prompt" = ask on each commit.
 	// Defaults to "prompt" (preserves existing user behavior).
@@ -177,6 +182,16 @@ func (s *EntireSettings) SummaryTimeoutValue() time.Duration {
 		return 0
 	}
 	return time.Duration(s.SummaryTimeoutSeconds) * time.Second
+}
+
+// ReviewSkillsFor returns the configured review skills for the given agent.
+// Returns nil when the agent has no configuration; callers should treat
+// this as "not yet configured."
+func (s *EntireSettings) ReviewSkillsFor(agentName string) []string {
+	if s == nil {
+		return nil
+	}
+	return s.Review[agentName]
 }
 
 // Load loads the Entire settings from .entire/settings.json,

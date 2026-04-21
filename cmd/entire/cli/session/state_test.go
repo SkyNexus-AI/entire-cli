@@ -651,3 +651,29 @@ func TestGetGitCommonDir_ErrorOutsideRepo(t *testing.T) {
 	_, err := getGitCommonDir(context.Background())
 	assert.Error(t, err)
 }
+
+func TestState_KindRoundTrip(t *testing.T) {
+	t.Parallel()
+	now := time.Now().UTC()
+	s := State{
+		SessionID:    "2026-04-20-uuid",
+		BaseCommit:   "abc",
+		StartedAt:    now,
+		Kind:         KindReview,
+		ReviewStatus: ReviewStatusInProgress,
+	}
+	data, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got State
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Kind != KindReview {
+		t.Errorf("Kind = %q", got.Kind)
+	}
+	if got.ReviewStatus != ReviewStatusInProgress {
+		t.Errorf("ReviewStatus = %q", got.ReviewStatus)
+	}
+}
