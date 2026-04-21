@@ -122,6 +122,24 @@ func (e *Agent) ReassembleTranscript(chunks [][]byte) ([]byte, error) {
 	return e.run(context.Background(), input, "reassemble-transcript")
 }
 
+func (e *Agent) CompactTranscript(ctx context.Context, sessionRef string) (*agent.CompactedTranscript, error) {
+	stdout, err := e.run(ctx, nil, "compact-transcript", "--session-ref", sessionRef)
+	if err != nil {
+		return nil, fmt.Errorf("compact-transcript: %w", err)
+	}
+
+	var resp CompactTranscriptResponse
+	if err := json.Unmarshal(stdout, &resp); err != nil {
+		return nil, fmt.Errorf("compact-transcript: invalid JSON: %w", err)
+	}
+
+	compacted, err := resp.toCompactedTranscript()
+	if err != nil {
+		return nil, err
+	}
+	return compacted, nil
+}
+
 // --- Agent interface: Legacy methods ---
 
 func (e *Agent) GetSessionID(input *agent.HookInput) string {
