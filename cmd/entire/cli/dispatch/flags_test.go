@@ -71,51 +71,6 @@ func TestParseSince_ISO(t *testing.T) {
 	}
 }
 
-func TestParseBranches_List(t *testing.T) {
-	t.Parallel()
-
-	b, allBranches, err := ParseBranches("main,release", "main")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if allBranches {
-		t.Fatal("all should be false")
-	}
-	if len(b) != 2 || b[0] != "main" || b[1] != "release" {
-		t.Fatalf("got %v", b)
-	}
-}
-
-func TestParseBranches_All(t *testing.T) {
-	t.Parallel()
-
-	b, allBranches, err := ParseBranches("all", "main")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !allBranches {
-		t.Fatal("all should be true")
-	}
-	if b != nil {
-		t.Fatalf("expected nil slice, got %v", b)
-	}
-}
-
-func TestParseBranches_Default(t *testing.T) {
-	t.Parallel()
-
-	b, allBranches, err := ParseBranches("", "feat/x")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if allBranches {
-		t.Fatal("all should be false")
-	}
-	if len(b) != 1 || b[0] != "feat/x" {
-		t.Fatalf("got %v", b)
-	}
-}
-
 func TestParseUntil_EmptyDefaultsToNow(t *testing.T) {
 	t.Parallel()
 

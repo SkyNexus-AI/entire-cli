@@ -1,6 +1,11 @@
 package dispatch
 
-import "time"
+import (
+	"errors"
+	"time"
+)
+
+var errDispatchMissingMarkdown = errors.New("dispatch generation returned no markdown")
 
 // Dispatch is the rendered, in-memory representation returned from either server or local mode.
 type Dispatch struct {

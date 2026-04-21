@@ -15,7 +15,7 @@ Web UI on entire.io for viewing and creating dispatches. Three core pages:
 
 **No personal feed in v1.** Dispatches are content-addressed cache objects with no ownership model — there is no "dispatches I made" list. Users navigate to a repo or org to see dispatches relevant to it. (See CLI spec Persistence and idempotency section for the full content-addressed model.)
 
-**Repo / codebase** — the entire.io frontend, not the CLI repo. All backend routes and frontend pages for this feature must be developed in a **new** git worktree whose branch is created off the `analysis-chunk-merge` branch (located at `/Users/alisha/Projects/wt/entire.io/analysis-chunk-merge`). Do **not** make changes on the `analysis-chunk-merge` worktree/branch itself — it is used only as the starting point.
+**Repo / codebase** — the entire.io frontend, not the CLI repo. All backend routes and frontend pages for this feature must be developed in a **new** git worktree whose branch is created off the `analysis-chunk-merge` branch (located at `/Users/alisha/Projects/wt/entire.io/analysis-chunk-merge`). Do **not** make changes on the `analysis-chunk-merge` worktree/branch itself — it is used only as the starting point. make sure new worktree has codex in the name
 
 ## Goals
 

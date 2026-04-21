@@ -36,7 +36,7 @@ func runServer(ctx context.Context, opts Options) (*Dispatch, error) {
 		return nil, fmt.Errorf("--since must be before --until")
 	}
 
-	repoFullName := ""
+	var repoScope any
 	repoFullNames := append([]string(nil), opts.RepoPaths...)
 	if opts.Org == "" && len(repoFullNames) == 0 {
 		repoRoot, err := paths.WorktreeRoot(ctx)
@@ -47,11 +47,15 @@ func runServer(ctx context.Context, opts Options) (*Dispatch, error) {
 		if err != nil {
 			return nil, fmt.Errorf("open repository: %w", err)
 		}
-		repoFullName, err = resolveRepoFullName(repo)
+		repoFullName, err := resolveRepoFullName(repo)
 		if err != nil {
 			return nil, err
 		}
-		repoFullNames = []string{repoFullName}
+		repoScope = repoFullName
+	} else if len(repoFullNames) == 1 {
+		repoScope = repoFullNames[0]
+	} else if len(repoFullNames) > 1 {
+		repoScope = repoFullNames
 	}
 
 	branches := any(opts.Branches)
@@ -61,17 +65,13 @@ func runServer(ctx context.Context, opts Options) (*Dispatch, error) {
 
 	cloud := NewCloudClient(CloudConfig{BaseURL: cloudBaseURL(), Token: token})
 	reqBody := CreateDispatchRequest{
-		Repo:     repoFullName,
-		Repos:    repoFullNames,
+		Repo:     repoScope,
 		Org:      opts.Org,
 		Since:    since.Format(time.RFC3339),
 		Until:    until.Format(time.RFC3339),
 		Branches: branches,
-		Generate: opts.Generate,
+		Generate: true,
 		Voice:    opts.Voice,
-	}
-	if len(repoFullNames) > 0 {
-		reqBody.Repo = ""
 	}
 	response, err := cloud.CreateDispatch(ctx, reqBody)
 	if err != nil {
@@ -80,6 +80,9 @@ func runServer(ctx context.Context, opts Options) (*Dispatch, error) {
 
 	dispatch := apiToDispatch(response)
 	dispatch.RequestedGenerate = opts.Generate
+	if strings.TrimSpace(dispatch.GeneratedText) == "" {
+		return nil, errDispatchMissingMarkdown
+	}
 	return dispatch, nil
 }
 
@@ -114,6 +117,11 @@ func apiToDispatch(response *CreateDispatchResponse) *Dispatch {
 		})
 	}
 
+	generatedText := strings.TrimSpace(response.GeneratedMarkdown)
+	if generatedText == "" {
+		generatedText = strings.TrimSpace(response.GeneratedText)
+	}
+
 	return &Dispatch{
 		Window: Window{
 			NormalizedSince:   parseAPITime(response.Window.NormalizedSince),
@@ -123,8 +131,8 @@ func apiToDispatch(response *CreateDispatchResponse) *Dispatch {
 		},
 		CoveredRepos:  append([]string(nil), response.CoveredRepos...),
 		Repos:         repos,
-		GeneratedText: response.GeneratedText,
-		Generated:     strings.TrimSpace(response.GeneratedText) != "",
+		GeneratedText: generatedText,
+		Generated:     generatedText != "",
 		Totals: Totals{
 			Checkpoints:         response.Totals.Checkpoints,
 			UsedCheckpointCount: response.Totals.UsedCheckpointCount,

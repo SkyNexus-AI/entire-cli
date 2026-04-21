@@ -21,6 +21,8 @@ import (
 
 var errDispatchCancelled = errors.New("dispatch cancelled")
 var wizardNowUTC = func() time.Time { return time.Now().UTC() }
+var listDispatchWizardRepos = discoverAuthenticatedDispatchWizardRepos
+var listDispatchWizardOrgs = discoverAuthenticatedDispatchWizardOrgs
 
 const (
 	dispatchWizardModeLocal  = "local"
@@ -30,10 +32,9 @@ const (
 	dispatchWizardScopeSelectedRepos = "selected_repos"
 	dispatchWizardScopeOrganization  = "organization"
 
-	dispatchWizardBranchDefault  = "default"
-	dispatchWizardBranchCurrent  = "current"
-	dispatchWizardBranchAll      = "all"
-	dispatchWizardBranchSelected = "selected"
+	dispatchWizardBranchDefault = "default"
+	dispatchWizardBranchCurrent = "current"
+	dispatchWizardBranchAll     = "all"
 )
 
 type dispatchWizardState struct {
@@ -43,18 +44,15 @@ type dispatchWizardState struct {
 	branchMode       string
 	selectedRepos    []string
 	selectedOrg      string
-	selectedBranches []string
 	voicePreset      string
-	format           string
+	voiceCustom      string
 	confirmRun       bool
 }
 
 type dispatchWizardChoices struct {
-	currentRepo         string
-	currentRepoBranches []huh.Option[string]
-	repoOptions         []huh.Option[string]
-	orgOptions          []huh.Option[string]
-	branchesByRepoSlug  map[string][]huh.Option[string]
+	currentRepo string
+	repoOptions []huh.Option[string]
+	orgOptions  []huh.Option[string]
 }
 
 func newDispatchWizardState() dispatchWizardState {
@@ -62,9 +60,9 @@ func newDispatchWizardState() dispatchWizardState {
 		modeChoice:       dispatchWizardModeLocal,
 		scopeType:        dispatchWizardScopeCurrentRepo,
 		timeWindowPreset: "7d",
-		branchMode:       dispatchWizardBranchDefault,
+		branchMode:       dispatchWizardBranchCurrent,
 		voicePreset:      "neutral",
-		format:           "text",
+		confirmRun:       true,
 	}
 }
 
@@ -77,10 +75,19 @@ func (s dispatchWizardState) sinceValue() string {
 }
 
 func (s dispatchWizardState) voiceValue() string {
-	if strings.TrimSpace(s.voicePreset) == "marvin" {
+	switch strings.TrimSpace(s.voicePreset) {
+	case "marvin":
 		return "marvin"
+	case "custom":
+		if value := strings.TrimSpace(s.voiceCustom); value != "" {
+			return value
+		}
 	}
 	return "neutral"
+}
+
+func (s dispatchWizardState) showCustomVoiceInput() bool {
+	return strings.TrimSpace(s.voicePreset) == "custom"
 }
 
 func (s dispatchWizardState) effectiveScopeType(choices dispatchWizardChoices) string {
@@ -100,27 +107,17 @@ func (s dispatchWizardState) effectiveScopeType(choices dispatchWizardChoices) s
 	return dispatchWizardScopeSelectedRepos
 }
 
-func (s dispatchWizardState) allowsSelectedBranches(choices dispatchWizardChoices) bool {
-	if s.isLocal() {
-		return len(choices.currentRepoBranches) > 0
-	}
-	if s.effectiveScopeType(choices) == dispatchWizardScopeSelectedRepos {
-		return len(s.selectedRepos) == 1
-	}
-	return false
-}
-
 func (s dispatchWizardState) effectiveBranchMode(choices dispatchWizardChoices) string {
 	if s.isLocal() {
-		return dispatchWizardBranchSelected
+		if s.branchMode == dispatchWizardBranchAll {
+			return dispatchWizardBranchAll
+		}
+		return dispatchWizardBranchCurrent
 	}
 
 	switch s.branchMode {
-	case dispatchWizardBranchDefault, dispatchWizardBranchAll, dispatchWizardBranchSelected:
+	case dispatchWizardBranchDefault, dispatchWizardBranchAll:
 	default:
-		return dispatchWizardBranchDefault
-	}
-	if s.branchMode == dispatchWizardBranchSelected && !s.allowsSelectedBranches(choices) {
 		return dispatchWizardBranchDefault
 	}
 	return s.branchMode
@@ -145,12 +142,8 @@ func (s dispatchWizardState) showOrganizationPicker(choices dispatchWizardChoice
 	return !s.isLocal() && s.effectiveScopeType(choices) == dispatchWizardScopeOrganization
 }
 
-func (s dispatchWizardState) showSelectedBranchesPicker(choices dispatchWizardChoices) bool {
-	return s.isLocal() || s.effectiveBranchMode(choices) == dispatchWizardBranchSelected
-}
-
 func (s dispatchWizardState) showBranchModePicker() bool {
-	return !s.isLocal()
+	return true
 }
 
 func (s *dispatchWizardState) applyCurrentBranchDefault(branch string) {
@@ -158,16 +151,7 @@ func (s *dispatchWizardState) applyCurrentBranchDefault(branch string) {
 	if branch == "" {
 		return
 	}
-	if len(s.selectedBranches) == 0 {
-		s.selectedBranches = []string{branch}
-		return
-	}
-	for _, selected := range s.selectedBranches {
-		if selected == branch {
-			return
-		}
-	}
-	s.selectedBranches = append([]string{branch}, s.selectedBranches...)
+	s.branchMode = dispatchWizardBranchCurrent
 }
 
 func (s dispatchWizardState) orgValue(choices dispatchWizardChoices) string {
@@ -183,29 +167,15 @@ func (s dispatchWizardState) orgValue(choices dispatchWizardChoices) string {
 	return ""
 }
 
-func (s dispatchWizardState) branchesFlag(choices dispatchWizardChoices) string {
-	switch s.effectiveBranchMode(choices) {
-	case dispatchWizardBranchDefault:
-		return ""
-	case dispatchWizardBranchAll:
-		return "all"
-	case dispatchWizardBranchSelected:
-		return strings.Join(s.selectedBranches, ",")
-	}
-	return ""
-}
-
 func (s dispatchWizardState) resolve(choices dispatchWizardChoices, currentBranch func() (string, error)) (dispatchpkg.Options, error) {
 	return resolveDispatchOptions(
 		s.isLocal(),
 		s.sinceValue(),
 		"",
-		s.branchesFlag(choices),
+		s.effectiveBranchMode(choices) == dispatchWizardBranchAll,
 		s.selectedRepoPaths(choices),
 		s.orgValue(choices),
-		dispatchWizardGenerateDefault,
 		s.voiceValue(),
-		s.format,
 		currentBranch,
 	)
 }
@@ -226,27 +196,15 @@ func (c dispatchWizardChoices) scopeOptions(state dispatchWizardState) []huh.Opt
 
 func (c dispatchWizardChoices) branchModeOptions(state dispatchWizardState) []huh.Option[string] {
 	if state.isLocal() {
-		return nil
+		return []huh.Option[string]{
+			huh.NewOption("Current branch", dispatchWizardBranchCurrent),
+			huh.NewOption("All branches", dispatchWizardBranchAll),
+		}
 	}
-	options := []huh.Option[string]{
+	return []huh.Option[string]{
 		huh.NewOption("Default branches", dispatchWizardBranchDefault),
 		huh.NewOption("All branches", dispatchWizardBranchAll),
 	}
-	if state.allowsSelectedBranches(c) {
-		options = append(options, huh.NewOption("Selected branches", dispatchWizardBranchSelected))
-	}
-	return options
-}
-
-func (c dispatchWizardChoices) branchOptions(state dispatchWizardState) []huh.Option[string] {
-	if state.isLocal() {
-		return append([]huh.Option[string](nil), c.currentRepoBranches...)
-	}
-
-	if state.effectiveScopeType(c) == dispatchWizardScopeSelectedRepos && len(state.selectedRepos) == 1 {
-		return append([]huh.Option[string](nil), c.branchesByRepoSlug[state.selectedRepos[0]]...)
-	}
-	return nil
 }
 
 func buildDispatchWizardSummary(opts dispatchpkg.Options) string {
@@ -261,11 +219,15 @@ func buildDispatchWizardSummary(opts dispatchpkg.Options) string {
 	branches := "current branch"
 	if opts.AllBranches {
 		branches = "all"
+	} else if opts.Mode == dispatchpkg.ModeLocal {
+		branches = "current branch"
 	} else if len(opts.Branches) > 0 {
 		branches = strings.Join(opts.Branches, ", ")
+	} else if strings.TrimSpace(opts.Org) != "" || len(opts.RepoPaths) > 0 {
+		branches = "default branches"
 	}
 
-	mode := "server"
+	mode := "cloud"
 	if opts.Mode == dispatchpkg.ModeLocal {
 		mode = "local"
 	}
@@ -278,23 +240,14 @@ func buildDispatchWizardSummary(opts dispatchpkg.Options) string {
 }
 
 func buildDispatchCommand(opts dispatchpkg.Options) string {
-	branchesValue := ""
-	if opts.AllBranches {
-		branchesValue = "all"
-	} else if len(opts.Branches) > 0 {
-		branchesValue = strings.Join(opts.Branches, ",")
-	}
-
 	return strings.Join(compactStrings([]string{
 		"entire dispatch",
 		mapBoolToFlag(opts.Mode == dispatchpkg.ModeLocal, "--local"),
 		renderStringFlag("--since", strings.TrimSpace(opts.Since)),
-		renderStringFlag("--branches", branchesValue),
+		mapBoolToFlag(opts.AllBranches, "--all-branches"),
 		renderStringFlag("--repos", strings.Join(opts.RepoPaths, ",")),
 		renderStringFlag("--org", strings.TrimSpace(opts.Org)),
-		mapBoolToFlag(opts.Generate, "--generate"),
 		renderStringFlag("--voice", strings.TrimSpace(opts.Voice)),
-		renderStringFlag("--format", strings.TrimSpace(opts.Format)),
 	}), " ")
 }
 
@@ -359,7 +312,7 @@ func runDispatchWizard(cmd *cobra.Command) (dispatchpkg.Options, error) {
 				Title("Dispatch mode").
 				Options(
 					huh.NewOption("Local", dispatchWizardModeLocal),
-					huh.NewOption("Server", dispatchWizardModeServer),
+					huh.NewOption("Cloud", dispatchWizardModeServer),
 				).
 				Value(&state.modeChoice),
 		).Title("Mode").Description("Choose where the dispatch should run."),
@@ -370,7 +323,7 @@ func runDispatchWizard(cmd *cobra.Command) (dispatchpkg.Options, error) {
 					return choices.scopeOptions(state)
 				}, &state).
 				Value(&state.scopeType),
-		).Title("Scope").Description("Choose which server-side scope to dispatch.").
+		).Title("Scope").Description("Choose which cloud scope to dispatch.").
 			WithHideFunc(func() bool {
 				return !state.showScopePicker(choices)
 			}),
@@ -432,33 +385,9 @@ func runDispatchWizard(cmd *cobra.Command) (dispatchpkg.Options, error) {
 					return choices.branchModeOptions(state)
 				}, &state).
 				Value(&state.branchMode),
-		).Title("Branch mode").Description("Choose how server dispatch should interpret branches.").
+		).Title("Branch mode").Description("Choose how dispatch should interpret branch scope.").
 			WithHideFunc(func() bool {
 				return !state.showBranchModePicker()
-			}),
-		huh.NewGroup(
-			huh.NewMultiSelect[string]().
-				Title("Branches").
-				DescriptionFunc(func() string {
-					if state.isLocal() {
-						return "Select branches from the current repo."
-					}
-					return "Select branch overrides to apply across the selected repo."
-				}, &state).
-				Filterable(true).
-				OptionsFunc(func() []huh.Option[string] {
-					return choices.branchOptions(state)
-				}, &state).
-				Value(&state.selectedBranches).
-				Validate(func(value []string) error {
-					if state.showSelectedBranchesPicker(choices) && len(value) == 0 {
-						return errors.New("select at least one branch")
-					}
-					return nil
-				}),
-		).Title("Branches").Description("Choose which branches to include.").
-			WithHideFunc(func() bool {
-				return !state.showSelectedBranchesPicker(choices)
 			}),
 		huh.NewGroup(
 			huh.NewSelect[string]().
@@ -466,17 +395,25 @@ func runDispatchWizard(cmd *cobra.Command) (dispatchpkg.Options, error) {
 				Options(
 					huh.NewOption("Neutral", "neutral"),
 					huh.NewOption("Marvin", "marvin"),
+					huh.NewOption("Custom", "custom"),
 				).
 				Value(&state.voicePreset),
-			huh.NewSelect[string]().
-				Title("Format").
-				Options(
-					huh.NewOption("Text", "text"),
-					huh.NewOption("Markdown", "markdown"),
-					huh.NewOption("JSON", "json"),
-				).
-				Value(&state.format),
-		).Title("Output").Description("Choose output and rendering settings."),
+		).Title("Output").Description("Choose a preset voice."),
+		huh.NewGroup(
+			huh.NewInput().
+				Title("Custom voice").
+				Placeholder("Dry, skeptical release note narrator").
+				Value(&state.voiceCustom).
+				Validate(func(value string) error {
+					if state.showCustomVoiceInput() && strings.TrimSpace(value) == "" {
+						return errors.New("enter a custom voice")
+					}
+					return nil
+				}),
+		).Title("Custom voice").Description("Describe the dispatch voice.").
+			WithHideFunc(func() bool {
+				return !state.showCustomVoiceInput()
+			}),
 		huh.NewGroup(
 			huh.NewNote().
 				Title("Resolved options").
@@ -524,14 +461,15 @@ func discoverDispatchWizardChoices(ctx context.Context) (dispatchWizardChoices, 
 		return dispatchWizardChoices{}, fmt.Errorf("not in a git repository: %w", err)
 	}
 
-	repoRoots := discoverLocalRepoRoots(ctx, currentRepo)
-	repoOptions := make([]huh.Option[string], 0, len(repoRoots))
-	branchesByRepoSlug := make(map[string][]huh.Option[string], len(repoRoots))
-	currentRepoBranches := discoverBranchOptions(ctx, currentRepo)
-	orgSet := make(map[string]struct{})
-	seenRepoSlugs := make(map[string]struct{}, len(repoRoots))
-	for _, repoRoot := range repoRoots {
-		repoSlug := discoverRepoSlug(repoRoot)
+	repoSlugs, err := listDispatchWizardRepos(ctx)
+	if err != nil || len(repoSlugs) == 0 {
+		repoSlugs = discoverLocalRepoSlugs(ctx, currentRepo)
+	}
+	sort.Strings(repoSlugs)
+
+	repoOptions := make([]huh.Option[string], 0, len(repoSlugs))
+	seenRepoSlugs := make(map[string]struct{}, len(repoSlugs))
+	for _, repoSlug := range repoSlugs {
 		if repoSlug == "" {
 			continue
 		}
@@ -540,15 +478,11 @@ func discoverDispatchWizardChoices(ctx context.Context) (dispatchWizardChoices, 
 		}
 		seenRepoSlugs[repoSlug] = struct{}{}
 		repoOptions = append(repoOptions, huh.NewOption(repoSlug, repoSlug))
-		branchesByRepoSlug[repoSlug] = discoverBranchOptions(ctx, repoRoot)
-		if org := discoverRepoOrg(repoRoot); org != "" {
-			orgSet[org] = struct{}{}
-		}
 	}
 
-	orgNames := make([]string, 0, len(orgSet))
-	for org := range orgSet {
-		orgNames = append(orgNames, org)
+	orgNames, err := listDispatchWizardOrgs(ctx)
+	if err != nil {
+		orgNames = nil
 	}
 	sort.Strings(orgNames)
 
@@ -558,11 +492,9 @@ func discoverDispatchWizardChoices(ctx context.Context) (dispatchWizardChoices, 
 	}
 
 	return dispatchWizardChoices{
-		currentRepo:         currentRepo,
-		currentRepoBranches: currentRepoBranches,
-		repoOptions:         repoOptions,
-		orgOptions:          orgOptions,
-		branchesByRepoSlug:  branchesByRepoSlug,
+		currentRepo: currentRepo,
+		repoOptions: repoOptions,
+		orgOptions:  orgOptions,
 	}, nil
 }
 
@@ -601,6 +533,24 @@ func discoverLocalRepoRoots(ctx context.Context, currentRepo string) []string {
 	return repoRoots
 }
 
+func discoverLocalRepoSlugs(ctx context.Context, currentRepo string) []string {
+	repoRoots := discoverLocalRepoRoots(ctx, currentRepo)
+	repoSlugs := make([]string, 0, len(repoRoots))
+	seenRepoSlugs := make(map[string]struct{}, len(repoRoots))
+	for _, repoRoot := range repoRoots {
+		repoSlug := discoverRepoSlug(repoRoot)
+		if repoSlug == "" {
+			continue
+		}
+		if _, ok := seenRepoSlugs[repoSlug]; ok {
+			continue
+		}
+		seenRepoSlugs[repoSlug] = struct{}{}
+		repoSlugs = append(repoSlugs, repoSlug)
+	}
+	return repoSlugs
+}
+
 func resolveGitTopLevel(ctx context.Context, path string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", "-C", path, "rev-parse", "--show-toplevel")
 	output, err := cmd.Output()
@@ -621,7 +571,7 @@ func discoverBranchOptions(ctx context.Context, repoRoot string) []huh.Option[st
 	branches := make([]string, 0, len(lines))
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
-		if line != "" {
+		if line != "" && !shouldHideDispatchWizardBranch(line) {
 			branches = append(branches, line)
 		}
 	}
@@ -632,6 +582,61 @@ func discoverBranchOptions(ctx context.Context, repoRoot string) []huh.Option[st
 		options = append(options, huh.NewOption(branch, branch))
 	}
 	return options
+}
+
+func shouldHideDispatchWizardBranch(branch string) bool {
+	branch = strings.TrimSpace(branch)
+	return strings.HasPrefix(branch, "entire/")
+}
+
+func discoverAuthenticatedDispatchWizardOrgs(ctx context.Context) ([]string, error) {
+	cmd := exec.CommandContext(ctx, "gh", "api", "user/orgs", "--jq", ".[].login")
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, err
+	}
+
+	orgs := make([]string, 0)
+	for _, line := range strings.Split(string(output), "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			orgs = append(orgs, line)
+		}
+	}
+	sort.Strings(orgs)
+	return orgs, nil
+}
+
+func discoverAuthenticatedDispatchWizardRepos(ctx context.Context) ([]string, error) {
+	cmd := exec.CommandContext(
+		ctx,
+		"gh",
+		"api",
+		"--paginate",
+		"user/repos?per_page=100&affiliation=owner,collaborator,organization_member&sort=full_name",
+		"--jq",
+		".[].full_name",
+	)
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, err
+	}
+
+	repos := make([]string, 0)
+	seen := make(map[string]struct{})
+	for _, line := range strings.Split(string(output), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if _, ok := seen[line]; ok {
+			continue
+		}
+		seen[line] = struct{}{}
+		repos = append(repos, line)
+	}
+	sort.Strings(repos)
+	return repos, nil
 }
 
 func discoverRepoSlug(repoRoot string) string {
@@ -648,16 +653,4 @@ func discoverRepoSlug(repoRoot string) string {
 		return ""
 	}
 	return owner + "/" + repoName
-}
-
-func discoverRepoOrg(repoRoot string) string {
-	repoSlug := discoverRepoSlug(repoRoot)
-	if repoSlug == "" {
-		return ""
-	}
-	owner, _, found := strings.Cut(repoSlug, "/")
-	if !found {
-		return ""
-	}
-	return owner
 }

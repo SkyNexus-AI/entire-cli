@@ -7,37 +7,11 @@ import (
 	"time"
 )
 
-func TestRenderText_Golden(t *testing.T) {
-	t.Parallel()
-
-	got := RenderText(testDispatchFixture())
-	want, err := os.ReadFile("testdata/text.golden")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.TrimSpace(got) != strings.TrimSpace(string(want)) {
-		t.Fatalf("mismatch\nwant:\n%s\ngot:\n%s", want, got)
-	}
-}
-
 func TestRenderMarkdown_Golden(t *testing.T) {
 	t.Parallel()
 
 	got := RenderMarkdown(testDispatchFixture())
 	want, err := os.ReadFile("testdata/markdown.golden")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.TrimSpace(got) != strings.TrimSpace(string(want)) {
-		t.Fatalf("mismatch\nwant:\n%s\ngot:\n%s", want, got)
-	}
-}
-
-func TestRenderJSON_Golden(t *testing.T) {
-	t.Parallel()
-
-	got := RenderJSON(testDispatchFixture())
-	want, err := os.ReadFile("testdata/json.golden")
 	if err != nil {
 		t.Fatal(err)
 	}

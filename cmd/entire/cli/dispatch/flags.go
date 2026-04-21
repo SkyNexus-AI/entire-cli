@@ -130,26 +130,3 @@ func weekdayFromString(value string) time.Weekday {
 		return -1
 	}
 }
-
-func ParseBranches(value string, currentBranch string) ([]string, bool, error) {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "":
-		return []string{currentBranch}, false, nil
-	case "all", "*":
-		return nil, true, nil
-	}
-
-	parts := strings.Split(value, ",")
-	out := make([]string, 0, len(parts))
-	for _, part := range parts {
-		trimmed := strings.TrimSpace(part)
-		if trimmed == "" {
-			continue
-		}
-		out = append(out, trimmed)
-	}
-	if len(out) == 0 {
-		return nil, false, fmt.Errorf("no branch names provided")
-	}
-	return out, false, nil
-}

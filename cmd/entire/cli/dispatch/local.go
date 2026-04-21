@@ -26,12 +26,8 @@ var (
 )
 
 func runLocal(ctx context.Context, opts Options) (*Dispatch, error) {
-	token, err := lookupCurrentToken()
-	if err != nil {
-		return nil, fmt.Errorf("reading credentials: %w", err)
-	}
-	if token == "" {
-		return nil, errors.New("dispatch requires login — run `entire login`")
+	if strings.TrimSpace(opts.Org) != "" {
+		return nil, errors.New("--org cannot be used with --local")
 	}
 
 	now := nowUTC()
@@ -52,46 +48,32 @@ func runLocal(ctx context.Context, opts Options) (*Dispatch, error) {
 		return nil, errors.New("--since must be before --until")
 	}
 
-	cloud := NewCloudClient(CloudConfig{BaseURL: cloudBaseURL(), Token: token})
-
-	allCandidates := make([]candidate, 0)
-	if strings.TrimSpace(opts.Org) != "" {
-		allCandidates, err = enumerateOrgCandidates(ctx, cloud, opts, normalizedSince, normalizedUntil)
-		if err != nil {
-			return nil, err
-		}
-	} else {
-		repoRoots, err := resolveRepoRoots(ctx, opts.RepoPaths)
-		if err != nil {
-			return nil, err
-		}
-
-		var candidatesMu sync.Mutex
-		group, groupCtx := errgroup.WithContext(ctx)
-		for _, repoRoot := range repoRoots {
-			repoRoot := repoRoot
-			group.Go(func() error {
-				candidates, err := enumerateRepoCandidates(groupCtx, repoRoot, opts, normalizedSince, normalizedUntil)
-				if err != nil {
-					return err
-				}
-				candidatesMu.Lock()
-				allCandidates = append(allCandidates, candidates...)
-				candidatesMu.Unlock()
-				return nil
-			})
-		}
-		if err := group.Wait(); err != nil {
-			return nil, err
-		}
-	}
-
-	analyses, err := fetchAnalyses(ctx, cloud, groupCandidatesByRepo(allCandidates))
+	repoRoots, err := resolveRepoRoots(ctx, opts.RepoPaths)
 	if err != nil {
 		return nil, err
 	}
 
-	fallback := applyFallbackChain(allCandidates, analyses)
+	allCandidates := make([]candidate, 0)
+	var candidatesMu sync.Mutex
+	group, groupCtx := errgroup.WithContext(ctx)
+	for _, repoRoot := range repoRoots {
+		repoRoot := repoRoot
+		group.Go(func() error {
+			candidates, err := enumerateRepoCandidates(groupCtx, repoRoot, opts, normalizedSince, normalizedUntil)
+			if err != nil {
+				return err
+			}
+			candidatesMu.Lock()
+			allCandidates = append(allCandidates, candidates...)
+			candidatesMu.Unlock()
+			return nil
+		})
+	}
+	if err := group.Wait(); err != nil {
+		return nil, err
+	}
+
+	fallback := applyFallbackChain(allCandidates)
 	dispatch := &Dispatch{
 		CoveredRepos: coveredRepos(allCandidates),
 		Repos:        groupBulletsByRepo(fallback.Used),
@@ -106,80 +88,17 @@ func runLocal(ctx context.Context, opts Options) (*Dispatch, error) {
 		RequestedGenerate: opts.Generate,
 	}
 
-	if opts.Generate {
-		text, err := generateLocalDispatch(ctx, dispatch, opts.Voice)
-		if err != nil {
-			return nil, err
-		}
-		dispatch.GeneratedText = text
-		dispatch.Generated = strings.TrimSpace(text) != ""
-	}
-
-	return dispatch, nil
-}
-
-func enumerateOrgCandidates(ctx context.Context, cloud *CloudClient, opts Options, since, until time.Time) ([]candidate, error) {
-	checkpoints, err := cloud.EnumerateOrgCheckpoints(ctx, opts.Org, since.Format(time.RFC3339))
+	text, err := generateLocalDispatch(ctx, dispatch, opts.Voice)
 	if err != nil {
 		return nil, err
 	}
-
-	branchSet := make(map[string]struct{}, len(opts.Branches))
-	for _, branch := range opts.Branches {
-		branchSet[branch] = struct{}{}
+	dispatch.GeneratedText = text
+	dispatch.Generated = strings.TrimSpace(text) != ""
+	if !dispatch.Generated {
+		return nil, errDispatchMissingMarkdown
 	}
 
-	candidates := make([]candidate, 0, len(checkpoints))
-	for _, checkpoint := range checkpoints {
-		createdAt := parseAPITime(checkpoint.CreatedAt)
-		if createdAt.Before(since) || !createdAt.Before(until) {
-			continue
-		}
-		if !opts.AllBranches && len(branchSet) > 0 {
-			if _, ok := branchSet[checkpoint.Branch]; !ok {
-				continue
-			}
-		}
-
-		candidates = append(candidates, candidate{
-			CheckpointID: checkpoint.ID,
-			RepoFullName: checkpoint.RepoFullName,
-			Branch:       checkpoint.Branch,
-			CreatedAt:    createdAt,
-		})
-	}
-
-	return candidates, nil
-}
-
-func fetchAnalyses(ctx context.Context, cloud *CloudClient, grouped map[string][]string) (map[string]AnalysisStatus, error) {
-	return fetchAnalysesOnce(ctx, cloud, cloneRepoIDs(grouped))
-}
-
-func fetchAnalysesOnce(ctx context.Context, cloud *CloudClient, grouped map[string][]string) (map[string]AnalysisStatus, error) {
-	analyses := make(map[string]AnalysisStatus)
-	var analysesMu sync.Mutex
-	group, groupCtx := errgroup.WithContext(ctx)
-	for repoFullName, ids := range grouped {
-		repoFullName := repoFullName
-		ids := append([]string(nil), ids...)
-		group.Go(func() error {
-			result, err := cloud.FetchBatchAnalyses(groupCtx, repoFullName, ids)
-			if err != nil {
-				return err
-			}
-			analysesMu.Lock()
-			for id, status := range result {
-				analyses[id] = status
-			}
-			analysesMu.Unlock()
-			return nil
-		})
-	}
-	if err := group.Wait(); err != nil {
-		return nil, err
-	}
-	return analyses, nil
+	return dispatch, nil
 }
 
 func NormalizeWindow(since, until time.Time) (time.Time, time.Time) {
@@ -261,7 +180,10 @@ func enumerateRepoCandidates(ctx context.Context, repoRoot string, opts Options,
 		}
 		if !opts.AllBranches {
 			if opts.ImplicitCurrentBranch {
-				if _, ok := reachableCheckpointIDs[info.CheckpointID.String()]; !ok {
+				if _, ok := branchSet[summary.Branch]; ok {
+					// The checkpoint was recorded on the current branch, so include it
+					// even if HEAD no longer has a reachable trailer for that ID.
+				} else if _, ok := reachableCheckpointIDs[info.CheckpointID.String()]; !ok {
 					continue
 				}
 			} else {
@@ -380,14 +302,6 @@ func coveredRepos(candidates []candidate) []string {
 	}
 	sort.Strings(repos)
 	return repos
-}
-
-func cloneRepoIDs(grouped map[string][]string) map[string][]string {
-	cloned := make(map[string][]string, len(grouped))
-	for repoFullName, ids := range grouped {
-		cloned[repoFullName] = append([]string(nil), ids...)
-	}
-	return cloned
 }
 
 func groupBulletsByRepo(used []repoBullet) []RepoGroup {

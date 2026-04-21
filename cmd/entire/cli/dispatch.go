@@ -1,8 +1,10 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -11,19 +13,21 @@ import (
 	"golang.org/x/term"
 )
 
-const dispatchWizardGenerateDefault = true
+var runDispatch = dispatchpkg.Run
+var renderDispatchMarkdown = dispatchpkg.RenderMarkdown
+var dispatchTerminalMode = func(w io.Writer) bool { return isTerminalWriter(w) }
+var runInteractiveDispatch = defaultRunInteractiveDispatch
+var renderTerminalMarkdown = defaultRenderTerminalMarkdown
 
 func newDispatchCmd() *cobra.Command {
 	var (
-		flagLocal    bool
-		flagSince    string
-		flagUntil    string
-		flagBranches string
-		flagRepos    []string
-		flagOrg      string
-		flagGenerate bool
-		flagVoice    string
-		flagFormat   string
+		flagLocal       bool
+		flagSince       string
+		flagUntil       string
+		flagAllBranches bool
+		flagRepos       []string
+		flagOrg         string
+		flagVoice       string
 	)
 
 	cmd := &cobra.Command{
@@ -33,10 +37,9 @@ func newDispatchCmd() *cobra.Command {
 
 Examples:
   entire dispatch
-  entire dispatch --since 14d --branches main,release
-  entire dispatch --local --repos ~/Projects/cli
-  entire dispatch --format markdown
-  entire dispatch --generate --voice neutral`,
+  entire dispatch --since 14d --all-branches
+  entire dispatch --local
+  entire dispatch --voice neutral`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			var (
 				opts dispatchpkg.Options
@@ -46,7 +49,7 @@ Examples:
 			if shouldRunDispatchWizard(cmd.Flags().NFlag(), isTerminalStdin(os.Stdin), isTerminalWriter(cmd.OutOrStdout())) {
 				opts, err = runDispatchWizard(cmd)
 			} else {
-				opts, err = parseDispatchFlags(cmd, flagLocal, flagSince, flagUntil, flagBranches, flagRepos, flagOrg, flagGenerate, flagVoice, flagFormat)
+				opts, err = parseDispatchFlags(cmd, flagLocal, flagSince, flagUntil, flagAllBranches, flagRepos, flagOrg, flagVoice)
 			}
 			if err != nil {
 				if errors.Is(err, errDispatchCancelled) {
@@ -55,16 +58,12 @@ Examples:
 				return err
 			}
 
-			result, err := dispatchpkg.Run(cmd.Context(), opts)
-			if err != nil {
+			if err := runDispatchCommand(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), opts); err != nil {
+				if errors.Is(err, errDispatchCancelled) {
+					return nil
+				}
 				return err
 			}
-
-			rendered, err := dispatchpkg.Render(opts.Format, result)
-			if err != nil {
-				return err
-			}
-			fmt.Fprint(cmd.OutOrStdout(), rendered)
 			return nil
 		},
 	}
@@ -72,14 +71,34 @@ Examples:
 	cmd.Flags().BoolVar(&flagLocal, "local", false, "use local LLM tokens instead of server synthesis")
 	cmd.Flags().StringVar(&flagSince, "since", "7d", "time window (Go duration, relative time, or ISO date)")
 	cmd.Flags().StringVar(&flagUntil, "until", "", "window end time (defaults to now)")
-	cmd.Flags().StringVar(&flagBranches, "branches", "", "comma-separated branch names, or 'all'")
+	cmd.Flags().BoolVar(&flagAllBranches, "all-branches", false, "include all branches instead of the default branch scope")
 	cmd.Flags().StringSliceVar(&flagRepos, "repos", nil, "server repo slugs (for example entireio/cli)")
 	cmd.Flags().StringVar(&flagOrg, "org", "", "enumerate checkpoints across an org")
-	cmd.Flags().BoolVar(&flagGenerate, "generate", false, "synthesize prose from dispatch bullets")
 	cmd.Flags().StringVar(&flagVoice, "voice", "", "voice preset name, file path, or literal description")
-	cmd.Flags().StringVar(&flagFormat, "format", "text", "output format: text | markdown | json")
 
 	return cmd
+}
+
+func runDispatchCommand(ctx context.Context, outW, _ io.Writer, opts dispatchpkg.Options) error {
+	if dispatchTerminalMode(outW) {
+		markdown, err := runInteractiveDispatch(ctx, outW, opts)
+		if err != nil {
+			return err
+		}
+		rendered, err := renderTerminalMarkdown(outW, markdown)
+		if err != nil {
+			return err
+		}
+		_, err = fmt.Fprint(outW, rendered)
+		return err
+	}
+
+	result, err := runDispatch(ctx, opts)
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprint(outW, renderDispatchMarkdown(result))
+	return err
 }
 
 func isTerminalStdin(file *os.File) bool {
@@ -95,23 +114,19 @@ func parseDispatchFlags(
 	flagLocal bool,
 	flagSince string,
 	flagUntil string,
-	flagBranches string,
+	flagAllBranches bool,
 	flagRepos []string,
 	flagOrg string,
-	flagGenerate bool,
 	flagVoice string,
-	flagFormat string,
 ) (dispatchpkg.Options, error) {
 	return resolveDispatchOptions(
 		flagLocal,
 		flagSince,
 		flagUntil,
-		flagBranches,
+		flagAllBranches,
 		flagRepos,
 		flagOrg,
-		flagGenerate,
 		flagVoice,
-		flagFormat,
 		func() (string, error) {
 			return GetCurrentBranch(cmd.Context())
 		},
@@ -122,12 +137,10 @@ func resolveDispatchOptions(
 	flagLocal bool,
 	flagSince string,
 	flagUntil string,
-	flagBranches string,
+	flagAllBranches bool,
 	flagRepos []string,
 	flagOrg string,
-	flagGenerate bool,
 	flagVoice string,
-	flagFormat string,
 	currentBranch func() (string, error),
 ) (dispatchpkg.Options, error) {
 	if flagOrg != "" && len(flagRepos) > 0 {
@@ -136,14 +149,8 @@ func resolveDispatchOptions(
 	if flagLocal && len(flagRepos) > 0 {
 		return dispatchpkg.Options{}, errors.New("--repos cannot be used with --local")
 	}
-
-	format := strings.ToLower(strings.TrimSpace(flagFormat))
-	switch format {
-	case "", "text":
-		format = "text"
-	case "markdown", "json":
-	default:
-		return dispatchpkg.Options{}, fmt.Errorf("unsupported format %q", flagFormat)
+	if flagLocal && flagOrg != "" {
+		return dispatchpkg.Options{}, errors.New("--org cannot be used with --local")
 	}
 
 	mode := dispatchpkg.ModeServer
@@ -151,17 +158,14 @@ func resolveDispatchOptions(
 		mode = dispatchpkg.ModeLocal
 	}
 
-	branches, allBranches, err := dispatchpkg.ParseBranches(flagBranches, "")
-	if err != nil {
-		return dispatchpkg.Options{}, err
-	}
+	var branches []string
+	allBranches := flagAllBranches
 	implicitCurrentBranch := false
-	if strings.TrimSpace(flagBranches) == "" && !allBranches {
+	if !allBranches {
 		if len(flagRepos) > 0 {
 			branches = nil
 		} else if strings.TrimSpace(flagOrg) != "" {
 			branches = nil
-			allBranches = true
 		} else {
 			currentBranchName, branchErr := currentBranch()
 			if branchErr != nil {
@@ -181,8 +185,7 @@ func resolveDispatchOptions(
 		Branches:              branches,
 		AllBranches:           allBranches,
 		ImplicitCurrentBranch: implicitCurrentBranch,
-		Generate:              flagGenerate,
+		Generate:              true,
 		Voice:                 flagVoice,
-		Format:                format,
 	}, nil
 }

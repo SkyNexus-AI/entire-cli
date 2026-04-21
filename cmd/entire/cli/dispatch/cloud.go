@@ -55,23 +55,23 @@ func NewCloudClient(cfg CloudConfig) *CloudClient {
 }
 
 type CreateDispatchRequest struct {
-	Repo     string   `json:"repo,omitempty"`
-	Repos    []string `json:"repos,omitempty"`
-	Org      string   `json:"org,omitempty"`
-	Since    string   `json:"since"`
-	Until    string   `json:"until"`
-	Branches any      `json:"branches"`
-	Generate bool     `json:"generate"`
-	Voice    string   `json:"voice,omitempty"`
+	Repo     any    `json:"repo,omitempty"`
+	Org      string `json:"org,omitempty"`
+	Since    string `json:"since"`
+	Until    string `json:"until"`
+	Branches any    `json:"branches"`
+	Generate bool   `json:"generate"`
+	Voice    string `json:"voice,omitempty"`
 }
 
 type CreateDispatchResponse struct {
-	Window        APIWindow   `json:"window"`
-	CoveredRepos  []string    `json:"covered_repos,omitempty"`
-	Repos         []APIRepo   `json:"repos,omitempty"`
-	Totals        APITotals   `json:"totals"`
-	Warnings      APIWarnings `json:"warnings"`
-	GeneratedText string      `json:"generated_text,omitempty"`
+	Window            APIWindow   `json:"window"`
+	CoveredRepos      []string    `json:"covered_repos,omitempty"`
+	Repos             []APIRepo   `json:"repos,omitempty"`
+	Totals            APITotals   `json:"totals"`
+	Warnings          APIWarnings `json:"warnings"`
+	GeneratedText     string      `json:"generated_text,omitempty"`
+	GeneratedMarkdown string      `json:"generated_markdown,omitempty"`
 }
 
 type APIWindow struct {
@@ -115,75 +115,12 @@ type APIWarnings struct {
 	UncategorizedCount int `json:"uncategorized_count"`
 }
 
-type AnalysisStatus struct {
-	Status  string   `json:"status"`
-	Summary string   `json:"summary,omitempty"`
-	Labels  []string `json:"labels,omitempty"`
-}
-
-type OrgCheckpoint struct {
-	ID           string `json:"id"`
-	RepoFullName string `json:"repo_full_name"`
-	Branch       string `json:"branch,omitempty"`
-	CreatedAt    string `json:"created_at"`
-}
-
 func (c *CloudClient) CreateDispatch(ctx context.Context, reqBody CreateDispatchRequest) (*CreateDispatchResponse, error) {
 	var out CreateDispatchResponse
-	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/users/me/dispatches", reqBody, &out); err != nil {
+	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/dispatches", reqBody, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
-}
-
-func (c *CloudClient) FetchBatchAnalyses(ctx context.Context, repoFullName string, ids []string) (map[string]AnalysisStatus, error) {
-	if len(ids) == 0 {
-		return map[string]AnalysisStatus{}, nil
-	}
-
-	out := make(map[string]AnalysisStatus, len(ids))
-	for _, chunk := range chunkIDs(ids, 200) {
-		var payload struct {
-			Analyses map[string]AnalysisStatus `json:"analyses"`
-		}
-		err := c.doJSON(ctx, http.MethodPost, "/api/v1/users/me/checkpoints/analyses/batch", map[string]any{
-			"repoFullName":  repoFullName,
-			"checkpointIds": chunk,
-		}, &payload)
-		if err != nil {
-			return nil, err
-		}
-		for id, status := range payload.Analyses {
-			out[id] = status
-		}
-	}
-
-	return out, nil
-}
-
-func (c *CloudClient) EnumerateOrgCheckpoints(ctx context.Context, org, since string) ([]OrgCheckpoint, error) {
-	cursor := ""
-	var out []OrgCheckpoint
-
-	for {
-		path := fmt.Sprintf("/api/v1/orgs/%s/checkpoints?since=%s", org, since)
-		if cursor != "" {
-			path += "&cursor=" + cursor
-		}
-
-		var payload struct {
-			Checkpoints []OrgCheckpoint `json:"checkpoints"`
-			Cursor      string          `json:"cursor"`
-		}
-		if err := c.doJSON(ctx, http.MethodGet, path, nil, &payload); err != nil {
-			return nil, err
-		}
-		out = append(out, payload.Checkpoints...)
-		if payload.Cursor == "" {
-			return out, nil
-		}
-		cursor = payload.Cursor
-	}
 }
 
 func (c *CloudClient) doJSON(ctx context.Context, method, path string, reqBody, out any) error {
@@ -232,22 +169,6 @@ func (c *CloudClient) doJSON(ctx context.Context, method, path string, reqBody, 
 		return fmt.Errorf("decode response: %w", err)
 	}
 	return nil
-}
-
-func chunkIDs(ids []string, size int) [][]string {
-	if size <= 0 || len(ids) == 0 {
-		return nil
-	}
-
-	chunks := make([][]string, 0, (len(ids)+size-1)/size)
-	for start := 0; start < len(ids); start += size {
-		end := start + size
-		if end > len(ids) {
-			end = len(ids)
-		}
-		chunks = append(chunks, ids[start:end])
-	}
-	return chunks
 }
 
 func cloudBaseURL() string {

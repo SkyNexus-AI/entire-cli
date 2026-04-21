@@ -2,9 +2,6 @@ package dispatch
 
 import (
 	"context"
-	"encoding/json"
-	"net/http"
-	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -21,6 +18,7 @@ import (
 
 func TestLocalMode_EnumeratesCheckpoints(t *testing.T) {
 	dir := t.TempDir()
+	stubGeneratedLocalDispatch(t)
 	testutil.InitRepo(t, dir)
 	testutil.WriteFile(t, dir, "a.txt", "x")
 	testutil.GitAdd(t, dir, "a.txt")
@@ -36,43 +34,18 @@ func TestLocalMode_EnumeratesCheckpoints(t *testing.T) {
 		outcome:      "local fallback summary",
 	})
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/users/me/checkpoints/analyses/batch" {
-			http.NotFound(w, r)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(map[string]any{
-			"analyses": map[string]AnalysisStatus{
-				"a1b2c3d4e5f6": {
-					Status:  "complete",
-					Summary: "remote summary",
-					Labels:  []string{"CI & Tooling"},
-				},
-			},
-		}); err != nil {
-			t.Fatal(err)
-		}
-	}))
-	defer srv.Close()
-
-	oldLookup := lookupCurrentToken
 	oldNow := nowUTC
-	lookupCurrentToken = func() (string, error) { return "test-token", nil }
 	nowUTC = func() time.Time { return createdAt.Add(2 * time.Hour) }
 	t.Cleanup(func() {
-		lookupCurrentToken = oldLookup
 		nowUTC = oldNow
 	})
 
-	t.Setenv("ENTIRE_API_BASE_URL", srv.URL)
 	t.Chdir(dir)
 
 	got, err := Run(context.Background(), Options{
 		Mode:     ModeLocal,
 		Since:    "7d",
 		Branches: []string{"main"},
-		Format:   "json",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -89,7 +62,7 @@ func TestLocalMode_EnumeratesCheckpoints(t *testing.T) {
 	if got.Repos[0].FullName != "entireio/cli" {
 		t.Fatalf("unexpected repo group: %+v", got.Repos[0])
 	}
-	if got.Repos[0].Sections[0].Bullets[0].Text != "remote summary" {
+	if got.Repos[0].Sections[0].Bullets[0].Text != "local fallback summary" {
 		t.Fatalf("unexpected bullet: %+v", got.Repos[0].Sections[0].Bullets[0])
 	}
 	if len(got.CoveredRepos) != 1 || got.CoveredRepos[0] != "entireio/cli" {
@@ -99,6 +72,7 @@ func TestLocalMode_EnumeratesCheckpoints(t *testing.T) {
 
 func TestLocalMode_UsesUntilWindow(t *testing.T) {
 	dir := t.TempDir()
+	stubGeneratedLocalDispatch(t)
 	testutil.InitRepo(t, dir)
 	testutil.WriteFile(t, dir, "a.txt", "x")
 	testutil.GitAdd(t, dir, "a.txt")
@@ -114,21 +88,12 @@ func TestLocalMode_UsesUntilWindow(t *testing.T) {
 		outcome:      "local fallback summary",
 	})
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Fatalf("unexpected request to %s", r.URL.Path)
-	}))
-	defer srv.Close()
-
-	oldLookup := lookupCurrentToken
 	oldNow := nowUTC
-	lookupCurrentToken = func() (string, error) { return "test-token", nil }
 	nowUTC = func() time.Time { return now }
 	t.Cleanup(func() {
-		lookupCurrentToken = oldLookup
 		nowUTC = oldNow
 	})
 
-	t.Setenv("ENTIRE_API_BASE_URL", srv.URL)
 	t.Chdir(dir)
 
 	got, err := Run(context.Background(), Options{
@@ -148,77 +113,22 @@ func TestLocalMode_UsesUntilWindow(t *testing.T) {
 	}
 }
 
-func TestLocalMode_OrgEnumeratesFromCloud(t *testing.T) {
-	dir := t.TempDir()
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/api/v1/orgs/entireio/checkpoints":
-			w.Header().Set("Content-Type", "application/json")
-			if err := json.NewEncoder(w).Encode(map[string]any{
-				"checkpoints": []map[string]any{{
-					"id":             "a1b2c3d4e5f6",
-					"repo_full_name": "entireio/cli",
-					"branch":         "main",
-					"created_at":     "2026-04-16T12:00:00Z",
-				}},
-			}); err != nil {
-				t.Fatal(err)
-			}
-		case "/api/v1/users/me/checkpoints/analyses/batch":
-			w.Header().Set("Content-Type", "application/json")
-			if err := json.NewEncoder(w).Encode(map[string]any{
-				"analyses": map[string]AnalysisStatus{
-					"a1b2c3d4e5f6": {
-						Status:  "complete",
-						Summary: "org summary",
-						Labels:  []string{"Dispatch"},
-					},
-				},
-			}); err != nil {
-				t.Fatal(err)
-			}
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer srv.Close()
-
-	oldLookup := lookupCurrentToken
-	oldNow := nowUTC
-	lookupCurrentToken = func() (string, error) { return "test-token", nil }
-	nowUTC = func() time.Time { return time.Date(2026, 4, 16, 14, 0, 0, 0, time.UTC) }
-	t.Cleanup(func() {
-		lookupCurrentToken = oldLookup
-		nowUTC = oldNow
+func TestLocalMode_RejectsOrgScope(t *testing.T) {
+	_, err := Run(context.Background(), Options{
+		Mode: ModeLocal,
+		Org:  "entireio",
 	})
-
-	t.Setenv("ENTIRE_API_BASE_URL", srv.URL)
-	t.Chdir(dir)
-
-	got, err := Run(context.Background(), Options{
-		Mode:        ModeLocal,
-		Org:         "entireio",
-		Since:       "7d",
-		Branches:    []string{"main"},
-		AllBranches: false,
-	})
-	if err != nil {
-		t.Fatal(err)
+	if err == nil {
+		t.Fatal("expected error")
 	}
-	if got.Totals.Checkpoints != 1 {
-		t.Fatalf("expected 1 candidate, got %d", got.Totals.Checkpoints)
-	}
-	if len(got.Repos) != 1 || got.Repos[0].FullName != "entireio/cli" {
-		t.Fatalf("unexpected repo groups: %+v", got.Repos)
-	}
-	if got.Repos[0].Sections[0].Bullets[0].Text != "org summary" {
-		t.Fatalf("unexpected bullet: %+v", got.Repos[0].Sections[0].Bullets[0])
+	if err.Error() != "--org cannot be used with --local" {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
-func TestLocalMode_SkipsPendingAnalysesWithoutWaiting(t *testing.T) {
+func TestLocalMode_FallsBackToCommitSubjectWhenSummaryMissing(t *testing.T) {
 	dir := t.TempDir()
+	stubGeneratedLocalDispatch(t)
 	testutil.InitRepo(t, dir)
 	testutil.WriteFile(t, dir, "a.txt", "x")
 	testutil.GitAdd(t, dir, "a.txt")
@@ -226,40 +136,24 @@ func TestLocalMode_SkipsPendingAnalysesWithoutWaiting(t *testing.T) {
 	addOriginRemote(t, dir, "https://github.com/entireio/cli.git")
 
 	now := time.Now().UTC()
+	cpID := "a1b2c3d4e5f6"
+	testutil.WriteFile(t, dir, "plans.md", "ship it")
+	testutil.GitAdd(t, dir, "plans.md")
+	commitWithMessage(t, dir, trailers.FormatCheckpoint("ship the thing", mustCheckpointID(t, cpID)))
 	seedCommittedCheckpoint(t, dir, seededCheckpoint{
-		id:           "a1b2c3d4e5f6",
+		id:           cpID,
 		branch:       "main",
 		createdAt:    now,
-		filesTouched: []string{"a.txt"},
-		outcome:      "local fallback summary",
+		filesTouched: []string{"plans.md"},
+		outcome:      "",
 	})
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/users/me/checkpoints/analyses/batch" {
-			http.NotFound(w, r)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(map[string]any{
-			"analyses": map[string]AnalysisStatus{
-				"a1b2c3d4e5f6": {Status: "pending"},
-			},
-		}); err != nil {
-			t.Fatal(err)
-		}
-	}))
-	defer srv.Close()
-
-	oldLookup := lookupCurrentToken
 	oldNow := nowUTC
-	lookupCurrentToken = func() (string, error) { return "test-token", nil }
 	nowUTC = func() time.Time { return now }
 	t.Cleanup(func() {
-		lookupCurrentToken = oldLookup
 		nowUTC = oldNow
 	})
 
-	t.Setenv("ENTIRE_API_BASE_URL", srv.URL)
 	t.Chdir(dir)
 
 	got, err := Run(context.Background(), Options{
@@ -270,11 +164,11 @@ func TestLocalMode_SkipsPendingAnalysesWithoutWaiting(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got.Repos) != 0 {
-		t.Fatalf("expected no repos when pending analyses are skipped, got %+v", got.Repos)
+	if len(got.Repos) != 1 {
+		t.Fatalf("expected one repo group, got %+v", got.Repos)
 	}
-	if got.Warnings.PendingCount != 1 {
-		t.Fatalf("expected pending warning count, got %+v", got.Warnings)
+	if got.Repos[0].Sections[0].Bullets[0].Text != "ship the thing" {
+		t.Fatalf("unexpected bullet: %+v", got.Repos[0].Sections[0].Bullets[0])
 	}
 }
 
@@ -295,54 +189,27 @@ func TestLocalMode_GenerateProducesInlineText(t *testing.T) {
 		outcome:      "local fallback summary",
 	})
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/users/me/checkpoints/analyses/batch" {
-			http.NotFound(w, r)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(map[string]any{
-			"analyses": map[string]AnalysisStatus{
-				"a1b2c3d4e5f6": {
-					Status:  "complete",
-					Summary: "remote summary",
-				},
-			},
-		}); err != nil {
-			t.Fatal(err)
-		}
-	}))
-	defer srv.Close()
-
-	oldLookup := lookupCurrentToken
 	oldNow := nowUTC
 	oldFactory := dispatchTextGeneratorFactory
-	lookupCurrentToken = func() (string, error) { return "test-token", nil }
 	nowUTC = func() time.Time { return createdAt.Add(2 * time.Hour) }
 	mock := &stubTextGenerator{text: "generated inline dispatch"}
 	dispatchTextGeneratorFactory = func() (dispatchTextGenerator, error) {
 		return mock, nil
 	}
 	t.Cleanup(func() {
-		lookupCurrentToken = oldLookup
 		nowUTC = oldNow
 		dispatchTextGeneratorFactory = oldFactory
 	})
 
-	t.Setenv("ENTIRE_API_BASE_URL", srv.URL)
 	t.Chdir(dir)
 
 	got, err := Run(context.Background(), Options{
 		Mode:     ModeLocal,
 		Since:    "7d",
 		Branches: []string{"main"},
-		Generate: true,
 	})
 	if err != nil {
 		t.Fatal(err)
-	}
-	if !got.RequestedGenerate {
-		t.Fatal("expected requested generate flag")
 	}
 	if !got.Generated {
 		t.Fatal("expected generated=true")
@@ -352,8 +219,52 @@ func TestLocalMode_GenerateProducesInlineText(t *testing.T) {
 	}
 }
 
+func TestLocalMode_FailsWhenGeneratedMarkdownIsEmpty(t *testing.T) {
+	dir := t.TempDir()
+	testutil.InitRepo(t, dir)
+	testutil.WriteFile(t, dir, "a.txt", "x")
+	testutil.GitAdd(t, dir, "a.txt")
+	testutil.GitCommit(t, dir, "initial")
+	addOriginRemote(t, dir, "https://github.com/entireio/cli.git")
+
+	createdAt := time.Date(2026, 4, 16, 12, 0, 0, 0, time.UTC)
+	seedCommittedCheckpoint(t, dir, seededCheckpoint{
+		id:           "a1b2c3d4e5f6",
+		branch:       "main",
+		createdAt:    createdAt,
+		filesTouched: []string{"a.txt"},
+		outcome:      "local fallback summary",
+	})
+
+	oldNow := nowUTC
+	oldFactory := dispatchTextGeneratorFactory
+	nowUTC = func() time.Time { return createdAt.Add(2 * time.Hour) }
+	dispatchTextGeneratorFactory = func() (dispatchTextGenerator, error) {
+		return &stubTextGenerator{text: "  \n\t "}, nil
+	}
+	t.Cleanup(func() {
+		nowUTC = oldNow
+		dispatchTextGeneratorFactory = oldFactory
+	})
+
+	t.Chdir(dir)
+
+	_, err := Run(context.Background(), Options{
+		Mode:     ModeLocal,
+		Since:    "7d",
+		Branches: []string{"main"},
+	})
+	if err == nil {
+		t.Fatal("expected error when local generation returns empty markdown")
+	}
+	if err.Error() != "dispatch generation returned no markdown" {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestLocalMode_ImplicitCurrentBranchUsesHEADReachability(t *testing.T) {
 	dir := t.TempDir()
+	stubGeneratedLocalDispatch(t)
 	testutil.InitRepo(t, dir)
 	testutil.WriteFile(t, dir, "a.txt", "x")
 	testutil.GitAdd(t, dir, "a.txt")
@@ -397,36 +308,12 @@ func TestLocalMode_ImplicitCurrentBranchUsesHEADReachability(t *testing.T) {
 
 	testutil.GitCheckoutNewBranch(t, dir, "entire-dispatch-codex")
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/users/me/checkpoints/analyses/batch" {
-			http.NotFound(w, r)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(map[string]any{
-			"analyses": map[string]AnalysisStatus{
-				cpID: {
-					Status:  "complete",
-					Summary: "remote summary",
-					Labels:  []string{"Dispatch"},
-				},
-			},
-		}); err != nil {
-			t.Fatal(err)
-		}
-	}))
-	defer srv.Close()
-
-	oldLookup := lookupCurrentToken
 	oldNow := nowUTC
-	lookupCurrentToken = func() (string, error) { return "test-token", nil }
 	nowUTC = func() time.Time { return time.Now().UTC() }
 	t.Cleanup(func() {
-		lookupCurrentToken = oldLookup
 		nowUTC = oldNow
 	})
 
-	t.Setenv("ENTIRE_API_BASE_URL", srv.URL)
 	t.Chdir(dir)
 
 	got, err := Run(context.Background(), Options{
@@ -441,13 +328,14 @@ func TestLocalMode_ImplicitCurrentBranchUsesHEADReachability(t *testing.T) {
 	if got.Totals.Checkpoints != 1 {
 		t.Fatalf("expected 1 candidate, got %d", got.Totals.Checkpoints)
 	}
-	if len(got.Repos) != 1 || got.Repos[0].Sections[0].Bullets[0].Text != "remote summary" {
+	if len(got.Repos) != 1 || got.Repos[0].Sections[0].Bullets[0].Text != "local fallback summary" {
 		t.Fatalf("unexpected dispatch payload: %+v", got)
 	}
 }
 
 func TestLocalMode_ExplicitBranchesRemainExact(t *testing.T) {
 	dir := t.TempDir()
+	stubGeneratedLocalDispatch(t)
 	testutil.InitRepo(t, dir)
 	testutil.WriteFile(t, dir, "a.txt", "x")
 	testutil.GitAdd(t, dir, "a.txt")
@@ -490,21 +378,12 @@ func TestLocalMode_ExplicitBranchesRemainExact(t *testing.T) {
 
 	testutil.GitCheckoutNewBranch(t, dir, "entire-dispatch-codex")
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Fatalf("unexpected request to %s", r.URL.Path)
-	}))
-	defer srv.Close()
-
-	oldLookup := lookupCurrentToken
 	oldNow := nowUTC
-	lookupCurrentToken = func() (string, error) { return "test-token", nil }
 	nowUTC = func() time.Time { return time.Now().UTC() }
 	t.Cleanup(func() {
-		lookupCurrentToken = oldLookup
 		nowUTC = oldNow
 	})
 
-	t.Setenv("ENTIRE_API_BASE_URL", srv.URL)
 	t.Chdir(dir)
 
 	got, err := Run(context.Background(), Options{
@@ -517,6 +396,51 @@ func TestLocalMode_ExplicitBranchesRemainExact(t *testing.T) {
 	}
 	if got.Totals.Checkpoints != 0 {
 		t.Fatalf("expected 0 candidates with explicit branch filter, got %d", got.Totals.Checkpoints)
+	}
+}
+
+func TestLocalMode_ImplicitCurrentBranchUsesCheckpointBranchWithoutTrailerReachability(t *testing.T) {
+	dir := t.TempDir()
+	stubGeneratedLocalDispatch(t)
+	testutil.InitRepo(t, dir)
+	testutil.WriteFile(t, dir, "a.txt", "x")
+	testutil.GitAdd(t, dir, "a.txt")
+	testutil.GitCommit(t, dir, "initial")
+	addOriginRemote(t, dir, "https://github.com/entireio/cli.git")
+
+	testutil.GitCheckoutNewBranch(t, dir, "entire-dispatch-codex")
+
+	createdAt := time.Now().UTC()
+	seedCommittedCheckpoint(t, dir, seededCheckpoint{
+		id:           "a1b2c3d4e5f6",
+		branch:       "entire-dispatch-codex",
+		createdAt:    createdAt,
+		filesTouched: []string{"a.txt"},
+		outcome:      "local fallback summary",
+	})
+
+	oldNow := nowUTC
+	nowUTC = func() time.Time { return createdAt.Add(2 * time.Hour) }
+	t.Cleanup(func() {
+		nowUTC = oldNow
+	})
+
+	t.Chdir(dir)
+
+	got, err := Run(context.Background(), Options{
+		Mode:                  ModeLocal,
+		Since:                 "7d",
+		Branches:              []string{"entire-dispatch-codex"},
+		ImplicitCurrentBranch: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Totals.Checkpoints != 1 {
+		t.Fatalf("expected 1 candidate, got %d", got.Totals.Checkpoints)
+	}
+	if len(got.Repos) != 1 || got.Repos[0].Sections[0].Bullets[0].Text != "local fallback summary" {
+		t.Fatalf("unexpected dispatch payload: %+v", got)
 	}
 }
 
@@ -561,6 +485,18 @@ type seededCheckpoint struct {
 	createdAt    time.Time
 	filesTouched []string
 	outcome      string
+}
+
+func stubGeneratedLocalDispatch(t *testing.T) {
+	t.Helper()
+
+	oldFactory := dispatchTextGeneratorFactory
+	dispatchTextGeneratorFactory = func() (dispatchTextGenerator, error) {
+		return &stubTextGenerator{text: "generated dispatch"}, nil
+	}
+	t.Cleanup(func() {
+		dispatchTextGeneratorFactory = oldFactory
+	})
 }
 
 func seedCommittedCheckpoint(t *testing.T, repoDir string, cp seededCheckpoint) {

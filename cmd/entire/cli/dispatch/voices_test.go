@@ -1,10 +1,6 @@
 package dispatch
 
-import (
-	"os"
-	"path/filepath"
-	"testing"
-)
+import "testing"
 
 func TestResolveVoice_PresetMatch(t *testing.T) {
 	t.Parallel()
@@ -33,25 +29,6 @@ func TestResolveVoice_CaseInsensitive(t *testing.T) {
 	}
 }
 
-func TestResolveVoice_FilePathFallback(t *testing.T) {
-	t.Parallel()
-
-	dir := t.TempDir()
-	path := filepath.Join(dir, "my-voice.md")
-	want := "my custom voice directive"
-	if err := os.WriteFile(path, []byte(want), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	got := ResolveVoice(path)
-	if got.IsPreset {
-		t.Fatalf("expected non-preset for file path, got %+v", got)
-	}
-	if got.Text != want {
-		t.Fatalf("expected file content %q, got %q", want, got.Text)
-	}
-}
-
 func TestResolveVoice_LiteralStringFallback(t *testing.T) {
 	t.Parallel()
 
@@ -61,6 +38,18 @@ func TestResolveVoice_LiteralStringFallback(t *testing.T) {
 	}
 	if got.Text != "sardonic AI named Gary" {
 		t.Fatalf("expected passthrough, got %q", got.Text)
+	}
+}
+
+func TestResolveVoice_FilePathIsTreatedAsLiteral(t *testing.T) {
+	t.Parallel()
+
+	got := ResolveVoice("/tmp/my-voice.md")
+	if got.IsPreset {
+		t.Fatalf("expected literal, not preset: %+v", got)
+	}
+	if got.Text != "/tmp/my-voice.md" {
+		t.Fatalf("expected literal passthrough, got %q", got.Text)
 	}
 }
 

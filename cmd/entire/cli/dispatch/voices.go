@@ -2,7 +2,6 @@ package dispatch
 
 import (
 	_ "embed"
-	"os"
 	"strings"
 )
 
@@ -24,7 +23,7 @@ var presets = map[string]string{
 	"marvin":  voiceMarvin,
 }
 
-// ResolveVoice applies the resolution chain preset -> file -> literal.
+// ResolveVoice applies the resolution chain preset -> literal.
 func ResolveVoice(value string) Voice {
 	if value == "" {
 		return Voice{Name: "neutral", Text: voiceNeutral, IsPreset: true}
@@ -33,12 +32,6 @@ func ResolveVoice(value string) Voice {
 	name := strings.ToLower(strings.TrimSpace(value))
 	if text, ok := presets[name]; ok {
 		return Voice{Name: name, Text: text, IsPreset: true}
-	}
-
-	if info, err := os.Stat(value); err == nil && !info.IsDir() {
-		if body, err := os.ReadFile(value); err == nil {
-			return Voice{Text: string(body)}
-		}
 	}
 
 	return Voice{Text: value}

@@ -21,7 +21,6 @@ type Options struct {
 	ImplicitCurrentBranch bool
 	Generate              bool
 	Voice                 string
-	Format                string
 }
 
 // Run is the entry point after flags are parsed.
