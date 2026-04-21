@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"strings"
@@ -16,6 +17,7 @@ import (
 	"github.com/entireio/cli/cmd/entire/cli/agent/types"
 	cpkg "github.com/entireio/cli/cmd/entire/cli/checkpoint"
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint/id"
+	"github.com/entireio/cli/cmd/entire/cli/checkpoint/remote"
 	"github.com/entireio/cli/cmd/entire/cli/interactive"
 	"github.com/entireio/cli/cmd/entire/cli/logging"
 	"github.com/entireio/cli/cmd/entire/cli/session"
@@ -175,17 +177,18 @@ func runAttach(ctx context.Context, w io.Writer, sessionID string, agentName typ
 		writeOpts.CompactTranscript = compacted
 	}
 
-	v2Only := settings.IsCheckpointsV2OnlyEnabled(logCtx)
-	if !v2Only {
+	v2 := settings.CheckpointsVersion(logCtx) == 2
+	if !v2 {
 		if err := store.WriteCommitted(ctx, writeOpts); err != nil {
 			return fmt.Errorf("failed to write checkpoint: %w", err)
 		}
 	}
-	// IsCheckpointsV2Enabled is true whenever v2Only is true, so this covers both
-	// the v2-only and dual-write paths. Only v2-only propagates the error.
+	// IsCheckpointsV2Enabled is true whenever v2 writes are enabled, including
+	// both v2-only mode (checkpoints_version == 2) and dual-write mode. Only
+	// v2-only mode propagates the error.
 	if settings.IsCheckpointsV2Enabled(logCtx) {
 		if err := writeAttachCheckpointV2(logCtx, repo, writeOpts); err != nil {
-			if v2Only {
+			if v2 {
 				return fmt.Errorf("failed to write checkpoint to v2: %w", err)
 			}
 			logging.Warn(logCtx, "attach v2 dual-write failed", "error", err)
@@ -215,7 +218,13 @@ func runAttach(ctx context.Context, w io.Writer, sessionID string, agentName typ
 
 // writeAttachCheckpointV2 writes attach-created checkpoints into the v2 refs.
 func writeAttachCheckpointV2(ctx context.Context, repo *git.Repository, opts cpkg.WriteCommittedOptions) error {
-	v2Store := cpkg.NewV2GitStore(repo, strategy.ResolveCheckpointURL(ctx, "origin"))
+	v2URL, err := remote.FetchURL(ctx)
+	if err != nil {
+		logging.Debug(ctx, "attach: using origin for v2 store fetch remote",
+			slog.String("error", err.Error()),
+		)
+	}
+	v2Store := cpkg.NewV2GitStore(repo, v2URL)
 	if err := v2Store.WriteCommitted(ctx, opts); err != nil {
 		return fmt.Errorf("v2 write committed: %w", err)
 	}

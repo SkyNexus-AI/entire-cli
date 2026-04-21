@@ -693,14 +693,14 @@ func TestIsCheckpointsV2Enabled_True(t *testing.T) {
 	}
 }
 
-func TestIsCheckpointsV2Enabled_V2Only(t *testing.T) {
+func TestIsCheckpointsV2Enabled_CheckpointsVersion2(t *testing.T) {
 	t.Parallel()
 	s := &EntireSettings{
 		Enabled:         true,
-		StrategyOptions: map[string]any{"checkpoints_v2_only": true},
+		StrategyOptions: map[string]any{"checkpoints_version": 2},
 	}
 	if !s.IsCheckpointsV2Enabled() {
-		t.Error("expected IsCheckpointsV2Enabled to be true when checkpoints_v2_only is enabled")
+		t.Error("expected IsCheckpointsV2Enabled to be true when checkpoints_version is 2")
 	}
 }
 
@@ -789,33 +789,34 @@ func TestIsCheckpointsV2Enabled_LocalOverride(t *testing.T) {
 	}
 }
 
-func TestIsCheckpointsV2OnlyEnabled_DefaultsFalse(t *testing.T) {
+func TestCheckpointsVersion(t *testing.T) {
 	t.Parallel()
-	s := &EntireSettings{Enabled: true}
-	if s.IsCheckpointsV2OnlyEnabled() {
-		t.Error("expected IsCheckpointsV2OnlyEnabled to default to false")
-	}
-}
 
-func TestIsCheckpointsV2OnlyEnabled_True(t *testing.T) {
-	t.Parallel()
-	s := &EntireSettings{
-		Enabled:         true,
-		StrategyOptions: map[string]any{"checkpoints_v2_only": true},
+	tests := []struct {
+		name string
+		opts map[string]any
+		want int
+	}{
+		{"unset defaults to one", nil, 1},
+		{"empty options defaults to one", map[string]any{}, 1},
+		{"integer 2", map[string]any{"checkpoints_version": 2}, 2},
+		{"float 2 from json", map[string]any{"checkpoints_version": float64(2)}, 2},
+		{"integer 3 falls back to default", map[string]any{"checkpoints_version": 3}, 1},
+		{"zero falls back to default", map[string]any{"checkpoints_version": 0}, 1},
+		{"negative falls back to default", map[string]any{"checkpoints_version": -1}, 1},
+		{"non-integer float falls back to default", map[string]any{"checkpoints_version": 2.5}, 1},
+		{"string 2", map[string]any{"checkpoints_version": "2"}, 2},
+		{"bool falls back to default", map[string]any{"checkpoints_version": true}, 1},
 	}
-	if !s.IsCheckpointsV2OnlyEnabled() {
-		t.Error("expected IsCheckpointsV2OnlyEnabled to be true")
-	}
-}
 
-func TestIsCheckpointsV2OnlyEnabled_WrongType(t *testing.T) {
-	t.Parallel()
-	s := &EntireSettings{
-		Enabled:         true,
-		StrategyOptions: map[string]any{"checkpoints_v2_only": "yes"},
-	}
-	if s.IsCheckpointsV2OnlyEnabled() {
-		t.Error("expected IsCheckpointsV2OnlyEnabled to be false for non-bool value")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			s := &EntireSettings{StrategyOptions: tt.opts}
+			if got := s.CheckpointsVersion(); got != tt.want {
+				t.Errorf("CheckpointsVersion() = %d, want %d", got, tt.want)
+			}
+		})
 	}
 }
 
@@ -835,7 +836,7 @@ func TestIsPushV2RefsEnabled_RequiresBothFlags(t *testing.T) {
 		opts     map[string]any
 		expected bool
 	}{
-		{"v2 only supersedes both", map[string]any{"checkpoints_v2": false, "push_v2_refs": false, "checkpoints_v2_only": true}, true},
+		{"checkpoints_version 2 supersedes both", map[string]any{"checkpoints_v2": false, "push_v2_refs": false, "checkpoints_version": 2}, true},
 		{"both true", map[string]any{"checkpoints_v2": true, "push_v2_refs": true}, true},
 		{"only checkpoints_v2", map[string]any{"checkpoints_v2": true}, false},
 		{"only push_v2_refs", map[string]any{"push_v2_refs": true}, false},

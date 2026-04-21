@@ -21,6 +21,7 @@ import (
 	"github.com/entireio/cli/cmd/entire/cli/agent/types"
 	cpkg "github.com/entireio/cli/cmd/entire/cli/checkpoint"
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint/id"
+	"github.com/entireio/cli/cmd/entire/cli/checkpoint/remote"
 	"github.com/entireio/cli/cmd/entire/cli/logging"
 	"github.com/entireio/cli/cmd/entire/cli/paths"
 	"github.com/entireio/cli/cmd/entire/cli/session"
@@ -255,12 +256,12 @@ func (s *ManualCommitStrategy) CondenseSession(ctx context.Context, repo *git.Re
 
 	compactTranscriptDuration := buildCompactTranscript(ctx, ag, redactedTranscript, state, &writeOpts)
 
-	v2Only := settings.IsCheckpointsV2OnlyEnabled(ctx)
+	v2 := settings.CheckpointsVersion(ctx) == 2
 
 	// Write checkpoint metadata to the primary store.
 	writeV1Start := time.Now()
 	writeCtx, writeCommittedSpan := perf.Start(ctx, "write_committed_v1")
-	if !v2Only {
+	if !v2 {
 		if err := store.WriteCommitted(writeCtx, writeOpts); err != nil {
 			writeCommittedSpan.RecordError(err)
 			writeCommittedSpan.End()
@@ -272,7 +273,7 @@ func (s *ManualCommitStrategy) CondenseSession(ctx context.Context, repo *git.Re
 
 	writeV2Start := time.Now()
 	writeV2Ctx, writeCommittedV2Span := perf.Start(ctx, "write_committed_v2")
-	if v2Only {
+	if v2 {
 		if err := writeCommittedV2(writeV2Ctx, repo, writeOpts); err != nil {
 			writeCommittedV2Span.RecordError(err)
 			writeCommittedV2Span.End()
@@ -1416,7 +1417,14 @@ func computeCompactTranscriptStart(ctx context.Context, ag agent.Agent, state *S
 // writeCommittedV2 writes checkpoint data to v2 refs unconditionally.
 // Callers decide whether to propagate or swallow the error (v2-only vs dual-write).
 func writeCommittedV2(ctx context.Context, repo *git.Repository, opts cpkg.WriteCommittedOptions) error {
-	v2Store := cpkg.NewV2GitStore(repo, ResolveCheckpointURL(ctx, "origin"))
+	v2URL, err := remote.FetchURL(ctx)
+	if err != nil {
+		logging.Debug(ctx, "manual-commit condensation: using origin for v2 write fetch remote",
+			slog.String("error", err.Error()),
+		)
+		v2URL = originRemote
+	}
+	v2Store := cpkg.NewV2GitStore(repo, v2URL)
 	if err := v2Store.WriteCommitted(ctx, opts); err != nil {
 		return fmt.Errorf("v2 write committed: %w", err)
 	}
@@ -1481,7 +1489,14 @@ func writeTaskMetadataV2IfEnabled(
 		return
 	}
 
-	v2Store := cpkg.NewV2GitStore(repo, ResolveCheckpointURL(ctx, "origin"))
+	v2URL, err := remote.FetchURL(ctx)
+	if err != nil {
+		logging.Debug(ctx, "manual-commit condensation: using origin for v2 task metadata fetch remote",
+			slog.String("error", err.Error()),
+		)
+		v2URL = originRemote
+	}
+	v2Store := cpkg.NewV2GitStore(repo, v2URL)
 	sessionIndex, err := resolveV2SessionIndexForCheckpoint(repo, checkpointID, sessionID)
 	if err != nil {
 		logging.Warn(ctx, "v2 dual-write task metadata copy skipped: failed to resolve session index",
