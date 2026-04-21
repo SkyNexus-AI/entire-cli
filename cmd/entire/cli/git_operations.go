@@ -361,8 +361,11 @@ func FetchAndCheckoutRemoteBranch(ctx context.Context, branchName string) error 
 
 	refSpec := fmt.Sprintf("+refs/heads/%s:refs/remotes/origin/%s", branchName, branchName)
 
-	fetchCmd := strategy.CheckpointGitCommand(ctx, "fetch", "origin", refSpec)
-	if output, err := fetchCmd.CombinedOutput(); err != nil {
+	output, err := remote.Fetch(ctx, remote.FetchOptions{
+		Remote:   "origin",
+		RefSpecs: []string{refSpec},
+	})
+	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			return errors.New("fetch timed out after 2 minutes")
 		}
@@ -418,21 +421,20 @@ func fetchMetadataFromOrigin(ctx context.Context, shallow bool) error {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 
-	fetchTarget, err := strategy.ResolveFetchTarget(ctx, "origin")
+	fetchTarget, err := remote.ResolveFetchTarget(ctx, "origin")
 	if err != nil {
 		return fmt.Errorf("failed to resolve fetch target: %w", err)
 	}
 
 	refSpec := fmt.Sprintf("+refs/heads/%s:refs/remotes/origin/%s", branchName, branchName)
-	args := []string{"fetch", "--no-tags"}
-	if shallow {
-		args = append(args, "--depth=1")
-	}
-	args = append(args, fetchTarget, refSpec)
 
-	fetchArgs := strategy.AppendFetchFilterArgs(ctx, args)
-	fetchCmd := strategy.CheckpointGitCommand(ctx, fetchArgs...)
-	if output, fetchErr := fetchCmd.CombinedOutput(); fetchErr != nil {
+	output, fetchErr := remote.Fetch(ctx, remote.FetchOptions{
+		Remote:   fetchTarget,
+		RefSpecs: []string{refSpec},
+		NoTags:   true,
+		Shallow:  shallow,
+	})
+	if fetchErr != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			return errors.New("fetch timed out after 2 minutes")
 		}
@@ -477,21 +479,20 @@ func fetchV2MainFromOrigin(ctx context.Context, shallow bool) error {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 
-	fetchTarget, err := strategy.ResolveFetchTarget(ctx, "origin")
+	fetchTarget, err := remote.ResolveFetchTarget(ctx, "origin")
 	if err != nil {
 		return fmt.Errorf("failed to resolve fetch target: %w", err)
 	}
 
 	refSpec := fmt.Sprintf("+%s:%s", paths.V2MainRefName, strategy.V2MainFetchTmpRef)
-	args := []string{"fetch", "--no-tags"}
-	if shallow {
-		args = append(args, "--depth=1")
-	}
-	args = append(args, fetchTarget, refSpec)
 
-	fetchArgs := strategy.AppendFetchFilterArgs(ctx, args)
-	fetchCmd := strategy.CheckpointGitCommand(ctx, fetchArgs...)
-	if output, fetchErr := fetchCmd.CombinedOutput(); fetchErr != nil {
+	output, fetchErr := remote.Fetch(ctx, remote.FetchOptions{
+		Remote:   fetchTarget,
+		RefSpecs: []string{refSpec},
+		NoTags:   true,
+		Shallow:  shallow,
+	})
+	if fetchErr != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			return errors.New("v2 fetch timed out after 2 minutes")
 		}
@@ -573,13 +574,17 @@ func FetchBlobsByHash(ctx context.Context, hashes []plumbing.Hash) error {
 
 	fetchTarget := resolveCheckpointFetchTarget(ctx)
 
-	args := []string{"fetch", "--no-tags", "--no-write-fetch-head", fetchTarget}
-	for _, h := range hashes {
-		args = append(args, h.String())
+	hashStrs := make([]string, len(hashes))
+	for i, h := range hashes {
+		hashStrs[i] = h.String()
 	}
 
-	fetchCmd := strategy.CheckpointGitCommand(ctx, args...)
-	if _, fetchErr := fetchCmd.CombinedOutput(); fetchErr != nil {
+	if _, fetchErr := remote.Fetch(ctx, remote.FetchOptions{
+		Remote:    fetchTarget,
+		RefSpecs:  hashStrs,
+		NoTags:    true,
+		ExtraArgs: []string{"--no-write-fetch-head"},
+	}); fetchErr != nil {
 		logging.Debug(ctx, "fetch-by-hash failed, falling back to full metadata fetch",
 			slog.Int("blob_count", len(hashes)),
 			slog.String("fetch_target", fetchTarget),

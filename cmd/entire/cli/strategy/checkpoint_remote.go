@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"os"
 	"strings"
 	"time"
 
@@ -144,14 +143,11 @@ func fetchURLIntoTmpRef(ctx context.Context, remoteURL, srcRef, tmpRef, label st
 	defer cancel()
 
 	refSpec := fmt.Sprintf("+%s:%s", srcRef, tmpRef)
-	fetchArgs := AppendFetchFilterArgs(fetchCtx, []string{"fetch", "--no-tags", remoteURL, refSpec})
-	fetchCmd := CheckpointGitCommand(fetchCtx, fetchArgs...)
-	if fetchCmd.Env == nil {
-		fetchCmd.Env = os.Environ()
-	}
-	fetchCmd.Env = append(fetchCmd.Env, "GIT_TERMINAL_PROMPT=0")
-
-	output, fetchErr := fetchCmd.CombinedOutput()
+	output, fetchErr := remote.Fetch(fetchCtx, remote.FetchOptions{
+		Remote:   remoteURL,
+		RefSpecs: []string{refSpec},
+		NoTags:   true,
+	})
 	if fetchErr == nil {
 		return nil
 	}

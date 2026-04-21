@@ -1,4 +1,4 @@
-package strategy
+package remote
 
 import (
 	"context"
@@ -9,7 +9,6 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/entireio/cli/cmd/entire/cli/checkpoint/remote"
 	"github.com/entireio/cli/cmd/entire/cli/settings"
 )
 
@@ -21,9 +20,114 @@ import (
 // SSH remotes ignore the token (with a warning).
 const CheckpointTokenEnvVar = "ENTIRE_CHECKPOINT_TOKEN"
 
-var sshTokenWarningOnce sync.Once
+var sshTokenWarningOnce sync.Once //nolint:gochecknoglobals // intentional per-process gate
 
-// CheckpointGitCommand creates an exec.Cmd for a git operation that may need
+// FetchOptions configures a git fetch operation.
+type FetchOptions struct {
+	Remote    string   // remote name or URL (required)
+	RefSpecs  []string // one or more refspecs / object hashes
+	Shallow   bool     // adds --depth=1
+	NoTags    bool     // adds --no-tags
+	Dir       string   // working directory (empty = CWD)
+	ExtraArgs []string // additional flags before remote (e.g., "--no-write-fetch-head")
+}
+
+// Fetch runs git fetch with checkpoint token injection and optional
+// filtered fetches (--filter=blob:none when settings enable it).
+// GIT_TERMINAL_PROMPT=0 is always set.
+//
+// Callers that pass a remote name (e.g., "origin") and want filtered fetches to
+// resolve the name to a URL (to avoid persisting promisor settings) should call
+// ResolveFetchTarget first and pass the resolved target as opts.Remote.
+func Fetch(ctx context.Context, opts FetchOptions) ([]byte, error) {
+	args := []string{"fetch"}
+	if opts.NoTags {
+		args = append(args, "--no-tags")
+	}
+	if opts.Shallow {
+		args = append(args, "--depth=1")
+	}
+	args = append(args, opts.ExtraArgs...)
+	if settings.IsFilteredFetchesEnabled(ctx) {
+		args = append(args, "--filter=blob:none")
+	}
+	args = append(args, opts.Remote)
+	args = append(args, opts.RefSpecs...)
+
+	cmd := newCommand(ctx, args...)
+	if opts.Dir != "" {
+		cmd.Dir = opts.Dir
+	}
+	ensureEnv(cmd, "GIT_TERMINAL_PROMPT=0")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return out, fmt.Errorf("git fetch: %w", err)
+	}
+	return out, nil
+}
+
+// PushResult holds raw porcelain output from git push.
+type PushResult struct {
+	Output string
+}
+
+// Push runs git push --no-verify --porcelain with token injection.
+// GIT_TERMINAL_PROMPT=0 is always set.
+func Push(ctx context.Context, remote, refSpec string) (PushResult, error) {
+	cmd := newCommand(ctx, "push", "--no-verify", "--porcelain", remote, refSpec)
+	ensureEnv(cmd, "GIT_TERMINAL_PROMPT=0")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return PushResult{Output: string(output)}, fmt.Errorf("git push: %w", err)
+	}
+	return PushResult{Output: string(output)}, nil
+}
+
+// LsRemote runs git ls-remote with token injection.
+// GIT_TERMINAL_PROMPT=0 is always set. Returns stdout only.
+func LsRemote(ctx context.Context, remote string, patterns ...string) ([]byte, error) {
+	return lsRemote(ctx, "", remote, patterns...)
+}
+
+// LsRemoteInDir is like LsRemote but runs in a specific directory.
+func LsRemoteInDir(ctx context.Context, dir, remote string, patterns ...string) ([]byte, error) {
+	return lsRemote(ctx, dir, remote, patterns...)
+}
+
+func lsRemote(ctx context.Context, dir, remote string, patterns ...string) ([]byte, error) {
+	args := append([]string{"ls-remote", remote}, patterns...)
+	cmd := newCommand(ctx, args...)
+	if dir != "" {
+		cmd.Dir = dir
+	}
+	ensureEnv(cmd, "GIT_TERMINAL_PROMPT=0")
+	out, err := cmd.Output()
+	if err != nil {
+		return out, fmt.Errorf("git ls-remote: %w", err)
+	}
+	return out, nil
+}
+
+// IsURL returns true if the target looks like a URL rather than a git remote name.
+func IsURL(target string) bool {
+	return strings.Contains(target, "://") || strings.Contains(target, "@")
+}
+
+// ResolveFetchTarget returns the git fetch target to use. When filtered
+// fetches are enabled, configured remotes are resolved to their URL so git does
+// not persist promisor settings onto the remote name.
+func ResolveFetchTarget(ctx context.Context, target string) (string, error) {
+	if IsURL(target) || !settings.IsFilteredFetchesEnabled(ctx) {
+		return target, nil
+	}
+	url, err := GetRemoteURL(ctx, target)
+	if err != nil {
+		return "", fmt.Errorf("get remote URL: %w", err)
+	}
+	return url, nil
+}
+
+// newCommand creates an exec.Cmd for a git operation that may need
 // checkpoint token authentication. If ENTIRE_CHECKPOINT_TOKEN is set and the
 // remote in args resolves to an HTTPS URL, a Basic auth token is injected via
 // GIT_CONFIG_COUNT/GIT_CONFIG_KEY_*/GIT_CONFIG_VALUE_* environment variables.
@@ -34,7 +138,7 @@ var sshTokenWarningOnce sync.Once
 // The remote is extracted from args by skipping the git subcommand and any flags
 // (arguments starting with "-"). For example, in
 // ["push", "--no-verify", "origin", "main"], the remote is "origin".
-func CheckpointGitCommand(ctx context.Context, args ...string) *exec.Cmd {
+func newCommand(ctx context.Context, args ...string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Stdin = nil // Disconnect stdin to prevent hanging in hook context
 
@@ -56,12 +160,12 @@ func CheckpointGitCommand(ctx context.Context, args ...string) *exec.Cmd {
 	protocol := resolveTargetProtocol(ctx, target)
 
 	switch protocol {
-	case remote.ProtocolSSH:
+	case ProtocolSSH:
 		sshTokenWarningOnce.Do(func() {
 			fmt.Fprintf(os.Stderr, "[entire] Warning: %s is set but remote uses SSH — token ignored for SSH remotes\n", CheckpointTokenEnvVar)
 		})
 		return cmd
-	case remote.ProtocolHTTPS:
+	case ProtocolHTTPS:
 		cmd.Env = appendCheckpointTokenEnv(os.Environ(), token)
 		return cmd
 	default:
@@ -128,46 +232,32 @@ func isValidToken(token string) bool {
 }
 
 // resolveTargetProtocol determines whether a push/fetch target uses SSH or HTTPS.
-// Returns remote.ProtocolSSH, remote.ProtocolHTTPS, or "" if unknown.
+// Returns ProtocolSSH, ProtocolHTTPS, or "" if unknown.
 func resolveTargetProtocol(ctx context.Context, target string) string {
 	var rawURL string
-	if isURL(target) {
+	if IsURL(target) {
 		rawURL = target
 	} else {
 		// Remote name — resolve to URL
 		var err error
-		rawURL, err = remote.GetRemoteURL(ctx, target)
+		rawURL, err = GetRemoteURL(ctx, target)
 		if err != nil {
 			return ""
 		}
 	}
 
-	info, err := remote.ParseURL(rawURL)
+	info, err := ParseURL(rawURL)
 	if err != nil {
 		return ""
 	}
 	return info.Protocol
 }
 
-// ResolveFetchTarget returns the git fetch target to use. When filtered
-// fetches are enabled, configured remotes are resolved to their URL so git does
-// not persist promisor settings onto the remote name.
-func ResolveFetchTarget(ctx context.Context, target string) (string, error) {
-	if isURL(target) || !settings.IsFilteredFetchesEnabled(ctx) {
-		return target, nil
+// ensureEnv appends an environment variable to the command, initializing
+// cmd.Env from os.Environ() if it is nil.
+func ensureEnv(cmd *exec.Cmd, envVar string) {
+	if cmd.Env == nil {
+		cmd.Env = os.Environ()
 	}
-	url, err := remote.GetRemoteURL(ctx, target)
-	if err != nil {
-		return "", fmt.Errorf("get remote URL: %w", err)
-	}
-	return url, nil
-}
-
-// AppendFetchFilterArgs appends the partial-clone filter arguments when the
-// filtered fetch rollout is enabled.
-func AppendFetchFilterArgs(ctx context.Context, args []string) []string {
-	if !settings.IsFilteredFetchesEnabled(ctx) {
-		return args
-	}
-	return append(args, "--filter=blob:none")
+	cmd.Env = append(cmd.Env, envVar)
 }
