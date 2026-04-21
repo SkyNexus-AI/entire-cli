@@ -541,7 +541,7 @@ func detectBaseBranch(ctx context.Context, repoRoot string) string {
 	if target := gitString(ctx, repoRoot, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"); target != "" {
 		return strings.TrimPrefix(target, "origin/")
 	}
-	candidates := []string{defaultBaseBranch, "master"}
+	candidates := []string{defaultBaseBranch, masterBaseBranch}
 	for _, candidate := range candidates {
 		if gitOK(ctx, repoRoot, "rev-parse", "--verify", "--quiet", "refs/remotes/origin/"+candidate) {
 			return candidate
