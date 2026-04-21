@@ -493,7 +493,7 @@ func runPostReview(ctx context.Context, cmd *cobra.Command, sessionID string) er
 		return fmt.Errorf("session %s is not a review session", sessionID)
 	}
 	out := cmd.OutOrStdout()
-	checkpointID := mostRecentCheckpointID(ctx, sessionID)
+	checkpointID := mostRecentCheckpointID(state)
 	if checkpointID != "" {
 		fmt.Fprintf(out, "Review complete. Transcript: entire explain %s\n\n", checkpointID)
 	} else {
@@ -508,10 +508,13 @@ func runPostReview(ctx context.Context, cmd *cobra.Command, sessionID string) er
 }
 
 // mostRecentCheckpointID returns the most recent checkpoint ID for the given
-// session, or "" if unavailable.
-// TODO(chunk-8): resolve actual checkpoint ID from strategy.
-func mostRecentCheckpointID(_ context.Context, _ string) string {
-	return ""
+// session state, or "" if no checkpoint has been condensed yet. Reads the
+// LastCheckpointID field that the strategy updates at each condensation.
+func mostRecentCheckpointID(state *session.State) string {
+	if state == nil || state.LastCheckpointID.IsEmpty() {
+		return ""
+	}
+	return state.LastCheckpointID.String()
 }
 
 const (
@@ -572,7 +575,7 @@ func finalizeClose(ctx context.Context, cmd *cobra.Command, sessionID string) er
 		return err
 	}
 	out := cmd.OutOrStdout()
-	checkpointID := mostRecentCheckpointID(ctx, sessionID)
+	checkpointID := mostRecentCheckpointID(state)
 	// Best-effort: author email used as review-by; omit if unavailable.
 	by := ""
 	if author, authErr := GetGitAuthor(ctx); authErr == nil && author != nil {
@@ -663,11 +666,15 @@ func createReviewCommit(ctx context.Context, md trailers.ReviewMetadata) (plumbi
 	return hash, nil
 }
 
-// pickAgentNameFromSession extracts an agent name hint from session state.
-// v1: returns empty; agent name was recorded in the pending marker which is
-// cleared at adoption time. Future work: persist agent name on the session.
-func pickAgentNameFromSession(_ *session.State) string {
-	return ""
+// pickAgentNameFromSession extracts the agent name from session state.
+// Reads the AgentType field populated by strat.InitializeSession at turn
+// start. Returns "" when the session was never initialized with an agent
+// (e.g., legacy state files or manually constructed test states).
+func pickAgentNameFromSession(state *session.State) string {
+	if state == nil {
+		return ""
+	}
+	return string(state.AgentType)
 }
 
 func finalizeSkip(ctx context.Context, cmd *cobra.Command, sessionID string) error {

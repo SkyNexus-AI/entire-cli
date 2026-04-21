@@ -317,9 +317,6 @@ func writeManagedReviewFinishSkill(targetPath, relPath string, content []byte) (
 	}, nil
 }
 
-// will be wired into setup flow in a later task
-//
-//nolint:unused // reportReviewFinishSkillScaffold will be called from setup flow in a later task
 func reportReviewFinishSkillScaffold(w io.Writer, ag agent.Agent, result reviewFinishSkillScaffoldResult) {
 	switch result.Status {
 	case reviewFinishSkillCreated:

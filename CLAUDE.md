@@ -601,6 +601,68 @@ Trailers:
 - Test with `mise run test` - strategy tests are in `*_test.go` files
 - **Update both CLAUDE.md and AGENTS.md** when modifying the strategy to keep documentation current
 
+### `entire review` Command
+
+`entire review` runs a set of configured review skills inside a single agent session, letting the author address findings in-session or close the review with an empty marker commit. On each run it scans prior review commits on the current branch; if HEAD is already a review commit, the command prompts the user before re-running, preventing accidental redundant reviews.
+
+#### Command Surface
+
+```
+entire review                          # Normal run: load config, spawn configured agent
+entire review --edit                   # Re-open the skills picker before running
+entire review --track-only             # Write the pending-review marker; do not spawn agent
+```
+
+Hidden subcommands called by the `/entire-review:finish` in-session skill:
+
+```
+entire review --postreview --session <id>          # Post-review hook: present fix/close/skip TUI
+entire review --finalize fix|close|skip --session <id>   # Write outcome commit / update state
+```
+
+#### Settings Schema
+
+Review skills are configured per-agent in `.entire/settings.json`:
+
+```json
+{
+  "review": {
+    "claude-code": ["/pr-review-toolkit:review-pr", "/test-auditor"],
+    "codex": ["/codex:adversarial-review"]
+  }
+}
+```
+
+The key is the agent name (matching the agent's `Name()` return value). The value is a list of skill invocations passed verbatim to the agent. Settings field: `EntireSettings.Review` in `cmd/entire/cli/settings/settings.go`.
+
+#### Session Kind and Review Status
+
+Review sessions are tagged `Kind = "review"` on the `session.State` struct (`cmd/entire/cli/session/state.go`). The `ReviewStatus` field tracks the outcome: `in-progress`, `closed`, `clean`, or `skipped`. The Stop-hook fallback in the lifecycle handler detects sessions that end without an explicit finalization call and marks them accordingly so state never stays permanently `in-progress`.
+
+#### Review Commits
+
+Only the "Close" outcome lands a commit. "Fix" continues the agent session without committing (the user runs `entire review` again after addressing findings); "Skip" updates session state without touching the branch. On Close, an empty commit lands on the current branch carrying the following trailers:
+
+- `Entire-Review-By: <user-email>` - Email of the user who ran the review (from `git config user.email`)
+- `Entire-Review-Agent: <agent-name>` - Agent name that produced the review (e.g. `claude-code`)
+- `Entire-Review-Skills: <skill1>,<skill2>,...` - Comma-joined list of skills run
+- `Entire-Review-Session: <session-id>` - Session identifier
+- `Entire-Review-Checkpoint: <checkpoint-id>` - Links to `entire/checkpoints/v1` metadata (may be empty in v1; resolution lands with follow-on work)
+- `Entire-Reviewed-Up-To: <commit-hash>` - HEAD at review time (used by the scanner)
+- `Entire-Review-Status: closed|clean` - Outcome (the `skipped` status lives only in session state, not in any commit trailer)
+
+Trailer constants and the `ReviewMetadata` struct live in `cmd/entire/cli/trailers/trailers.go`.
+
+#### Key Files
+
+- `cmd/entire/cli/review.go` - Command registration, flag handling, scanner, post-review TUI, finalize logic
+- `cmd/entire/cli/lifecycle.go` - Session adoption: pending-review marker promotes to `Kind=review` on `UserPromptSubmit`; Stop-hook fallback for un-finalized sessions
+- `cmd/entire/cli/agent/agent.go` - `Launcher` interface used by `entire review` to spawn agents
+- `cmd/entire/cli/agent/{claudecode,codex,geminicli}/` - Per-agent `Launcher` implementations
+- `cmd/entire/cli/setup_subagents.go` - Installs the `/entire-review:finish` skill template into each agent's config directory
+- `cmd/entire/cli/trailers/trailers.go` - Trailer key constants, `ReviewMetadata` struct, parse helpers
+- `cmd/entire/cli/settings/settings.go` - `EntireSettings.Review` field (`map[string][]string`) and `ReviewSkillsFor` helper
+
 # Important Notes
 
 - **Before committing:** Follow the "Before Every Commit (REQUIRED)" checklist above - CI will fail without it
