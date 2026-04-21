@@ -354,13 +354,7 @@ Those bytes must satisfy the checkpoints v2 format requirements:
 
 - UTF-8 JSONL, written byte-for-byte by the CLI to `transcript.jsonl`
 - Newline-terminated JSONL: each record must end with `\n`, including the final record
-- First line: a header object declaring the format version and source agent, for example:
-
-```json
-{"v":1,"agent":"cursor","cli_version":"0.42.0"}
-```
-
-- Subsequent lines: normalized conversation entries, each also carrying `"v":1`
+- Every line includes format metadata (`v`, `agent`, `cli_version`) alongside the entry data
 - Supported top-level entry types are currently:
   - `user`
   - `assistant`
