@@ -99,17 +99,19 @@ type agentDisplay struct {
 	Char  rune   // block character for bar charts
 }
 
+// Agent colors match the dark-mode CSS variables from entire.io (Tailwind 400-level).
+// Lipgloss resolves hex to the best representation for the terminal's color profile.
 var agentDisplayMap = map[string]agentDisplay{
-	"claude":   {Label: "Claude Code", Color: "208", Char: '█'},
-	"gemini":   {Label: "Gemini", Color: "141", Char: '█'},
-	"amp":      {Label: "Amp", Color: "219", Char: '█'},
-	"codex":    {Label: "Codex", Color: "75", Char: '█'},
-	"opencode": {Label: "OpenCode", Color: "37", Char: '█'},
-	"copilot":  {Label: "Copilot", Color: "117", Char: '█'},
-	"pi":       {Label: "Pi", Color: "204", Char: '█'},
-	"cursor":   {Label: "Cursor", Color: "114", Char: '█'},
-	"droid":    {Label: "Droid", Color: "215", Char: '█'},
-	"kiro":     {Label: "Kiro", Color: "222", Char: '█'},
+	"claude":   {Label: "Claude Code", Color: "#fb923c", Char: '█'}, // orange-400
+	"gemini":   {Label: "Gemini", Color: "#60a5fa", Char: '█'},      // blue-400
+	"amp":      {Label: "Amp", Color: "#f87171", Char: '█'},         // red-400
+	"codex":    {Label: "Codex", Color: "#818cf8", Char: '█'},       // indigo-400
+	"opencode": {Label: "OpenCode", Color: "#22d3ee", Char: '█'},    // cyan-400
+	"copilot":  {Label: "Copilot", Color: "#a78bfa", Char: '█'},     // violet-400
+	"pi":       {Label: "Pi", Color: "#fbbf24", Char: '█'},          // amber-400
+	"cursor":   {Label: "Cursor", Color: "#38bdf8", Char: '█'},      // sky-400
+	"droid":    {Label: "Droid", Color: "#f472b6", Char: '█'},       // pink-400
+	"kiro":     {Label: "Kiro", Color: "#c084fc", Char: '█'},        // purple-400
 	"unknown":  {Label: "Unknown", Color: "245", Char: '░'},
 }
 
