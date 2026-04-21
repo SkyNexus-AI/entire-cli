@@ -18,6 +18,7 @@ import (
 	git "github.com/go-git/go-git/v6"
 	"github.com/go-git/go-git/v6/plumbing"
 	"github.com/go-git/go-git/v6/plumbing/object"
+	"golang.org/x/term"
 
 	"github.com/entireio/cli/cmd/entire/cli/agent"
 	"github.com/entireio/cli/cmd/entire/cli/agent/types"
@@ -438,16 +439,22 @@ func mostRecentCheckpointID(_ context.Context, _ string) string {
 	return ""
 }
 
+const (
+	finalizeChoiceFix   = "fix"
+	finalizeChoiceClose = "close"
+	finalizeChoiceSkip  = "skip"
+)
+
 func runFinalize(ctx context.Context, cmd *cobra.Command, decision, sessionID string) error {
 	if sessionID == "" {
 		return errors.New("--session required with --finalize")
 	}
 	switch decision {
-	case "fix":
+	case finalizeChoiceFix:
 		return finalizeFix(ctx, cmd, sessionID)
-	case "close":
+	case finalizeChoiceClose:
 		return finalizeClose(ctx, cmd, sessionID)
-	case "skip":
+	case finalizeChoiceSkip:
 		return finalizeSkip(ctx, cmd, sessionID)
 	default:
 		return fmt.Errorf("unknown finalize decision: %s (expected fix|close|skip)", decision)
@@ -603,6 +610,51 @@ func finalizeSkip(ctx context.Context, cmd *cobra.Command, sessionID string) err
 	}
 	fmt.Fprintln(cmd.OutOrStdout(), "Review ended without commit. You may exit.")
 	return nil
+}
+
+// promptReviewFallback presents a three-choice TUI (Fix/Close/Skip) when a
+// review session ends without the /entire-review:finish skill finalizing it.
+// If stdin isn't a TTY (e.g., hook invoked by an agent subprocess without a
+// terminal), it logs guidance and returns without prompting — the user can
+// run `entire review --finalize <choice> --session <id>` manually next time.
+func promptReviewFallback(ctx context.Context, sessionID string) error {
+	if !term.IsTerminal(int(os.Stdin.Fd())) { //nolint:gosec // G115: uintptr->int is safe for fd
+		logging.Warn(ctx, "review session ended in non-terminal context; cannot prompt",
+			slog.String("session_id", sessionID),
+			slog.String("hint", "run: entire review --finalize close|fix|skip --session "+sessionID))
+		return nil
+	}
+
+	var choice string
+	form := NewAccessibleForm(huh.NewGroup(
+		huh.NewSelect[string]().
+			Title("Review session ended. What's next?").
+			Options(
+				huh.NewOption("Fix   — run `entire resume` after to continue", finalizeChoiceFix),
+				huh.NewOption("Close — commit review marker now", finalizeChoiceClose),
+				huh.NewOption("Skip  — end without committing", finalizeChoiceSkip),
+			).
+			Value(&choice),
+	))
+	if err := form.Run(); err != nil {
+		return fmt.Errorf("fallback TUI: %w", err)
+	}
+
+	// Build a dummy cobra.Command for the existing finalize handlers.
+	cmd := &cobra.Command{}
+	cmd.SetOut(os.Stdout)
+	cmd.SetErr(os.Stderr)
+
+	switch choice {
+	case finalizeChoiceFix:
+		return finalizeFix(ctx, cmd, sessionID)
+	case finalizeChoiceClose:
+		return finalizeClose(ctx, cmd, sessionID)
+	case finalizeChoiceSkip:
+		return finalizeSkip(ctx, cmd, sessionID)
+	default:
+		return nil
+	}
 }
 
 // saveReviewConfig persists the review map into .entire/settings.json while

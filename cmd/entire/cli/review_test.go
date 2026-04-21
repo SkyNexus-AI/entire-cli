@@ -417,3 +417,12 @@ func TestFinalizeSkip(t *testing.T) {
 		t.Errorf("output missing 'exit'; got: %s", buf.String())
 	}
 }
+
+func TestPromptReviewFallback_NonTerminalIsNoop(t *testing.T) {
+	t.Parallel()
+	// stdin is not a TTY in go test, so this should return nil without error
+	// and without prompting. We just verify no panic and no error.
+	if err := promptReviewFallback(context.Background(), "any-session"); err != nil {
+		t.Fatalf("expected nil, got %v", err)
+	}
+}
