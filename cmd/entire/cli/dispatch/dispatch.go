@@ -9,7 +9,6 @@ const (
 	ModeLocal
 )
 
-// Options holds all parsed CLI inputs.
 type Options struct {
 	Mode                  Mode
 	RepoPaths             []string
@@ -23,7 +22,6 @@ type Options struct {
 	Voice                 string
 }
 
-// Run is the entry point after flags are parsed.
 func Run(ctx context.Context, opts Options) (*Dispatch, error) {
 	if opts.Mode == ModeServer {
 		return runServer(ctx, opts)

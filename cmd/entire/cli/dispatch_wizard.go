@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"time"
+	"sync"
 
 	"github.com/charmbracelet/huh"
 	dispatchpkg "github.com/entireio/cli/cmd/entire/cli/dispatch"
@@ -20,7 +20,6 @@ import (
 )
 
 var errDispatchCancelled = errors.New("dispatch cancelled")
-var wizardNowUTC = func() time.Time { return time.Now().UTC() }
 var listDispatchWizardRepos = discoverAuthenticatedDispatchWizardRepos
 var listDispatchWizardOrgs = discoverAuthenticatedDispatchWizardOrgs
 
@@ -68,10 +67,6 @@ func newDispatchWizardState() dispatchWizardState {
 
 func (s dispatchWizardState) isLocal() bool {
 	return s.modeChoice != dispatchWizardModeServer
-}
-
-func (s dispatchWizardState) sinceValue() string {
-	return s.timeWindowPreset
 }
 
 func (s dispatchWizardState) voiceValue() string {
@@ -142,10 +137,6 @@ func (s dispatchWizardState) showOrganizationPicker(choices dispatchWizardChoice
 	return !s.isLocal() && s.effectiveScopeType(choices) == dispatchWizardScopeOrganization
 }
 
-func (s dispatchWizardState) showBranchModePicker() bool {
-	return true
-}
-
 func (s *dispatchWizardState) applyCurrentBranchDefault(branch string) {
 	branch = strings.TrimSpace(branch)
 	if branch == "" {
@@ -170,7 +161,7 @@ func (s dispatchWizardState) orgValue(choices dispatchWizardChoices) string {
 func (s dispatchWizardState) resolve(choices dispatchWizardChoices, currentBranch func() (string, error)) (dispatchpkg.Options, error) {
 	return resolveDispatchOptions(
 		s.isLocal(),
-		s.sinceValue(),
+		s.timeWindowPreset,
 		"",
 		s.effectiveBranchMode(choices) == dispatchWizardBranchAll,
 		s.selectedRepoPaths(choices),
@@ -385,10 +376,7 @@ func runDispatchWizard(cmd *cobra.Command) (dispatchpkg.Options, error) {
 					return choices.branchModeOptions(state)
 				}, &state).
 				Value(&state.branchMode),
-		).Title("Branch mode").Description("Choose how dispatch should interpret branch scope.").
-			WithHideFunc(func() bool {
-				return !state.showBranchModePicker()
-			}),
+		).Title("Branch mode").Description("Choose how dispatch should interpret branch scope."),
 		huh.NewGroup(
 			huh.NewSelect[string]().
 				Title("Voice").
@@ -461,12 +449,29 @@ func discoverDispatchWizardChoices(ctx context.Context) (dispatchWizardChoices, 
 		return dispatchWizardChoices{}, fmt.Errorf("not in a git repository: %w", err)
 	}
 
-	repoSlugs, err := listDispatchWizardRepos(ctx)
-	if err != nil || len(repoSlugs) == 0 {
-		repoSlugs = discoverLocalRepoSlugs(ctx, currentRepo)
-	}
-	sort.Strings(repoSlugs)
+	var (
+		repoSlugs []string
+		orgNames  []string
+		wg        sync.WaitGroup
+	)
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		slugs, listErr := listDispatchWizardRepos(ctx)
+		if listErr != nil || len(slugs) == 0 {
+			slugs = discoverLocalRepoSlugs(ctx, currentRepo)
+		}
+		repoSlugs = slugs
+	}()
+	go func() {
+		defer wg.Done()
+		if names, listErr := listDispatchWizardOrgs(ctx); listErr == nil {
+			orgNames = names
+		}
+	}()
+	wg.Wait()
 
+	sort.Strings(repoSlugs)
 	repoOptions := make([]huh.Option[string], 0, len(repoSlugs))
 	seenRepoSlugs := make(map[string]struct{}, len(repoSlugs))
 	for _, repoSlug := range repoSlugs {
@@ -480,10 +485,6 @@ func discoverDispatchWizardChoices(ctx context.Context) (dispatchWizardChoices, 
 		repoOptions = append(repoOptions, huh.NewOption(repoSlug, repoSlug))
 	}
 
-	orgNames, err := listDispatchWizardOrgs(ctx)
-	if err != nil {
-		orgNames = nil
-	}
 	sort.Strings(orgNames)
 
 	orgOptions := make([]huh.Option[string], 0, len(orgNames))
@@ -504,16 +505,34 @@ func discoverLocalRepoRoots(ctx context.Context, currentRepo string) []string {
 
 	entries, err := os.ReadDir(parent)
 	if err == nil {
+		candidates := make([]string, 0, len(entries))
 		for _, entry := range entries {
 			if !entry.IsDir() {
 				continue
 			}
 			candidate := filepath.Join(parent, entry.Name())
-			repoRoot, resolveErr := resolveGitTopLevel(ctx, candidate)
-			if resolveErr != nil {
+			if _, statErr := os.Stat(filepath.Join(candidate, ".git")); statErr != nil {
 				continue
 			}
-			rootSet[repoRoot] = struct{}{}
+			candidates = append(candidates, candidate)
+		}
+
+		resolved := make([]string, len(candidates))
+		var wg sync.WaitGroup
+		wg.Add(len(candidates))
+		for i, candidate := range candidates {
+			go func() {
+				defer wg.Done()
+				if repoRoot, resolveErr := resolveGitTopLevel(ctx, candidate); resolveErr == nil {
+					resolved[i] = repoRoot
+				}
+			}()
+		}
+		wg.Wait()
+		for _, repoRoot := range resolved {
+			if repoRoot != "" {
+				rootSet[repoRoot] = struct{}{}
+			}
 		}
 	}
 

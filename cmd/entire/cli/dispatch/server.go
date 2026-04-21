@@ -2,10 +2,12 @@ package dispatch
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
+	"github.com/entireio/cli/cmd/entire/cli/api"
 	"github.com/entireio/cli/cmd/entire/cli/paths"
 	"github.com/go-git/go-git/v6"
 )
@@ -16,7 +18,7 @@ func runServer(ctx context.Context, opts Options) (*Dispatch, error) {
 		return nil, fmt.Errorf("reading credentials: %w", err)
 	}
 	if token == "" {
-		return nil, fmt.Errorf("dispatch requires login — run `entire login`")
+		return nil, errors.New("dispatch requires login — run `entire login`")
 	}
 
 	now := nowUTC()
@@ -33,7 +35,7 @@ func runServer(ctx context.Context, opts Options) (*Dispatch, error) {
 		return nil, err
 	}
 	if !since.Before(until) {
-		return nil, fmt.Errorf("--since must be before --until")
+		return nil, errors.New("--since must be before --until")
 	}
 
 	var repoScope any
@@ -63,7 +65,7 @@ func runServer(ctx context.Context, opts Options) (*Dispatch, error) {
 		branches = "all"
 	}
 
-	cloud := NewCloudClient(CloudConfig{BaseURL: cloudBaseURL(), Token: token})
+	cloud := NewCloudClient(CloudConfig{BaseURL: api.BaseURL(), Token: token})
 	reqBody := CreateDispatchRequest{
 		Repo:     repoScope,
 		Org:      opts.Org,

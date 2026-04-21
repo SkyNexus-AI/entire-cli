@@ -170,7 +170,3 @@ func (c *CloudClient) doJSON(ctx context.Context, method, path string, reqBody, 
 	}
 	return nil
 }
-
-func cloudBaseURL() string {
-	return api.BaseURL()
-}

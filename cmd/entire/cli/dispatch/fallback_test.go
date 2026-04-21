@@ -16,7 +16,7 @@ func TestApplyFallbackChain_UsesLocalSummaryFirst(t *testing.T) {
 		Branch:            "main",
 		CreatedAt:         time.Unix(1, 0).UTC(),
 	}})
-	if len(got.Used) != 1 || got.Used[0].Bullet.Source != "local_summary" {
+	if len(got.Used) != 1 || got.Used[0].Bullet.Source != bulletSourceLocalSummary {
 		t.Fatalf("unexpected used bullets: %+v", got.Used)
 	}
 	if got.Used[0].Bullet.Text != "local summary" {
@@ -34,7 +34,7 @@ func TestApplyFallbackChain_FallsBackToCommitMessage(t *testing.T) {
 		Branch:        "main",
 		CreatedAt:     time.Unix(1, 0).UTC(),
 	}})
-	if len(got.Used) != 1 || got.Used[0].Bullet.Source != "commit_message" {
+	if len(got.Used) != 1 || got.Used[0].Bullet.Source != bulletSourceCommitMessage {
 		t.Fatalf("unexpected used bullets: %+v", got.Used)
 	}
 }

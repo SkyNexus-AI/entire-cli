@@ -5,6 +5,11 @@ import (
 	"time"
 )
 
+const (
+	bulletSourceLocalSummary  = "local_summary"
+	bulletSourceCommitMessage = "commit_message"
+)
+
 type candidate struct {
 	CheckpointID      string
 	RepoFullName      string
@@ -35,7 +40,7 @@ func applyFallbackChain(candidates []candidate) fallbackResult {
 				Bullet: Bullet{
 					CheckpointID: candidate.CheckpointID,
 					Text:         text,
-					Source:       "local_summary",
+					Source:       bulletSourceLocalSummary,
 					Branch:       candidate.Branch,
 					CreatedAt:    candidate.CreatedAt,
 				},
@@ -49,7 +54,7 @@ func applyFallbackChain(candidates []candidate) fallbackResult {
 				Bullet: Bullet{
 					CheckpointID: candidate.CheckpointID,
 					Text:         text,
-					Source:       "commit_message",
+					Source:       bulletSourceCommitMessage,
 					Branch:       candidate.Branch,
 					CreatedAt:    candidate.CreatedAt,
 				},

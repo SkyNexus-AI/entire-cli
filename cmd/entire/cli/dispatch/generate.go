@@ -1,9 +1,7 @@
 package dispatch
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -11,6 +9,7 @@ import (
 
 	"github.com/entireio/cli/cmd/entire/cli/agent"
 	"github.com/entireio/cli/cmd/entire/cli/agent/claudecode"
+	"github.com/entireio/cli/cmd/entire/cli/jsonutil"
 	"github.com/entireio/cli/cmd/entire/cli/summarize"
 )
 
@@ -175,14 +174,11 @@ func marshalDispatchPromptPayload(dispatch *Dispatch, voice string) (string, err
 		payload.Repos = append(payload.Repos, outRepo)
 	}
 
-	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf)
-	enc.SetEscapeHTML(false)
-	enc.SetIndent("", "  ")
-	if err := enc.Encode(payload); err != nil {
-		return "", err
+	encoded, err := jsonutil.MarshalIndentWithNewline(payload, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("marshal dispatch prompt payload: %w", err)
 	}
-	return strings.TrimSpace(buf.String()), nil
+	return strings.TrimSpace(string(encoded)), nil
 }
 
 func escapeDispatchPrompt(text string) string {

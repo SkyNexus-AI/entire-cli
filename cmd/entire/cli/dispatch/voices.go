@@ -11,7 +11,6 @@ var voiceNeutral string
 //go:embed voices/marvin.md
 var voiceMarvin string
 
-// Voice is the resolved form of a --voice input.
 type Voice struct {
 	Name     string
 	Text     string
@@ -23,7 +22,6 @@ var presets = map[string]string{
 	"marvin":  voiceMarvin,
 }
 
-// ResolveVoice applies the resolution chain preset -> literal.
 func ResolveVoice(value string) Voice {
 	if value == "" {
 		return Voice{Name: "neutral", Text: voiceNeutral, IsPreset: true}
@@ -37,7 +35,6 @@ func ResolveVoice(value string) Voice {
 	return Voice{Text: value}
 }
 
-// ListPresetNames returns the shipped preset names in stable order.
 func ListPresetNames() []string {
 	return []string{"neutral", "marvin"}
 }

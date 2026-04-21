@@ -5,7 +5,6 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/charmbracelet/huh"
 	dispatchpkg "github.com/entireio/cli/cmd/entire/cli/dispatch"
@@ -216,20 +215,6 @@ func TestDispatchWizardState_ShowsOrganizationPickerOnlyForOrgScope(t *testing.T
 		},
 	}) {
 		t.Fatal("expected organization picker for organization scope")
-	}
-}
-
-func TestDispatchWizardState_ShowsBranchModePicker(t *testing.T) {
-	t.Parallel()
-
-	state := newDispatchWizardState()
-	if !state.showBranchModePicker() {
-		t.Fatal("expected branch mode picker in local mode")
-	}
-
-	state.modeChoice = dispatchWizardModeServer
-	if !state.showBranchModePicker() {
-		t.Fatal("expected branch mode picker in server mode")
 	}
 }
 
@@ -513,18 +498,4 @@ func optionKeys(options []huh.Option[string]) []string {
 		keys = append(keys, option.Key)
 	}
 	return keys
-}
-
-func TestWizardNowUTCPlaceholder(t *testing.T) {
-	t.Parallel()
-
-	oldNow := wizardNowUTC
-	wizardNowUTC = func() time.Time { return time.Date(2026, 4, 17, 9, 30, 0, 0, time.UTC) }
-	t.Cleanup(func() {
-		wizardNowUTC = oldNow
-	})
-
-	if wizardNowUTC().Format("2006-01-02") != "2026-04-17" {
-		t.Fatal("expected deterministic test now")
-	}
 }

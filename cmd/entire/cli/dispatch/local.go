@@ -57,7 +57,6 @@ func runLocal(ctx context.Context, opts Options) (*Dispatch, error) {
 	var candidatesMu sync.Mutex
 	group, groupCtx := errgroup.WithContext(ctx)
 	for _, repoRoot := range repoRoots {
-		repoRoot := repoRoot
 		group.Go(func() error {
 			candidates, err := enumerateRepoCandidates(groupCtx, repoRoot, opts, normalizedSince, normalizedUntil)
 			if err != nil {
@@ -179,15 +178,12 @@ func enumerateRepoCandidates(ctx context.Context, repoRoot string, opts Options,
 			continue
 		}
 		if !opts.AllBranches {
-			if opts.ImplicitCurrentBranch {
-				if _, ok := branchSet[summary.Branch]; ok {
-					// The checkpoint was recorded on the current branch, so include it
-					// even if HEAD no longer has a reachable trailer for that ID.
-				} else if _, ok := reachableCheckpointIDs[info.CheckpointID.String()]; !ok {
+			_, onSelectedBranch := branchSet[summary.Branch]
+			if !onSelectedBranch {
+				if !opts.ImplicitCurrentBranch {
 					continue
 				}
-			} else {
-				if _, ok := branchSet[summary.Branch]; !ok {
+				if _, reachable := reachableCheckpointIDs[info.CheckpointID.String()]; !reachable {
 					continue
 				}
 			}
@@ -273,14 +269,6 @@ func findCommitSubjectByCheckpoint(ctx context.Context, repoRoot string, checkpo
 		return "", nil
 	}
 	return strings.TrimSpace(parts[0]), nil
-}
-
-func groupCandidatesByRepo(candidates []candidate) map[string][]string {
-	grouped := make(map[string][]string)
-	for _, candidate := range candidates {
-		grouped[candidate.RepoFullName] = append(grouped[candidate.RepoFullName], candidate.CheckpointID)
-	}
-	return grouped
 }
 
 func coveredRepos(candidates []candidate) []string {

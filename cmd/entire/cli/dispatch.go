@@ -58,7 +58,7 @@ Examples:
 				return err
 			}
 
-			if err := runDispatchCommand(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), opts); err != nil {
+			if err := runDispatchCommand(cmd.Context(), cmd.OutOrStdout(), opts); err != nil {
 				if errors.Is(err, errDispatchCancelled) {
 					return nil
 				}
@@ -79,7 +79,7 @@ Examples:
 	return cmd
 }
 
-func runDispatchCommand(ctx context.Context, outW, _ io.Writer, opts dispatchpkg.Options) error {
+func runDispatchCommand(ctx context.Context, outW io.Writer, opts dispatchpkg.Options) error {
 	if dispatchTerminalMode(outW) {
 		markdown, err := runInteractiveDispatch(ctx, outW, opts)
 		if err != nil {
