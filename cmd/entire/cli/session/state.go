@@ -47,10 +47,21 @@ type Kind string
 const (
 	// KindAgentReview tags a session created by `entire review` (agent-driven
 	// review). Future review kinds (e.g., manual review) should be defined as
-	// distinct Kind values; every review-kind Kind should cause its checkpoint
-	// to set HasReview = true.
+	// distinct Kind values AND added to Kind.IsReview so the checkpoint's
+	// HasReview umbrella flag keeps covering them.
 	KindAgentReview Kind = "agent_review"
 )
+
+// IsReview reports whether this Kind counts as "a review happened" for the
+// purpose of CheckpointSummary.HasReview. Extend this when adding new
+// review-kind Kind values (e.g. KindManualReview) so the umbrella flag stays
+// accurate without string-literal coupling across packages.
+func (k Kind) IsReview() bool {
+	// Note: a switch is the natural shape here, but golangci's
+	// singleCaseSwitch flags a one-case switch — so we keep it as a list of
+	// equality checks. Add new review-kind values to the disjunction below.
+	return k == KindAgentReview
+}
 
 // State represents the state of an active session.
 // This is stored in .git/entire-sessions/<session-id>.json

@@ -961,7 +961,7 @@ func TestAdoptPendingReviewMarker(t *testing.T) {
 	testutil.GitCommit(t, tmp, "init")
 	t.Chdir(tmp)
 
-	if err := WritePendingReviewMarker(PendingReviewMarker{
+	if err := WritePendingReviewMarker(context.Background(), PendingReviewMarker{
 		AgentName:   "claude-code",
 		Skills:      []string{"/pr-review-toolkit:review-pr"},
 		StartingSHA: "abc",
@@ -989,7 +989,7 @@ func TestAdoptPendingReviewMarker(t *testing.T) {
 	}
 
 	// Marker should be cleared after adoption.
-	_, ok, readErr := ReadPendingReviewMarker()
+	_, ok, readErr := ReadPendingReviewMarker(context.Background())
 	if readErr != nil {
 		t.Fatal(readErr)
 	}
@@ -1027,7 +1027,7 @@ func TestAdoptPendingReviewMarker_AlreadyReview(t *testing.T) {
 	testutil.GitCommit(t, tmp, "init")
 	t.Chdir(tmp)
 
-	if err := WritePendingReviewMarker(PendingReviewMarker{
+	if err := WritePendingReviewMarker(context.Background(), PendingReviewMarker{
 		AgentName: "claude-code",
 		Skills:    []string{"/x"},
 	}); err != nil {
@@ -1046,7 +1046,7 @@ func TestAdoptPendingReviewMarker_AlreadyReview(t *testing.T) {
 		t.Errorf("ReviewSkills should be unchanged: %v", got.ReviewSkills)
 	}
 	// Marker should NOT be cleared since adoption didn't happen.
-	_, ok, readErr := ReadPendingReviewMarker()
+	_, ok, readErr := ReadPendingReviewMarker(context.Background())
 	if readErr != nil {
 		t.Fatal(readErr)
 	}
@@ -1067,7 +1067,7 @@ func TestAdoptPendingReviewMarker_OtherWorktreeLeavesMarker(t *testing.T) {
 	testutil.GitCommit(t, tmp, "init")
 	t.Chdir(tmp)
 
-	if err := WritePendingReviewMarker(PendingReviewMarker{
+	if err := WritePendingReviewMarker(context.Background(), PendingReviewMarker{
 		AgentName:    "claude-code",
 		Skills:       []string{"/pr-review-toolkit:review-pr"},
 		StartingSHA:  "abc",
@@ -1076,7 +1076,7 @@ func TestAdoptPendingReviewMarker_OtherWorktreeLeavesMarker(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = ClearPendingReviewMarker() }) //nolint:errcheck // test cleanup, best-effort
+	t.Cleanup(func() { _ = ClearPendingReviewMarker(context.Background()) }) //nolint:errcheck // test cleanup, best-effort
 
 	// A session running in a different worktree must NOT adopt.
 	got, modified, err := adoptPendingReviewMarkerInto(context.Background(), session.State{
@@ -1094,7 +1094,7 @@ func TestAdoptPendingReviewMarker_OtherWorktreeLeavesMarker(t *testing.T) {
 	}
 
 	// Marker must survive so the correct-worktree session can adopt later.
-	_, ok, readErr := ReadPendingReviewMarker()
+	_, ok, readErr := ReadPendingReviewMarker(context.Background())
 	if readErr != nil {
 		t.Fatal(readErr)
 	}

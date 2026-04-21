@@ -437,9 +437,7 @@ func (s *GitStore) writeCheckpointSummary(opts WriteCommittedOptions, basePath s
 	}
 
 	var combinedAttribution *InitialAttribution
-	// Wire string must stay in sync with session.KindAgentReview; we can't
-	// import the session package here (it imports checkpoint, cycle).
-	hasReview := opts.Kind == "agent_review"
+	hasReview := opts.HasReview
 	rootMetadataPath := basePath + paths.MetadataFileName
 	if entry, exists := entries[rootMetadataPath]; exists {
 		existingSummary, readErr := s.readSummaryFromBlob(entry.Hash)

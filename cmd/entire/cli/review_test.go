@@ -3,11 +3,13 @@ package cli
 import (
 	"bytes"
 	"context"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/entireio/cli/cmd/entire/cli/session"
 	"github.com/entireio/cli/cmd/entire/cli/settings"
 	"github.com/entireio/cli/cmd/entire/cli/testutil"
 )
@@ -31,10 +33,11 @@ func TestReviewMarker_RoundTrip(t *testing.T) {
 		StartingSHA: "deadbeef",
 		StartedAt:   time.Now().UTC(),
 	}
-	if err := WritePendingReviewMarker(m); err != nil {
+	ctx := context.Background()
+	if err := WritePendingReviewMarker(ctx, m); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	got, ok, err := ReadPendingReviewMarker()
+	got, ok, err := ReadPendingReviewMarker(ctx)
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
@@ -44,10 +47,10 @@ func TestReviewMarker_RoundTrip(t *testing.T) {
 	if got.AgentName != m.AgentName || got.StartingSHA != m.StartingSHA {
 		t.Errorf("roundtrip mismatch: %+v", got)
 	}
-	if err := ClearPendingReviewMarker(); err != nil {
+	if err := ClearPendingReviewMarker(ctx); err != nil {
 		t.Fatalf("clear: %v", err)
 	}
-	_, ok, err = ReadPendingReviewMarker()
+	_, ok, err = ReadPendingReviewMarker(ctx)
 	if err != nil {
 		t.Fatalf("read-after-clear: %v", err)
 	}
@@ -126,7 +129,7 @@ func TestRunReview_TrackOnlyWritesMarker(t *testing.T) {
 		t.Fatalf("execute: %v", err)
 	}
 
-	m, ok, err := ReadPendingReviewMarker()
+	m, ok, err := ReadPendingReviewMarker(context.Background())
 	if err != nil || !ok {
 		t.Fatalf("expected marker present: ok=%v err=%v", ok, err)
 	}
@@ -304,5 +307,89 @@ func TestDetectBaseBranch_UsesOriginMainWhenNoLocalMain(t *testing.T) {
 	got := detectBaseBranch(context.Background(), tmp)
 	if got != testMainBranch {
 		t.Errorf("detectBaseBranch = %q, want %s (should resolve via refs/remotes/origin/main)", got, testMainBranch)
+	}
+}
+
+// Pins the documented fallback order: when origin/HEAD is unset, ALL remote-
+// tracking branches are tried before ANY local branch. Reproduces the drift
+// the comment-analyzer caught: if local `main` + remote `origin/master` both
+// exist, the code must prefer `master` (the remote) since the remote reflects
+// the team's canonical base.
+func TestDetectBaseBranch_PrefersAllRemotesOverLocals(t *testing.T) {
+	tmp := t.TempDir()
+	testutil.InitRepo(t, tmp)
+	testutil.WriteFile(t, tmp, "a.txt", "hello")
+	testutil.GitAdd(t, tmp, "a.txt")
+	testutil.GitCommit(t, tmp, "init")
+	// go-git default branch is `master` — rename to `main` so we have a local
+	// `main` but not a local `master`.
+	runGit(t, tmp, "branch", "-M", testMainBranch)
+	// Fake an origin/master remote-tracking ref; no origin/HEAD.
+	headSHA := testutil.GetHeadHash(t, tmp)
+	runGit(t, tmp, "update-ref", "refs/remotes/origin/master", headSHA)
+
+	got := detectBaseBranch(context.Background(), tmp)
+	if got != "master" {
+		t.Errorf("detectBaseBranch = %q, want master (remote origin/master should beat local main)", got)
+	}
+}
+
+// TestKindIsReview pins the invariant that the umbrella HasReview flag is
+// derived from Kind.IsReview. Anyone adding a new review-kind Kind value must
+// also add it here, or this test fails.
+func TestKindIsReview(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		kind session.Kind
+		want bool
+	}{
+		{session.KindAgentReview, true},
+		{session.Kind(""), false},
+		{session.Kind("unknown_kind"), false},
+	}
+	for _, tc := range tests {
+		if got := tc.kind.IsReview(); got != tc.want {
+			t.Errorf("(%q).IsReview() = %v, want %v", tc.kind, got, tc.want)
+		}
+	}
+}
+
+// Regression test for the settings-wipe bug: saveReviewConfig must NOT
+// overwrite existing settings when settings.json is malformed. It should
+// propagate the load error so the caller can surface it, rather than
+// silently discarding unrelated configuration.
+func TestSaveReviewConfig_ReturnsErrorOnMalformedSettings(t *testing.T) {
+	tmp := t.TempDir()
+	testutil.InitRepo(t, tmp)
+	t.Chdir(tmp)
+
+	// Write a deliberately malformed settings.json with user content we
+	// must not clobber.
+	entireDir := filepath.Join(tmp, ".entire")
+	if err := os.MkdirAll(entireDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	malformed := []byte(`{"enabled": true, "strategy": "manual-commit", "review": {`) // truncated
+	if err := os.WriteFile(filepath.Join(entireDir, "settings.json"), malformed, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(filepath.Join(entireDir, "settings.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = saveReviewConfig(context.Background(), map[string][]string{
+		testAgentName: {testReviewSkill},
+	})
+	if err == nil {
+		t.Fatal("expected saveReviewConfig to error on malformed settings; returned nil (data-loss bug)")
+	}
+
+	after, err := os.ReadFile(filepath.Join(entireDir, "settings.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Errorf("settings.json was overwritten on load error:\nbefore=%q\nafter=%q", before, after)
 	}
 }

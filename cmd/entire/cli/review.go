@@ -51,18 +51,17 @@ type PendingReviewMarker struct {
 	WorktreePath string    `json:"worktree_path,omitempty"`
 }
 
-func pendingMarkerPath() (string, error) {
-	commonDir, err := session.GetGitCommonDir(context.Background())
+func pendingMarkerPath(ctx context.Context) (string, error) {
+	commonDir, err := session.GetGitCommonDir(ctx)
 	if err != nil {
 		return "", fmt.Errorf("locate git common dir: %w", err)
 	}
 	return filepath.Join(commonDir, session.SessionStateDirName, pendingReviewMarkerFilename), nil
 }
 
-// WritePendingReviewMarker persists the marker. Overwrites any existing marker
-// — callers detect concurrent reviews via ReadPendingReviewMarker before this.
-func WritePendingReviewMarker(m PendingReviewMarker) error {
-	path, err := pendingMarkerPath()
+// WritePendingReviewMarker persists the marker. Overwrites any existing marker.
+func WritePendingReviewMarker(ctx context.Context, m PendingReviewMarker) error {
+	path, err := pendingMarkerPath(ctx)
 	if err != nil {
 		return err
 	}
@@ -81,8 +80,8 @@ func WritePendingReviewMarker(m PendingReviewMarker) error {
 
 // ReadPendingReviewMarker returns the marker if one exists.
 // ok=false with err=nil indicates "no pending review."
-func ReadPendingReviewMarker() (PendingReviewMarker, bool, error) {
-	path, err := pendingMarkerPath()
+func ReadPendingReviewMarker(ctx context.Context) (PendingReviewMarker, bool, error) {
+	path, err := pendingMarkerPath(ctx)
 	if err != nil {
 		return PendingReviewMarker{}, false, err
 	}
@@ -101,8 +100,8 @@ func ReadPendingReviewMarker() (PendingReviewMarker, bool, error) {
 }
 
 // ClearPendingReviewMarker removes the marker. Missing file is not an error.
-func ClearPendingReviewMarker() error {
-	path, err := pendingMarkerPath()
+func ClearPendingReviewMarker(ctx context.Context) error {
+	path, err := pendingMarkerPath(ctx)
 	if err != nil {
 		return err
 	}
@@ -164,7 +163,7 @@ func adoptPendingReviewMarkerInto(ctx context.Context, s session.State) (session
 	if s.Kind != "" {
 		return s, false, nil
 	}
-	m, ok, err := ReadPendingReviewMarker()
+	m, ok, err := ReadPendingReviewMarker(ctx)
 	if err != nil {
 		return s, false, err
 	}
@@ -179,7 +178,7 @@ func adoptPendingReviewMarkerInto(ctx context.Context, s session.State) (session
 	}
 	s.Kind = session.KindAgentReview
 	s.ReviewSkills = m.Skills
-	if err := ClearPendingReviewMarker(); err != nil {
+	if err := ClearPendingReviewMarker(ctx); err != nil {
 		// Tagging succeeded; leftover marker self-heals on next session start
 		// (since Kind is now set, the next turn will return modified=false
 		// and the marker will be re-cleared on any next review session).
@@ -224,9 +223,15 @@ func runReviewConfigPicker(ctx context.Context, out io.Writer) (map[string][]str
 		)
 	}
 
-	// Load existing config so we can pre-check saved skills.
+	// Load existing config so we can pre-check saved skills. A load error
+	// here means the settings file is malformed; log at Warn so users
+	// debugging "my saved skills aren't pre-checked" can see why, but keep
+	// going with an empty prefill — runReview already surfaces the same
+	// error distinctly when it's the first load.
 	existing := map[string][]string{}
-	if s, err := settings.Load(ctx); err == nil && s != nil {
+	if s, err := settings.Load(ctx); err != nil {
+		logging.Warn(ctx, "settings.Load failed when pre-filling picker", slog.String("error", err.Error()))
+	} else if s != nil {
 		existing = s.Review
 	}
 
@@ -322,14 +327,27 @@ func runReview(ctx context.Context, cmd *cobra.Command, trackOnly bool) error {
 		return NewSilentError(errors.New("not a git repository"))
 	}
 
-	// 2. Load config; trigger first-run picker if missing.
+	// 2. Load config. A load error means the settings file exists but is
+	// malformed (Load returns a default-filled object when the file is
+	// missing). Surface the error instead of silently opening the picker,
+	// which would cause saveReviewConfig to write over the user's other
+	// settings with an empty EntireSettings{}.
 	s, err := settings.Load(ctx)
-	if err != nil || s == nil || len(s.Review) == 0 {
+	if err != nil {
+		cmd.SilenceUsage = true
+		fmt.Fprintf(cmd.ErrOrStderr(), "Failed to load settings: %v\n", err)
+		fmt.Fprintln(cmd.ErrOrStderr(), "Fix `.entire/settings.json` and re-run `entire review`.")
+		return NewSilentError(err)
+	}
+	if s == nil || len(s.Review) == 0 {
 		picked, pickErr := runReviewConfigPicker(ctx, out)
 		if pickErr != nil {
 			return pickErr
 		}
-		s = &settings.EntireSettings{Review: picked}
+		if s == nil {
+			s = &settings.EntireSettings{}
+		}
+		s.Review = picked
 	}
 
 	// 3. Pick agent.
@@ -369,7 +387,7 @@ func runReview(ctx context.Context, cmd *cobra.Command, trackOnly bool) error {
 	}
 
 	// 6. Write pending marker (agent hook will adopt it).
-	if err := WritePendingReviewMarker(PendingReviewMarker{
+	if err := WritePendingReviewMarker(ctx, PendingReviewMarker{
 		AgentName:    agentName,
 		Skills:       skills,
 		StartingSHA:  headSHA,
@@ -380,10 +398,28 @@ func runReview(ctx context.Context, cmd *cobra.Command, trackOnly bool) error {
 	}
 
 	if trackOnly {
+		// Marker must persist — the user will start the agent manually and
+		// its hook will adopt the marker.
 		fmt.Fprintln(out, "Pending review marker written.")
 		fmt.Fprintf(out, "Start %s and run these skills manually: %s\n", agentName, strings.Join(skills, ", "))
 		return nil
 	}
+
+	// From this point on, the marker lives on disk until either (a) the
+	// spawned agent's hook adopts and clears it, or (b) we clear it here
+	// as a fallback. The defer covers every spawn/launch/run failure path,
+	// and also the case where the agent exits cleanly without ever firing
+	// UserPromptSubmit (e.g. user `/quit`s immediately). Leaving the marker
+	// in those cases would mis-tag the next unrelated session as a review.
+	defer func() {
+		_, exists, readErr := ReadPendingReviewMarker(ctx)
+		if readErr != nil || !exists {
+			return
+		}
+		if clearErr := ClearPendingReviewMarker(ctx); clearErr != nil {
+			logging.Debug(ctx, "cleanup unadopted review marker", slog.String("error", clearErr.Error()))
+		}
+	}()
 
 	// 7. Spawn agent with the composed initial prompt.
 	launcher, ok := agent.LauncherFor(types.AgentName(agentName))
@@ -404,9 +440,6 @@ func runReview(ctx context.Context, cmd *cobra.Command, trackOnly bool) error {
 		return fmt.Errorf("launch %s: %w", agentName, err)
 	}
 	if err := execCmd.Run(); err != nil {
-		// Best-effort cleanup: clear the pending marker so a stale marker
-		// doesn't tag the next non-review session.
-		_ = ClearPendingReviewMarker() //nolint:errcheck // best-effort cleanup
 		return fmt.Errorf("agent exited: %w", err)
 	}
 	return nil
@@ -499,21 +532,22 @@ func detectReviewScope(ctx context.Context) (reviewScope, error) {
 	return s, nil
 }
 
-// detectBaseBranch prefers origin/HEAD, then the origin/main or origin/master
-// remote-tracking branches, then local main/master. Returns "" if none match.
-//
-// Each step is an actual lookup, not just a best-effort hope: repos without
-// origin/HEAD (e.g., forks) still resolve to "main" when origin/main exists,
-// which matches how humans describe "what to review against."
+// detectBaseBranch resolves a base branch name by trying, in order:
+// origin/HEAD → origin/main → origin/master → local main → local master.
+// Returns "" if none match. Remote-tracking branches come first because they
+// reflect the team's convention; local branches are the fallback for repos
+// that haven't been `git fetch`'d recently.
 func detectBaseBranch(ctx context.Context, repoRoot string) string {
 	if target := gitString(ctx, repoRoot, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"); target != "" {
 		return strings.TrimPrefix(target, "origin/")
 	}
-	for _, candidate := range []string{defaultBaseBranch, "master"} {
-		// Check the remote-tracking branch first; falling back to local.
+	candidates := []string{defaultBaseBranch, "master"}
+	for _, candidate := range candidates {
 		if gitOK(ctx, repoRoot, "rev-parse", "--verify", "--quiet", "refs/remotes/origin/"+candidate) {
 			return candidate
 		}
+	}
+	for _, candidate := range candidates {
 		if gitOK(ctx, repoRoot, "rev-parse", "--verify", "--quiet", "refs/heads/"+candidate) {
 			return candidate
 		}
@@ -580,53 +614,67 @@ func formatReviewScope(s reviewScope) string {
 
 // headHasReviewCheckpoint checks whether HEAD's checkpoint metadata includes
 // a review session. Returns (true, infoString) if HasReview is set.
-// This is O(1): read the Entire-Checkpoint trailer from HEAD, then read the
-// CheckpointSummary via ResolveCommittedReaderForCheckpoint so v2-enabled
-// repos also resolve correctly (v1 on its own would miss v2-written summaries).
+// Single lookup: read the Entire-Checkpoint trailer from HEAD, then resolve
+// the CheckpointSummary via ResolveCommittedReaderForCheckpoint so v2-enabled
+// repos also work (v1 alone would miss v2-written summaries).
+//
+// Each early return logs at Debug so users debugging "why is no review badge
+// showing?" have breadcrumbs without the caller having to ask for five
+// distinct failure modes.
 func headHasReviewCheckpoint(ctx context.Context) (bool, string) {
 	repoRoot, err := paths.WorktreeRoot(ctx)
 	if err != nil {
+		logging.Debug(ctx, "head review check: locate worktree root", slog.String("error", err.Error()))
 		return false, ""
 	}
-	// Read HEAD commit message to extract checkpoint trailer.
 	execCmd := exec.CommandContext(ctx, "git", "-C", repoRoot, "log", "-1", "--format=%B")
 	output, err := execCmd.Output()
 	if err != nil {
+		logging.Debug(ctx, "head review check: read HEAD commit message", slog.String("error", err.Error()))
 		return false, ""
 	}
 	cpID, ok := trailers.ParseCheckpoint(string(output))
 	if !ok {
+		logging.Debug(ctx, "head review check: no Entire-Checkpoint trailer on HEAD")
 		return false, ""
 	}
 	repo, err := git.PlainOpen(repoRoot)
 	if err != nil {
+		logging.Debug(ctx, "head review check: open repository", slog.String("error", err.Error()))
 		return false, ""
 	}
 	v1Store := checkpoint.NewGitStore(repo)
 	v2URL, urlErr := remote.FetchURL(ctx)
 	if urlErr != nil {
-		// V2 store can still operate with "" as the URL — it falls back to
-		// local refs. Log at debug; this is the same pattern as explain.go.
 		logging.Debug(ctx, "head review check: no configured v2 fetch remote", slog.String("error", urlErr.Error()))
 		v2URL = ""
 	}
 	v2Store := checkpoint.NewV2GitStore(repo, v2URL)
 	_, summary, err := checkpoint.ResolveCommittedReaderForCheckpoint(ctx, cpID, v1Store, v2Store, settings.IsCheckpointsV2Enabled(ctx))
 	if err != nil || summary == nil {
+		logging.Debug(ctx, "head review check: resolve checkpoint summary",
+			slog.String("checkpoint_id", cpID.String()),
+			slog.Any("error", err))
 		return false, ""
 	}
 	if !summary.HasReview {
+		logging.Debug(ctx, "head review check: summary HasReview is false", slog.String("checkpoint_id", cpID.String()))
 		return false, ""
 	}
-	// Build a short description for the re-run prompt.
 	return true, fmt.Sprintf("checkpoint %s", cpID)
 }
 
 // saveReviewConfig persists the review map into .entire/settings.json while
-// preserving all other settings.
+// preserving all other settings. A Load error means the file exists but is
+// malformed — we must NOT silently overwrite it with an empty struct, or
+// every unrelated setting the user had configured would be wiped. Return the
+// error so the caller can surface it instead.
 func saveReviewConfig(ctx context.Context, review map[string][]string) error {
 	s, err := settings.Load(ctx)
-	if err != nil || s == nil {
+	if err != nil {
+		return fmt.Errorf("load settings before save: %w", err)
+	}
+	if s == nil {
 		s = &settings.EntireSettings{}
 	}
 	s.Review = review

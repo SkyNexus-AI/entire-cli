@@ -314,6 +314,12 @@ type WriteCommittedOptions struct {
 
 	// ReviewSkills is the snapshot of skills used (only meaningful when Kind is a review kind).
 	ReviewSkills []string
+
+	// HasReview is set by the caller when this session should mark its
+	// checkpoint as reviewed. The caller computes this (e.g. via
+	// session.Kind.IsReview) because checkpoint can't import session
+	// — the session package imports checkpoint, creating a cycle.
+	HasReview bool
 }
 
 // UpdateCommittedOptions contains options for updating an existing committed checkpoint.
