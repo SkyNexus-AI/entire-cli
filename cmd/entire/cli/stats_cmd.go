@@ -79,16 +79,17 @@ func runStats(ctx context.Context, w, errW io.Writer) error {
 
 	stats := computeContributionStats(checkpoints, streakDates)
 	repos := computeRepoContributions(checkpoints)
+	hourly := computeHourlyData(checkpoints)
 	days := groupCommitsByDay(commits)
 
 	// Non-interactive fallback: piped output or accessibility mode
 	if !isTerminalWriter(w) || IsAccessibleMode() {
 		sty := newStatsStyles(w)
-		renderStats(w, sty, stats, repos, days)
+		renderStats(w, sty, stats, repos, hourly, days)
 		return nil
 	}
 
-	return runStatsTUI(stats, repos, days)
+	return runStatsTUI(stats, repos, hourly, days)
 }
 
 func fetchCheckpoints(ctx context.Context, client *api.Client) ([]userCheckpoint, []string, error) {
@@ -244,6 +245,41 @@ func computeRepoContributions(checkpoints []userCheckpoint) []repoContribution {
 	sort.Slice(result, func(i, j int) bool {
 		return result[i].Total > result[j].Total
 	})
+	return result
+}
+
+// computeHourlyData groups checkpoints by date+hour+agent, summing steps.
+func computeHourlyData(checkpoints []userCheckpoint) []hourlyPoint {
+	type key struct {
+		date    string
+		hour    int
+		agentID string
+	}
+	grouped := make(map[key]int)
+
+	for _, cp := range checkpoints {
+		t, err := parseFlexibleTime(cp.CommitDate)
+		if err != nil {
+			continue
+		}
+		local := t.Local()
+		k := key{
+			date:    local.Format("2006-01-02"),
+			hour:    local.Hour(),
+			agentID: normalizeAgentID(cp.Agent),
+		}
+		grouped[k] += derefOr(cp.Steps, 1)
+	}
+
+	result := make([]hourlyPoint, 0, len(grouped))
+	for k, v := range grouped {
+		result = append(result, hourlyPoint{
+			Date:    k.date,
+			Hour:    k.hour,
+			Value:   v,
+			AgentID: k.agentID,
+		})
+	}
 	return result
 }
 

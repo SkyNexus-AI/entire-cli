@@ -203,13 +203,17 @@ func TestRenderCommitList_SingularPlural(t *testing.T) {
 	})
 }
 
-func TestRenderAgentBreakdown_Empty(t *testing.T) {
+func TestRenderBrailleChart_Empty(t *testing.T) {
 	t.Parallel()
 	var buf bytes.Buffer
 	sty := statsStyles{width: 80}
-	renderAgentBreakdown(&buf, sty, nil)
-	if buf.Len() != 0 {
-		t.Error("empty repos should produce no output")
+	renderBrailleChart(&buf, sty, nil, nil)
+	out := buf.String()
+	if !strings.Contains(out, "CONTRIBUTIONS") {
+		t.Error("should still show CONTRIBUTIONS header")
+	}
+	if !strings.Contains(out, "No activity data") {
+		t.Error("should show 'No activity data' when empty")
 	}
 }
 

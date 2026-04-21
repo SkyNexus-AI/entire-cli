@@ -78,6 +78,14 @@ type repoContribution struct {
 	Agents map[string]int // agentID -> checkpoint count
 }
 
+// hourlyPoint is a single data point for the contribution chart.
+type hourlyPoint struct {
+	Date    string // "2006-01-02"
+	Hour    int
+	Value   int // step count
+	AgentID string
+}
+
 // commitDay groups commits by date for display.
 type commitDay struct {
 	Date    string

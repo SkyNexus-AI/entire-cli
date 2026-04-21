@@ -11,9 +11,10 @@ import (
 )
 
 type statsModel struct {
-	stats contributionStats
-	repos []repoContribution
-	days  []commitDay
+	stats  contributionStats
+	repos  []repoContribution
+	hourly []hourlyPoint
+	days   []commitDay
 
 	viewport viewport.Model
 	sty      statsStyles
@@ -22,11 +23,12 @@ type statsModel struct {
 	ready    bool
 }
 
-func runStatsTUI(stats contributionStats, repos []repoContribution, days []commitDay) error {
+func runStatsTUI(stats contributionStats, repos []repoContribution, hourly []hourlyPoint, days []commitDay) error {
 	m := statsModel{
-		stats: stats,
-		repos: repos,
-		days:  days,
+		stats:  stats,
+		repos:  repos,
+		hourly: hourly,
+		days:   days,
 	}
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
@@ -90,7 +92,7 @@ func (m statsModel) renderHeader() string {
 	buf.WriteString("\n")
 	renderStatCards(&buf, m.sty, m.stats)
 	buf.WriteString("\n")
-	renderAgentBreakdown(&buf, m.sty, m.repos)
+	renderBrailleChart(&buf, m.sty, m.hourly, m.repos)
 	buf.WriteString("\n")
 	renderRepoChart(&buf, m.sty, m.repos)
 	buf.WriteString("\n")
