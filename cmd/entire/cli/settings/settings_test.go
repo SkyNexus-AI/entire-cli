@@ -796,16 +796,16 @@ func TestCheckpointsVersion(t *testing.T) {
 		opts map[string]any
 		want int
 	}{
-		{"unset returns zero", nil, 0},
-		{"empty options returns zero", map[string]any{}, 0},
+		{"unset defaults to one", nil, 1},
+		{"empty options defaults to one", map[string]any{}, 1},
 		{"integer 2", map[string]any{"checkpoints_version": 2}, 2},
 		{"float 2 from json", map[string]any{"checkpoints_version": float64(2)}, 2},
 		{"integer 3 (not yet supported but surfaced)", map[string]any{"checkpoints_version": 3}, 3},
-		{"zero is ignored", map[string]any{"checkpoints_version": 0}, 0},
-		{"negative is ignored", map[string]any{"checkpoints_version": -1}, 0},
-		{"non-integer float ignored", map[string]any{"checkpoints_version": 2.5}, 0},
-		{"string is ignored", map[string]any{"checkpoints_version": "2"}, 0},
-		{"bool is ignored", map[string]any{"checkpoints_version": true}, 0},
+		{"zero falls back to default", map[string]any{"checkpoints_version": 0}, 1},
+		{"negative falls back to default", map[string]any{"checkpoints_version": -1}, 1},
+		{"non-integer float falls back to default", map[string]any{"checkpoints_version": 2.5}, 1},
+		{"string falls back to default", map[string]any{"checkpoints_version": "2"}, 1},
+		{"bool falls back to default", map[string]any{"checkpoints_version": true}, 1},
 	}
 
 	for _, tt := range tests {

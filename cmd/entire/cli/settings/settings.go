@@ -607,12 +607,12 @@ func IsCheckpointsV2Enabled(ctx context.Context) bool {
 	return settings.IsCheckpointsV2Enabled()
 }
 
-// CheckpointsVersion returns the configured checkpoints format version, or 0
+// CheckpointsVersion returns the configured checkpoints format version, or 1
 // if settings cannot be loaded or the value is unset/invalid.
 func CheckpointsVersion(ctx context.Context) int {
 	s, err := Load(ctx)
 	if err != nil {
-		return 0
+		return 1
 	}
 	return s.CheckpointsVersion()
 }
@@ -722,15 +722,15 @@ func (s *EntireSettings) IsCheckpointsV2Enabled() bool {
 }
 
 // CheckpointsVersion returns the configured checkpoints format version from
-// strategy_options.checkpoints_version. Returns 0 when unset or when the value
-// is not a positive integer. 2 is the first and only supported version.
+// strategy_options.checkpoints_version. Returns 1 when unset or when the value
+// is not a positive integer. 2 is the only other supported version.
 func (s *EntireSettings) CheckpointsVersion() int {
 	if s.StrategyOptions == nil {
-		return 0
+		return 1
 	}
 	val, ok := s.StrategyOptions["checkpoints_version"]
 	if !ok {
-		return 0
+		return 1
 	}
 	switch v := val.(type) {
 	case int:
@@ -743,7 +743,7 @@ func (s *EntireSettings) CheckpointsVersion() int {
 			return intV
 		}
 	}
-	return 0
+	return 1
 }
 
 // IsPushV2RefsEnabled checks if pushing v2 refs is enabled.
