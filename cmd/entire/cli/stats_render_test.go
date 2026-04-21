@@ -43,8 +43,9 @@ func TestUniqueCommitAgents_FallsBackToSingularAgentEmptySlice(t *testing.T) {
 		},
 	}
 	agents := uniqueCommitAgents(c)
-	if len(agents) != 1 || agents[0] != "codex" {
-		t.Errorf("got %v, want [codex] (should fall back to Agent field)", agents)
+	wantAgent := "codex"
+	if len(agents) != 1 || agents[0] != wantAgent {
+		t.Errorf("got %v, want [%s] (should fall back to Agent field)", agents, wantAgent)
 	}
 }
 

@@ -315,14 +315,6 @@ func renderCommitListN(w io.Writer, sty statsStyles, days []commitDay, maxDays i
 				msg = firstLine(*c.CommitMsg)
 			}
 
-			maxMsg := sty.width - 10 - len(c.RepoFullName) - 20
-			if maxMsg < 20 {
-				maxMsg = 20
-			}
-			if len(msg) > maxMsg {
-				msg = msg[:maxMsg-3] + "..."
-			}
-
 			var badges []string
 			for _, a := range uniqueCommitAgents(c) {
 				display := agentDisplayMap[a]
@@ -342,15 +334,7 @@ func renderCommitListN(w io.Writer, sty statsStyles, days []commitDay, maxDays i
 				cpStr = fmt.Sprintf("%d checkpoints", cpCount)
 			}
 
-			fmt.Fprintf(w, "%s %s %s",
-				sty.render(sty.commitH, sha),
-				sty.render(sty.commitM, msg),
-				sty.render(sty.muted, c.RepoFullName))
-			for _, badge := range badges {
-				fmt.Fprintf(w, "  %s", badge)
-			}
-			fmt.Fprintln(w)
-
+			// Build right-aligned stats: +N / -N  M files  [K checkpoints]
 			var statParts []string
 			statParts = append(statParts,
 				sty.render(sty.add, fmt.Sprintf("+%d", c.Additions))+
@@ -360,8 +344,58 @@ func renderCommitListN(w io.Writer, sty statsStyles, days []commitDay, maxDays i
 			if cpStr != "" {
 				statParts = append(statParts, sty.render(sty.muted, cpStr))
 			}
+			rightSide := strings.Join(statParts, sty.render(sty.dim, "  "))
+			// Plain length for padding (ANSI codes don't count)
+			rightPlain := fmt.Sprintf("+%d / -%d  %s", c.Additions, c.Deletions, fileStats)
+			if cpStr != "" {
+				rightPlain += "  " + cpStr
+			}
 
-			fmt.Fprintf(w, "        %s\n", strings.Join(statParts, sty.render(sty.dim, "  ")))
+			// Build left side: hash  message  repo  [badges]
+			left := sty.render(sty.commitH, sha) + " " +
+				sty.render(sty.commitM, msg) + " " +
+				sty.render(sty.muted, c.RepoFullName)
+			leftPlain := sha + " " + msg + " " + c.RepoFullName
+			var leftSb359 strings.Builder
+			for _, badge := range badges {
+				leftSb359.WriteString("  " + badge)
+			}
+			left += leftSb359.String()
+			var leftPlainSb362 strings.Builder
+			for _, a := range uniqueCommitAgents(c) {
+				leftPlainSb362.WriteString("  " + agentDisplayMap[a].Label)
+			}
+			leftPlain += leftPlainSb362.String()
+
+			// Truncate message if line would exceed width
+			maxMsg := sty.width - (len(leftPlain) - len(msg)) - len(rightPlain) - 2
+			if maxMsg < 10 {
+				maxMsg = 10
+			}
+			if len(msg) > maxMsg {
+				msg = msg[:maxMsg-3] + "..."
+				// Rebuild left side with truncated message
+				left = sty.render(sty.commitH, sha) + " " +
+					sty.render(sty.commitM, msg) + " " +
+					sty.render(sty.muted, c.RepoFullName)
+				leftPlain = sha + " " + msg + " " + c.RepoFullName
+				var leftSb378 strings.Builder
+				for _, badge := range badges {
+					leftSb378.WriteString("  " + badge)
+				}
+				left += leftSb378.String()
+				var leftPlainSb381 strings.Builder
+				for _, a := range uniqueCommitAgents(c) {
+					leftPlainSb381.WriteString("  " + agentDisplayMap[a].Label)
+				}
+				leftPlain += leftPlainSb381.String()
+			}
+
+			gap := sty.width - len(leftPlain) - len(rightPlain)
+			if gap < 2 {
+				gap = 2
+			}
+			fmt.Fprintf(w, "%s%s%s\n", left, strings.Repeat(" ", gap), rightSide)
 		}
 		fmt.Fprintln(w)
 	}
