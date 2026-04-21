@@ -203,8 +203,6 @@ func AllProtectedFiles() []string {
 // LauncherFor returns the Launcher implementation for the given agent name,
 // or ok=false if the agent does not support subprocess launching. Callers
 // should fall back to "--track-only" mode in that case.
-//
-//nolint:ireturn // Intentionally returns an interface; callers need the Launcher interface, not a concrete type.
 func LauncherFor(name types.AgentName) (Launcher, bool) {
 	a, err := Get(name)
 	if err != nil {
