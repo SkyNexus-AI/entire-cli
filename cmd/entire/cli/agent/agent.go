@@ -199,6 +199,31 @@ type TextGenerator interface {
 	GenerateText(ctx context.Context, prompt string, model string) (string, error)
 }
 
+// CompactedTranscript contains the result of transcript compaction into Entire
+// Transcript Format. Assets are accepted in the protocol shape for forward
+// compatibility but may not yet be persisted by all call sites.
+type CompactedTranscript struct {
+	Transcript []byte
+	Assets     []CompactedTranscriptAsset
+}
+
+// CompactedTranscriptAsset is binary data extracted during transcript compaction.
+type CompactedTranscriptAsset struct {
+	Name      string
+	MediaType string
+	Data      []byte
+}
+
+// TranscriptCompactor is implemented by agents that can produce Entire
+// Transcript Format directly from their native transcript representation.
+type TranscriptCompactor interface {
+	Agent
+
+	// CompactTranscript converts the transcript referenced by sessionRef into
+	// Entire Transcript Format and returns the compact transcript bytes.
+	CompactTranscript(ctx context.Context, sessionRef string) (*CompactedTranscript, error)
+}
+
 // HookResponseWriter is implemented by agents that support structured hook responses.
 // Agents that implement this can output messages (e.g., banners) to the user via
 // the agent's response protocol. For example, Claude Code outputs JSON with a
