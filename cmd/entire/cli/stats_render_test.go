@@ -39,13 +39,12 @@ func TestUniqueCommitAgents_FallsBackToSingularAgentEmptySlice(t *testing.T) {
 	t.Parallel()
 	c := userCommit{
 		Checkpoints: []userCommitCheckpoint{
-			{Agent: "Codex", Agents: []string{}},
+			{Agent: "Amp", Agents: []string{}},
 		},
 	}
 	agents := uniqueCommitAgents(c)
-	wantAgent := "codex"
-	if len(agents) != 1 || agents[0] != wantAgent {
-		t.Errorf("got %v, want [%s] (should fall back to Agent field)", agents, wantAgent)
+	if len(agents) != 1 || agents[0] != "amp" {
+		t.Errorf("got %v, want [amp] (should fall back to Agent field)", agents)
 	}
 }
 

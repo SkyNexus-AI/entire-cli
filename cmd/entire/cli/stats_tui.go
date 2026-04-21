@@ -2,20 +2,46 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/entireio/cli/cmd/entire/cli/api"
+	"golang.org/x/sync/errgroup"
 )
 
-type statsModel struct {
+// statsDataMsg is sent when API data has been fetched.
+type statsDataMsg struct {
 	stats  contributionStats
 	repos  []repoContribution
 	hourly []hourlyPoint
 	days   []commitDay
+}
 
+// statsErrMsg is sent when fetching fails.
+type statsErrMsg struct{ err error }
+
+type statsModel struct {
+	// Data (nil until loaded)
+	stats  *contributionStats
+	repos  []repoContribution
+	hourly []hourlyPoint
+	days   []commitDay
+
+	// Loading state
+	loading bool
+	loadErr error
+	spinner spinner.Model
+
+	// Fetch context
+	ctx    context.Context
+	client *api.Client
+
+	// View state
 	viewport viewport.Model
 	sty      statsStyles
 	width    int
@@ -23,12 +49,16 @@ type statsModel struct {
 	ready    bool
 }
 
-func runStatsTUI(stats contributionStats, repos []repoContribution, hourly []hourlyPoint, days []commitDay) error {
+func runStatsTUI(ctx context.Context, client *api.Client) error {
+	sp := spinner.New()
+	sp.Spinner = spinner.Dot
+	sp.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+
 	m := statsModel{
-		stats:  stats,
-		repos:  repos,
-		hourly: hourly,
-		days:   days,
+		loading: true,
+		spinner: sp,
+		ctx:     ctx,
+		client:  client,
 	}
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
@@ -37,46 +67,121 @@ func runStatsTUI(stats contributionStats, repos []repoContribution, hourly []hou
 	return nil
 }
 
+func (m statsModel) fetchData() tea.Msg { //nolint:ireturn // bubbletea Cmd signature requires tea.Msg return
+	var checkpoints []userCheckpoint
+	var streakDates []string
+	var commits []userCommit
+
+	g, gCtx := errgroup.WithContext(m.ctx)
+	g.Go(func() error {
+		var err error
+		checkpoints, streakDates, err = fetchCheckpoints(gCtx, m.client)
+		return err
+	})
+	g.Go(func() error {
+		var err error
+		commits, err = fetchCommits(gCtx, m.client)
+		return err
+	})
+	if err := g.Wait(); err != nil {
+		return statsErrMsg{err: err}
+	}
+
+	stats := computeContributionStats(checkpoints, streakDates)
+	repos := computeRepoContributions(checkpoints)
+	hourly := computeHourlyData(checkpoints)
+	days := groupCommitsByDay(commits)
+
+	return statsDataMsg{
+		stats:  stats,
+		repos:  repos,
+		hourly: hourly,
+		days:   days,
+	}
+}
+
 func (m statsModel) Init() tea.Cmd {
-	return nil
+	return tea.Batch(m.spinner.Tick, m.fetchData)
 }
 
 func (m statsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint:ireturn // bubbletea interface
 	switch msg := msg.(type) {
+	case statsDataMsg:
+		m.loading = false
+		m.stats = &msg.stats
+		m.repos = msg.repos
+		m.hourly = msg.hourly
+		m.days = msg.days
+		if m.width > 0 {
+			m = m.withViewport()
+		}
+		return m, nil
+
+	case statsErrMsg:
+		m.loading = false
+		m.loadErr = msg.err
+		return m, nil
+
 	case tea.KeyMsg:
 		if msg.Type == tea.KeyEscape || msg.Type == tea.KeyCtrlC || msg.String() == "q" {
 			return m, tea.Quit
 		}
+
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
 		m.sty = newStatsStylesWithWidth(m.width)
-
-		headerHeight := m.headerLineCount()
-		vpHeight := m.height - headerHeight - 1 // 1 for footer
-		if vpHeight < 1 {
-			vpHeight = 1
+		if m.stats != nil {
+			m = m.withViewport()
 		}
-
-		if !m.ready {
-			m.viewport = viewport.New(m.width, vpHeight)
-			m.ready = true
-		} else {
-			m.viewport.Width = m.width
-			m.viewport.Height = vpHeight
-		}
-		m.viewport.SetContent(m.renderCommits())
 		return m, nil
+
+	case spinner.TickMsg:
+		if m.loading {
+			var cmd tea.Cmd
+			m.spinner, cmd = m.spinner.Update(msg)
+			return m, cmd
+		}
 	}
 
-	var cmd tea.Cmd
-	m.viewport, cmd = m.viewport.Update(msg)
-	return m, cmd
+	if m.ready {
+		var cmd tea.Cmd
+		m.viewport, cmd = m.viewport.Update(msg)
+		return m, cmd
+	}
+
+	return m, nil
+}
+
+func (m statsModel) withViewport() statsModel {
+	headerHeight := m.headerLineCount()
+	vpHeight := m.height - headerHeight - 1
+	if vpHeight < 1 {
+		vpHeight = 1
+	}
+
+	if !m.ready {
+		m.viewport = viewport.New(m.width, vpHeight)
+		m.ready = true
+	} else {
+		m.viewport.Width = m.width
+		m.viewport.Height = vpHeight
+	}
+	m.viewport.SetContent(m.renderCommits())
+	return m
 }
 
 func (m statsModel) View() string {
+	if m.loadErr != nil {
+		return fmt.Sprintf("\n  Failed to load stats: %s\n\n  Press q to quit.\n", m.loadErr)
+	}
+
+	if m.loading {
+		return fmt.Sprintf("\n  %s Loading stats...\n", m.spinner.View())
+	}
+
 	if !m.ready {
-		return "Loading..."
+		return ""
 	}
 
 	var b strings.Builder
@@ -88,9 +193,12 @@ func (m statsModel) View() string {
 }
 
 func (m statsModel) renderHeader() string {
+	if m.stats == nil {
+		return ""
+	}
 	var buf bytes.Buffer
 	buf.WriteString("\n")
-	renderStatCards(&buf, m.sty, m.stats)
+	renderStatCards(&buf, m.sty, *m.stats)
 	buf.WriteString("\n")
 	renderContributionChart(&buf, m.sty, m.hourly, m.repos)
 	buf.WriteString("\n")
@@ -100,8 +208,7 @@ func (m statsModel) renderHeader() string {
 }
 
 func (m statsModel) headerLineCount() int {
-	header := m.renderHeader()
-	return strings.Count(header, "\n")
+	return strings.Count(m.renderHeader(), "\n")
 }
 
 func (m statsModel) renderCommits() string {
@@ -130,7 +237,7 @@ func (m statsModel) renderFooter() string {
 }
 
 func newStatsStylesWithWidth(width int) statsStyles {
-	s := statsStyles{
+	return statsStyles{
 		colorEnabled: true,
 		width:        width,
 		bold:         lipgloss.NewStyle().Bold(true),
@@ -146,7 +253,6 @@ func newStatsStylesWithWidth(width int) statsStyles {
 		del:          lipgloss.NewStyle().Foreground(lipgloss.Color("1")),
 		muted:        lipgloss.NewStyle().Foreground(lipgloss.Color("8")),
 	}
-	return s
 }
 
 func padLeft(n int) string {
@@ -156,7 +262,6 @@ func padLeft(n int) string {
 	} else if n < 100 {
 		s.WriteString(" ")
 	}
-	s.WriteString(strings.TrimSpace(strings.Repeat(" ", 0)))
 	fmt.Fprintf(&s, "%d", n)
 	return s.String()
 }

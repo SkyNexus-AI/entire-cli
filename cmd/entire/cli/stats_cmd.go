@@ -58,6 +58,15 @@ func runStats(ctx context.Context, w, errW io.Writer) error {
 		return NewSilentError(err)
 	}
 
+	// Non-interactive fallback: piped output or accessibility mode
+	if !isTerminalWriter(w) || IsAccessibleMode() {
+		return runStatsStatic(ctx, w, client)
+	}
+
+	return runStatsTUI(ctx, client)
+}
+
+func runStatsStatic(ctx context.Context, w io.Writer, client *api.Client) error {
 	var checkpoints []userCheckpoint
 	var streakDates []string
 	var commits []userCommit
@@ -82,14 +91,9 @@ func runStats(ctx context.Context, w, errW io.Writer) error {
 	hourly := computeHourlyData(checkpoints)
 	days := groupCommitsByDay(commits)
 
-	// Non-interactive fallback: piped output or accessibility mode
-	if !isTerminalWriter(w) || IsAccessibleMode() {
-		sty := newStatsStyles(w)
-		renderStats(w, sty, stats, repos, hourly, days)
-		return nil
-	}
-
-	return runStatsTUI(stats, repos, hourly, days)
+	sty := newStatsStyles(w)
+	renderStats(w, sty, stats, repos, hourly, days)
+	return nil
 }
 
 func fetchCheckpoints(ctx context.Context, client *api.Client) ([]userCheckpoint, []string, error) {
