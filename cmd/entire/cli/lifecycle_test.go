@@ -12,6 +12,7 @@ import (
 	"github.com/entireio/cli/cmd/entire/cli/agent/opencode"
 	"github.com/entireio/cli/cmd/entire/cli/agent/types"
 	"github.com/entireio/cli/cmd/entire/cli/paths"
+	"github.com/entireio/cli/cmd/entire/cli/session"
 	"github.com/entireio/cli/cmd/entire/cli/strategy"
 	"github.com/entireio/cli/cmd/entire/cli/testutil"
 	"github.com/go-git/go-git/v6"
@@ -950,4 +951,109 @@ func TestHandleLifecycleTurnEnd_BackfillsPromptFromOpenCodeTranscript(t *testing
 	require.NoError(t, loadErr)
 	require.NotNil(t, updated)
 	require.Contains(t, updated.LastPrompt, "create a file called notes/deep.md")
+}
+
+func TestAdoptPendingReviewMarker(t *testing.T) {
+	tmp := t.TempDir()
+	testutil.InitRepo(t, tmp)
+	testutil.WriteFile(t, tmp, "f.txt", "x")
+	testutil.GitAdd(t, tmp, "f.txt")
+	testutil.GitCommit(t, tmp, "init")
+	t.Chdir(tmp)
+
+	if err := WritePendingReviewMarker(PendingReviewMarker{
+		AgentName:   "claude-code",
+		Skills:      []string{"/pr-review-toolkit:review-pr"},
+		StartingSHA: "abc",
+		StartedAt:   time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Pure-function test of the helper.
+	got, modified, err := adoptPendingReviewMarkerInto(context.Background(), session.State{
+		SessionID: "s1",
+		Kind:      "",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !modified {
+		t.Fatal("expected modified=true when marker exists")
+	}
+	if got.Kind != session.KindReview {
+		t.Errorf("Kind = %q, want review", got.Kind)
+	}
+	if got.ReviewStatus != session.ReviewStatusInProgress {
+		t.Errorf("ReviewStatus = %q", got.ReviewStatus)
+	}
+	if len(got.ReviewSkills) != 1 || got.ReviewSkills[0] != "/pr-review-toolkit:review-pr" {
+		t.Errorf("ReviewSkills = %v", got.ReviewSkills)
+	}
+
+	// Marker should be cleared after adoption.
+	_, ok, readErr := ReadPendingReviewMarker()
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if ok {
+		t.Error("expected marker cleared after adoption")
+	}
+}
+
+func TestAdoptPendingReviewMarker_NoMarker(t *testing.T) {
+	tmp := t.TempDir()
+	testutil.InitRepo(t, tmp)
+	testutil.WriteFile(t, tmp, "f.txt", "x")
+	testutil.GitAdd(t, tmp, "f.txt")
+	testutil.GitCommit(t, tmp, "init")
+	t.Chdir(tmp)
+
+	// No marker written.
+	got, modified, err := adoptPendingReviewMarkerInto(context.Background(), session.State{SessionID: "s2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if modified {
+		t.Error("expected modified=false when no marker present")
+	}
+	if got.Kind != "" {
+		t.Errorf("Kind = %q, want empty", got.Kind)
+	}
+}
+
+func TestAdoptPendingReviewMarker_AlreadyReview(t *testing.T) {
+	tmp := t.TempDir()
+	testutil.InitRepo(t, tmp)
+	testutil.WriteFile(t, tmp, "f.txt", "x")
+	testutil.GitAdd(t, tmp, "f.txt")
+	testutil.GitCommit(t, tmp, "init")
+	t.Chdir(tmp)
+
+	if err := WritePendingReviewMarker(PendingReviewMarker{
+		AgentName: "claude-code",
+		Skills:    []string{"/x"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// State already tagged — adoption should be a no-op (not a second re-tag).
+	in := session.State{SessionID: "s3", Kind: session.KindReview, ReviewStatus: session.ReviewStatusInProgress, ReviewSkills: []string{"/y"}}
+	got, modified, err := adoptPendingReviewMarkerInto(context.Background(), in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if modified {
+		t.Error("expected modified=false when session already has Kind=review")
+	}
+	if len(got.ReviewSkills) != 1 || got.ReviewSkills[0] != "/y" {
+		t.Errorf("ReviewSkills should be unchanged: %v", got.ReviewSkills)
+	}
+	// Marker should NOT be cleared since adoption didn't happen.
+	_, ok, readErr := ReadPendingReviewMarker()
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if !ok {
+		t.Error("expected marker preserved when adoption was a no-op")
+	}
 }

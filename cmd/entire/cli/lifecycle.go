@@ -267,6 +267,26 @@ func handleLifecycleTurnStart(ctx context.Context, ag agent.Agent, event *agent.
 		logging.Warn(logCtx, "failed to initialize session state",
 			slog.String("error", err.Error()))
 	}
+
+	// Best-effort: adopt any pending review marker written by `entire review`
+	// before spawning the agent. Errors in load/save must not fail the turn.
+	if stateStore, storeErr := session.NewStateStore(ctx); storeErr != nil {
+		logging.Warn(logCtx, "failed to create state store for review marker adoption",
+			slog.String("error", storeErr.Error()))
+	} else if state, loadErr := stateStore.Load(ctx, sessionID); loadErr != nil {
+		logging.Warn(logCtx, "failed to load session state for review marker adoption",
+			slog.String("error", loadErr.Error()))
+	} else if state != nil {
+		if updated, modified, adoptErr := adoptPendingReviewMarkerInto(logCtx, *state); adoptErr != nil {
+			logging.Warn(logCtx, "failed to adopt pending review marker",
+				slog.String("error", adoptErr.Error()))
+		} else if modified {
+			if saveErr := stateStore.Save(ctx, &updated); saveErr != nil {
+				logging.Warn(logCtx, "failed to save session state after review marker adoption",
+					slog.String("error", saveErr.Error()))
+			}
+		}
+	}
 	initSpan.End()
 
 	return nil

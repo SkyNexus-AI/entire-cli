@@ -559,6 +559,15 @@ func ClearGitCommonDirCache() {
 	gitCommonDirMu.Unlock()
 }
 
+// GetGitCommonDir returns the .git common directory for the current working
+// directory. In a regular checkout this is .git/; in a worktree, it's the
+// main repo's .git/ (not .git/worktrees/<name>/). Result is cached per
+// working directory. This is a public wrapper around the package-internal
+// helper for callers outside this package.
+func GetGitCommonDir(ctx context.Context) (string, error) {
+	return getGitCommonDir(ctx)
+}
+
 // getGitCommonDir returns the path to the shared git directory.
 // In a regular checkout, this is .git/
 // In a worktree, this is the main repo's .git/ (not .git/worktrees/<name>/)
