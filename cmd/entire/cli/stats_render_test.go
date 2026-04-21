@@ -2,8 +2,10 @@ package cli
 
 import (
 	"bytes"
+	"os"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestUniqueCommitAgents_UsesAgentsSlice(t *testing.T) {
@@ -216,6 +218,30 @@ func TestRenderContributionChart_Empty(t *testing.T) {
 	}
 }
 
+func TestRenderContributionChart_MonthAxisWideWidth(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	sty := statsStyles{width: 200}
+	hourly := []hourlyPoint{
+		{Date: "2026-04-01", Hour: 12, Value: 3, AgentID: "claude"},
+	}
+	repos := []repoContribution{
+		{Repo: "org/repo", Total: 1, Agents: map[string]int{"claude": 1}},
+	}
+
+	renderContributionChart(&buf, sty, hourly, repos)
+	out := buf.String()
+
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	if len(lines) < 2 {
+		t.Fatalf("expected at least 2 chart lines, got %d", len(lines))
+	}
+	axis := lines[1]
+	if len(axis) > sty.width+8 {
+		t.Fatalf("month axis too wide: got %d chars for width %d", len(axis), sty.width)
+	}
+}
+
 func TestRenderRepoChart_LimitsToFive(t *testing.T) {
 	t.Parallel()
 	var repos []repoContribution
@@ -268,5 +294,55 @@ func TestPadOrTruncate(t *testing.T) {
 				t.Errorf("padOrTruncate(%q, %d) = %q, want %q", tt.input, tt.width, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestRenderCommitList_UnicodeMessageSafeTruncation(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	sty := statsStyles{width: 40}
+	msg := "fix café 🔥 renderer alignment"
+	days := []commitDay{
+		{Date: "2026-01-15", Commits: []userCommit{
+			{
+				CommitSHA:    "abc1234567",
+				CommitMsg:    &msg,
+				RepoFullName: "org/repo",
+				FilesChanged: 1,
+			},
+		}},
+	}
+
+	renderCommitList(&buf, sty, days)
+	out := buf.String()
+
+	if !utf8.ValidString(out) {
+		t.Fatal("rendered commit list contains invalid UTF-8")
+	}
+}
+
+func TestNewStatsStylesWithWidth_RespectsColorFlag(t *testing.T) {
+	t.Parallel()
+	sty := newStatsStylesWithWidth(80, false)
+	if sty.colorEnabled {
+		t.Fatal("expected colorEnabled=false")
+	}
+}
+
+func TestRunStatsTUI_NoColorStyleFlag(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+
+	m := statsModel{
+		useColor: shouldUseColor(os.Stdout),
+	}
+	m.width = 80
+	m = m.withViewport()
+	m.sty = newStatsStylesWithWidth(m.width, m.useColor)
+
+	if m.useColor {
+		t.Fatal("expected NO_COLOR to disable stats TUI colors")
+	}
+	if m.sty.colorEnabled {
+		t.Fatal("expected stats TUI styles to disable colors")
 	}
 }

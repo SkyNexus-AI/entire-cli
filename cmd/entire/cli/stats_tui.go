@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -44,6 +45,7 @@ type statsModel struct {
 	// View state
 	viewport viewport.Model
 	sty      statsStyles
+	useColor bool
 	width    int
 	height   int
 	ready    bool
@@ -55,10 +57,11 @@ func runStatsTUI(ctx context.Context, client *api.Client) error {
 	sp.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 
 	m := statsModel{
-		loading: true,
-		spinner: sp,
-		ctx:     ctx,
-		client:  client,
+		loading:  true,
+		spinner:  sp,
+		ctx:      ctx,
+		client:   client,
+		useColor: shouldUseColor(os.Stdout),
 	}
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
@@ -130,7 +133,7 @@ func (m statsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint:ireturn 
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		m.sty = newStatsStylesWithWidth(m.width)
+		m.sty = newStatsStylesWithWidth(m.width, m.useColor)
 		if m.stats != nil {
 			m = m.withViewport()
 		}
@@ -236,9 +239,9 @@ func (m statsModel) renderFooter() string {
 		scrollPct
 }
 
-func newStatsStylesWithWidth(width int) statsStyles {
+func newStatsStylesWithWidth(width int, useColor bool) statsStyles {
 	return statsStyles{
-		colorEnabled: true,
+		colorEnabled: useColor,
 		width:        width,
 		bold:         lipgloss.NewStyle().Bold(true),
 		dim:          lipgloss.NewStyle().Faint(true),

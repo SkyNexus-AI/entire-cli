@@ -274,7 +274,11 @@ func renderDotChart(w io.Writer, sty statsStyles, hourly []hourlyPoint, repos []
 		month := date.Format("Jan")
 		if month != lastMonth {
 			fmt.Fprint(w, sty.render(sty.muted, month))
-			d += len(month)/max(colWidth, 1) - 1
+			labelCols := int(math.Ceil(float64(len(month)) / float64(max(colWidth, 1))))
+			if labelCols < 1 {
+				labelCols = 1
+			}
+			d += labelCols - 1
 			lastMonth = month
 		} else {
 			fmt.Fprint(w, strings.Repeat(" ", colWidth))
@@ -664,12 +668,12 @@ func renderCommitListN(w io.Writer, sty statsStyles, days []commitDay, maxDays i
 			leftPlain += leftPlainSb362.String()
 
 			// Truncate message if line would exceed width
-			maxMsg := sty.width - (len(leftPlain) - len(msg)) - len(rightPlain) - 2
+			maxMsg := sty.width - (lipgloss.Width(leftPlain) - lipgloss.Width(msg)) - lipgloss.Width(rightPlain) - 2
 			if maxMsg < 10 {
 				maxMsg = 10
 			}
-			if len(msg) > maxMsg {
-				msg = msg[:maxMsg-3] + "..."
+			if lipgloss.Width(msg) > maxMsg {
+				msg = truncateDisplayWidth(msg, maxMsg, "...")
 				// Rebuild left side with truncated message
 				left = sty.render(sty.commitH, sha) + " " +
 					sty.render(sty.commitM, msg) + " " +
@@ -687,7 +691,7 @@ func renderCommitListN(w io.Writer, sty statsStyles, days []commitDay, maxDays i
 				leftPlain += leftPlainSb381.String()
 			}
 
-			gap := sty.width - len(leftPlain) - len(rightPlain)
+			gap := sty.width - lipgloss.Width(leftPlain) - lipgloss.Width(rightPlain)
 			if gap < 2 {
 				gap = 2
 			}
@@ -743,4 +747,26 @@ func padOrTruncate(s string, width int) string {
 		return string(runes[:width-1]) + "…"
 	}
 	return s + strings.Repeat(" ", width-len(runes))
+}
+
+func truncateDisplayWidth(s string, width int, tail string) string {
+	if lipgloss.Width(s) <= width {
+		return s
+	}
+	if width <= 0 {
+		return ""
+	}
+	if lipgloss.Width(tail) >= width {
+		return tail[:width]
+	}
+
+	var b strings.Builder
+	remaining := width - lipgloss.Width(tail)
+	for _, r := range s {
+		if lipgloss.Width(b.String()+string(r)) > remaining {
+			break
+		}
+		b.WriteRune(r)
+	}
+	return b.String() + tail
 }
