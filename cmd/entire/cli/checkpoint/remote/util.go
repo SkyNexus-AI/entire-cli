@@ -241,6 +241,11 @@ func ExtractOwnerFromRemoteURL(rawURL string) string {
 func deriveCheckpointURLFromInfo(info *Info, config *settings.CheckpointRemoteConfig) (string, error) {
 	switch info.Protocol {
 	case ProtocolSSH:
+		// SCP-style (git@host:repo) doesn't support ports. When Host includes
+		// a port (e.g., from ssh://git@host:2222/...), use the ssh:// URL form.
+		if strings.Contains(info.Host, ":") {
+			return fmt.Sprintf("ssh://git@%s/%s.git", info.Host, config.Repo), nil
+		}
 		return fmt.Sprintf("git@%s:%s.git", info.Host, config.Repo), nil
 	case ProtocolHTTPS:
 		return fmt.Sprintf("https://%s/%s.git", info.Host, config.Repo), nil

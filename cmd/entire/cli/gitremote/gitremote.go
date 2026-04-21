@@ -73,7 +73,7 @@ func ParseURL(rawURL string) (*Info, error) {
 		return nil, err
 	}
 
-	return &Info{Protocol: u.Scheme, Host: u.Hostname(), Owner: owner, Repo: repo}, nil
+	return &Info{Protocol: u.Scheme, Host: u.Host, Owner: owner, Repo: repo}, nil
 }
 
 // RedactURL removes credentials and query parameters from a URL for safe logging.
