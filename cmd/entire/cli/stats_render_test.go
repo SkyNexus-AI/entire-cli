@@ -203,11 +203,11 @@ func TestRenderCommitList_SingularPlural(t *testing.T) {
 	})
 }
 
-func TestRenderBrailleChart_Empty(t *testing.T) {
+func TestRenderContributionChart_Empty(t *testing.T) {
 	t.Parallel()
 	var buf bytes.Buffer
 	sty := statsStyles{width: 80}
-	renderBrailleChart(&buf, sty, nil, nil)
+	renderContributionChart(&buf, sty, nil, nil)
 	out := buf.String()
 	if !strings.Contains(out, "CONTRIBUTIONS") {
 		t.Error("should still show CONTRIBUTIONS header")

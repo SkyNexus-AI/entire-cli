@@ -122,7 +122,7 @@ func renderStats(w io.Writer, sty statsStyles, stats contributionStats, repos []
 	fmt.Fprintln(w)
 	renderStatCards(w, sty, stats)
 	fmt.Fprintln(w)
-	renderBrailleChart(w, sty, hourly, repos)
+	renderContributionChart(w, sty, hourly, repos)
 	fmt.Fprintln(w)
 	renderRepoChart(w, sty, repos)
 	fmt.Fprintln(w)
@@ -163,6 +163,161 @@ func renderStatCards(w io.Writer, sty statsStyles, stats contributionStats) {
 	fmt.Fprintln(w, strings.Join(midParts, sep))
 	fmt.Fprintln(w, strings.Join(botParts, sep))
 }
+
+func renderContributionChart(w io.Writer, sty statsStyles, hourly []hourlyPoint, repos []repoContribution) {
+	renderDotChart(w, sty, hourly, repos)
+}
+
+func renderDotChart(w io.Writer, sty statsStyles, hourly []hourlyPoint, repos []repoContribution) {
+	agentTotals := make(map[string]int)
+	total := 0
+	for _, r := range repos {
+		total += r.Total
+		for agent, count := range r.Agents {
+			agentTotals[agent] += count
+		}
+	}
+
+	totalLabel := ""
+	if total > 0 {
+		totalLabel = sty.render(sty.muted, fmt.Sprintf("  %d checkpoints", total))
+	}
+	fmt.Fprintf(w, "%s%s\n", sty.render(sty.label, "CONTRIBUTIONS"), totalLabel)
+
+	if len(hourly) == 0 {
+		fmt.Fprintln(w, sty.render(sty.muted, "  No activity data"))
+		return
+	}
+
+	now := time.Now().Local()
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	numDays := 30
+
+	// 4 hour bands: 0-5, 6-11, 12-17, 18-23
+	type hourBand struct {
+		label  string
+		lo, hi int
+	}
+	bands := []hourBand{
+		{" 0", 0, 5},
+		{" 6", 6, 11},
+		{"12", 12, 17},
+		{"18", 18, 23},
+	}
+
+	// Grid: [band][day] -> best point
+	type cell struct {
+		value   int
+		agentID string
+	}
+	grid := make([][]cell, len(bands))
+	for i := range grid {
+		grid[i] = make([]cell, numDays)
+	}
+
+	for _, p := range hourly {
+		pt, err := time.ParseInLocation("2006-01-02", p.Date, time.Local)
+		if err != nil {
+			continue
+		}
+		dayIdx := int(today.Sub(pt).Hours() / 24)
+		col := numDays - 1 - dayIdx
+		if col < 0 || col >= numDays {
+			continue
+		}
+		band := -1
+		for i, hb := range bands {
+			if p.Hour >= hb.lo && p.Hour <= hb.hi {
+				band = i
+				break
+			}
+		}
+		if band < 0 {
+			continue
+		}
+		if p.Value > grid[band][col].value {
+			grid[band][col] = cell{value: p.Value, agentID: p.AgentID}
+		}
+	}
+
+	sizeChars := []string{" ", "·", "•", "●", "⬤"}
+	sizeFor := func(v int) int {
+		switch {
+		case v == 0:
+			return 0
+		case v <= 2:
+			return 1
+		case v <= 5:
+			return 2
+		case v <= 9:
+			return 3
+		default:
+			return 4
+		}
+	}
+
+	labelWidth := 3
+	availCols := sty.width - labelWidth - 2
+	colWidth := availCols / numDays
+	if colWidth < 1 {
+		colWidth = 1
+	}
+
+	// Date axis
+	fmt.Fprint(w, strings.Repeat(" ", labelWidth+1))
+	startDate := today.AddDate(0, 0, -(numDays - 1))
+	lastMonth := ""
+	for d := 0; d < numDays; d++ {
+		date := startDate.AddDate(0, 0, d)
+		month := date.Format("Jan")
+		if month != lastMonth {
+			fmt.Fprint(w, sty.render(sty.muted, month))
+			d += len(month)/max(colWidth, 1) - 1
+			lastMonth = month
+		} else {
+			fmt.Fprint(w, strings.Repeat(" ", colWidth))
+		}
+	}
+	fmt.Fprintln(w)
+
+	// Grid rows
+	for band, hb := range bands {
+		fmt.Fprint(w, sty.render(sty.dim, hb.label)+" ")
+		for col := range numDays {
+			c := grid[band][col]
+			sz := sizeFor(c.value)
+			if sz == 0 {
+				fmt.Fprint(w, strings.Repeat(" ", colWidth))
+			} else {
+				fmt.Fprint(w, sty.renderAgent(c.agentID, sizeChars[sz])+strings.Repeat(" ", colWidth-1))
+			}
+		}
+		fmt.Fprintln(w)
+	}
+
+	// Size legend
+	fmt.Fprintln(w, sty.render(sty.dim, "     · 1-2   • 3-5   ● 6-9   ⬤ 10+"))
+
+	// Agent legend
+	if total > 0 {
+		var parts []string
+		for _, id := range agentOrder {
+			count, ok := agentTotals[id]
+			if !ok || count == 0 {
+				continue
+			}
+			pct := float64(count) / float64(total) * 100
+			display := agentDisplayMap[id]
+			parts = append(parts, sty.renderAgent(id, fmt.Sprintf("● %s %d%%", display.Label, int(math.Round(pct)))))
+		}
+		fmt.Fprintln(w, strings.Join(parts, sty.render(sty.dim, "  ")))
+	}
+}
+
+// renderBrailleChart is an alternative contribution chart using Unicode braille
+// characters for higher resolution. Swap renderDotChart → renderBrailleChart in
+// renderContributionChart to enable it.
+var _ = renderBrailleChart // keep compiled while inactive
 
 func renderBrailleChart(w io.Writer, sty statsStyles, hourly []hourlyPoint, repos []repoContribution) {
 	// Agent breakdown header + total

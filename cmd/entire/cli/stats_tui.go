@@ -92,7 +92,7 @@ func (m statsModel) renderHeader() string {
 	buf.WriteString("\n")
 	renderStatCards(&buf, m.sty, m.stats)
 	buf.WriteString("\n")
-	renderBrailleChart(&buf, m.sty, m.hourly, m.repos)
+	renderContributionChart(&buf, m.sty, m.hourly, m.repos)
 	buf.WriteString("\n")
 	renderRepoChart(&buf, m.sty, m.repos)
 	buf.WriteString("\n")
