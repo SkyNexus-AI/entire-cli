@@ -630,24 +630,24 @@ The key is the agent name (matching the agent's `Name()` return value). The valu
 
 #### How It Works
 
-1. `entire review` writes a pending-review marker before spawning the agent
-2. The agent's `UserPromptSubmit` lifecycle hook adopts the marker, tagging the session with `Kind = "review"` and recording the configured skills in `ReviewSkills`
+1. `entire review` writes a pending-review marker (scoped to the current worktree) before spawning the agent
+2. The agent's `UserPromptSubmit` lifecycle hook adopts the marker, tagging the session with `Kind = "agent_review"` and recording the configured skills in `ReviewSkills`. The marker is only adopted by a session whose worktree matches — sessions in other worktrees of the same repo leave it untouched
 3. The agent runs the review skills and the session ends naturally
 4. On the next `git commit`, the PostCommit hook condenses the review session into the checkpoint on `entire/checkpoints/v1`, with `Kind` and `ReviewSkills` recorded in `CommittedMetadata`
-5. The `CheckpointSummary` sets `HasReview = true` for O(1) lookup
+5. The `CheckpointSummary` sets `HasReview = true` for O(1) lookup. `HasReview` is an umbrella "any review happened" flag — future review kinds (e.g. manual review) should also set it so callers don't have to disjunction a growing list of booleans
 6. `entire status` and the re-run guard in `entire review` read `HasReview` from the checkpoint metadata (no commit history walking)
 
 #### Checkpoint Metadata
 
 Review metadata is stored at two levels on `entire/checkpoints/v1`:
 
-- **`CommittedMetadata` (per-session)**: `kind: "review"`, `review_skills: ["/skill1", "/skill2"]`
-- **`CheckpointSummary` (per-checkpoint)**: `has_review: true` (set when any session in the checkpoint has `Kind == "review"`)
+- **`CommittedMetadata` (per-session)**: `kind: "agent_review"`, `review_skills: ["/skill1", "/skill2"]`
+- **`CheckpointSummary` (per-checkpoint)**: `has_review: true` (umbrella; set when any session in the checkpoint has a review-kind `Kind`)
 
 #### Key Files
 
-- `cmd/entire/cli/review.go` - Command registration, config picker, agent spawn, re-run guard, pending marker management
-- `cmd/entire/cli/lifecycle.go` - Session adoption: pending-review marker promotes to `Kind=review` on `UserPromptSubmit`
+- `cmd/entire/cli/review.go` - Command registration, config picker, agent spawn, re-run guard, pending marker management (including `WorktreePath`-scoped adoption)
+- `cmd/entire/cli/lifecycle.go` - Session adoption: pending-review marker promotes to `Kind=agent_review` on `UserPromptSubmit` when worktrees match
 - `cmd/entire/cli/agent/agent.go` - `Launcher` interface used by `entire review` to spawn agents
 - `cmd/entire/cli/agent/{claudecode,codex,geminicli}/` - Per-agent `Launcher` implementations
 - `cmd/entire/cli/checkpoint/checkpoint.go` - `Kind` and `ReviewSkills` fields on `WriteCommittedOptions`, `CommittedMetadata`, and `HasReview` on `CheckpointSummary`

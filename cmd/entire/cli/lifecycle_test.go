@@ -981,7 +981,7 @@ func TestAdoptPendingReviewMarker(t *testing.T) {
 	if !modified {
 		t.Fatal("expected modified=true when marker exists")
 	}
-	if got.Kind != session.KindReview {
+	if got.Kind != session.KindAgentReview {
 		t.Errorf("Kind = %q, want review", got.Kind)
 	}
 	if len(got.ReviewSkills) != 1 || got.ReviewSkills[0] != "/pr-review-toolkit:review-pr" {
@@ -1034,7 +1034,7 @@ func TestAdoptPendingReviewMarker_AlreadyReview(t *testing.T) {
 		t.Fatal(err)
 	}
 	// State already tagged — adoption should be a no-op (not a second re-tag).
-	in := session.State{SessionID: "s3", Kind: session.KindReview, ReviewSkills: []string{"/y"}}
+	in := session.State{SessionID: "s3", Kind: session.KindAgentReview, ReviewSkills: []string{"/y"}}
 	got, modified, err := adoptPendingReviewMarkerInto(context.Background(), in)
 	if err != nil {
 		t.Fatal(err)
@@ -1052,5 +1052,68 @@ func TestAdoptPendingReviewMarker_AlreadyReview(t *testing.T) {
 	}
 	if !ok {
 		t.Error("expected marker preserved when adoption was a no-op")
+	}
+}
+
+// Reproduces the concurrent-worktree race: `entire review` in worktree A
+// writes a marker, but a Claude session in worktree B fires its hook first.
+// The other-worktree session must NOT claim the marker, and the marker must
+// survive for the correct session to adopt later.
+func TestAdoptPendingReviewMarker_OtherWorktreeLeavesMarker(t *testing.T) {
+	tmp := t.TempDir()
+	testutil.InitRepo(t, tmp)
+	testutil.WriteFile(t, tmp, "f.txt", "x")
+	testutil.GitAdd(t, tmp, "f.txt")
+	testutil.GitCommit(t, tmp, "init")
+	t.Chdir(tmp)
+
+	if err := WritePendingReviewMarker(PendingReviewMarker{
+		AgentName:    "claude-code",
+		Skills:       []string{"/pr-review-toolkit:review-pr"},
+		StartingSHA:  "abc",
+		StartedAt:    time.Now().UTC(),
+		WorktreePath: "/repo/main",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ClearPendingReviewMarker() }) //nolint:errcheck // test cleanup, best-effort
+
+	// A session running in a different worktree must NOT adopt.
+	got, modified, err := adoptPendingReviewMarkerInto(context.Background(), session.State{
+		SessionID:    "other-worktree-session",
+		WorktreePath: "/repo/.worktrees/feature",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if modified {
+		t.Fatal("expected modified=false when session worktree differs from marker worktree")
+	}
+	if got.Kind != "" {
+		t.Errorf("Kind = %q, want empty (should not be tagged)", got.Kind)
+	}
+
+	// Marker must survive so the correct-worktree session can adopt later.
+	_, ok, readErr := ReadPendingReviewMarker()
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if !ok {
+		t.Error("expected marker preserved after mismatched-worktree adoption attempt")
+	}
+
+	// Now the same marker; a session in the matching worktree should adopt.
+	got, modified, err = adoptPendingReviewMarkerInto(context.Background(), session.State{
+		SessionID:    "matching-worktree-session",
+		WorktreePath: "/repo/main",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !modified {
+		t.Fatal("expected modified=true when worktree matches")
+	}
+	if got.Kind != session.KindAgentReview {
+		t.Errorf("Kind = %q, want review", got.Kind)
 	}
 }

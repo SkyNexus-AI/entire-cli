@@ -12,7 +12,10 @@ import (
 	"github.com/entireio/cli/cmd/entire/cli/testutil"
 )
 
-const testReviewSkill = "/pr-review-toolkit:review-pr"
+const (
+	testReviewSkill = "/pr-review-toolkit:review-pr"
+	testMainBranch  = "main"
+)
 
 func TestReviewMarker_RoundTrip(t *testing.T) {
 	tmp := t.TempDir()
@@ -153,5 +156,130 @@ func TestNewReviewCmd_NoHiddenFlags(t *testing.T) {
 		if cmd.Flags().Lookup(name) != nil {
 			t.Errorf("found removed flag: --%s", name)
 		}
+	}
+}
+
+func TestFormatReviewScope(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name  string
+		scope reviewScope
+		want  string
+	}{
+		{
+			name: "branch ahead of base with uncommitted",
+			scope: reviewScope{
+				Branch: "feat/foo", Base: testMainBranch,
+				AheadCommits: 3, FilesChanged: 7, Uncommitted: 2,
+			},
+			want: "Reviewing feat/foo vs main: 3 commits, 7 files changed, 2 uncommitted",
+		},
+		{
+			name: "branch ahead of base, clean worktree",
+			scope: reviewScope{
+				Branch: "feat/foo", Base: testMainBranch,
+				AheadCommits: 3, FilesChanged: 7,
+			},
+			want: "Reviewing feat/foo vs main: 3 commits, 7 files changed",
+		},
+		{
+			name: "on default branch with uncommitted only",
+			scope: reviewScope{
+				Branch: testMainBranch, Base: testMainBranch, Uncommitted: 4,
+			},
+			want: "Reviewing main: 4 uncommitted",
+		},
+		{
+			name: "clean default branch — nothing to review",
+			scope: reviewScope{
+				Branch: testMainBranch, Base: testMainBranch,
+			},
+			want: "Reviewing main: no changes detected",
+		},
+		{
+			name: "detached HEAD with uncommitted",
+			scope: reviewScope{
+				HeadSHA: "a3b2c4d", Uncommitted: 1,
+			},
+			want: "Reviewing HEAD a3b2c4d: 1 uncommitted",
+		},
+		{
+			name: "base unknown, branch only",
+			scope: reviewScope{
+				Branch: "feat/foo", Uncommitted: 2,
+			},
+			want: "Reviewing feat/foo: 2 uncommitted",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := formatReviewScope(tc.scope)
+			if got != tc.want {
+				t.Errorf("formatReviewScope() =\n  %q\nwant\n  %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestDetectReviewScope_FeatureBranchAheadOfMain(t *testing.T) {
+	tmp := t.TempDir()
+	testutil.InitRepo(t, tmp)
+	testutil.WriteFile(t, tmp, "a.txt", "hello")
+	testutil.GitAdd(t, tmp, "a.txt")
+	testutil.GitCommit(t, tmp, "init")
+	// go-git's PlainInit defaults to master; rename so tests can assume main.
+	runGit(t, tmp, "branch", "-M", testMainBranch)
+	// Create a feature branch and add two commits touching two files.
+	testutil.GitCheckoutNewBranch(t, tmp, "feat/x")
+	testutil.WriteFile(t, tmp, "a.txt", "hello v2")
+	testutil.GitAdd(t, tmp, "a.txt")
+	testutil.GitCommit(t, tmp, "edit a")
+	testutil.WriteFile(t, tmp, "b.txt", "new")
+	testutil.GitAdd(t, tmp, "b.txt")
+	testutil.GitCommit(t, tmp, "add b")
+	// And an uncommitted edit.
+	testutil.WriteFile(t, tmp, "a.txt", "hello v3")
+	t.Chdir(tmp)
+
+	got, err := detectReviewScope(context.Background())
+	if err != nil {
+		t.Fatalf("detectReviewScope: %v", err)
+	}
+	if got.Branch != "feat/x" {
+		t.Errorf("Branch = %q, want feat/x", got.Branch)
+	}
+	if got.Base != testMainBranch {
+		t.Errorf("Base = %q, want %s", got.Base, testMainBranch)
+	}
+	if got.AheadCommits != 2 {
+		t.Errorf("AheadCommits = %d, want 2", got.AheadCommits)
+	}
+	if got.FilesChanged != 2 {
+		t.Errorf("FilesChanged = %d, want 2", got.FilesChanged)
+	}
+	if got.Uncommitted != 1 {
+		t.Errorf("Uncommitted = %d, want 1", got.Uncommitted)
+	}
+}
+
+func TestDetectReviewScope_OnDefaultBranchCleanRepo(t *testing.T) {
+	tmp := t.TempDir()
+	testutil.InitRepo(t, tmp)
+	testutil.WriteFile(t, tmp, "a.txt", "hello")
+	testutil.GitAdd(t, tmp, "a.txt")
+	testutil.GitCommit(t, tmp, "init")
+	runGit(t, tmp, "branch", "-M", testMainBranch)
+	t.Chdir(tmp)
+
+	got, err := detectReviewScope(context.Background())
+	if err != nil {
+		t.Fatalf("detectReviewScope: %v", err)
+	}
+	if got.Branch != testMainBranch {
+		t.Errorf("Branch = %q, want %s", got.Branch, testMainBranch)
+	}
+	if got.AheadCommits != 0 || got.FilesChanged != 0 || got.Uncommitted != 0 {
+		t.Errorf("expected zeros, got %+v", got)
 	}
 }

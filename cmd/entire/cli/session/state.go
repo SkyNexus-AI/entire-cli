@@ -37,11 +37,19 @@ const (
 // Kind identifies the purpose of a session. Empty means "normal" (legacy
 // sessions + every session that isn't a review). Callers must not rely on
 // Kind being set unless they specifically want to branch on it.
+//
+// Kind is a discriminator — it distinguishes review variants at a per-session
+// granularity. The checkpoint-level HasReview flag remains an umbrella that
+// any review-kind session should set (so future review kinds like manual
+// review can be added without changing summary-shape).
 type Kind string
 
 const (
-	// KindReview tags a session created by `entire review`.
-	KindReview Kind = "review"
+	// KindAgentReview tags a session created by `entire review` (agent-driven
+	// review). Future review kinds (e.g., manual review) should be defined as
+	// distinct Kind values; every review-kind Kind should cause its checkpoint
+	// to set HasReview = true.
+	KindAgentReview Kind = "agent_review"
 )
 
 // State represents the state of an active session.
@@ -83,7 +91,7 @@ type State struct {
 	Phase Phase `json:"phase,omitempty"`
 
 	// Kind tags the session's purpose. Empty for normal agent sessions;
-	// set to KindReview when the session was started by `entire review`.
+	// set to KindAgentReview when the session was started by `entire review`.
 	Kind Kind `json:"kind,omitempty"`
 
 	// ReviewSkills is the snapshot of configured review skills at session start.

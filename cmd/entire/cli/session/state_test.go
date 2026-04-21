@@ -659,7 +659,7 @@ func TestState_KindRoundTrip(t *testing.T) {
 		SessionID:    "2026-04-20-uuid",
 		BaseCommit:   "abc",
 		StartedAt:    now,
-		Kind:         KindReview,
+		Kind:         KindAgentReview,
 		ReviewSkills: []string{"/review-pr"},
 	}
 	data, err := json.Marshal(s)
@@ -670,7 +670,7 @@ func TestState_KindRoundTrip(t *testing.T) {
 	if err := json.Unmarshal(data, &got); err != nil {
 		t.Fatal(err)
 	}
-	if got.Kind != KindReview {
+	if got.Kind != KindAgentReview {
 		t.Errorf("Kind = %q", got.Kind)
 	}
 	if len(got.ReviewSkills) != 1 || got.ReviewSkills[0] != "/review-pr" {

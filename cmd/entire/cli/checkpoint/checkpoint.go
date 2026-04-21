@@ -309,10 +309,10 @@ type WriteCommittedOptions struct {
 	// was not performed (unknown agent, compaction error, empty transcript).
 	CompactTranscript []byte
 
-	// Kind identifies the session purpose (e.g., "review"). Empty for normal sessions.
+	// Kind identifies the session purpose (e.g., "agent_review"). Empty for normal sessions.
 	Kind string
 
-	// ReviewSkills is the snapshot of skills used (only meaningful when Kind == "review").
+	// ReviewSkills is the snapshot of skills used (only meaningful when Kind is a review kind).
 	ReviewSkills []string
 }
 
@@ -479,10 +479,10 @@ type CommittedMetadata struct {
 	// Diagnostic field — shows which prompt recorded which "user" lines.
 	PromptAttributions json.RawMessage `json:"prompt_attributions,omitempty"`
 
-	// Kind identifies the session purpose (e.g., "review"). Empty for normal sessions.
+	// Kind identifies the session purpose (e.g., "agent_review"). Empty for normal sessions.
 	Kind string `json:"kind,omitempty"`
 
-	// ReviewSkills lists the review skills that were run (only set when Kind == "review").
+	// ReviewSkills lists the review skills that were run (only set when Kind is a review kind).
 	ReviewSkills []string `json:"review_skills,omitempty"`
 }
 
@@ -535,7 +535,11 @@ type CheckpointSummary struct {
 	TokenUsage          *agent.TokenUsage   `json:"token_usage,omitempty"`
 	CombinedAttribution *InitialAttribution `json:"combined_attribution,omitempty"`
 
-	// HasReview is true when at least one session in this checkpoint has Kind == "review".
+	// HasReview is the umbrella "any review happened" flag: true when at least
+	// one session in this checkpoint has a review-kind Kind (currently
+	// "agent_review"). When new review kinds are introduced they should also
+	// cause this flag to be set so callers can keep asking "was this reviewed
+	// in any way?" without caring about the variant.
 	HasReview bool `json:"has_review,omitempty"`
 }
 
