@@ -251,7 +251,11 @@ func (s *ManualCommitStrategy) CondenseSession(ctx context.Context, repo *git.Re
 		Summary:                     summary,
 	}
 
-	compactResult := buildCompactTranscript(ctx, ag, redactedTranscript, state)
+	compactResult := buildExternalCompactTranscript(ctx, ag, state)
+	if compactResult == nil {
+		internalResult := buildInternalCompactTranscript(ctx, ag, redactedTranscript, state)
+		compactResult = &internalResult
+	}
 	writeOpts.CompactTranscript = compactResult.Transcript
 	writeOpts.CompactTranscriptStart = compactResult.StartLine
 
@@ -424,33 +428,15 @@ type compactTranscriptResult struct {
 	Duration   time.Duration // Time spent producing the compact transcript.
 }
 
-// buildCompactTranscript produces compact (v2) transcript forms when v2
-// checkpoints are enabled. Dispatches to the external or internal path
-// depending on the agent type.
-func buildCompactTranscript(ctx context.Context, ag agent.Agent, redacted redact.RedactedBytes, state *SessionState) compactTranscriptResult {
-	if !settings.IsCheckpointsV2Enabled(ctx) {
-		return compactTranscriptResult{}
-	}
-
-	compactStart := time.Now()
-	compactCtx, compactSpan := perf.Start(ctx, "compact_transcript_v2")
-	defer compactSpan.End()
-
-	if extResult := buildExternalCompactTranscript(compactCtx, ag, state); extResult != nil {
-		extResult.Duration = time.Since(compactStart)
-		return *extResult
-	}
-
-	result := buildInternalCompactTranscript(compactCtx, ag, redacted, state)
-	result.Duration = time.Since(compactStart)
-	return result
-}
-
-// buildExternalCompactTranscript handles compact transcript generation for
-// external agents. Returns nil if the agent is not external (caller should
-// fall through to the internal path). Returns a non-nil result with
-// Transcript == nil if the agent is external but compaction is unavailable.
+// buildExternalCompactTranscript produces the compact transcript for external
+// agents by calling the agent's compact-transcript subcommand and redacting
+// the result. Returns nil if the agent is not external (caller should use
+// buildInternalCompactTranscript instead).
 func buildExternalCompactTranscript(ctx context.Context, ag agent.Agent, state *SessionState) *compactTranscriptResult {
+	if !settings.IsCheckpointsV2Enabled(ctx) {
+		return nil
+	}
+
 	compactor, ok := agent.AsTranscriptCompactor(ag)
 	if !ok {
 		if _, isCap := ag.(agent.CapabilityDeclarer); isCap {
@@ -463,26 +449,30 @@ func buildExternalCompactTranscript(ctx context.Context, ag agent.Agent, state *
 		return nil
 	}
 
-	compacted := compactTranscriptForExternalAgent(ctx, compactor, state.SessionID, state.TranscriptPath)
+	compactStart := time.Now()
+	compactCtx, compactSpan := perf.Start(ctx, "compact_transcript_v2_external")
+	defer compactSpan.End()
+
+	compacted := compactTranscriptForExternalAgent(compactCtx, compactor, state.SessionID, state.TranscriptPath)
 	if compacted == nil {
-		return &compactTranscriptResult{}
+		return &compactTranscriptResult{Duration: time.Since(compactStart)}
 	}
 
 	redacted, err := redactSessionJSONLBytes(compacted.Transcript)
 	if err != nil {
-		logging.Warn(ctx, "failed to redact external compact transcript, dropping transcript.jsonl on /main",
+		logging.Warn(compactCtx, "failed to redact external compact transcript, dropping transcript.jsonl on /main",
 			slog.String("session_id", state.SessionID),
 			slog.String("agent", string(compactor.Name())),
 			slog.String("error", err.Error()),
 		)
-		return &compactTranscriptResult{}
+		return &compactTranscriptResult{Duration: time.Since(compactStart)}
 	}
 
 	transcript := redacted.Bytes()
 	startLine := state.CompactTranscriptStart
 	fullLines := countCompactLines(transcript)
 	if fullLines < startLine {
-		logging.Warn(ctx, "external compact transcript shorter than previous compact transcript start; resetting compact transcript start",
+		logging.Warn(compactCtx, "external compact transcript shorter than previous compact transcript start; resetting compact transcript start",
 			slog.String("session_id", state.SessionID),
 			slog.String("agent", string(compactor.Name())),
 			slog.Int("compact_transcript_lines", fullLines),
@@ -494,23 +484,33 @@ func buildExternalCompactTranscript(ctx context.Context, ag agent.Agent, state *
 	return &compactTranscriptResult{
 		Transcript: transcript,
 		StartLine:  startLine,
+		Duration:   time.Since(compactStart),
 	}
 }
 
-// buildInternalCompactTranscript handles compact transcript generation for
-// built-in agents using already-redacted transcript bytes.
+// buildInternalCompactTranscript produces the compact transcript for built-in
+// agents from already-redacted transcript bytes.
 func buildInternalCompactTranscript(ctx context.Context, ag agent.Agent, redacted redact.RedactedBytes, state *SessionState) compactTranscriptResult {
+	if !settings.IsCheckpointsV2Enabled(ctx) {
+		return compactTranscriptResult{}
+	}
+
+	compactStart := time.Now()
+	compactCtx, compactSpan := perf.Start(ctx, "compact_transcript_v2_internal")
+	defer compactSpan.End()
+
 	// Generate scoped compact (only new content) for line counting and offset calculation.
-	scopedCompact := compactTranscriptForV2(ctx, ag, redacted, state.CheckpointTranscriptStart)
+	scopedCompact := compactTranscriptForV2(compactCtx, ag, redacted, state.CheckpointTranscriptStart)
 	// Generate full compact (cumulative) for storage — v2 /main replaces
 	// the session's transcript.jsonl on each write, so we must include all
 	// prior content, not just the new portion.
-	fullCompact := compactTranscriptForV2(ctx, ag, redacted, 0)
-	startLine := computeCompactTranscriptStart(ctx, ag, state, redacted.Bytes(), scopedCompact)
+	fullCompact := compactTranscriptForV2(compactCtx, ag, redacted, 0)
+	startLine := computeCompactTranscriptStart(compactCtx, ag, state, redacted.Bytes(), scopedCompact)
 
 	return compactTranscriptResult{
 		Transcript: fullCompact,
 		StartLine:  startLine,
+		Duration:   time.Since(compactStart),
 	}
 }
 

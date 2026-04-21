@@ -120,7 +120,8 @@ func TestBuildCompactTranscript_UsesAgentTranscriptCompactor(t *testing.T) { //n
 		CheckpointTranscriptStart: 0,
 	}
 
-	result := buildCompactTranscript(context.Background(), ag, redact.AlreadyRedacted([]byte("not-jsonl")), state)
+	result := buildExternalCompactTranscript(context.Background(), ag, state)
+	require.NotNil(t, result)
 	// The transcript passes through redaction, so compare the redacted form.
 	redacted, err := redact.JSONLBytes(ag.fullCompact)
 	require.NoError(t, err)
@@ -128,7 +129,7 @@ func TestBuildCompactTranscript_UsesAgentTranscriptCompactor(t *testing.T) { //n
 	require.Equal(t, 0, result.StartLine)
 }
 
-func TestBuildCompactTranscript_UsesExistingCompactOffsetForAgentTranscriptCompactor(t *testing.T) { //nolint:paralleltest // uses t.Chdir
+func TestBuildExternalCompactTranscript_UsesExistingCompactOffset(t *testing.T) { //nolint:paralleltest // uses t.Chdir
 	dir := t.TempDir()
 	t.Chdir(dir)
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".entire"), 0o755))
@@ -149,14 +150,15 @@ func TestBuildCompactTranscript_UsesExistingCompactOffsetForAgentTranscriptCompa
 		CompactTranscriptStart:    1,
 	}
 
-	result := buildCompactTranscript(context.Background(), ag, redact.AlreadyRedacted([]byte("not-jsonl")), state)
+	result := buildExternalCompactTranscript(context.Background(), ag, state)
+	require.NotNil(t, result)
 	redacted, err := redact.JSONLBytes(ag.fullCompact)
 	require.NoError(t, err)
 	require.Equal(t, redacted.Bytes(), result.Transcript)
 	require.Equal(t, 1, result.StartLine)
 }
 
-func TestBuildCompactTranscript_ExternalCompactorShorterThanOffset_ResetsStart(t *testing.T) { //nolint:paralleltest // uses t.Chdir
+func TestBuildExternalCompactTranscript_ShorterThanOffset_ResetsStart(t *testing.T) { //nolint:paralleltest // uses t.Chdir
 	dir := t.TempDir()
 	t.Chdir(dir)
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".entire"), 0o755))
@@ -176,14 +178,15 @@ func TestBuildCompactTranscript_ExternalCompactorShorterThanOffset_ResetsStart(t
 		CompactTranscriptStart: 2,
 	}
 
-	result := buildCompactTranscript(context.Background(), ag, redact.AlreadyRedacted([]byte("not-jsonl")), state)
+	result := buildExternalCompactTranscript(context.Background(), ag, state)
+	require.NotNil(t, result)
 	redacted, err := redact.JSONLBytes(ag.fullCompact)
 	require.NoError(t, err)
 	require.Equal(t, redacted.Bytes(), result.Transcript)
 	require.Equal(t, 0, result.StartLine)
 }
 
-func TestBuildCompactTranscript_ExternalCompactorNilResultDoesNotPanic(t *testing.T) { //nolint:paralleltest // uses t.Chdir
+func TestBuildExternalCompactTranscript_NilResultDoesNotPanic(t *testing.T) { //nolint:paralleltest // uses t.Chdir
 	dir := t.TempDir()
 	t.Chdir(dir)
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".entire"), 0o755))
@@ -201,10 +204,11 @@ func TestBuildCompactTranscript_ExternalCompactorNilResultDoesNotPanic(t *testin
 		TranscriptPath: "/tmp/session.jsonl",
 	}
 
-	var result compactTranscriptResult
+	var result *compactTranscriptResult
 	require.NotPanics(t, func() {
-		result = buildCompactTranscript(context.Background(), ag, redact.AlreadyRedacted([]byte("not-jsonl")), state)
+		result = buildExternalCompactTranscript(context.Background(), ag, state)
 	})
+	require.NotNil(t, result)
 	require.Nil(t, result.Transcript)
 }
 
@@ -234,9 +238,29 @@ func TestBuildExternalCompactTranscript_RedactsTranscript(t *testing.T) { //noli
 		TranscriptPath: "/tmp/session.jsonl",
 	}
 
-	result := buildCompactTranscript(context.Background(), ag, redact.AlreadyRedacted([]byte("not-jsonl")), state)
+	result := buildExternalCompactTranscript(context.Background(), ag, state)
+	require.NotNil(t, result)
 	require.True(t, redactCalled, "redactSessionJSONLBytes must be called for external agent transcripts")
 	require.NotNil(t, result.Transcript)
+}
+
+func TestBuildExternalCompactTranscript_ReturnsNilForInternalAgent(t *testing.T) { //nolint:paralleltest // uses t.Chdir
+	dir := t.TempDir()
+	t.Chdir(dir)
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".entire"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".entire", "settings.json"), []byte(testCheckpointsV2SettingsJSON), 0o644))
+
+	ag, err := agent.GetByAgentType(agent.AgentTypeClaudeCode)
+	require.NoError(t, err)
+
+	state := &SessionState{
+		SessionID:      "sess-1",
+		AgentType:      agent.AgentTypeClaudeCode,
+		TranscriptPath: "/tmp/session.jsonl",
+	}
+
+	result := buildExternalCompactTranscript(context.Background(), ag, state)
+	require.Nil(t, result, "should return nil for built-in agents so caller falls through to internal path")
 }
 
 func TestCompactTranscriptForExternalAgent_RejectsWhitespaceOnlyOutput(t *testing.T) {
