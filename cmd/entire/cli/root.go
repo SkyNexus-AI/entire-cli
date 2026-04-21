@@ -79,6 +79,7 @@ func NewRootCmd() *cobra.Command {
 	}
 
 	// Add subcommands here
+	cmd.AddCommand(newReviewCmd())
 	cmd.AddCommand(newRewindCmd())
 	cmd.AddCommand(newResumeCmd())
 	cmd.AddCommand(newCleanCmd())
