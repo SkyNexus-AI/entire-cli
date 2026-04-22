@@ -44,6 +44,12 @@ func Disable(t *testing.T, dir string) {
 	run(t, dir, "disable")
 }
 
+// Doctor runs `entire doctor --force` and returns the output.
+func Doctor(t *testing.T, dir string) string {
+	t.Helper()
+	return run(t, dir, "doctor", "--force")
+}
+
 // RewindList runs `entire rewind --list` and parses the JSON output.
 func RewindList(t *testing.T, dir string) []RewindPoint {
 	t.Helper()
