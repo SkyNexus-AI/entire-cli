@@ -1,0 +1,51 @@
+name: E2E Checkpoints V2
+
+on:
+  workflow_dispatch:
+    inputs:
+      agent:
+        description: "Agent to run"
+        required: true
+        default: "vogon"
+        type: choice
+        options:
+          - vogon
+          - claude-code
+          - opencode
+          - gemini-cli
+          - factoryai-droid
+          - cursor-cli
+          - copilot-cli
+          - roger-roger
+          - codex
+      checkpoints_mode:
+        description: "Checkpoints mode to run"
+        required: true
+        default: "v2-dual-write"
+        type: choice
+        options:
+          - v2-dual-write
+          - v2-only
+
+jobs:
+  e2e-checkpoints-v2:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Setup Keyring
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gnome-keyring
+          echo 'somecredstorepass' | gnome-keyring-daemon --unlock
+
+      - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4
+
+      - name: E2E Canary (Checkpoints V2)
+        env:
+          E2E_AGENT: ${{ inputs.agent }}
+          E2E_CHECKPOINTS_MODE: ${{ inputs.checkpoints_mode }}
+        run: mise run test:e2e:canary
