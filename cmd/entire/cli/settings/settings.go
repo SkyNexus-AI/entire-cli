@@ -10,7 +10,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/entireio/cli/cmd/entire/cli/jsonutil"
@@ -26,6 +28,8 @@ const (
 	// checkpoints v2 raw-transcript generations when no override is configured.
 	defaultGenerationRetentionDays = 60
 )
+
+var checkpointsVersionWarningOnce sync.Once
 
 // Commit linking mode constants.
 const (
@@ -607,14 +611,27 @@ func IsCheckpointsV2Enabled(ctx context.Context) bool {
 	return settings.IsCheckpointsV2Enabled()
 }
 
-// IsCheckpointsV2OnlyEnabled checks if checkpoints should be written and pushed
-// only via v2 refs.
-func IsCheckpointsV2OnlyEnabled(ctx context.Context) bool {
+// CheckpointsVersion returns the configured checkpoints format version, or 1
+// if settings cannot be loaded or the value is unset/invalid.
+func CheckpointsVersion(ctx context.Context) int {
 	s, err := Load(ctx)
 	if err != nil {
-		return false
+		return 1
 	}
-	return s.IsCheckpointsV2OnlyEnabled()
+	version := s.CheckpointsVersion()
+	if s.StrategyOptions != nil {
+		if configured, ok := s.StrategyOptions["checkpoints_version"]; ok {
+			if _, supported := parseCheckpointsVersion(configured); !supported {
+				checkpointsVersionWarningOnce.Do(func() {
+					fmt.Fprintf(os.Stderr,
+						"[entire] unsupported strategy_options.checkpoints_version %v detected in settings. Falling back to the default version (1).\n",
+						configured,
+					)
+				})
+			}
+		}
+	}
+	return version
 }
 
 // IsPushV2RefsEnabled checks if pushing v2 refs is enabled in settings.
@@ -709,9 +726,9 @@ func (s *EntireSettings) GetCheckpointRemote() *CheckpointRemoteConfig {
 }
 
 // IsCheckpointsV2Enabled checks if checkpoints v2 is enabled.
-// Returns true when either checkpoints_v2 or checkpoints_v2_only is enabled.
+// Returns true when either checkpoints_v2 is set or checkpoints_version is 2.
 func (s *EntireSettings) IsCheckpointsV2Enabled() bool {
-	if s.IsCheckpointsV2OnlyEnabled() {
+	if s.CheckpointsVersion() == 2 {
 		return true
 	}
 	if s.StrategyOptions == nil {
@@ -721,20 +738,47 @@ func (s *EntireSettings) IsCheckpointsV2Enabled() bool {
 	return ok && val
 }
 
-// IsCheckpointsV2OnlyEnabled checks if checkpoints should be written and pushed
-// only via v2 refs, with no v1 dual-write.
-func (s *EntireSettings) IsCheckpointsV2OnlyEnabled() bool {
+// CheckpointsVersion returns the configured checkpoints format version from
+// strategy_options.checkpoints_version. Returns 1 when unset, invalid, or
+// unsupported. The currently supported versions are 1 and 2.
+func (s *EntireSettings) CheckpointsVersion() int {
 	if s.StrategyOptions == nil {
-		return false
+		return 1
 	}
-	val, ok := s.StrategyOptions["checkpoints_v2_only"].(bool)
-	return ok && val
+	val, ok := s.StrategyOptions["checkpoints_version"]
+	if !ok {
+		return 1
+	}
+	version, ok := parseCheckpointsVersion(val)
+	if ok {
+		return version
+	}
+	return 1
+}
+
+func parseCheckpointsVersion(val any) (int, bool) {
+	v, ok := val.(int)
+	if ok && (v == 1 || v == 2) {
+		return v, true
+	}
+	floatV, ok := val.(float64)
+	if ok && (floatV == 1 || floatV == 2) {
+		return int(floatV), true
+	}
+	stringV, ok := val.(string)
+	if ok {
+		parsed, err := strconv.Atoi(stringV)
+		if err == nil && (parsed == 1 || parsed == 2) {
+			return parsed, true
+		}
+	}
+	return 1, false
 }
 
 // IsPushV2RefsEnabled checks if pushing v2 refs is enabled.
-// checkpoints_v2_only forces v2 ref pushes on, regardless of push_v2_refs.
+// checkpoints_version: 2 forces v2 ref pushes on, regardless of push_v2_refs.
 func (s *EntireSettings) IsPushV2RefsEnabled() bool {
-	if s.IsCheckpointsV2OnlyEnabled() {
+	if s.CheckpointsVersion() == 2 {
 		return true
 	}
 	if !s.IsCheckpointsV2Enabled() {
