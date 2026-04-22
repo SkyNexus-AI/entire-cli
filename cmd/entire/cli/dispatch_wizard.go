@@ -115,18 +115,18 @@ func (s dispatchWizardState) selectedOrganizations() []string {
 	return normalizeDispatchWizardSelections(s.selectedOrgs)
 }
 
-func (s dispatchWizardState) resolveCloudScope() ([]string, []string, error) {
+func (s dispatchWizardState) resolveCloudScope() ([]string, []string) {
 	if s.isLocal() {
-		return nil, nil, nil
+		return nil, nil
 	}
 
 	switch s.effectiveScopeType() {
 	case dispatchWizardScopeSelectedRepos:
-		return s.selectedReposList(), nil, nil
+		return s.selectedReposList(), nil
 	case dispatchWizardScopeOrganization:
-		return nil, s.selectedOrganizations(), nil
+		return nil, s.selectedOrganizations()
 	default:
-		return nil, nil, nil
+		return nil, nil
 	}
 }
 
@@ -143,11 +143,7 @@ func (s dispatchWizardState) showOrganizationPicker() bool {
 }
 
 func (s dispatchWizardState) resolve(currentBranch func() (string, error)) (dispatchpkg.Options, error) {
-	repoPaths, orgs, err := s.resolveCloudScope()
-	if err != nil {
-		return dispatchpkg.Options{}, err
-	}
-
+	repoPaths, orgs := s.resolveCloudScope()
 	opts, err := resolveDispatchOptions(
 		s.isLocal(),
 		s.timeWindowPreset,

@@ -40,8 +40,7 @@ func runServer(ctx context.Context, opts Options) (*Dispatch, error) {
 
 	repos := append([]string(nil), opts.RepoPaths...)
 	orgs := append([]string(nil), opts.Orgs...)
-	switch {
-	case len(orgs) == 0 && len(repos) == 0:
+	if len(orgs) == 0 && len(repos) == 0 {
 		repoRoot, err := paths.WorktreeRoot(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("not in a git repository: %w", err)
