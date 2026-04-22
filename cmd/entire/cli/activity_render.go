@@ -140,7 +140,7 @@ func renderStatCards(w io.Writer, sty activityStyles, stats contributionStats) {
 	}{
 		{"THROUGHPUT", fmt.Sprintf("%.1f", stats.Throughput), "k", "Avg. tokens/checkpoint"},
 		{"ITERATION", fmt.Sprintf("%.1f", stats.Iteration), "x", "Avg sessions/checkpoint"},
-		{"CONTINUITY", fmt.Sprintf("%.1f", stats.ContinuityH), "h", "Peak session length"},
+		{"ORCHESTRATION", strconv.Itoa(stats.Orchestration), "%", "Agent step density"},
 		{"STREAK", strconv.Itoa(stats.Streak), " day", fmt.Sprintf("%d current", stats.CurrentStreak)},
 	}
 

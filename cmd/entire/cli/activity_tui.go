@@ -12,7 +12,6 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/entireio/cli/cmd/entire/cli/api"
-	"golang.org/x/sync/errgroup"
 )
 
 // activityDataMsg is sent when API data has been fetched.
@@ -71,35 +70,23 @@ func runActivityTUI(ctx context.Context, client *api.Client) error {
 }
 
 func (m activityModel) fetchData() tea.Msg { //nolint:ireturn // bubbletea Cmd signature requires tea.Msg return
-	var checkpoints []userCheckpoint
-	var streakDates []string
-	var commits []userCommit
-
-	g, gCtx := errgroup.WithContext(m.ctx)
-	g.Go(func() error {
-		var err error
-		checkpoints, streakDates, err = fetchCheckpoints(gCtx, m.client)
-		return err
-	})
-	g.Go(func() error {
-		var err error
-		commits, err = fetchCommits(gCtx, m.client)
-		return err
-	})
-	if err := g.Wait(); err != nil {
+	activity, commits, err := fetchActivityData(m.ctx, m.client)
+	if err != nil {
 		return activityErrMsg{err: err}
 	}
 
-	stats := computeContributionStats(checkpoints, streakDates)
-	repos := computeRepoContributions(checkpoints)
-	hourly := computeHourlyData(checkpoints)
-	days := groupCommitsByDay(commits)
-
 	return activityDataMsg{
-		stats:  stats,
-		repos:  repos,
-		hourly: hourly,
-		days:   days,
+		stats: contributionStats{
+			Tasks:         activity.Stats.Tasks,
+			Throughput:    activity.Stats.Throughput,
+			Iteration:     activity.Stats.Iteration,
+			Orchestration: activity.Stats.Orchestration,
+			Streak:        activity.Stats.Streak,
+			CurrentStreak: activity.Stats.CurrentStreak,
+		},
+		repos:  activity.Repos,
+		hourly: activity.HourlyContributions,
+		days:   groupCommitsByDay(commits),
 	}
 }
 

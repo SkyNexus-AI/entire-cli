@@ -4,7 +4,10 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/url"
+	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -21,8 +24,8 @@ const (
 )
 
 // knownAgents maps normalized agent strings from the API to display IDs.
-// This is intentionally broader than agent.AgentType constants because
-// the API returns agents that may not have CLI integrations (amp, pi, kiro).
+// Used for the commit list, where per-checkpoint agent strings are free-form.
+// The /me/activity endpoint returns already-normalized canonical IDs.
 var knownAgents = map[string]string{
 	"claude":     "claude",
 	"claudecode": "claude",
@@ -67,56 +70,74 @@ func runActivity(ctx context.Context, w, errW io.Writer) error {
 }
 
 func runActivityStatic(ctx context.Context, w io.Writer, client *api.Client) error {
-	var checkpoints []userCheckpoint
-	var streakDates []string
+	activity, commits, err := fetchActivityData(ctx, client)
+	if err != nil {
+		return err
+	}
+
+	stats := contributionStats{
+		Tasks:         activity.Stats.Tasks,
+		Throughput:    activity.Stats.Throughput,
+		Iteration:     activity.Stats.Iteration,
+		Orchestration: activity.Stats.Orchestration,
+		Streak:        activity.Stats.Streak,
+		CurrentStreak: activity.Stats.CurrentStreak,
+	}
+	days := groupCommitsByDay(commits)
+
+	sty := newActivityStyles(w)
+	renderActivity(w, sty, stats, activity.Repos, activity.HourlyContributions, days)
+	return nil
+}
+
+// fetchActivityData fetches aggregated activity and commits concurrently.
+func fetchActivityData(ctx context.Context, client *api.Client) (*userActivityResponse, []userCommit, error) {
+	var activity *userActivityResponse
 	var commits []userCommit
 
 	g, gCtx := errgroup.WithContext(ctx)
 	g.Go(func() error {
-		var fetchErr error
-		checkpoints, streakDates, fetchErr = fetchCheckpoints(gCtx, client)
-		return fetchErr
+		var err error
+		activity, err = fetchActivity(gCtx, client)
+		return err
 	})
 	g.Go(func() error {
-		var fetchErr error
-		commits, fetchErr = fetchCommits(gCtx, client)
-		return fetchErr
+		var err error
+		commits, err = fetchCommits(gCtx, client)
+		return err
 	})
 	if err := g.Wait(); err != nil {
-		return fmt.Errorf("fetch activity: %w", err)
+		return nil, nil, fmt.Errorf("fetch activity: %w", err)
 	}
-
-	stats := computeContributionStats(checkpoints, streakDates)
-	repos := computeRepoContributions(checkpoints)
-	hourly := computeHourlyData(checkpoints)
-	days := groupCommitsByDay(commits)
-
-	sty := newActivityStyles(w)
-	renderActivity(w, sty, stats, repos, hourly, days)
-	return nil
+	return activity, commits, nil
 }
 
-func fetchCheckpoints(ctx context.Context, client *api.Client) ([]userCheckpoint, []string, error) {
-	path := fmt.Sprintf("/api/v1/stats/checkpoints?timeframe=%s&limit=%d", activityTimeframe, activityLimit)
+func fetchActivity(ctx context.Context, client *api.Client) (*userActivityResponse, error) {
+	q := url.Values{}
+	q.Set("timezone", detectTimezone())
+	q.Set("timeframe", activityTimeframe)
+	q.Set("limit", strconv.Itoa(activityLimit))
+	path := "/api/v1/me/activity?" + q.Encode()
+
 	resp, err := client.Get(ctx, path)
 	if err != nil {
-		return nil, nil, fmt.Errorf("GET checkpoints: %w", err)
+		return nil, fmt.Errorf("GET activity: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if err := api.CheckResponse(resp); err != nil {
-		return nil, nil, fmt.Errorf("checkpoints response: %w", err)
+		return nil, fmt.Errorf("activity response: %w", err)
 	}
 
-	var result userCheckpointsResponse
+	var result userActivityResponse
 	if err := api.DecodeJSON(resp, &result); err != nil {
-		return nil, nil, fmt.Errorf("decode checkpoints: %w", err)
+		return nil, fmt.Errorf("decode activity: %w", err)
 	}
-	return result.Checkpoints, result.StreakDates, nil
+	return &result, nil
 }
 
 func fetchCommits(ctx context.Context, client *api.Client) ([]userCommit, error) {
-	path := fmt.Sprintf("/api/v1/stats/commits?timeframe=%s&limit=%d", activityTimeframe, activityLimit)
+	path := fmt.Sprintf("/api/v1/me/commits?timeframe=%s&limit=%d", activityTimeframe, activityLimit)
 	resp, err := client.Get(ctx, path)
 	if err != nil {
 		return nil, fmt.Errorf("GET commits: %w", err)
@@ -134,160 +155,22 @@ func fetchCommits(ctx context.Context, client *api.Client) ([]userCommit, error)
 	return result.Commits, nil
 }
 
-// computeContributionStats mirrors the frontend's computeStats + computeStreaks.
-func computeContributionStats(checkpoints []userCheckpoint, streakDates []string) contributionStats {
-	stats := contributionStats{}
-	if len(checkpoints) == 0 {
-		return stats
+// detectTimezone returns an IANA timezone identifier for the current host.
+// Tries $TZ first, then the /etc/localtime symlink (Unix), falling back to UTC.
+func detectTimezone() string {
+	if tz := os.Getenv("TZ"); tz != "" {
+		return tz
 	}
-
-	stats.Tasks = len(checkpoints)
-
-	var tokenSum, tokenCount, sessionSum, maxSteps int
-	for _, cp := range checkpoints {
-		if cp.InputTokens != nil || cp.OutputTokens != nil {
-			tokenSum += derefOr(cp.InputTokens, 0) + derefOr(cp.OutputTokens, 0)
-			tokenCount++
-		}
-		sessionSum += derefOr(cp.SessionCount, 1)
-		if s := derefOr(cp.Steps, 1); s > maxSteps {
-			maxSteps = s
+	if link, err := os.Readlink("/etc/localtime"); err == nil {
+		const marker = "/zoneinfo/"
+		if idx := strings.LastIndex(link, marker); idx >= 0 {
+			return link[idx+len(marker):]
 		}
 	}
-
-	if tokenCount > 0 {
-		stats.Throughput = float64(tokenSum) / float64(tokenCount) / 1000.0
+	if name := time.Local.String(); name != "" && name != "Local" {
+		return name
 	}
-	stats.Iteration = float64(sessionSum) / float64(len(checkpoints))
-	// 2 min/step is the frontend's heuristic for turn duration
-	stats.ContinuityH = float64(maxSteps) * 2.0 / 60.0
-	stats.Streak, stats.CurrentStreak = computeStreaks(streakDates)
-
-	return stats
-}
-
-func computeStreaks(timestamps []string) (longest, current int) {
-	if len(timestamps) == 0 {
-		return 0, 0
-	}
-
-	dateSet := make(map[string]struct{})
-	for _, ts := range timestamps {
-		t, err := parseFlexibleTime(ts)
-		if err != nil {
-			continue
-		}
-		dateSet[t.Local().Format("2006-01-02")] = struct{}{}
-	}
-
-	if len(dateSet) == 0 {
-		return 0, 0
-	}
-
-	// Current streak: from today or yesterday backward
-	today := time.Now().Local().Format("2006-01-02")
-	check := time.Now().Local()
-	if _, ok := dateSet[today]; !ok {
-		check = check.AddDate(0, 0, -1)
-	}
-	for {
-		if _, ok := dateSet[check.Format("2006-01-02")]; !ok {
-			break
-		}
-		current++
-		check = check.AddDate(0, 0, -1)
-	}
-
-	dates := make([]string, 0, len(dateSet))
-	for d := range dateSet {
-		dates = append(dates, d)
-	}
-	sort.Strings(dates)
-
-	run := 1
-	longest = 1
-	for i := 1; i < len(dates); i++ {
-		prev, errP := time.Parse("2006-01-02", dates[i-1])
-		curr, errC := time.Parse("2006-01-02", dates[i])
-		if errP != nil || errC != nil {
-			run = 1
-			continue
-		}
-		if curr.Sub(prev).Hours() <= 25 { // 1 day with some tolerance
-			run++
-		} else {
-			run = 1
-		}
-		if run > longest {
-			longest = run
-		}
-	}
-
-	return longest, current
-}
-
-func computeRepoContributions(checkpoints []userCheckpoint) []repoContribution {
-	byRepo := make(map[string]*repoContribution)
-
-	for _, cp := range checkpoints {
-		rc, ok := byRepo[cp.RepoFullName]
-		if !ok {
-			rc = &repoContribution{
-				Repo:   cp.RepoFullName,
-				Agents: make(map[string]int),
-			}
-			byRepo[cp.RepoFullName] = rc
-		}
-		rc.Total++
-		rc.Agents[normalizeAgentID(cp.Agent)]++
-	}
-
-	result := make([]repoContribution, 0, len(byRepo))
-	for _, rc := range byRepo {
-		result = append(result, *rc)
-	}
-	sort.Slice(result, func(i, j int) bool {
-		if result[i].Total != result[j].Total {
-			return result[i].Total > result[j].Total
-		}
-		return result[i].Repo < result[j].Repo
-	})
-	return result
-}
-
-// computeHourlyData groups checkpoints by date+hour+agent, summing steps.
-func computeHourlyData(checkpoints []userCheckpoint) []hourlyPoint {
-	type key struct {
-		date    string
-		hour    int
-		agentID string
-	}
-	grouped := make(map[key]int)
-
-	for _, cp := range checkpoints {
-		t, err := parseFlexibleTime(cp.CommitDate)
-		if err != nil {
-			continue
-		}
-		local := t.Local()
-		k := key{
-			date:    local.Format("2006-01-02"),
-			hour:    local.Hour(),
-			agentID: normalizeAgentID(cp.Agent),
-		}
-		grouped[k] += derefOr(cp.Steps, 1)
-	}
-
-	result := make([]hourlyPoint, 0, len(grouped))
-	for k, v := range grouped {
-		result = append(result, hourlyPoint{
-			Date:    k.date,
-			Hour:    k.hour,
-			Value:   v,
-			AgentID: k.agentID,
-		})
-	}
-	return result
+	return "UTC"
 }
 
 func groupCommitsByDay(commits []userCommit) []commitDay {
@@ -323,13 +206,6 @@ func groupCommitsByDay(commits []userCommit) []commitDay {
 		result = append(result, commitDay{Date: d, Commits: byDate[d]})
 	}
 	return result
-}
-
-func normalizeAgentID(agent *string) string {
-	if agent == nil {
-		return agentUnknown
-	}
-	return normalizeAgentString(*agent)
 }
 
 func normalizeAgentString(s string) string {
@@ -379,11 +255,4 @@ func parseFlexibleTime(s string) (time.Time, error) {
 		}
 	}
 	return t, nil
-}
-
-func derefOr(p *int, def int) int {
-	if p == nil {
-		return def
-	}
-	return *p
 }

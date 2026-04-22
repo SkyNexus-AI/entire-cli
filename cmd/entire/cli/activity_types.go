@@ -1,32 +1,26 @@
 package cli
 
-// API response types for the /api/v1/stats/* endpoints used by `entire activity`.
+// API response types for the /api/v1/me/* endpoints used by `entire activity`.
 
-// userCheckpoint represents a single checkpoint returned by the checkpoints API.
-type userCheckpoint struct {
-	CheckpointID string  `json:"checkpoint_id"`
-	CommitSHA    string  `json:"commit_sha"`
-	CommitMsg    string  `json:"commit_message"`
-	CommitDate   string  `json:"commit_date"`
-	Additions    int     `json:"additions"`
-	Deletions    int     `json:"deletions"`
-	FilesChanged int     `json:"files_changed"`
-	RepoFullName string  `json:"repo_full_name"`
-	Branch       string  `json:"branch"`
-	IsPrivate    bool    `json:"is_private"`
-	Agent        *string `json:"agent"`
-	Steps        *int    `json:"steps"`
-	SessionCount *int    `json:"session_count"`
-	InputTokens  *int    `json:"input_tokens"`
-	OutputTokens *int    `json:"output_tokens"`
+// activityAgentCounts maps the 11 canonical agent IDs to counts.
+// The API always populates every key (zero for absent agents).
+type activityAgentCounts map[string]int
+
+// userActivityResponse is the API response for GET /api/v1/me/activity.
+type userActivityResponse struct {
+	Stats               activityStatsResponse `json:"stats"`
+	HourlyContributions []hourlyPoint         `json:"hourly_contributions"`
+	Repos               []repoContribution    `json:"repos"`
+	// DailyContributions is returned but unused by the CLI.
 }
 
-// userCheckpointsResponse is the API response for GET /api/v1/stats/checkpoints.
-type userCheckpointsResponse struct {
-	Checkpoints []userCheckpoint `json:"checkpoints"`
-	StreakDates []string         `json:"streakDates"`
-	Timeframe   string           `json:"timeframe"`
-	UpdatedAt   string           `json:"updated_at"`
+type activityStatsResponse struct {
+	Tasks         int     `json:"tasks"`
+	Orchestration int     `json:"orchestration"` // 0-100, percentage
+	Iteration     float64 `json:"iteration"`
+	Throughput    float64 `json:"throughput"`
+	Streak        int     `json:"streak"`
+	CurrentStreak int     `json:"current_streak"`
 }
 
 // userCommitCheckpoint is checkpoint info nested inside a commit.
@@ -54,7 +48,7 @@ type userCommit struct {
 	CheckpointRepoFullName *string                `json:"checkpoint_repo_full_name"`
 }
 
-// userCommitsResponse is the API response for GET /api/v1/stats/commits.
+// userCommitsResponse is the API response for GET /api/v1/me/commits.
 type userCommitsResponse struct {
 	Commits   []userCommit `json:"commits"`
 	Timeframe string       `json:"timeframe"`
@@ -67,23 +61,26 @@ type contributionStats struct {
 	Tasks         int
 	Throughput    float64 // avg tokens/checkpoint in thousands
 	Iteration     float64 // avg session_count per checkpoint
-	ContinuityH   float64 // peak session length in hours
+	Orchestration int     // sum(steps) / (sum(steps) + count) * 100
 	Streak        int     // longest consecutive days
 	CurrentStreak int     // current streak from today
 }
 
+// repoContribution matches the API's `repos[]` shape. Agents is keyed by the
+// canonical agent ID (claude, gemini, …, unknown) with all 11 keys populated.
 type repoContribution struct {
-	Repo   string
-	Total  int
-	Agents map[string]int // agentID -> checkpoint count
+	Repo   string              `json:"repo"`
+	Total  int                 `json:"total"`
+	Agents activityAgentCounts `json:"agents"`
 }
 
-// hourlyPoint is a single data point for the contribution chart.
+// hourlyPoint matches the API's `hourly_contributions[]` shape. AgentID is a
+// canonical ID (no client-side normalization needed).
 type hourlyPoint struct {
-	Date    string // "2006-01-02"
-	Hour    int
-	Value   int // step count
-	AgentID string
+	Date    string `json:"date"` // "2006-01-02", in the caller's timezone
+	Hour    int    `json:"hour"`
+	AgentID string `json:"agent"`
+	Value   int    `json:"value"`
 }
 
 // commitDay groups commits by date for display.

@@ -5,162 +5,7 @@ import (
 	"time"
 )
 
-func intPtr(v int) *int       { return &v }
 func strPtr(v string) *string { return &v }
-
-func TestComputeContributionStats_Throughput(t *testing.T) {
-	t.Parallel()
-	cps := []userCheckpoint{
-		{InputTokens: intPtr(5000), OutputTokens: intPtr(3000)},
-		{InputTokens: intPtr(2000), OutputTokens: intPtr(1000)},
-	}
-	stats := computeContributionStats(cps, nil)
-
-	// avg tokens = (8000+3000)/2 = 5500, /1000 = 5.5k
-	want := 5.5
-	if diff := stats.Throughput - want; diff > 0.01 || diff < -0.01 {
-		t.Errorf("Throughput = %.2f, want %.2f", stats.Throughput, want)
-	}
-}
-
-func TestComputeContributionStats_ThroughputSkipsNilTokens(t *testing.T) {
-	t.Parallel()
-	cps := []userCheckpoint{
-		{InputTokens: intPtr(4000), OutputTokens: intPtr(2000)},
-		{}, // no tokens — should be excluded from average
-	}
-	stats := computeContributionStats(cps, nil)
-
-	want := 6.0 // 6000/1 / 1000
-	if diff := stats.Throughput - want; diff > 0.01 || diff < -0.01 {
-		t.Errorf("Throughput = %.2f, want %.2f", stats.Throughput, want)
-	}
-}
-
-func TestComputeContributionStats_IterationUsesSessionCount(t *testing.T) {
-	t.Parallel()
-	cps := []userCheckpoint{
-		{SessionCount: intPtr(2), Steps: intPtr(10)},
-		{SessionCount: intPtr(4), Steps: intPtr(20)},
-	}
-	stats := computeContributionStats(cps, nil)
-
-	// Iteration should be avg(session_count) = (2+4)/2 = 3.0, NOT avg(steps)
-	want := 3.0
-	if diff := stats.Iteration - want; diff > 0.01 || diff < -0.01 {
-		t.Errorf("Iteration = %.2f, want %.2f (should use session_count, not steps)", stats.Iteration, want)
-	}
-}
-
-func TestComputeContributionStats_ContinuityUsesMaxSteps(t *testing.T) {
-	t.Parallel()
-	cps := []userCheckpoint{
-		{Steps: intPtr(30)},
-		{Steps: intPtr(60)},
-		{Steps: intPtr(15)},
-	}
-	stats := computeContributionStats(cps, nil)
-
-	// max(steps) = 60, * 2 / 60 = 2.0 hours
-	want := 2.0
-	if diff := stats.ContinuityH - want; diff > 0.01 || diff < -0.01 {
-		t.Errorf("ContinuityH = %.2f, want %.2f", stats.ContinuityH, want)
-	}
-}
-
-func TestComputeContributionStats_NilFieldsDefault(t *testing.T) {
-	t.Parallel()
-	cps := []userCheckpoint{{}} // all nil pointer fields
-	stats := computeContributionStats(cps, nil)
-
-	if stats.Iteration != 1.0 {
-		t.Errorf("Iteration = %.2f, want 1.0 (nil session_count defaults to 1)", stats.Iteration)
-	}
-	// max(steps) defaults to 1, continuity = 1*2/60
-	wantH := 2.0 / 60.0
-	if diff := stats.ContinuityH - wantH; diff > 0.001 || diff < -0.001 {
-		t.Errorf("ContinuityH = %.4f, want %.4f", stats.ContinuityH, wantH)
-	}
-	if stats.Throughput != 0 {
-		t.Errorf("Throughput = %.2f, want 0 (no token data)", stats.Throughput)
-	}
-}
-
-func TestComputeContributionStats_Empty(t *testing.T) {
-	t.Parallel()
-	stats := computeContributionStats(nil, nil)
-	if stats.Tasks != 0 || stats.Throughput != 0 || stats.Iteration != 0 {
-		t.Errorf("empty checkpoints should return zero stats, got %+v", stats)
-	}
-}
-
-func TestComputeStreaks_Basic(t *testing.T) {
-	t.Parallel()
-	today := time.Now().Local()
-	dates := []string{
-		today.AddDate(0, 0, -2).Format(time.RFC3339),
-		today.AddDate(0, 0, -1).Format(time.RFC3339),
-		today.Format(time.RFC3339),
-	}
-	longest, current := computeStreaks(dates)
-	if longest != 3 {
-		t.Errorf("longest = %d, want 3", longest)
-	}
-	if current != 3 {
-		t.Errorf("current = %d, want 3", current)
-	}
-}
-
-func TestComputeStreaks_DedupsSameDay(t *testing.T) {
-	t.Parallel()
-	today := time.Now().Local()
-	ts := today.Format(time.RFC3339)
-	dates := []string{ts, ts, ts}
-
-	longest, current := computeStreaks(dates)
-	if longest != 1 {
-		t.Errorf("longest = %d, want 1 (deduped)", longest)
-	}
-	if current != 1 {
-		t.Errorf("current = %d, want 1", current)
-	}
-}
-
-func TestComputeStreaks_InvalidTimestamps(t *testing.T) {
-	t.Parallel()
-	dates := []string{"not-a-date", "also-bad", ""}
-	longest, current := computeStreaks(dates)
-	if longest != 0 || current != 0 {
-		t.Errorf("invalid timestamps should return 0,0; got %d,%d", longest, current)
-	}
-}
-
-func TestComputeStreaks_CurrentStartsFromYesterday(t *testing.T) {
-	t.Parallel()
-	today := time.Now().Local()
-	// Activity yesterday and day-before, but not today
-	dates := []string{
-		today.AddDate(0, 0, -2).Format(time.RFC3339),
-		today.AddDate(0, 0, -1).Format(time.RFC3339),
-	}
-	_, current := computeStreaks(dates)
-	if current != 2 {
-		t.Errorf("current = %d, want 2 (should start from yesterday)", current)
-	}
-}
-
-func TestComputeStreaks_NoCurrentIfGap(t *testing.T) {
-	t.Parallel()
-	today := time.Now().Local()
-	// Activity 3 days ago only
-	dates := []string{
-		today.AddDate(0, 0, -3).Format(time.RFC3339),
-	}
-	_, current := computeStreaks(dates)
-	if current != 0 {
-		t.Errorf("current = %d, want 0 (gap of 2 days)", current)
-	}
-}
 
 func TestNormalizeAgentString(t *testing.T) {
 	t.Parallel()
@@ -308,6 +153,13 @@ func TestFormatCommitDate(t *testing.T) {
 				t.Errorf("formatCommitDate(%q) = %q, should not contain %q", tt.input, got, tt.excludes)
 			}
 		})
+	}
+}
+
+func TestDetectTimezone_HonoursTZEnv(t *testing.T) {
+	t.Setenv("TZ", "Europe/Berlin")
+	if got := detectTimezone(); got != "Europe/Berlin" {
+		t.Errorf("detectTimezone() = %q, want Europe/Berlin", got)
 	}
 }
 
