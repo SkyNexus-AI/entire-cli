@@ -71,10 +71,7 @@ func newSearchStyles(ss statusStyles) searchStyles {
 	return s
 }
 
-const (
-	resultsPerPage = 25
-	searchKeyEsc   = "esc"
-)
+const resultsPerPage = 25
 
 // searchModel is the bubbletea model for interactive search results.
 type searchModel struct {
@@ -234,7 +231,7 @@ func (m searchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint:ireturn
 
 func (m searchModel) updateSearchMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) { //nolint:ireturn // bubbletea pattern
 	switch msg.String() {
-	case searchKeyEsc:
+	case "esc":
 		m.mode = modeBrowse
 		m.input.Blur()
 		m = m.refreshBrowseContent()
@@ -332,7 +329,7 @@ func (m searchModel) updateBrowseMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) { //n
 
 func (m searchModel) updateDetailMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) { //nolint:ireturn // bubbletea pattern
 	switch msg.String() {
-	case searchKeyEsc, "backspace":
+	case "esc", "backspace":
 		m.mode = modeBrowse
 		return m, nil
 	case "q", "ctrl+c":
@@ -661,7 +658,7 @@ func (m searchModel) viewDetailFull() string {
 	scrollPct := m.styles.render(m.styles.dim, fmt.Sprintf("%3.f%%", m.detailVP.ScrollPercent()*100))
 	help := m.styles.render(m.styles.helpKey, "j/k") + " scroll" +
 		m.styles.render(m.styles.helpSep, " · ") +
-		m.styles.render(m.styles.helpKey, searchKeyEsc) + " back" +
+		m.styles.render(m.styles.helpKey, "esc") + " back" +
 		m.styles.render(m.styles.helpSep, " · ") +
 		m.styles.render(m.styles.helpKey, "q") + " quit"
 
@@ -679,7 +676,7 @@ func (m searchModel) viewHelp() string {
 
 	if m.mode == modeSearch {
 		return m.styles.render(m.styles.helpKey, "enter") + " search" + dot +
-			m.styles.render(m.styles.helpKey, searchKeyEsc) + " cancel" + "\n"
+			m.styles.render(m.styles.helpKey, "esc") + " cancel" + "\n"
 	}
 
 	pages := m.totalPages()
