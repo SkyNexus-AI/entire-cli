@@ -20,6 +20,16 @@ import (
 
 const droidRepoSettingsPath = ".factory/settings.json"
 
+const (
+	checkpointsModeLegacy      = "legacy"
+	checkpointsModeV2DualWrite = "v2-dual-write"
+	checkpointsModeV2Only      = "v2-only"
+
+	checkpointRefV1            = "entire/checkpoints/v1"
+	checkpointRefV2Main        = "refs/entire/checkpoints/v2/main"
+	checkpointRefV2FullCurrent = "refs/entire/checkpoints/v2/full/current"
+)
+
 // RepoState holds the working state for a single test's cloned repository.
 type RepoState struct {
 	Agent            agents.Agent
@@ -99,6 +109,7 @@ func SetupRepo(t *testing.T, agent agents.Agent) *RepoState {
 	// shadow branch exists yet. Prompt-mode agents still exercise the !hasTTY()
 	// fast path since they have no TTY regardless of this setting.
 	PatchSettings(t, dir, map[string]any{"log_level": "debug", "commit_linking": "always"})
+	applySuiteCheckpointsMode(t, dir)
 
 	// Copilot CLI blocks on a "No copilot instructions found" notice in fresh
 	// repos that lack .github/copilot-instructions.md, preventing the interactive
@@ -139,7 +150,7 @@ func SetupRepo(t *testing.T, agent agents.Agent) *RepoState {
 		Dir:              dir,
 		ArtifactDir:      artDir,
 		HeadBefore:       GitOutput(t, dir, "rev-parse", "HEAD"),
-		CheckpointBefore: GitOutput(t, dir, "rev-parse", "entire/checkpoints/v1"),
+		CheckpointBefore: strings.TrimSpace(gitOutputSafe(dir, "rev-parse", primaryCheckpointRef())),
 		ConsoleLog:       consoleLog,
 	}
 
@@ -151,6 +162,80 @@ func SetupRepo(t *testing.T, agent agents.Agent) *RepoState {
 	})
 
 	return state
+}
+
+// ApplySuiteCheckpointsMode configures an arbitrary repo for the current
+// suite-wide E2E checkpoints mode. Useful for repos created outside SetupRepo,
+// such as fresh clones in remote-resume scenarios.
+func ApplySuiteCheckpointsMode(t *testing.T, dir string) {
+	t.Helper()
+
+	switch checkpointsMode() {
+	case checkpointsModeLegacy:
+		return
+	case checkpointsModeV2DualWrite:
+		EnableCheckpointsV2(t, dir)
+	case checkpointsModeV2Only:
+		EnableCheckpointsVersion2(t, dir)
+	default:
+		t.Fatalf("unsupported E2E_CHECKPOINTS_MODE %q (expected legacy, v2-dual-write, or v2-only)", checkpointsMode())
+	}
+}
+
+func applySuiteCheckpointsMode(t *testing.T, dir string) {
+	t.Helper()
+	ApplySuiteCheckpointsMode(t, dir)
+}
+
+func checkpointsMode() string {
+	switch mode := os.Getenv("E2E_CHECKPOINTS_MODE"); mode {
+	case "", checkpointsModeLegacy:
+		return checkpointsModeLegacy
+	case checkpointsModeV2DualWrite, checkpointsModeV2Only:
+		return mode
+	default:
+		return mode
+	}
+}
+
+func primaryCheckpointRef() string {
+	switch checkpointsMode() {
+	case checkpointsModeV2DualWrite, checkpointsModeV2Only:
+		return checkpointRefV2Main
+	default:
+		return checkpointRefV1
+	}
+}
+
+// CurrentCheckpointRef returns the current hash of the primary checkpoint ref
+// for the active suite mode. It fails if the ref does not exist.
+func CurrentCheckpointRef(t *testing.T, dir string) string {
+	t.Helper()
+	return GitOutput(t, dir, "rev-parse", primaryCheckpointRef())
+}
+
+// CheckpointMetadataRef returns the metadata ref name used by the active suite
+// mode. Tests use this to verify local fetch-on-demand behavior without
+// hardcoding v1-only assumptions.
+func CheckpointMetadataRef() string {
+	return primaryCheckpointRef()
+}
+
+// PushCheckpointRefs pushes the checkpoint refs used by the active suite mode
+// to the origin remote. Remote-resume tests use this instead of hardcoding
+// legacy v1 branch pushes.
+func PushCheckpointRefs(t *testing.T, dir string) {
+	t.Helper()
+
+	switch checkpointsMode() {
+	case checkpointsModeLegacy:
+		Git(t, dir, "push", "origin", checkpointRefV1+":"+checkpointRefV1)
+	case checkpointsModeV2DualWrite, checkpointsModeV2Only:
+		Git(t, dir, "push", "origin", checkpointRefV2Main+":"+checkpointRefV2Main)
+		Git(t, dir, "push", "origin", checkpointRefV2FullCurrent+":"+checkpointRefV2FullCurrent)
+	default:
+		t.Fatalf("unsupported E2E_CHECKPOINTS_MODE %q", checkpointsMode())
+	}
 }
 
 func setupGeminiTestHome(t *testing.T, repoDir string) {
@@ -516,9 +601,7 @@ func PatchSettings(t *testing.T, dir string, extra map[string]any) {
 	if err := json.Unmarshal(data, &settings); err != nil {
 		t.Fatalf("parse settings: %v", err)
 	}
-	for k, v := range extra {
-		settings[k] = v
-	}
+	mergeSettings(settings, extra)
 	out, err := json.MarshalIndent(settings, "", "  ")
 	if err != nil {
 		t.Fatalf("marshal settings: %v", err)
@@ -526,6 +609,56 @@ func PatchSettings(t *testing.T, dir string, extra map[string]any) {
 	if err := os.WriteFile(path, out, 0o644); err != nil {
 		t.Fatalf("write settings: %v", err)
 	}
+}
+
+// EnableCheckpointsV2 switches an E2E repo into v2 dual-write mode while
+// preserving existing strategy_options written during setup.
+func EnableCheckpointsV2(t *testing.T, dir string) {
+	t.Helper()
+	PatchSettings(t, dir, map[string]any{
+		"strategy_options": map[string]any{
+			"checkpoints_v2": true,
+		},
+	})
+}
+
+// EnableCheckpointsVersion2 switches an E2E repo into strict v2-only mode.
+func EnableCheckpointsVersion2(t *testing.T, dir string) {
+	t.Helper()
+	PatchSettings(t, dir, map[string]any{
+		"strategy_options": map[string]any{
+			"checkpoints_version": 2,
+		},
+	})
+}
+
+func mergeSettings(dst, src map[string]any) {
+	for k, v := range src {
+		srcMap, ok := v.(map[string]any)
+		if !ok {
+			dst[k] = v
+			continue
+		}
+
+		if existing, ok := dst[k].(map[string]any); ok {
+			mergeSettings(existing, srcMap)
+			continue
+		}
+
+		dst[k] = cloneSettingsMap(srcMap)
+	}
+}
+
+func cloneSettingsMap(src map[string]any) map[string]any {
+	dst := make(map[string]any, len(src))
+	for k, v := range src {
+		if child, ok := v.(map[string]any); ok {
+			dst[k] = cloneSettingsMap(child)
+			continue
+		}
+		dst[k] = v
+	}
+	return dst
 }
 
 // EmptyDir returns the path to an empty temporary directory, cleaned up when

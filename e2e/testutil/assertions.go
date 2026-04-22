@@ -110,13 +110,13 @@ func WaitForCheckpoint(t *testing.T, s *RepoState, timeout time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		after := GitOutput(t, s.Dir, "rev-parse", "entire/checkpoints/v1")
+		after := strings.TrimSpace(gitOutputSafe(s.Dir, "rev-parse", primaryCheckpointRef()))
 		if after != s.CheckpointBefore {
 			return
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
-	t.Fatalf("checkpoint branch did not advance within %s", timeout)
+	t.Fatalf("checkpoint ref %s did not advance within %s", primaryCheckpointRef(), timeout)
 }
 
 // shadowBranches returns all shadow branches (entire/*) excluding entire/checkpoints/*.
@@ -166,14 +166,14 @@ func AssertHasShadowBranches(t *testing.T, dir string) {
 // AssertCheckpointAdvanced asserts the checkpoint branch moved forward.
 func AssertCheckpointAdvanced(t *testing.T, s *RepoState) {
 	t.Helper()
-	after := GitOutput(t, s.Dir, "rev-parse", "entire/checkpoints/v1")
+	after := strings.TrimSpace(gitOutputSafe(s.Dir, "rev-parse", primaryCheckpointRef()))
 	assert.NotEqual(t, s.CheckpointBefore, after, "checkpoint branch did not advance")
 }
 
 // AssertCheckpointNotAdvanced asserts the checkpoint branch has NOT moved.
 func AssertCheckpointNotAdvanced(t *testing.T, s *RepoState) {
 	t.Helper()
-	after := GitOutput(t, s.Dir, "rev-parse", "entire/checkpoints/v1")
+	after := strings.TrimSpace(gitOutputSafe(s.Dir, "rev-parse", primaryCheckpointRef()))
 	assert.Equal(t, s.CheckpointBefore, after, "checkpoint branch advanced unexpectedly")
 }
 
@@ -281,13 +281,17 @@ func WaitForCheckpointAdvanceFrom(t *testing.T, dir string, fromRef string, time
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		after := GitOutput(t, dir, "rev-parse", "entire/checkpoints/v1")
+		after := strings.TrimSpace(gitOutputSafe(dir, "rev-parse", primaryCheckpointRef()))
 		if after != fromRef {
 			return
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
-	t.Fatalf("checkpoint branch did not advance from %s within %s", fromRef[:8], timeout)
+	displayRef := fromRef
+	if len(displayRef) > 8 {
+		displayRef = displayRef[:8]
+	}
+	t.Fatalf("checkpoint ref %s did not advance from %s within %s", primaryCheckpointRef(), displayRef, timeout)
 }
 
 // WaitForSessionIdle polls the session state files in .git/entire-sessions/
