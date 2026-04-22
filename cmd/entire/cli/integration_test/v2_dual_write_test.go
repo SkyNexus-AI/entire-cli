@@ -245,10 +245,11 @@ func TestV2DualWrite_StopTimeFinalization(t *testing.T) {
 	assert.Contains(t, compactTranscript, `"v":1`)
 }
 
-// TestV2Only_SkipsV1Write verifies the v2-only specific deltas: v1 metadata is
-// not written and v2 refs still exist. The full v2 payload shape is already
-// covered by TestV2DualWrite_FullWorkflow.
-func TestV2Only_SkipsV1Write(t *testing.T) {
+// TestCheckpointsVersion2_SkipsV1Write verifies the specific deltas of running
+// with checkpoints_version: 2 — v1 metadata is not written and v2 refs still
+// exist. The full v2 payload shape is already covered by
+// TestV2DualWrite_FullWorkflow.
+func TestCheckpointsVersion2_SkipsV1Write(t *testing.T) {
 	t.Parallel()
 	env := NewTestEnv(t)
 	defer env.Cleanup()
@@ -259,10 +260,10 @@ func TestV2Only_SkipsV1Write(t *testing.T) {
 	env.GitAdd("README.md")
 	env.GitAdd(".gitignore")
 	env.GitCommit("Initial commit")
-	env.GitCheckoutNewBranch("feature/v2-only-test")
+	env.GitCheckoutNewBranch("feature/checkpoints-v2-test")
 
 	env.InitEntireWithOptions(map[string]any{
-		"checkpoints_v2_only": true,
+		"checkpoints_version": 2,
 	})
 
 	session := env.NewSession()
@@ -287,7 +288,7 @@ func TestV2Only_SkipsV1Write(t *testing.T) {
 	// v1: should NOT be written.
 	_, found := env.ReadFileFromBranch(paths.MetadataBranchName, cpPath+"/"+paths.MetadataFileName)
 	assert.False(t, found,
-		"v1 committed checkpoint metadata should NOT exist when checkpoints_v2_only is enabled")
+		"v1 committed checkpoint metadata should NOT exist when checkpoints_version is 2")
 
 	// v2: smoke check that the checkpoint still landed.
 	assert.True(t, env.RefExists(paths.V2MainRefName), "v2 /main ref should exist")

@@ -1120,9 +1120,28 @@ func TestRunGitHubBootstrap_YesRepoExistsNoTTY_Fails(t *testing.T) {
 func TestResolveRepoName_YesRepoExistsWithTTY_FallsBackToPrompt(t *testing.T) {
 	// When --yes is set, the name is taken, and a TTY is available,
 	// resolveRepoName should print a conflict message and fall through
-	// to the interactive prompt (which we can't complete in a test, but
-	// we can verify it reached the right path via the output).
+	// to the interactive prompt. We verify the conflict message was
+	// printed (proving the fallback path was taken).
 	t.Setenv("ENTIRE_TEST_TTY", "1")
+
+	// Force accessible (text-based) mode so the huh form reads from
+	// os.Stdin instead of trying to open /dev/tty via bubbletea.
+	// Pipe a unique name so the form completes instead of blocking.
+	t.Setenv("ACCESSIBLE", "1")
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { pr.Close() })
+	go func() {
+		// The form reads one line; provide a unique name so it exits the loop.
+		pw.WriteString("unique-test-repo\n") //nolint:errcheck // test helper
+		pw.Close()
+	}()
+	oldStdin := os.Stdin
+	os.Stdin = pr
+	t.Cleanup(func() { os.Stdin = oldStdin })
+
 	dir := t.TempDir()
 	restoreCwd(t, dir)
 
@@ -1130,24 +1149,24 @@ func TestResolveRepoName_YesRepoExistsWithTTY_FallsBackToPrompt(t *testing.T) {
 	repoName := filepath.Base(dir)
 	// The suggested name exists.
 	r.set("gh", []string{"repo", "view", "myuser/" + repoName, "--json", "name"}, `{"name":"`+repoName+`"}`, nil)
+	// The unique name typed at the prompt does not exist (fakeRunner returns
+	// an error for unknown calls, which ghRepoExists treats as "proceed").
 
 	var stdout bytes.Buffer
 	opts := GitHubBootstrapOptions{Yes: true}
-	// resolveRepoName will print the conflict message, then try to run
-	// the interactive form which will fail without a real TTY — that's fine,
-	// we just need to verify it printed the conflict message (reached the
-	// fallback path) rather than returning the taken name or a hard error.
-	_, err := resolveRepoName(context.Background(), &stdout, io.Discard, r, "myuser", dir, opts)
+	name, err := resolveRepoName(context.Background(), &stdout, io.Discard, r, "myuser", dir, opts)
 
 	output := stdout.String()
 	if !strings.Contains(output, "already exists on GitHub") {
 		t.Errorf("expected conflict message in output, got: %s", output)
 	}
-	// The form.Run() will error since there's no real TTY — that's expected.
-	// The key assertion is that we got the conflict message, proving the
-	// fallback path was taken instead of returning the taken name.
-	if err == nil {
-		t.Error("expected error from form.Run() without a real TTY")
+	// The form should complete with the unique name (fakeRunner can't verify
+	// the name, so resolveRepoName proceeds with a warning).
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+	if name != "unique-test-repo" {
+		t.Errorf("expected name %q, got %q", "unique-test-repo", name)
 	}
 }
 
