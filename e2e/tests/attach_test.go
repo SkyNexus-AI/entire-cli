@@ -68,9 +68,14 @@ func TestAttachSessionAddsToExistingCheckpoint(t *testing.T) {
 			"create a file at docs/existing.md with a short paragraph about existing checkpoints. Do not ask for confirmation or approval, just make the change.")
 		require.NoError(t, err, "agent failed")
 
+		checkpointBefore := ""
+		if _, refErr := testutil.GitOutputErr(s.Dir, "show-ref", "--verify", "--hash", testutil.CheckpointMetadataRef()); refErr == nil {
+			checkpointBefore = testutil.CurrentCheckpointRef(t, s.Dir)
+		}
+
 		s.Git(t, "add", ".")
 		s.Git(t, "commit", "-m", "Add existing checkpoint doc")
-		testutil.WaitForCheckpoint(t, s, 30*time.Second)
+		testutil.WaitForCheckpointAdvanceFrom(t, s.Dir, checkpointBefore, 30*time.Second)
 
 		checkpointID := testutil.AssertHasCheckpointTrailer(t, s.Dir, "HEAD")
 
