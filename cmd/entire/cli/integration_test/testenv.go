@@ -1116,12 +1116,14 @@ func (env *TestEnv) gitCommitWithShadowHooks(message string, simulateTTY bool, f
 	prepCmd := exec.Command(getTestBinary(), "hooks", "git", "prepare-commit-msg", msgFile, "message")
 	prepCmd.Dir = env.RepoDir
 	if simulateTTY {
-		// Simulate human at terminal: ENTIRE_TEST_TTY=1 makes hasTTY() return true
-		// and askConfirmTTY() return defaultYes without reading from /dev/tty.
+		// Simulate human at terminal: ENTIRE_TEST_TTY=1 makes
+		// interactive.CanPromptInteractively() return true and askConfirmTTY()
+		// return defaultYes without reading from /dev/tty.
 		prepCmd.Env = env.gitHookEnv("ENTIRE_TEST_TTY=1")
 	} else {
-		// Simulate agent: ENTIRE_TEST_TTY=0 makes hasTTY() return false,
-		// triggering the fast path that adds trailers for ACTIVE sessions.
+		// Simulate agent: ENTIRE_TEST_TTY=0 makes
+		// interactive.CanPromptInteractively() return false, triggering the
+		// fast path that adds trailers for ACTIVE sessions.
 		prepCmd.Env = env.gitHookEnv("ENTIRE_TEST_TTY=0")
 	}
 	if output, err := prepCmd.CombinedOutput(); err != nil {

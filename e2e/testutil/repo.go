@@ -94,10 +94,11 @@ func SetupRepo(t *testing.T, agent agents.Agent) *RepoState {
 	}
 	// commit_linking=always ensures the prepare-commit-msg hook adds the
 	// Entire-Checkpoint trailer unconditionally. This is needed because
-	// interactive agents run inside tmux (hasTTY()=true) but can't respond to
-	// prompts, and content detection may fail on the first checkpoint when no
-	// shadow branch exists yet. Prompt-mode agents still exercise the !hasTTY()
-	// fast path since they have no TTY regardless of this setting.
+	// interactive agents run inside tmux (CanPromptInteractively()=true) but
+	// can't respond to prompts, and content detection may fail on the first
+	// checkpoint when no shadow branch exists yet. Prompt-mode agents still
+	// exercise the !CanPromptInteractively() fast path since they have no TTY
+	// regardless of this setting.
 	PatchSettings(t, dir, map[string]any{"log_level": "debug", "commit_linking": "always"})
 
 	// Copilot CLI blocks on a "No copilot instructions found" notice in fresh
