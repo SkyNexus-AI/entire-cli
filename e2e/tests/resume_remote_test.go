@@ -70,8 +70,7 @@ func TestResumeFromClonedRepo(t *testing.T) {
 		// Enable entire in the cloned repo and commit the enable files.
 		entire.Enable(t, cloneDir, s.Agent.EntireAgent())
 		testutil.ApplySuiteCheckpointsMode(t, cloneDir)
-		testutil.Git(t, cloneDir, "add", ".")
-		testutil.Git(t, cloneDir, "commit", "-m", "Enable entire in clone")
+		testutil.CommitIfDirty(t, cloneDir, "Enable entire in clone")
 
 		// Run resume from the clone — should fetch metadata and succeed.
 		out, err := entire.Resume(cloneDir, "feature")

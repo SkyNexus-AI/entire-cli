@@ -80,8 +80,7 @@ func TestExplainCheckpointFromClonedRepo(t *testing.T) {
 
 		entire.Enable(t, cloneDir, s.Agent.EntireAgent())
 		testutil.ApplySuiteCheckpointsMode(t, cloneDir)
-		testutil.Git(t, cloneDir, "add", ".")
-		testutil.Git(t, cloneDir, "commit", "-m", "Enable entire in clone")
+		testutil.CommitIfDirty(t, cloneDir, "Enable entire in clone")
 
 		out := entire.Explain(t, cloneDir, checkpointID)
 		assert.Contains(t, out, "Checkpoint: "+checkpointID, "explain output should include the checkpoint ID")

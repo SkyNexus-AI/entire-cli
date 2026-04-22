@@ -842,6 +842,24 @@ func GitOutputErr(dir string, args ...string) (string, error) {
 	return strings.TrimSpace(string(out)), err
 }
 
+// CommitIfDirty stages all changes and creates a commit only when the worktree
+// or index is non-empty. This keeps cloned-repo E2E tests robust when
+// `entire enable` is already idempotent and produces no repo changes.
+func CommitIfDirty(t *testing.T, dir string, message string) {
+	t.Helper()
+
+	status, err := GitOutputErr(dir, "status", "--porcelain")
+	if err != nil {
+		t.Fatalf("git status --porcelain failed: %v\n%s", err, status)
+	}
+	if strings.TrimSpace(status) == "" {
+		return
+	}
+
+	Git(t, dir, "add", ".")
+	Git(t, dir, "commit", "-m", message)
+}
+
 // GetCheckpointTrailer extracts the Entire-Checkpoint trailer value from a
 // code commit. Returns the trimmed trailer value, or an empty string if the
 // trailer is not present.
