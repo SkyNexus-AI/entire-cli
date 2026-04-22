@@ -12,15 +12,18 @@ import (
 
 // CanPromptInteractively reports whether interactive confirmation prompts
 // (huh forms, yes/no questions, etc.) can be shown. Returns false in CI,
-// tests without ENTIRE_TEST_TTY=1, agent subprocesses that inherit a TTY
-// but can't respond to prompts, and other environments without a
-// controlling TTY.
+// agent subprocesses that inherit a TTY but can't respond to prompts,
+// and other environments without a controlling TTY.
 //
-// ENTIRE_TEST_TTY overrides every other check so tests can exercise both
-// interactive and non-interactive paths deterministically without a real pty:
+// When ENTIRE_TEST_TTY is set (to any value, including empty) it is treated
+// as a test override and the result is determined solely by whether the
+// value equals "1":
 //   - ENTIRE_TEST_TTY=1 forces interactive mode on
-//   - any other non-empty value forces interactive mode off
-//   - unset falls through to agent-env guards and /dev/tty probing
+//   - any other value (including empty) forces interactive mode off
+//   - ENTIRE_TEST_TTY unset falls through to agent-env guards and
+//     /dev/tty probing. In that case the return value depends on the
+//     actual environment, so tests that need a specific answer should set
+//     ENTIRE_TEST_TTY explicitly rather than assume a non-interactive host.
 func CanPromptInteractively() bool {
 	if v, ok := os.LookupEnv("ENTIRE_TEST_TTY"); ok {
 		return v == "1"
