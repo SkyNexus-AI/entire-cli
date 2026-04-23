@@ -32,7 +32,6 @@ func TestWriteStandardCheckpointEntries_WarnsOnUnexpectedSessionZeroOverwrite(t 
 	if err := logging.Init(context.Background(), ""); err != nil {
 		t.Fatalf("logging.Init() error = %v", err)
 	}
-	defer logging.Close()
 
 	checkpointID, err := id.Generate()
 	if err != nil {

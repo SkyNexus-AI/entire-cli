@@ -289,7 +289,7 @@ func verifyCheckpointLocallyAvailable(ctx context.Context, store *cpkg.GitStore,
 	}
 	const fetchCmd = "git fetch origin entire/checkpoints/v1:entire/checkpoints/v1"
 	return fmt.Errorf(
-		"checkpoint %s referenced by HEAD is missing from the local entire/checkpoints/v1 branch (the remote fetch didn't bring it in either). Creating a fresh checkpoint here would overwrite the original session data on push. Run:\n\n    %s\n\nthen re-run attach. If the colleague who made this commit hasn't pushed their checkpoint metadata yet, ask them to do so first",
+		"checkpoint %s referenced by HEAD is missing from the local entire/checkpoints/v1 branch after a refresh attempt. Creating a fresh checkpoint here would overwrite the original session data on push. Run:\n\n    %s\n\nthen re-run attach. If the colleague who made this commit hasn't pushed their checkpoint metadata yet, ask them to do so first",
 		checkpointID.String(), fetchCmd,
 	)
 }

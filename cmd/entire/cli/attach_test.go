@@ -331,7 +331,7 @@ func TestAttach_RefusesWhenCheckpointMissingFromLocalBranch(t *testing.T) {
 	setupAttachTestRepo(t)
 
 	repoRoot := mustGetwd(t)
-	runGitInDir(t, repoRoot, "commit", "--amend", "--no-edit", "-m", "init\n\nEntire-Checkpoint: ffffffffeeee")
+	runGitInDir(t, repoRoot, "commit", "--amend", "-m", "init\n\nEntire-Checkpoint: ffffffffeeee")
 
 	sessionID := "orphaned-attach-session"
 	setupClaudeTranscript(t, sessionID, `{"type":"user","message":{"role":"user","content":"attach please"},"uuid":"u1"}
@@ -360,15 +360,6 @@ func TestAttach_RefusesWhenCheckpointMissingFromLocalBranch(t *testing.T) {
 	}
 	if summary != nil {
 		t.Errorf("attach should NOT have created checkpoint ffffffffeeee locally; found %+v", summary)
-	}
-}
-
-func runGitInDir(t *testing.T, dir string, args ...string) {
-	t.Helper()
-	cmd := exec.CommandContext(context.Background(), "git", args...)
-	cmd.Dir = dir
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("git %v in %s: %v\n%s", args, dir, err, out)
 	}
 }
 
@@ -962,5 +953,14 @@ func TestAttach_DiscoversExternalAgents(t *testing.T) {
 	// short-circuited before the registry lookup).
 	if _, lookupErr := agent.Get(agentName); lookupErr != nil {
 		t.Errorf("expected external agent %q in registry after attach, got: %v", agentName, lookupErr)
+	}
+}
+
+func runGitInDir(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.CommandContext(context.Background(), "git", args...)
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v in %s: %v\n%s", args, dir, err, out)
 	}
 }

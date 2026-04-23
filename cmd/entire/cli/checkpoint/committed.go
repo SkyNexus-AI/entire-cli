@@ -318,8 +318,10 @@ func (s *GitStore) writeStandardCheckpointEntries(ctx context.Context, opts Writ
 	sessionIndex := s.findSessionIndex(ctx, basePath, existingSummary, entries, opts.SessionID)
 
 	// Capture any pre-existing session-0 metadata before writeSessionToSubdirectory
-	// clears that subtree. This is a diagnostic tripwire for a production report
-	// where session 0 was silently replaced by a different session's data.
+	// clears that subtree. The warning below only fires in the suspicious shape
+	// where findSessionIndex chose slot 0 but the tree already had session-0
+	// metadata for a different session — typically meaning the root summary is
+	// missing/stale while a numbered session subdir still exists.
 	var existingSessionZeroMeta *CommittedMetadata
 	if sessionIndex == 0 {
 		if entry, exists := entries[fmt.Sprintf("%s0/%s", basePath, paths.MetadataFileName)]; exists {
@@ -354,8 +356,8 @@ func (s *GitStore) writeStandardCheckpointEntries(ctx context.Context, opts Writ
 	sessions[sessionIndex] = sessionFilePaths
 
 	// Tripwire: if we're writing session 0 and there was already session-0
-	// metadata for a DIFFERENT session ID, emit a loud warning so we have a
-	// log trace instead of only the overwrite symptom.
+	// metadata for a DIFFERENT session ID, emit a loud warning. This is a
+	// tree-corruption / stale-summary shape, not a routine overwrite path.
 	if existingSessionZeroMeta != nil && existingSessionZeroMeta.SessionID != opts.SessionID {
 		logging.Warn(ctx, "checkpoint write overwrites session 0 with a different sessionID — potential overwrite regression",
 			slog.String("checkpoint_id", opts.CheckpointID.String()),
