@@ -16,7 +16,7 @@ func TestResolveOptions_NormalizesScopeValues(t *testing.T) {
 		[]string{" entireio/cli ", "", "entireio/cli"},
 		"",
 		false,
-		func() (string, error) { return "main", nil },
+		func() (string, error) { return testDefaultBranchName, nil },
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -40,7 +40,7 @@ func TestResolveOptions_CloudRejectsAllBranches(t *testing.T) {
 		[]string{"entireio/cli"},
 		"",
 		false,
-		func() (string, error) { return "main", nil },
+		func() (string, error) { return testDefaultBranchName, nil },
 	)
 	if err == nil || !strings.Contains(err.Error(), "--all-branches only applies to --local") {
 		t.Fatalf("expected all-branches rejection, got %v", err)
@@ -59,7 +59,7 @@ func TestResolveOptions_CloudCapsReposAtFive(t *testing.T) {
 		repos,
 		"",
 		false,
-		func() (string, error) { return "main", nil },
+		func() (string, error) { return testDefaultBranchName, nil },
 	)
 	if err == nil || !strings.Contains(err.Error(), "supports at most 5") {
 		t.Fatalf("expected 5-repo cap rejection, got %v", err)
@@ -101,7 +101,7 @@ func TestResolveOptions_ForwardsInsecureHTTPAuth(t *testing.T) {
 		[]string{"entireio/cli"},
 		"",
 		true,
-		func() (string, error) { return "main", nil },
+		func() (string, error) { return testDefaultBranchName, nil },
 	)
 	if err != nil {
 		t.Fatal(err)

@@ -10,4 +10,5 @@ const (
 	testVoicePresetMarvin      = "marvin"
 	testVoicePresetNeutral     = "neutral"
 	testDispatchGeneratedHello = "Hello"
+	testDefaultBranchName      = "main"
 )

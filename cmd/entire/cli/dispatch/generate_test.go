@@ -129,8 +129,8 @@ func TestMarshalDispatchPromptPayload_OmitsZeroCheckpointTimesAndDeduplicatesBra
 				{
 					Label: "One",
 					Bullets: []Bullet{
-						{Branch: "main", Text: "A"},
-						{Branch: "main", Text: "B"},
+						{Branch: testDefaultBranchName, Text: "A"},
+						{Branch: testDefaultBranchName, Text: "B"},
 					},
 				},
 				{
@@ -166,7 +166,7 @@ func TestMarshalDispatchPromptPayload_OmitsZeroCheckpointTimesAndDeduplicatesBra
 	if !ok {
 		t.Fatalf("expected branches array, got %T", body["branches"])
 	}
-	if len(branches) != 2 || branches[0] != "main" || branches[1] != "release" {
+	if len(branches) != 2 || branches[0] != testDefaultBranchName || branches[1] != "release" {
 		t.Fatalf("unexpected deduplicated branches: %v", branches)
 	}
 }
