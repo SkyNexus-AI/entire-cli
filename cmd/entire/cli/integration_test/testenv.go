@@ -54,6 +54,11 @@ type TestEnv struct {
 	SessionCounter     int
 	gitConfigSnapshot  string
 	gitConfigGuardSet  bool
+
+	// ExtraEnv holds additional environment variables appended to all CLI
+	// invocations (RunPrePush, GitCommitWithShadowHooks, etc.). Use this to
+	// pass ENTIRE_CHECKPOINT_TOKEN, GIT_SSL_CAINFO, and similar per-test env.
+	ExtraEnv []string
 }
 
 // NewTestEnv creates a new isolated test environment.
@@ -112,33 +117,17 @@ func (env *TestEnv) Cleanup() {
 	// No-op - temp dirs are cleaned up by t.TempDir()
 }
 
-// gitEmptyConfigPath returns the path to an empty file suitable for use as
-// GIT_CONFIG_GLOBAL/GIT_CONFIG_SYSTEM. We use an empty file instead of
-// os.DevNull because git on Windows cannot open NUL as a config file.
-var gitEmptyConfig string
-
-func gitEmptyConfigPath() string {
-	if gitEmptyConfig == "" {
-		f, err := os.CreateTemp("", "git-empty-config-*")
-		if err != nil {
-			panic("create empty git config: " + err.Error())
-		}
-		f.Close()
-		gitEmptyConfig = f.Name()
-	}
-	return gitEmptyConfig
-}
-
 // cliEnv returns the environment variables for CLI execution.
 // Includes Claude, Gemini, and OpenCode project dirs so tests work for any agent.
 // Delegates to testutil.GitIsolatedEnv() for git config isolation.
 func (env *TestEnv) cliEnv() []string {
-	return append(testutil.GitIsolatedEnv(),
+	base := append(testutil.GitIsolatedEnv(),
 		"ENTIRE_TEST_CLAUDE_PROJECT_DIR="+env.ClaudeProjectDir,
 		"ENTIRE_TEST_GEMINI_PROJECT_DIR="+env.GeminiProjectDir,
 		"ENTIRE_TEST_OPENCODE_PROJECT_DIR="+env.OpenCodeProjectDir,
 		"ENTIRE_TEST_TTY=0", // Prevent interactive prompts from blocking in tests
 	)
+	return append(base, env.ExtraEnv...)
 }
 
 // RunCLI runs the entire CLI with the given arguments and returns stdout.
