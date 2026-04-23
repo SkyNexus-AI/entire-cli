@@ -450,8 +450,13 @@ func newReviewCmdWithDeps(deps runReviewDeps) *cobra.Command {
 	var agentOverride string
 
 	cmd := &cobra.Command{
-		Use:   "review",
-		Short: "Run configured review skills against the current branch",
+		Use: "review",
+		// Hidden from `entire help` while the feature is still maturing —
+		// users who know about it can still run `entire review` / `entire
+		// review --help` and the command works normally. Remove when we're
+		// ready to advertise it in the top-level command list.
+		Hidden: true,
+		Short:  "Run configured review skills against the current branch",
 		Long: `Run the review skills configured in .entire/settings.json against
 the current branch. On first run, an interactive picker writes the config.
 
