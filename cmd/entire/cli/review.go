@@ -350,7 +350,13 @@ func runReviewConfigPicker(ctx context.Context, out io.Writer) (map[string]setti
 		}
 		activeHints := skilldiscovery.ActiveInstallHintsFor(string(c.name), discoveredSet)
 
-		var builtinPicks, discoveredPicks []string
+		// Pre-populate pick slices from saved config so the picker preselects
+		// them. The header promises "previously-saved skills are pre-checked";
+		// without this split + Option.Selected(true) in buildReviewPickerFields,
+		// --edit with accept-defaults silently wipes the agent's saved skills.
+		builtinPicks, discoveredPicks := splitSavedPicks(
+			existing[string(c.name)].Skills, curated, discovered,
+		)
 		prompt := existing[string(c.name)].Prompt
 
 		fields := buildReviewPickerFields(
@@ -358,16 +364,16 @@ func runReviewConfigPicker(ctx context.Context, out io.Writer) (map[string]setti
 			&builtinPicks, &discoveredPicks, &prompt,
 		)
 
-		// huh's Group has no .Title(), so the counter goes on the first field
-		// via type assertion. If the interface assertion fails (e.g. future huh
-		// refactor changes method sets), we silently skip the counter — UI nit,
-		// not a correctness issue.
-		title := fmt.Sprintf("[%d/%d] Review skills for %s", i+1, len(configurable), c.ag.Type())
-		if titleable, ok := fields[0].(interface {
-			Title(t string) huh.Field
-		}); ok {
-			fields[0] = titleable.Title(title)
-		}
+		// Prepend a non-blocking header Note so the agent being configured
+		// is always clearly visible. huh.Note defaults to skip:true — it
+		// renders above the first interactive field but doesn't pause the
+		// form. The previous attempt (type-asserting the first field's
+		// Title method) silently did nothing because huh's concrete Title
+		// methods return *MultiSelect[T]/*Text/*Note, not huh.Field.
+		header := huh.NewNote().
+			Title(string(c.ag.Type())).
+			Description(fmt.Sprintf("Agent %d of %d · pick review skills and optional instructions", i+1, len(configurable)))
+		fields = append([]huh.Field{header}, fields...)
 
 		form := NewAccessibleForm(huh.NewGroup(fields...))
 		if err := form.Run(); err != nil {
@@ -462,6 +468,13 @@ Subcommands:
                  'entire attach --review <id>')`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
+			// Discover external agents so review configs that target them
+			// resolve correctly — without this, GetAgentsWithHooksInstalled
+			// and agent.Get can't see them, and `entire review` on an
+			// external-agent config fails even though hooks and `review
+			// attach` work. Mirrors the call in newReviewAttachCmd for
+			// consistent behavior across review entry points.
+			external.DiscoverAndRegister(ctx)
 			if edit {
 				_, err := runReviewConfigPicker(ctx, cmd.OutOrStdout())
 				return err
@@ -1099,9 +1112,54 @@ func saveReviewConfig(ctx context.Context, review map[string]settings.ReviewConf
 //	2: install hints (note with all active hint messages) — OMITTED if empty
 //	3: additional instructions (text) — always present
 //
+// splitSavedPicks partitions a flat saved-skills list into the subset that
+// matches built-in curated commands and the subset that matches discovered
+// plugin skills. Skill names that match neither (e.g., external-agent
+// entries, or skills that were uninstalled since save) are dropped from
+// both — they're preserved on the settings side via mergePickerResults
+// when they belong to a picker-unaware agent entry.
+func splitSavedPicks(saved []string, builtins []skilldiscovery.CuratedSkill, discovered []agent.DiscoveredSkill) ([]string, []string) {
+	builtinNames := make(map[string]struct{}, len(builtins))
+	for _, b := range builtins {
+		builtinNames[b.Name] = struct{}{}
+	}
+	discoveredNames := make(map[string]struct{}, len(discovered))
+	for _, d := range discovered {
+		discoveredNames[d.Name] = struct{}{}
+	}
+	var builtinPicks, discoveredPicks []string
+	for _, s := range saved {
+		if _, ok := builtinNames[s]; ok {
+			builtinPicks = append(builtinPicks, s)
+			continue
+		}
+		if _, ok := discoveredNames[s]; ok {
+			discoveredPicks = append(discoveredPicks, s)
+		}
+	}
+	return builtinPicks, discoveredPicks
+}
+
+// preselectedSet turns a slice pointer's current contents into a lookup
+// set for the picker's "previously-saved" pre-selection. Nil or empty
+// returns nil — the caller's `if _, ok := set[name]; ok` works either way.
+func preselectedSet(slice *[]string) map[string]struct{} {
+	if slice == nil || len(*slice) == 0 {
+		return nil
+	}
+	out := make(map[string]struct{}, len(*slice))
+	for _, s := range *slice {
+		out[s] = struct{}{}
+	}
+	return out
+}
+
 // Pure function — no side effects, no huh form running — so unit-testable.
 // Value bindings (builtinPicksOut, discoveredPicksOut, promptOut) may be
-// nil when the caller only needs the field count (tests).
+// nil when the caller only needs the field count (tests). When the out
+// slices contain values on entry, those values double as the pre-selected
+// set: matching options get Option.Selected(true) so the picker preserves
+// the saved config on accept-defaults.
 func buildReviewPickerFields(
 	agentName string,
 	builtins []skilldiscovery.CuratedSkill,
@@ -1117,10 +1175,21 @@ func buildReviewPickerFields(
 	// descriptions in particular can be pages of embedded usage examples,
 	// which makes the picker unreadable. Users recognize skills by name;
 	// the stored value is the name either way.
+	// Pre-populated contents of the output slices double as the "previously
+	// selected" set so the picker preselects saved skills via
+	// Option.Selected(true). Accepting defaults in --edit therefore
+	// preserves the agent's saved config instead of wiping it.
+	builtinPreselected := preselectedSet(builtinPicksOut)
+	discoveredPreselected := preselectedSet(discoveredPicksOut)
+
 	if len(builtins) > 0 {
 		opts := make([]huh.Option[string], 0, len(builtins))
 		for _, b := range builtins {
-			opts = append(opts, huh.NewOption(b.Name, b.Name))
+			opt := huh.NewOption(b.Name, b.Name)
+			if _, ok := builtinPreselected[b.Name]; ok {
+				opt = opt.Selected(true)
+			}
+			opts = append(opts, opt)
 		}
 		ms := huh.NewMultiSelect[string]().Title("Built-in commands").Options(opts...)
 		if builtinPicksOut != nil {
@@ -1136,7 +1205,11 @@ func buildReviewPickerFields(
 	if len(discovered) > 0 {
 		opts := make([]huh.Option[string], 0, len(discovered))
 		for _, d := range discovered {
-			opts = append(opts, huh.NewOption(d.Name, d.Name))
+			opt := huh.NewOption(d.Name, d.Name)
+			if _, ok := discoveredPreselected[d.Name]; ok {
+				opt = opt.Selected(true)
+			}
+			opts = append(opts, opt)
 		}
 		ms := huh.NewMultiSelect[string]().Title("Installed plugin skills").Options(opts...)
 		if discoveredPicksOut != nil {

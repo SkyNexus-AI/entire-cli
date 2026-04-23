@@ -679,6 +679,101 @@ func TestPickerForm_EmptyBuiltinsRendersNote(t *testing.T) {
 	}
 }
 
+// Regression: the picker header claims "Previously-saved skills are
+// pre-checked" — without a functioning split + Option.Selected(true),
+// running `entire review --edit` and accepting defaults silently wipes
+// the agent's saved skills. splitSavedPicks partitions the saved flat
+// list into the two picker buckets so matching options can be
+// pre-selected downstream.
+func TestSplitSavedPicks(t *testing.T) {
+	t.Parallel()
+	builtins := []skilldiscovery.CuratedSkill{
+		{Name: "/review"},
+		{Name: "/test-auditor"},
+	}
+	discovered := []agent.DiscoveredSkill{
+		{Name: "/pr-review-toolkit:review-pr"},
+		{Name: "/my-plugin:lint"},
+	}
+
+	tests := []struct {
+		name           string
+		saved          []string
+		wantBuiltin    []string
+		wantDiscovered []string
+	}{
+		{
+			name:        "all matches — both buckets populated",
+			saved:       []string{"/review", "/pr-review-toolkit:review-pr", "/test-auditor"},
+			wantBuiltin: []string{"/review", "/test-auditor"},
+			wantDiscovered: []string{
+				"/pr-review-toolkit:review-pr",
+			},
+		},
+		{
+			name:           "only builtins saved",
+			saved:          []string{"/review"},
+			wantBuiltin:    []string{"/review"},
+			wantDiscovered: nil,
+		},
+		{
+			name:           "only discovered saved",
+			saved:          []string{"/my-plugin:lint"},
+			wantBuiltin:    nil,
+			wantDiscovered: []string{"/my-plugin:lint"},
+		},
+		{
+			name:           "unknown saved skill drops from both (uninstalled/external)",
+			saved:          []string{"/ghost"},
+			wantBuiltin:    nil,
+			wantDiscovered: nil,
+		},
+		{
+			name:           "empty saved returns empty",
+			saved:          nil,
+			wantBuiltin:    nil,
+			wantDiscovered: nil,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			gotBuiltin, gotDiscovered := splitSavedPicks(tc.saved, builtins, discovered)
+			if !reflect.DeepEqual(gotBuiltin, tc.wantBuiltin) {
+				t.Errorf("builtin = %v, want %v", gotBuiltin, tc.wantBuiltin)
+			}
+			if !reflect.DeepEqual(gotDiscovered, tc.wantDiscovered) {
+				t.Errorf("discovered = %v, want %v", gotDiscovered, tc.wantDiscovered)
+			}
+		})
+	}
+}
+
+// preselectedSet turns the caller's output slice into a lookup set the
+// picker uses to mark options Selected(true). Nil or empty input yields
+// nil so `if _, ok := set[name]; ok` works in either case.
+func TestPreselectedSet(t *testing.T) {
+	t.Parallel()
+	if got := preselectedSet(nil); got != nil {
+		t.Errorf("nil slice = %v, want nil", got)
+	}
+	var empty []string
+	if got := preselectedSet(&empty); got != nil {
+		t.Errorf("empty slice = %v, want nil", got)
+	}
+	populated := []string{"/a", "/b"}
+	set := preselectedSet(&populated)
+	if _, ok := set["/a"]; !ok {
+		t.Error("set missing /a")
+	}
+	if _, ok := set["/b"]; !ok {
+		t.Error("set missing /b")
+	}
+	if _, ok := set["/c"]; ok {
+		t.Error("set unexpectedly contains /c")
+	}
+}
+
 func TestPickerForm_AllHintsSuppressedHidesSection(t *testing.T) {
 	t.Parallel()
 	fields := buildReviewPickerFields(
