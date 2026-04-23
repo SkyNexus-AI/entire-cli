@@ -45,13 +45,22 @@ func TestCanPromptInteractively_AgentEnvGuards(t *testing.T) {
 }
 
 func TestCanPromptInteractively_CIEnv(t *testing.T) {
-	// Unset ENTIRE_TEST_TTY so the real env checks run (same pattern as
-	// TestCanPromptInteractively_AgentEnvGuards above).
 	t.Setenv("ENTIRE_TEST_TTY", "")
 	_ = os.Unsetenv("ENTIRE_TEST_TTY")
 	t.Setenv("CI", "true")
 	if CanPromptInteractively() {
-		t.Error("CanPromptInteractively() = true; want false when CI is set")
+		t.Error("CanPromptInteractively() = true; want false when CI=true")
+	}
+}
+
+// CI=false is the `is-ci` escape hatch: a dev may set it to override an
+// inherited CI=true. Verify the CI branch doesn't short-circuit to false,
+// using ENTIRE_TEST_TTY=1 to stand in for a real TTY in the test host.
+func TestCanPromptInteractively_CIFalseOverride(t *testing.T) {
+	t.Setenv("CI", "false")
+	t.Setenv("ENTIRE_TEST_TTY", "1")
+	if !CanPromptInteractively() {
+		t.Error("CanPromptInteractively() = false; want true when CI=false")
 	}
 }
 

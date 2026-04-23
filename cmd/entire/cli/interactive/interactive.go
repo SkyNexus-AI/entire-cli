@@ -43,11 +43,12 @@ func CanPromptInteractively() bool {
 		return false
 	}
 
-	// CI=<non-empty> is the de-facto convention across CI providers (GitHub
-	// Actions, CircleCI, GitLab, Travis, Buildkite, etc.). Self-hosted runners
-	// and some Docker configs expose /dev/tty, so the TTY probe below isn't
-	// enough — an interactive prompt on CI would hang the pipeline forever.
-	if os.Getenv("CI") != "" {
+	// CI=<non-empty> is the de-facto CI-provider convention (GitHub Actions,
+	// CircleCI, GitLab, Travis, Buildkite). Self-hosted runners expose /dev/tty,
+	// so the probe below isn't enough — an interactive prompt on CI hangs.
+	// CI=false is the `is-ci` escape hatch for developers who need to override
+	// an inherited value.
+	if v := os.Getenv("CI"); v != "" && v != "false" {
 		return false
 	}
 
