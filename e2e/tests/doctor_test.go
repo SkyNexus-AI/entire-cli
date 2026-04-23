@@ -4,7 +4,6 @@ package tests
 
 import (
 	"context"
-	"os"
 	"testing"
 	"time"
 
@@ -41,8 +40,8 @@ func TestDoctorNoIssues(t *testing.T) {
 		assert.Contains(t, out, "Metadata branches: OK", "doctor should report healthy metadata state")
 		assert.Contains(t, out, "No stuck sessions found.", "doctor should report no stuck sessions")
 
-		switch os.Getenv("E2E_CHECKPOINTS_MODE") {
-		case "", "legacy":
+		switch testutil.CheckpointsMode() {
+		case "legacy":
 			assert.NotContains(t, out, "v2 refs", "legacy mode should not run v2 doctor checks")
 			assert.NotContains(t, out, "v2 checkpoint counts", "legacy mode should not run v2 count checks")
 			assert.NotContains(t, out, "v2 generations", "legacy mode should not run v2 generation checks")

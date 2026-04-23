@@ -42,36 +42,9 @@ func (v *Vogon) IsTransientError(_ Output, _ error) bool { return false }
 func (v *Vogon) RunPrompt(ctx context.Context, dir string, prompt string, opts ...Option) (Output, error) {
 	args := []string{"-p", prompt}
 	displayArgs := []string{"-p", fmt.Sprintf("%q", prompt)}
-
-	cmd := exec.CommandContext(ctx, v.Binary(), args...)
-	cmd.Dir = dir
-	cmd.Stdin = nil
-	cmd.Env = filterEnv(os.Environ(), "ENTIRE_TEST_TTY")
-	cmd.Env = append(cmd.Env, "HOME="+vogonHomeDir(dir))
-	setupProcessGroup(cmd)
-	cmd.WaitDelay = 5 * time.Second
-
-	var stdout, stderr strings.Builder
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	err := cmd.Run()
-	exitCode := 0
-	if err != nil {
-		exitErr := &exec.ExitError{}
-		if errors.As(err, &exitErr) {
-			exitCode = exitErr.ExitCode()
-		} else {
-			exitCode = -1
-		}
-	}
-
-	return Output{
-		Command:  v.Binary() + " " + strings.Join(displayArgs, " "),
-		Stdout:   stdout.String(),
-		Stderr:   stderr.String(),
-		ExitCode: exitCode,
-	}, err
+	env := filterEnv(os.Environ(), "ENTIRE_TEST_TTY")
+	env = append(env, "HOME="+vogonHomeDir(dir))
+	return v.run(ctx, dir, args, displayArgs, env)
 }
 
 func (v *Vogon) StartSession(_ context.Context, dir string) (Session, error) {
@@ -107,15 +80,19 @@ func (v *Vogon) WriteSessionTranscript(ctx context.Context, dir string, extraEnv
 		"--user-prompt", fmt.Sprintf("%q", userPrompt),
 		"--assistant-message", fmt.Sprintf("%q", assistantMessage),
 	}
+	env := filterEnv(os.Environ(), "ENTIRE_TEST_TTY")
+	env = append(env, extraEnv...)
+	if !hasEnvVar(extraEnv, "HOME") {
+		env = append(env, "HOME="+vogonHomeDir(dir))
+	}
+	return v.run(ctx, dir, args, displayArgs, env)
+}
 
+func (v *Vogon) run(ctx context.Context, dir string, args, displayArgs []string, env []string) (Output, error) {
 	cmd := exec.CommandContext(ctx, v.Binary(), args...)
 	cmd.Dir = dir
 	cmd.Stdin = nil
-	cmd.Env = filterEnv(os.Environ(), "ENTIRE_TEST_TTY")
-	cmd.Env = append(cmd.Env, extraEnv...)
-	if !hasEnvVar(extraEnv, "HOME") {
-		cmd.Env = append(cmd.Env, "HOME="+vogonHomeDir(dir))
-	}
+	cmd.Env = env
 	setupProcessGroup(cmd)
 	cmd.WaitDelay = 5 * time.Second
 

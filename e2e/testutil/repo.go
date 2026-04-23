@@ -170,7 +170,7 @@ func SetupRepo(t *testing.T, agent agents.Agent) *RepoState {
 func ApplySuiteCheckpointsMode(t *testing.T, dir string) {
 	t.Helper()
 
-	switch checkpointsMode() {
+	switch CheckpointsMode() {
 	case checkpointsModeLegacy:
 		return
 	case checkpointsModeV2DualWrite:
@@ -178,11 +178,13 @@ func ApplySuiteCheckpointsMode(t *testing.T, dir string) {
 	case checkpointsModeV2Only:
 		EnableCheckpointsVersion2(t, dir)
 	default:
-		t.Fatalf("unsupported E2E_CHECKPOINTS_MODE %q (expected legacy, v2-dual-write, or v2-only)", checkpointsMode())
+		t.Fatalf("unsupported E2E_CHECKPOINTS_MODE %q (expected legacy, v2-dual-write, or v2-only)", CheckpointsMode())
 	}
 }
 
-func checkpointsMode() string {
+// CheckpointsMode returns the active E2E checkpoints mode from E2E_CHECKPOINTS_MODE,
+// defaulting to "legacy".
+func CheckpointsMode() string {
 	mode := os.Getenv("E2E_CHECKPOINTS_MODE")
 	if mode == "" || mode == checkpointsModeLegacy {
 		return checkpointsModeLegacy
@@ -191,7 +193,7 @@ func checkpointsMode() string {
 }
 
 func primaryCheckpointRef() string {
-	switch checkpointsMode() {
+	switch CheckpointsMode() {
 	case checkpointsModeV2DualWrite, checkpointsModeV2Only:
 		return checkpointRefV2Main
 	default:
@@ -219,14 +221,14 @@ func CheckpointMetadataRef() string {
 func PushCheckpointRefs(t *testing.T, dir string) {
 	t.Helper()
 
-	switch checkpointsMode() {
+	switch CheckpointsMode() {
 	case checkpointsModeLegacy:
 		Git(t, dir, "push", "origin", checkpointRefV1+":"+checkpointRefV1)
 	case checkpointsModeV2DualWrite, checkpointsModeV2Only:
 		Git(t, dir, "push", "origin", checkpointRefV2Main+":"+checkpointRefV2Main)
 		Git(t, dir, "push", "origin", checkpointRefV2FullCurrent+":"+checkpointRefV2FullCurrent)
 	default:
-		t.Fatalf("unsupported E2E_CHECKPOINTS_MODE %q", checkpointsMode())
+		t.Fatalf("unsupported E2E_CHECKPOINTS_MODE %q", CheckpointsMode())
 	}
 }
 
