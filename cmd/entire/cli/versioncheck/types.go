@@ -1,9 +1,6 @@
 package versioncheck
 
-import (
-	"os"
-	"time"
-)
+import "time"
 
 // VersionCache represents the cached version check data.
 type VersionCache struct {
@@ -17,23 +14,11 @@ type GitHubRelease struct {
 }
 
 // githubAPIURL is the GitHub API endpoint for fetching the latest stable release.
-// A var so tests can override it directly. For local manual testing, set the
-// ENTIRE_VERSION_CHECK_URL env var to point at a mock server — this avoids
-// hammering api.github.com and working around rate limits while iterating.
-var githubAPIURL = envOr("ENTIRE_VERSION_CHECK_URL",
-	"https://api.github.com/repos/entireio/cli/releases/latest")
+// This is a var (not const) to allow overriding in tests.
+var githubAPIURL = "https://api.github.com/repos/entireio/cli/releases/latest"
 
 // githubReleasesURL is the GitHub API endpoint for listing releases (used for nightly checks).
-// Overridable via ENTIRE_VERSION_CHECK_RELEASES_URL for the same reason.
-var githubReleasesURL = envOr("ENTIRE_VERSION_CHECK_RELEASES_URL",
-	"https://api.github.com/repos/entireio/cli/releases")
-
-func envOr(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
-}
+var githubReleasesURL = "https://api.github.com/repos/entireio/cli/releases"
 
 const (
 	// checkInterval is the duration between version checks.
