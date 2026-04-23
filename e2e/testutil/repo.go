@@ -109,7 +109,7 @@ func SetupRepo(t *testing.T, agent agents.Agent) *RepoState {
 	// shadow branch exists yet. Prompt-mode agents still exercise the !hasTTY()
 	// fast path since they have no TTY regardless of this setting.
 	PatchSettings(t, dir, map[string]any{"log_level": "debug", "commit_linking": "always"})
-	applySuiteCheckpointsMode(t, dir)
+	ApplySuiteCheckpointsMode(t, dir)
 
 	// Copilot CLI blocks on a "No copilot instructions found" notice in fresh
 	// repos that lack .github/copilot-instructions.md, preventing the interactive
@@ -182,20 +182,12 @@ func ApplySuiteCheckpointsMode(t *testing.T, dir string) {
 	}
 }
 
-func applySuiteCheckpointsMode(t *testing.T, dir string) {
-	t.Helper()
-	ApplySuiteCheckpointsMode(t, dir)
-}
-
 func checkpointsMode() string {
-	switch mode := os.Getenv("E2E_CHECKPOINTS_MODE"); mode {
-	case "", checkpointsModeLegacy:
+	mode := os.Getenv("E2E_CHECKPOINTS_MODE")
+	if mode == "" || mode == checkpointsModeLegacy {
 		return checkpointsModeLegacy
-	case checkpointsModeV2DualWrite, checkpointsModeV2Only:
-		return mode
-	default:
-		return mode
 	}
+	return mode
 }
 
 func primaryCheckpointRef() string {

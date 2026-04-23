@@ -119,8 +119,8 @@ func WaitForCheckpoint(t *testing.T, s *RepoState, timeout time.Duration) {
 	t.Fatalf("checkpoint ref %s did not advance within %s", primaryCheckpointRef(), timeout)
 }
 
-// shadowBranches returns all shadow branches (entire/*) excluding entire/checkpoints/*.
-func shadowBranches(t *testing.T, dir string) []string {
+// ShadowBranches returns all shadow branches (entire/*) excluding entire/checkpoints/*.
+func ShadowBranches(t *testing.T, dir string) []string {
 	t.Helper()
 	branches := GitOutput(t, dir, "for-each-ref", "--format=%(refname:short)", "refs/heads/entire/")
 	var shadow []string
@@ -142,13 +142,13 @@ func WaitForNoShadowBranches(t *testing.T, dir string, timeout time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		shadow := shadowBranches(t, dir)
+		shadow := ShadowBranches(t, dir)
 		if len(shadow) == 0 {
 			return
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
-	shadow := shadowBranches(t, dir)
+	shadow := ShadowBranches(t, dir)
 	require.Emptyf(t, shadow,
 		"shadow branches should be cleaned up within %s after commit, found: %v", timeout, shadow)
 }
@@ -158,7 +158,7 @@ func WaitForNoShadowBranches(t *testing.T, dir string, timeout time.Duration) {
 // expected to persist (e.g., session is still idle).
 func AssertHasShadowBranches(t *testing.T, dir string) {
 	t.Helper()
-	shadow := shadowBranches(t, dir)
+	shadow := ShadowBranches(t, dir)
 	assert.NotEmpty(t, shadow,
 		"expected at least one shadow branch to persist, but none found")
 }

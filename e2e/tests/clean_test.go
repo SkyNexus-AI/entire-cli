@@ -28,7 +28,7 @@ func TestCleanCurrentHead(t *testing.T) {
 		sessionStatesBefore := sessionStateFiles(t, s.Dir)
 		require.NotEmpty(t, sessionStatesBefore, "expected session state files before clean")
 
-		shadowBranchesBefore := shadowBranches(t, s.Dir)
+		shadowBranchesBefore := testutil.ShadowBranches(t, s.Dir)
 		require.NotEmpty(t, shadowBranchesBefore, "expected shadow branches before clean")
 
 		dryRunOut := entire.CleanDryRun(t, s.Dir)
@@ -39,7 +39,7 @@ func TestCleanCurrentHead(t *testing.T) {
 
 		assert.ElementsMatch(t, sessionStatesBefore, sessionStateFiles(t, s.Dir),
 			"dry-run should not delete session state files")
-		assert.ElementsMatch(t, shadowBranchesBefore, shadowBranches(t, s.Dir),
+		assert.ElementsMatch(t, shadowBranchesBefore, testutil.ShadowBranches(t, s.Dir),
 			"dry-run should not delete shadow branches")
 
 		cleanOut := entire.CleanForce(t, s.Dir)
@@ -69,20 +69,4 @@ func sessionStateFiles(t *testing.T, dir string) []string {
 		files = append(files, entry.Name())
 	}
 	return files
-}
-
-func shadowBranches(t *testing.T, dir string) []string {
-	t.Helper()
-
-	out := testutil.GitOutput(t, dir, "for-each-ref", "--format=%(refname:short)", "refs/heads/entire/")
-
-	var shadow []string
-	for _, branch := range strings.Split(out, "\n") {
-		branch = strings.TrimSpace(branch)
-		if branch == "" || strings.HasPrefix(branch, "entire/checkpoints") {
-			continue
-		}
-		shadow = append(shadow, branch)
-	}
-	return shadow
 }
