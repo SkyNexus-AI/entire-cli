@@ -140,6 +140,11 @@ func runAttach(ctx context.Context, w io.Writer, sessionID string, agentName typ
 		// Init failed — logging will use stderr fallback, non-fatal.
 		_ = err
 	}
+	// Flush the 8KB buffered log writer on exit. Without this, any
+	// Warn/Info calls during attach (including the overwrite tripwire)
+	// get silently dropped when the process exits, matching the pattern
+	// already used by resume/clean/reset/rewind/migrate/explain.
+	defer logging.Close()
 
 	logCtx := logging.WithComponent(ctx, "attach")
 

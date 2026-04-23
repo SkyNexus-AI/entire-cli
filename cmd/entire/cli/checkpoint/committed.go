@@ -311,6 +311,10 @@ func (s *GitStore) writeStandardCheckpointEntries(ctx context.Context, opts Writ
 		existing, err := s.readSummaryFromBlob(entry.Hash)
 		if err == nil {
 			existingSummary = existing
+		} else {
+			logging.Debug(ctx, "writeStandardCheckpointEntries: readSummaryFromBlob failed",
+				slog.String("metadata_path", metadataPath),
+				slog.String("error", err.Error()))
 		}
 	}
 
@@ -340,6 +344,27 @@ func (s *GitStore) writeStandardCheckpointEntries(ctx context.Context, opts Writ
 		sessions = make([]SessionFilePaths, 1)
 	}
 	sessions[sessionIndex] = sessionFilePaths
+
+	// Tripwire: an unreproduced production report had session 0 silently
+	// replaced with a different sessionID's data. The symptom was
+	// findSessionIndex returning 0 when it should have returned N
+	// (append). That happens if existingSummary is nil — yet the
+	// on-disk tree clearly had session 0's metadata. If we're writing
+	// at sessionIndex=0 while entries has pre-existing session-0
+	// metadata with a DIFFERENT sessionID, that's the exact bug shape.
+	// Loud WARN so we get a log trace instead of only the symptom.
+	if sessionIndex == 0 {
+		path := fmt.Sprintf("%s0/%s", basePath, paths.MetadataFileName)
+		if entry, exists := entries[path]; exists {
+			if existingMeta, readErr := s.readMetadataFromBlob(entry.Hash); readErr == nil && existingMeta.SessionID != opts.SessionID {
+				logging.Warn(ctx, "checkpoint write overwrites session 0 with a different sessionID — potential overwrite regression",
+					slog.String("checkpoint_id", opts.CheckpointID.String()),
+					slog.String("existing_session_id", existingMeta.SessionID),
+					slog.String("write_session_id", opts.SessionID),
+					slog.Bool("existing_summary_nil", existingSummary == nil))
+			}
+		}
+	}
 
 	// Update root metadata.json with CheckpointSummary
 	return s.writeCheckpointSummary(opts, basePath, entries, sessions)
@@ -557,19 +582,21 @@ func (s *GitStore) findSessionIndex(ctx context.Context, basePath string, existi
 	}
 	for i := range len(existingSummary.Sessions) {
 		path := fmt.Sprintf("%s%d/%s", basePath, i, paths.MetadataFileName)
-		if entry, exists := entries[path]; exists {
-			meta, err := s.readMetadataFromBlob(entry.Hash)
-			if err != nil {
-				logging.Warn(ctx, "failed to read session metadata during dedup check",
-					slog.Int("session_index", i),
-					slog.String("session_id", sessionID),
-					slog.String("error", err.Error()),
-				)
-				continue
-			}
-			if meta.SessionID == sessionID {
-				return i
-			}
+		entry, exists := entries[path]
+		if !exists {
+			continue
+		}
+		meta, err := s.readMetadataFromBlob(entry.Hash)
+		if err != nil {
+			logging.Warn(ctx, "failed to read session metadata during dedup check",
+				slog.Int("session_index", i),
+				slog.String("session_id", sessionID),
+				slog.String("error", err.Error()),
+			)
+			continue
+		}
+		if meta.SessionID == sessionID {
+			return i
 		}
 	}
 	return len(existingSummary.Sessions)

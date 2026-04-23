@@ -18,10 +18,12 @@ import (
 	_ "github.com/entireio/cli/cmd/entire/cli/agent/factoryaidroid" // register agent
 	_ "github.com/entireio/cli/cmd/entire/cli/agent/geminicli"      // register agent
 	"github.com/entireio/cli/cmd/entire/cli/agent/types"
+	cpkg "github.com/entireio/cli/cmd/entire/cli/checkpoint"
 	"github.com/entireio/cli/cmd/entire/cli/paths"
 	"github.com/entireio/cli/cmd/entire/cli/session"
 	"github.com/entireio/cli/cmd/entire/cli/settings"
 	"github.com/entireio/cli/cmd/entire/cli/testutil"
+	"github.com/entireio/cli/cmd/entire/cli/trailers"
 
 	"github.com/go-git/go-git/v6"
 	"github.com/go-git/go-git/v6/plumbing"
@@ -761,6 +763,97 @@ func TestAttach_ReviewWithExistingCheckpointErrors(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "already has checkpoint") {
 		t.Errorf("error should mention 'already has checkpoint'; got: %v", err)
+	}
+}
+
+// Regression for the second "review-attach overwrote the session on the
+// checkpoint" report: a DIFFERENT session ID (not present in the existing
+// checkpoint) must APPEND at the next-available index, not overwrite
+// session 0. In the wild this happens when a user runs a manual claude
+// session, commits (with the checkpoint trailer), then runs
+// `entire review attach <new-session-id>` to record a separate review.
+// The expected result is two sessions on the same checkpoint.
+func TestAttach_ReviewAppendsAsAdditionalSessionWhenIDDiffers(t *testing.T) {
+	setupAttachTestRepo(t)
+
+	// First session: a normal claude-code attach creates the checkpoint
+	// and session 0. Amend HEAD with the trailer so the next attach sees
+	// an existing checkpoint.
+	firstSessionID := "first-session-a-original"
+	setupClaudeTranscript(t, firstSessionID, `{"type":"user","message":{"role":"user","content":"first"},"uuid":"u1"}
+`)
+	var out bytes.Buffer
+	if err := runAttach(context.Background(), &out, firstSessionID, agent.AgentNameClaudeCode, attachOptions{Force: true}); err != nil {
+		t.Fatalf("first attach failed: %v", err)
+	}
+
+	// Sanity: HEAD now carries the Entire-Checkpoint trailer.
+	repoRoot := mustGetwd(t)
+	repo, err := git.PlainOpen(repoRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	headRef, err := repo.Head()
+	if err != nil {
+		t.Fatal(err)
+	}
+	headCommit, err := repo.CommitObject(headRef.Hash())
+	if err != nil {
+		t.Fatal(err)
+	}
+	existingCheckpoints := trailers.ParseAllCheckpoints(headCommit.Message)
+	if len(existingCheckpoints) != 1 {
+		t.Fatalf("expected one Entire-Checkpoint trailer after first attach; got %v", existingCheckpoints)
+	}
+	checkpointID := existingCheckpoints[0]
+
+	// Second session: a different sessionID tagged as a review.
+	secondSessionID := "second-session-b-review"
+	setupClaudeTranscript(t, secondSessionID, `{"type":"user","message":{"role":"user","content":"please review"},"uuid":"u1"}
+`)
+	out.Reset()
+	if err := runAttach(context.Background(), &out, secondSessionID, agent.AgentNameClaudeCode, attachOptions{
+		Force:                true,
+		Review:               true,
+		ReviewSkillsOverride: []string{"/review"},
+	}); err != nil {
+		t.Fatalf("review attach failed: %v", err)
+	}
+
+	// Read the checkpoint summary and verify BOTH sessions are present.
+	// Pre-fix observation: session 0 is OVERWRITTEN with the review session,
+	// losing the original attach. The summary has only one session entry
+	// despite two attach calls with different IDs.
+	store := cpkg.NewGitStore(repo)
+	summary, err := store.ReadCommitted(context.Background(), checkpointID)
+	if err != nil {
+		t.Fatalf("ReadCommitted(%s): %v", checkpointID, err)
+	}
+	if summary == nil {
+		t.Fatalf("checkpoint %s summary nil after two attaches", checkpointID)
+	}
+	if len(summary.Sessions) != 2 {
+		t.Fatalf("checkpoint has %d sessions, want 2 (original attach + review attach). "+
+			"Session-0 overwrite bug: findSessionIndex returned 0 instead of appending.", len(summary.Sessions))
+	}
+
+	// Explicitly confirm each session's ID is in the checkpoint.
+	var idx0, idx1 *cpkg.SessionContent
+	if idx0, err = store.ReadSessionContent(context.Background(), checkpointID, 0); err != nil {
+		t.Fatalf("ReadSessionContent(0): %v", err)
+	}
+	if idx1, err = store.ReadSessionContent(context.Background(), checkpointID, 1); err != nil {
+		t.Fatalf("ReadSessionContent(1): %v", err)
+	}
+	haveFirst := idx0.Metadata.SessionID == firstSessionID || idx1.Metadata.SessionID == firstSessionID
+	haveSecond := idx0.Metadata.SessionID == secondSessionID || idx1.Metadata.SessionID == secondSessionID
+	if !haveFirst {
+		t.Errorf("first session %q missing from checkpoint (overwritten?); got [%q, %q]",
+			firstSessionID, idx0.Metadata.SessionID, idx1.Metadata.SessionID)
+	}
+	if !haveSecond {
+		t.Errorf("second session %q missing from checkpoint; got [%q, %q]",
+			secondSessionID, idx0.Metadata.SessionID, idx1.Metadata.SessionID)
 	}
 }
 
