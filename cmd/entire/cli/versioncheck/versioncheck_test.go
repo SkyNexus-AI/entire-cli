@@ -494,12 +494,12 @@ func TestCheckAndNotify_NoNotificationWhenUpToDate(t *testing.T) {
 	}
 }
 
-func TestCheckAndNotify_InstallerFailureInvalidatesCache(t *testing.T) {
+func TestCheckAndNotify_InstallerFailureKeepsCacheFresh(t *testing.T) {
 	server := newVersionServer(t, "v2.0.0")
-	cmd, _ := setupCheckAndNotifyTest(t, server.URL)
+	cmd, buf := setupCheckAndNotifyTest(t, server.URL)
 
 	// Simulate an interactive user who accepts the upgrade prompt, and an
-	// installer that fails.
+	// installer that fails (e.g. brew upgrade blew up mid-run).
 	t.Setenv("ENTIRE_TEST_TTY", "1")
 	useBrewExecutable(t)
 
@@ -513,13 +513,23 @@ func TestCheckAndNotify_InstallerFailureInvalidatesCache(t *testing.T) {
 
 	CheckAndNotify(context.Background(), cmd.OutOrStdout(), "1.0.0")
 
-	// Cache must be rolled back so the next CLI invocation re-prompts.
+	// User sees the failure message with a manual-retry hint.
+	if !strings.Contains(buf.String(), "Try again later with:") {
+		t.Errorf("missing retry hint in output: %q", buf.String())
+	}
+
+	// Cache must remain bumped: we don't want to re-prompt every invocation
+	// while the upstream issue is still in place. The user already has the
+	// hint with the exact command to run manually.
 	cache, err := loadCache()
 	if err != nil {
 		t.Fatalf("loadCache() error = %v", err)
 	}
-	if !cache.LastCheckTime.IsZero() {
-		t.Errorf("cache LastCheckTime not reset after installer failure: %v", cache.LastCheckTime)
+	if cache.LastCheckTime.IsZero() {
+		t.Errorf("cache LastCheckTime was reset after installer failure; want fresh bump")
+	}
+	if time.Since(cache.LastCheckTime) > time.Minute {
+		t.Errorf("cache LastCheckTime not fresh after installer failure: %v", cache.LastCheckTime)
 	}
 }
 

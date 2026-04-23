@@ -130,28 +130,17 @@ func TestMaybeAutoUpdate_InstallerFailurePrintedToUser(t *testing.T) {
 	f.installErr = errors.New("boom")
 
 	var buf bytes.Buffer
-	failed := MaybeAutoUpdate(context.Background(), &buf, "1.0.0")
+	MaybeAutoUpdate(context.Background(), &buf, "1.0.0")
 
 	if f.installCalls != 1 {
 		t.Fatalf("installer called %d times, want 1", f.installCalls)
 	}
-	if !strings.Contains(buf.String(), "Update failed") {
-		t.Errorf("missing failure message: %q", buf.String())
+	out := buf.String()
+	if !strings.Contains(out, "Update failed") {
+		t.Errorf("missing failure message: %q", out)
 	}
-	if !failed {
-		t.Error("MaybeAutoUpdate returned false after installer error; want true")
-	}
-}
-
-func TestMaybeAutoUpdate_HappyPathReturnsFalse(t *testing.T) {
-	f := newAutoUpdateFixture(t)
-	useBrewExecutable(t)
-
-	var buf bytes.Buffer
-	if failed := MaybeAutoUpdate(context.Background(), &buf, "1.0.0"); failed {
-		t.Error("MaybeAutoUpdate returned true on success; want false")
-	}
-	if f.installCalls != 1 {
-		t.Fatalf("installer called %d times, want 1", f.installCalls)
+	// Failure message should include a manual-retry hint with the exact command.
+	if !strings.Contains(out, "Try again later with: brew upgrade --cask entire") {
+		t.Errorf("missing retry hint with command: %q", out)
 	}
 }
