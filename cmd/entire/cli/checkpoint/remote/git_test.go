@@ -141,19 +141,34 @@ func TestResolvePushCommandTarget(t *testing.T) {
 		want         string
 	}{
 		{
-			name:         "ssh origin without token stays ssh",
+			// Without checkpoint_remote configured the push should use the
+			// remote name so git updates refs/remotes/origin/<branch> and
+			// subsequent hasUnpushedSessionsCommon checks can short-circuit.
+			name:         "no checkpoint remote keeps remote name",
 			originURL:    "git@github.com:acme/app.git",
 			settingsJSON: `{"enabled":true}`,
 			target:       "origin",
-			want:         "git@github.com:acme/app.git",
+			want:         "origin",
 		},
 		{
-			name:         "ssh origin with token becomes https",
+			// With token set but no checkpoint_remote, PushURL still returns
+			// the coerced HTTPS URL but enabled=false. resolvePushCommandTarget
+			// should still return the name — newCommand handles token coercion.
+			name:         "no checkpoint remote with token keeps remote name",
 			originURL:    "git@github.com:acme/app.git",
 			settingsJSON: `{"enabled":true}`,
 			token:        "push-token",
 			target:       "origin",
-			want:         "https://github.com/acme/app.git",
+			want:         "origin",
+		},
+		{
+			// With checkpoint_remote configured, use the derived URL so the
+			// push actually goes to the separate checkpoint repo.
+			name:         "checkpoint remote routes to checkpoint URL",
+			originURL:    "https://github.com/acme/app.git",
+			settingsJSON: `{"enabled":true,"strategy_options":{"checkpoint_remote":{"provider":"github","repo":"acme/checkpoints"}}}`,
+			target:       "origin",
+			want:         "https://github.com/acme/checkpoints.git",
 		},
 		{
 			name:         "local path target stays unchanged",

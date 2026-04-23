@@ -336,16 +336,26 @@ func isValidToken(token string) bool {
 	return true
 }
 
+// resolvePushCommandTarget returns the target to pass to git push. When a
+// dedicated checkpoint_remote is configured, the checkpoint URL is returned so
+// the push is routed to the separate checkpoint repo. Otherwise the remote
+// name is returned unchanged so git uses its own config, updates the
+// refs/remotes/<name>/<branch> tracking ref, and subsequent calls can use that
+// tracking ref to skip redundant pushes.
+//
+// SSH→HTTPS coercion for token auth is handled by newCommand, which rewrites
+// the command args or injects per-host config, rather than being baked into
+// the target here.
 func resolvePushCommandTarget(ctx context.Context, target string) (string, error) {
 	if target == "" || IsURL(target) || isLocalPath(target) {
 		return target, nil
 	}
 
-	pushTarget, _, err := PushURL(ctx, target)
+	pushTarget, enabled, err := PushURL(ctx, target)
 	if err != nil {
 		return "", err
 	}
-	if pushTarget == "" {
+	if !enabled || pushTarget == "" {
 		return target, nil
 	}
 	return pushTarget, nil
