@@ -2,8 +2,6 @@ package checkpoint
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -19,13 +17,9 @@ import (
 	"github.com/go-git/go-git/v6/plumbing/object"
 )
 
-func TestWriteStandardCheckpointEntries_WarnsOnUnexpectedSessionZeroOverwrite(t *testing.T) {
+func TestWriteStandardCheckpointEntries_RefusesUnexpectedSessionZeroOverwrite(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Chdir(tmpDir)
-
-	// Pin log level so the assertion below doesn't depend on a dev/CI
-	// environment that happens to set ENTIRE_LOG_LEVEL=error.
-	t.Setenv(logging.LogLevelEnvVar, "warn")
 
 	repo, err := git.PlainInit(tmpDir, false)
 	if err != nil {
@@ -36,6 +30,7 @@ func TestWriteStandardCheckpointEntries_WarnsOnUnexpectedSessionZeroOverwrite(t 
 	if err := logging.Init(context.Background(), ""); err != nil {
 		t.Fatalf("logging.Init() error = %v", err)
 	}
+	defer logging.Close()
 
 	checkpointID, err := id.Generate()
 	if err != nil {
@@ -58,9 +53,10 @@ func TestWriteStandardCheckpointEntries_WarnsOnUnexpectedSessionZeroOverwrite(t 
 		t.Fatalf("CreateBlobFromContent(old metadata) error = %v", err)
 	}
 
+	sessionZeroPath := basePath + "0/" + paths.MetadataFileName
 	entries := map[string]object.TreeEntry{
-		basePath + "0/" + paths.MetadataFileName: {
-			Name: basePath + "0/" + paths.MetadataFileName,
+		sessionZeroPath: {
+			Name: sessionZeroPath,
 			Mode: filemode.Regular,
 			Hash: oldMetadataHash,
 		},
@@ -74,21 +70,24 @@ func TestWriteStandardCheckpointEntries_WarnsOnUnexpectedSessionZeroOverwrite(t 
 		Prompts:      []string{"hi"},
 	}
 
-	if err := store.writeStandardCheckpointEntries(context.Background(), opts, basePath, entries); err != nil {
-		t.Fatalf("writeStandardCheckpointEntries() error = %v", err)
+	err = store.writeStandardCheckpointEntries(context.Background(), opts, basePath, entries)
+	if err == nil {
+		t.Fatal("expected writeStandardCheckpointEntries to refuse, got nil error")
 	}
-	logging.Close()
+	if !strings.Contains(err.Error(), "refusing to overwrite session 0") {
+		t.Errorf("error message should announce the refuse; got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "session-old") || !strings.Contains(err.Error(), "session-new") {
+		t.Errorf("error should include both session IDs; got: %v", err)
+	}
 
-	logPath := filepath.Join(tmpDir, logging.LogsDir, "entire.log")
-	logData, err := os.ReadFile(logPath)
-	if err != nil {
-		t.Fatalf("ReadFile(%s) error = %v", logPath, err)
+	// Alice's original metadata must remain untouched in the entries map —
+	// the refuse runs before writeSessionToSubdirectory clears the subtree.
+	entry, ok := entries[sessionZeroPath]
+	if !ok {
+		t.Fatalf("session 0 metadata entry unexpectedly removed from entries map")
 	}
-	logText := string(logData)
-	if !strings.Contains(logText, "checkpoint write overwrites session 0 with a different sessionID") {
-		t.Fatalf("expected tripwire warning in log, got:\n%s", logText)
-	}
-	if !strings.Contains(logText, "session-old") || !strings.Contains(logText, "session-new") {
-		t.Fatalf("expected log to include both session IDs, got:\n%s", logText)
+	if entry.Hash != oldMetadataHash {
+		t.Errorf("session 0 metadata blob changed: got %s, want %s", entry.Hash, oldMetadataHash)
 	}
 }

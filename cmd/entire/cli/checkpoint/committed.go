@@ -317,16 +317,27 @@ func (s *GitStore) writeStandardCheckpointEntries(ctx context.Context, opts Writ
 	// Determine session index: reuse existing slot if session ID matches, otherwise append
 	sessionIndex := s.findSessionIndex(ctx, basePath, existingSummary, entries, opts.SessionID)
 
-	// Capture any pre-existing session-0 metadata before writeSessionToSubdirectory
-	// clears that subtree. The warning below only fires in the suspicious shape
-	// where findSessionIndex chose slot 0 but the tree already had session-0
-	// metadata for a different session — typically meaning the root summary is
-	// missing/stale while a numbered session subdir still exists.
-	var existingSessionZeroMeta *CommittedMetadata
+	// Refuse if slot 0 already holds metadata for a DIFFERENT session ID.
+	// findSessionIndex only returns 0 when existingSummary is nil (fresh write)
+	// or when the summary claims slot 0 belongs to us — either way, the tree
+	// actually holding session-0 metadata for someone else is a corruption /
+	// stale-summary shape. Writing through it would overwrite data we don't
+	// know about. Bail instead of silently clobbering.
+	//
+	// We read and capture BEFORE writeSessionToSubdirectory clears the subtree,
+	// otherwise we'd only ever see our own write.
 	if sessionIndex == 0 {
 		if entry, exists := entries[fmt.Sprintf("%s0/%s", basePath, paths.MetadataFileName)]; exists {
-			if existingMeta, readErr := s.readMetadataFromBlob(entry.Hash); readErr == nil {
-				existingSessionZeroMeta = existingMeta
+			if existingMeta, readErr := s.readMetadataFromBlob(entry.Hash); readErr == nil && existingMeta.SessionID != opts.SessionID {
+				logging.Error(ctx, "refusing checkpoint write: session 0 holds a different sessionID",
+					slog.String("checkpoint_id", opts.CheckpointID.String()),
+					slog.String("existing_session_id", existingMeta.SessionID),
+					slog.String("write_session_id", opts.SessionID),
+					slog.Bool("existing_summary_nil", existingSummary == nil))
+				return fmt.Errorf(
+					"refusing to overwrite session 0 of checkpoint %s: existing session ID %q differs from write session ID %q (tree corruption or stale summary — run 'entire doctor' to investigate)",
+					opts.CheckpointID, existingMeta.SessionID, opts.SessionID,
+				)
 			}
 		}
 	}
@@ -354,17 +365,6 @@ func (s *GitStore) writeStandardCheckpointEntries(ctx context.Context, opts Writ
 		sessions = make([]SessionFilePaths, 1)
 	}
 	sessions[sessionIndex] = sessionFilePaths
-
-	// Tripwire: if we're writing session 0 and there was already session-0
-	// metadata for a DIFFERENT session ID, emit a loud warning. This is a
-	// tree-corruption / stale-summary shape, not a routine overwrite path.
-	if existingSessionZeroMeta != nil && existingSessionZeroMeta.SessionID != opts.SessionID {
-		logging.Warn(ctx, "checkpoint write overwrites session 0 with a different sessionID — potential overwrite regression",
-			slog.String("checkpoint_id", opts.CheckpointID.String()),
-			slog.String("existing_session_id", existingSessionZeroMeta.SessionID),
-			slog.String("write_session_id", opts.SessionID),
-			slog.Bool("existing_summary_nil", existingSummary == nil))
-	}
 
 	// Update root metadata.json with CheckpointSummary
 	return s.writeCheckpointSummary(opts, basePath, entries, sessions)
