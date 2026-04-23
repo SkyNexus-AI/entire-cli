@@ -857,6 +857,70 @@ func TestAttach_ReviewAppendsAsAdditionalSessionWhenIDDiffers(t *testing.T) {
 	}
 }
 
+// Reproduces the cross-user "missing checkpoint data" scenario: a
+// teammate pushed a branch with commits whose messages carry
+// Entire-Checkpoint trailers, but the orphan `entire/checkpoints/v1`
+// branch holding the actual session data wasn't fetched (git pull
+// doesn't bring it in by default). Running review-attach against the
+// trailer used to silently CREATE a fresh checkpoint, orphaning the
+// original session on push. Now it must refuse with a clear
+// "run `git fetch ...` or ask them to push" message.
+func TestAttach_ReviewRefusesWhenCheckpointMissingFromLocalBranch(t *testing.T) {
+	setupAttachTestRepo(t)
+
+	// Simulate a teammate's commit: amend HEAD with an Entire-Checkpoint
+	// trailer that points at a checkpoint ID the local entire/checkpoints/v1
+	// branch doesn't know about. No corresponding checkpoint data is
+	// written locally — that's the whole point.
+	repoRoot := mustGetwd(t)
+	runGitInDir(t, repoRoot, "commit", "--amend", "--no-edit", "-m", "init\n\nEntire-Checkpoint: ffffffffeeee")
+
+	sessionID := "orphaned-review-session"
+	setupClaudeTranscript(t, sessionID, `{"type":"user","message":{"role":"user","content":"review please"},"uuid":"u1"}
+`)
+
+	var out bytes.Buffer
+	err := runAttach(context.Background(), &out, sessionID, agent.AgentNameClaudeCode, attachOptions{
+		Force:                true,
+		Review:               true,
+		ReviewSkillsOverride: []string{"/review"},
+	})
+	if err == nil {
+		t.Fatal("expected error: checkpoint referenced by HEAD is missing locally and attach should refuse")
+	}
+	if !strings.Contains(err.Error(), "missing from the local entire/checkpoints/v1 branch") {
+		t.Errorf("error message should explain the missing-branch situation; got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "git fetch origin entire/checkpoints/v1") {
+		t.Errorf("error message should include the fetch command to fix it; got: %v", err)
+	}
+
+	// Confirm no fresh checkpoint was created for the orphaned ID.
+	repo, err := git.PlainOpen(repoRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := cpkg.NewGitStore(repo)
+	summary, err := store.ReadCommitted(context.Background(), "ffffffffeeee")
+	if err != nil {
+		t.Fatalf("ReadCommitted: %v", err)
+	}
+	if summary != nil {
+		t.Errorf("attach should NOT have created checkpoint ffffffffeeee locally; found %+v", summary)
+	}
+}
+
+// runGitInDir runs `git <args>` in the given directory, failing the test
+// on error. Used to amend commits with synthetic trailers for test setup.
+func runGitInDir(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.CommandContext(context.Background(), "git", args...)
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v in %s: %v\n%s", args, dir, err, out)
+	}
+}
+
 // Regression for the "review-attach overwrote the existing session"
 // bug: the LastCheckpointID guard in session state only catches the case
 // where the state file tracks the checkpoint. A session that's already

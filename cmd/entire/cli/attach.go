@@ -224,6 +224,10 @@ func runAttach(ctx context.Context, w io.Writer, sessionID string, agentName typ
 	// Write directly to entire/checkpoints/v1.
 	store := cpkg.NewGitStore(repo)
 
+	if err := verifyCheckpointLocallyAvailable(ctx, store, checkpointID, isExistingCheckpoint); err != nil {
+		return err
+	}
+
 	// Defense-in-depth guard: the earlier existingState.LastCheckpointID
 	// check only fires when the session's state file records its
 	// checkpoint. A session already stored in the HEAD checkpoint but
@@ -390,6 +394,35 @@ func refreshForExistingCheckpoint(ctx, logCtx context.Context, repo *git.Reposit
 		return repo
 	}
 	return freshRepo
+}
+
+// verifyCheckpointLocallyAvailable refuses the attach when HEAD references
+// an Entire-Checkpoint the local entire/checkpoints/v1 branch doesn't have.
+// Typical scenario: pulled a co-worker's branch whose commits carry
+// trailers, but the orphan metadata branch wasn't fetched (git pull
+// ignores it by default). Without this guard, WriteCommitted would
+// silently create a fresh checkpoint with the same ID here — and on push,
+// that would overwrite the original session data on the remote.
+//
+// Only runs when isExistingCheckpoint is true (HEAD had a trailer).
+// Fresh checkpoints (no trailer) are always fine to create.
+func verifyCheckpointLocallyAvailable(ctx context.Context, store *cpkg.GitStore, checkpointID id.CheckpointID, isExistingCheckpoint bool) error {
+	if !isExistingCheckpoint {
+		return nil
+	}
+	summary, readErr := store.ReadCommitted(ctx, checkpointID)
+	if readErr != nil {
+		return fmt.Errorf("failed to read checkpoint %s: %w", checkpointID, readErr)
+	}
+	if summary != nil {
+		// Checkpoint data is present locally — safe to proceed.
+		return nil
+	}
+	const fetchCmd = "git fetch origin entire/checkpoints/v1:entire/checkpoints/v1"
+	return fmt.Errorf(
+		"checkpoint %s referenced by HEAD is missing from the local entire/checkpoints/v1 branch (the remote fetch didn't bring it in either). Creating a fresh checkpoint here would overwrite the original session data on push. Run:\n\n    %s\n\nthen re-run attach. If the colleague who made this commit hasn't pushed their checkpoint metadata yet, ask them to do so first",
+		checkpointID.String(), fetchCmd,
+	)
 }
 
 func resolveCheckpointID(headCommit *object.Commit) (id.CheckpointID, bool) {
