@@ -50,9 +50,9 @@ func pushBranchIfNeeded(ctx context.Context, target, branchName string) error {
 
 // hasUnpushedSessionsCommon checks if the local branch differs from the remote.
 // Returns true if there's any difference that needs syncing (local ahead, remote ahead, or diverged).
-func hasUnpushedSessionsCommon(repo *git.Repository, remote string, localHash plumbing.Hash, branchName string) bool {
-	// Check for remote tracking ref: refs/remotes/<remote>/<branch>
-	remoteRefName := plumbing.NewRemoteReferenceName(remote, branchName)
+func hasUnpushedSessionsCommon(repo *git.Repository, remoteName string, localHash plumbing.Hash, branchName string) bool {
+	// Check for remote tracking ref: refs/remotes/<remoteName>/<branch>
+	remoteRefName := plumbing.NewRemoteReferenceName(remoteName, branchName)
 	remoteRef, err := repo.Reference(remoteRefName, true)
 	if err != nil {
 		// Remote branch doesn't exist yet - we have content to push
