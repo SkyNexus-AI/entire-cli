@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -221,28 +222,39 @@ func extractRemoteFromArgs(args []string) string {
 // an Authorization header into git HTTP requests. The token is sent as a Basic
 // credential with the format "x-access-token:<token>" (base64-encoded), which
 // is compatible with GitHub's token authentication.
-// It filters out any pre-existing GIT_CONFIG_COUNT/KEY/VALUE entries to avoid
-// conflicts, then appends the new ones.
 //
-// NOTE: This drops ALL existing GIT_CONFIG_* entries from the environment.
-// If a parent process (e.g., CI) injects its own GIT_CONFIG_* vars, they will
-// be lost. If that becomes an issue, read the existing count and append at the
-// next index instead of replacing.
+// Existing GIT_CONFIG_KEY_*/GIT_CONFIG_VALUE_* entries are preserved; the new
+// http.extraHeader entry is appended at the next free index and
+// GIT_CONFIG_COUNT is updated accordingly. This keeps caller-injected git
+// config (e.g., safe.directory, custom CA settings) intact.
 func appendCheckpointTokenEnv(baseEnv []string, token string) []string {
+	existingCount := 0
+	for _, e := range baseEnv {
+		rest, ok := strings.CutPrefix(e, "GIT_CONFIG_COUNT=")
+		if !ok {
+			continue
+		}
+		if n, err := strconv.Atoi(rest); err == nil && n > 0 {
+			existingCount = n
+		}
+	}
+
+	// Strip the old GIT_CONFIG_COUNT entry (we'll emit a new one) but keep
+	// GIT_CONFIG_KEY_*/GIT_CONFIG_VALUE_* entries in place.
 	filtered := make([]string, 0, len(baseEnv)+3)
 	for _, e := range baseEnv {
-		if strings.HasPrefix(e, "GIT_CONFIG_COUNT=") ||
-			strings.HasPrefix(e, "GIT_CONFIG_KEY_") ||
-			strings.HasPrefix(e, "GIT_CONFIG_VALUE_") {
+		if strings.HasPrefix(e, "GIT_CONFIG_COUNT=") {
 			continue
 		}
 		filtered = append(filtered, e)
 	}
+
+	idx := existingCount
 	encoded := base64.StdEncoding.EncodeToString([]byte("x-access-token:" + token))
 	return append(filtered,
-		"GIT_CONFIG_COUNT=1",
-		"GIT_CONFIG_KEY_0=http.extraHeader",
-		"GIT_CONFIG_VALUE_0=Authorization: Basic "+encoded,
+		fmt.Sprintf("GIT_CONFIG_COUNT=%d", existingCount+1),
+		fmt.Sprintf("GIT_CONFIG_KEY_%d=http.extraHeader", idx),
+		fmt.Sprintf("GIT_CONFIG_VALUE_%d=Authorization: Basic %s", idx, encoded),
 	)
 }
 

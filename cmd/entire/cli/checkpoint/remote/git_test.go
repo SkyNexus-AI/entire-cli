@@ -232,7 +232,7 @@ func TestAppendCheckpointTokenEnv(t *testing.T) {
 		assert.Contains(t, env, "GIT_CONFIG_VALUE_0="+wantAuth)
 	})
 
-	t.Run("filters existing GIT_CONFIG entries", func(t *testing.T) {
+	t.Run("preserves existing GIT_CONFIG entries and appends at next index", func(t *testing.T) {
 		t.Parallel()
 		env := appendCheckpointTokenEnv([]string{
 			"PATH=/usr/bin",
@@ -245,17 +245,29 @@ func TestAppendCheckpointTokenEnv(t *testing.T) {
 
 		for _, e := range env {
 			if e == "GIT_CONFIG_COUNT=2" {
-				t.Error("old GIT_CONFIG_COUNT should have been filtered")
-			}
-			if strings.Contains(e, "some.key") || strings.Contains(e, "some-value") {
-				t.Error("old GIT_CONFIG_KEY/VALUE should have been filtered")
+				t.Error("old GIT_CONFIG_COUNT should have been replaced")
 			}
 		}
 
+		assert.Contains(t, env, "GIT_CONFIG_COUNT=3")
+		assert.Contains(t, env, "GIT_CONFIG_KEY_0=some.key")
+		assert.Contains(t, env, "GIT_CONFIG_VALUE_0=some-value")
+		assert.Contains(t, env, "GIT_CONFIG_KEY_1=other.key")
+		assert.Contains(t, env, "GIT_CONFIG_VALUE_1=other-value")
+		assert.Contains(t, env, "GIT_CONFIG_KEY_2=http.extraHeader")
+		wantAuth := "Authorization: Basic " + base64.StdEncoding.EncodeToString([]byte("x-access-token:new-token"))
+		assert.Contains(t, env, "GIT_CONFIG_VALUE_2="+wantAuth)
+	})
+
+	t.Run("invalid GIT_CONFIG_COUNT falls back to zero", func(t *testing.T) {
+		t.Parallel()
+		env := appendCheckpointTokenEnv([]string{
+			"PATH=/usr/bin",
+			"GIT_CONFIG_COUNT=not-a-number",
+		}, "tok")
+
 		assert.Contains(t, env, "GIT_CONFIG_COUNT=1")
 		assert.Contains(t, env, "GIT_CONFIG_KEY_0=http.extraHeader")
-		wantAuth := "Authorization: Basic " + base64.StdEncoding.EncodeToString([]byte("x-access-token:new-token"))
-		assert.Contains(t, env, "GIT_CONFIG_VALUE_0="+wantAuth)
 	})
 }
 
