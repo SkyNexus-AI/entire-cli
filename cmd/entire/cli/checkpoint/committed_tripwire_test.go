@@ -23,6 +23,10 @@ func TestWriteStandardCheckpointEntries_WarnsOnUnexpectedSessionZeroOverwrite(t 
 	tmpDir := t.TempDir()
 	t.Chdir(tmpDir)
 
+	// Pin log level so the assertion below doesn't depend on a dev/CI
+	// environment that happens to set ENTIRE_LOG_LEVEL=error.
+	t.Setenv(logging.LogLevelEnvVar, "warn")
+
 	repo, err := git.PlainInit(tmpDir, false)
 	if err != nil {
 		t.Fatalf("PlainInit() error = %v", err)
