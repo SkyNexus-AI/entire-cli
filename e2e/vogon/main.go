@@ -16,6 +16,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -123,13 +124,13 @@ func parseArgs(args []string) config {
 
 func validateSessionID(sessionID string) error {
 	if sessionID == "" {
-		return fmt.Errorf("session ID cannot be empty")
+		return errors.New("session ID cannot be empty")
 	}
 	if filepath.Base(sessionID) != sessionID {
-		return fmt.Errorf("must not contain path separators")
+		return errors.New("must not contain path separators")
 	}
 	if sessionID == "." || sessionID == ".." || strings.Contains(sessionID, "..") {
-		return fmt.Errorf("must not contain dot path elements")
+		return errors.New("must not contain dot path elements")
 	}
 	return nil
 }
