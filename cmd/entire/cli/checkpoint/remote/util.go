@@ -160,10 +160,16 @@ func PushURL(ctx context.Context, pushRemoteName string) (string, bool, error) {
 		return "", true, fmt.Errorf("no push URL found: %w", err)
 	}
 	if strings.TrimSpace(os.Getenv(CheckpointTokenEnvVar)) != "" {
+		// Keep the port only when the source was already HTTPS. SSH ports
+		// (e.g., :2222) don't map to HTTPS ports on the same host.
+		port := ""
+		if pushInfo.Protocol == ProtocolHTTPS {
+			port = pushInfo.Port
+		}
 		pushInfo = &Info{
 			Protocol: ProtocolHTTPS,
 			Host:     pushInfo.Host,
-			Port:     pushInfo.Port,
+			Port:     port,
 			Owner:    pushInfo.Owner,
 			Repo:     pushInfo.Repo,
 		}
@@ -260,7 +266,13 @@ func deriveTokenOriginURL(originURL string) (string, bool) {
 	if info.Host == "" || info.Owner == "" || info.Repo == "" {
 		return "", false
 	}
-	return fmt.Sprintf("https://%s/%s/%s.git", info.HostPort(), info.Owner, info.Repo), true
+	// Keep the port only when the source was already HTTPS. SSH ports
+	// (e.g., :2222) don't map to HTTPS ports on the same host.
+	hostPort := info.Host
+	if info.Protocol == ProtocolHTTPS {
+		hostPort = info.HostPort()
+	}
+	return fmt.Sprintf("https://%s/%s/%s.git", hostPort, info.Owner, info.Repo), true
 }
 
 func providerHost(provider string) (string, bool) {
