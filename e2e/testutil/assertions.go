@@ -395,9 +395,10 @@ func ValidateCheckpointDeep(t *testing.T, dir string, v DeepCheckpointValidation
 	}
 
 	path := CheckpointPath(v.CheckpointID)
+	checkpointRef := checkpointMetadataRef()
 
 	// Validate session metadata exists and has checkpoint_id
-	sessionBlob := fmt.Sprintf("entire/checkpoints/v1:%s/0/metadata.json", path)
+	sessionBlob := fmt.Sprintf("%s:%s/0/metadata.json", checkpointRef, path)
 	sessionRaw := gitOutputSafe(dir, "show", sessionBlob)
 	if assert.NotEmpty(t, sessionRaw, "session metadata should exist at %s", sessionBlob) {
 		var sessionMeta map[string]any
@@ -409,7 +410,7 @@ func ValidateCheckpointDeep(t *testing.T, dir string, v DeepCheckpointValidation
 	}
 
 	// Validate transcript is valid JSONL
-	transcriptBlob := fmt.Sprintf("entire/checkpoints/v1:%s/0/full.jsonl", path)
+	transcriptBlob := fmt.Sprintf("%s:%s/0/full.jsonl", checkpointRef, path)
 	transcriptRaw := gitOutputSafe(dir, "show", transcriptBlob)
 	if assert.NotEmpty(t, transcriptRaw, "transcript should exist at %s", transcriptBlob) {
 		lines := strings.Split(transcriptRaw, "\n")
@@ -427,7 +428,7 @@ func ValidateCheckpointDeep(t *testing.T, dir string, v DeepCheckpointValidation
 		}
 
 		// Validate content hash
-		hashBlob := fmt.Sprintf("entire/checkpoints/v1:%s/0/content_hash.txt", path)
+		hashBlob := fmt.Sprintf("%s:%s/0/content_hash.txt", checkpointRef, path)
 		hashRaw := gitOutputSafe(dir, "show", hashBlob)
 		if hashRaw != "" {
 			hash := sha256.Sum256([]byte(transcriptRaw))
@@ -439,7 +440,7 @@ func ValidateCheckpointDeep(t *testing.T, dir string, v DeepCheckpointValidation
 
 	// Validate prompt.txt if expected prompts specified
 	if len(v.ExpectedPrompts) > 0 {
-		promptBlob := fmt.Sprintf("entire/checkpoints/v1:%s/0/prompt.txt", path)
+		promptBlob := fmt.Sprintf("%s:%s/0/prompt.txt", checkpointRef, path)
 		promptRaw := gitOutputSafe(dir, "show", promptBlob)
 		for _, expected := range v.ExpectedPrompts {
 			assert.Contains(t, promptRaw, expected,
