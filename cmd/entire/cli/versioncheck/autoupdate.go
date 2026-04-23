@@ -39,7 +39,7 @@ var (
 // command is printed so the user still learns what to run manually.
 func MaybeAutoUpdate(ctx context.Context, w io.Writer, currentVersion string) {
 	if os.Getenv(envKillSwitch) != "" || !interactive.CanPromptInteractively() {
-		fmt.Fprintf(w, "To update entire run:\n  %s\n", updateCommand(currentVersion))
+		fmt.Fprintf(w, "To update, run:\n  %s\n", updateCommand(currentVersion))
 		return
 	}
 

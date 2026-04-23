@@ -56,7 +56,7 @@ func useBrewExecutable(t *testing.T) {
 // was printed when the prompt couldn't be shown.
 func assertManualHint(t *testing.T, out string) {
 	t.Helper()
-	if !strings.Contains(out, "To update entire run:") {
+	if !strings.Contains(out, "To update, run:") {
 		t.Errorf("missing manual-update hint: %q", out)
 	}
 	if !strings.Contains(out, "brew upgrade --cask entire") {
