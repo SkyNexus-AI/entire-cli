@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/entireio/cli/cmd/entire/cli/api"
+	"github.com/entireio/cli/cmd/entire/cli/interactive"
 	"github.com/spf13/cobra"
 	"golang.org/x/sync/errgroup"
 )
@@ -62,7 +63,7 @@ func runActivity(ctx context.Context, w, errW io.Writer) error {
 	}
 
 	// Non-interactive fallback: piped output or accessibility mode
-	if !isTerminalWriter(w) || IsAccessibleMode() {
+	if !interactive.IsTerminalWriter(w) || IsAccessibleMode() {
 		return runActivityStatic(ctx, w, client)
 	}
 
