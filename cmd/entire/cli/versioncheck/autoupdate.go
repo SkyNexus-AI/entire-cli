@@ -53,7 +53,7 @@ func MaybeAutoUpdate(ctx context.Context, w io.Writer, currentVersion string) {
 	cmdStr := updateCommand(currentVersion)
 	fmt.Fprintf(w, "\nUpdating Entire CLI: %s\n", cmdStr)
 	if err := runInstaller(ctx, cmdStr); err != nil {
-		fmt.Fprintf(w, "Update failed: %v\nTry again later with: %s\n", err, cmdStr)
+		fmt.Fprintf(w, "Update failed: %v\nTry again later running:\n  %s\n", err, cmdStr)
 		return
 	}
 	fmt.Fprintln(w, "Update complete. Re-run entire to use the new version.")

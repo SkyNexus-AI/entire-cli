@@ -362,7 +362,7 @@ func updateCommand(currentVersion string) string {
 
 // printNotification prints the version update notification to the user.
 func printNotification(w io.Writer, current, latest string) {
-	msg := fmt.Sprintf("\nA newer version of Entire CLI is available: %s (current: %s)\nRun '%s' to update.\n",
-		latest, current, updateCommand(current))
+	msg := fmt.Sprintf("\nA newer version of Entire CLI is available: %s (current: %s)\n",
+		latest, current)
 	fmt.Fprint(w, msg)
 }

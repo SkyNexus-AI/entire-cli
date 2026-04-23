@@ -140,7 +140,10 @@ func TestMaybeAutoUpdate_InstallerFailurePrintedToUser(t *testing.T) {
 		t.Errorf("missing failure message: %q", out)
 	}
 	// Failure message should include a manual-retry hint with the exact command.
-	if !strings.Contains(out, "Try again later with: brew upgrade --cask entire") {
-		t.Errorf("missing retry hint with command: %q", out)
+	if !strings.Contains(out, "Try again later running:") {
+		t.Errorf("missing retry hint: %q", out)
+	}
+	if !strings.Contains(out, "brew upgrade --cask entire") {
+		t.Errorf("retry hint missing installer command: %q", out)
 	}
 }

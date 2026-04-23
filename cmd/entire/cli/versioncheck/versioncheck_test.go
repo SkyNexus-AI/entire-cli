@@ -514,7 +514,7 @@ func TestCheckAndNotify_InstallerFailureKeepsCacheFresh(t *testing.T) {
 	CheckAndNotify(context.Background(), cmd.OutOrStdout(), "1.0.0")
 
 	// User sees the failure message with a manual-retry hint.
-	if !strings.Contains(buf.String(), "Try again later with:") {
+	if !strings.Contains(buf.String(), "Try again later running:") {
 		t.Errorf("missing retry hint in output: %q", buf.String())
 	}
 
