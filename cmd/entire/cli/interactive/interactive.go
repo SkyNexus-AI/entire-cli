@@ -46,6 +46,14 @@ func CanPromptInteractively() bool {
 		return false
 	}
 
+	// CI=<non-empty> is the de-facto convention across CI providers (GitHub
+	// Actions, CircleCI, GitLab, Travis, Buildkite, etc.). Self-hosted runners
+	// and some Docker configs expose /dev/tty, so the TTY probe below isn't
+	// enough — an interactive prompt on CI would hang the pipeline forever.
+	if os.Getenv("CI") != "" {
+		return false
+	}
+
 	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
 	if err != nil {
 		return false

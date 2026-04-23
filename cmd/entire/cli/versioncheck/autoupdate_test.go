@@ -78,6 +78,21 @@ func TestMaybeAutoUpdate_NoTTY(t *testing.T) {
 	}
 }
 
+func TestMaybeAutoUpdate_CIEnv(t *testing.T) {
+	f := newAutoUpdateFixture(t)
+	useBrewExecutable(t)
+	// Clear the test override so the real CanPromptInteractively path runs.
+	t.Setenv("ENTIRE_TEST_TTY", "")
+	t.Setenv("CI", "true")
+
+	var buf bytes.Buffer
+	MaybeAutoUpdate(context.Background(), &buf, "1.0.0")
+
+	if f.installCalls != 0 {
+		t.Errorf("installer called on CI (CI=true)")
+	}
+}
+
 func TestMaybeAutoUpdate_UserDeclines(t *testing.T) {
 	f := newAutoUpdateFixture(t)
 	useBrewExecutable(t)

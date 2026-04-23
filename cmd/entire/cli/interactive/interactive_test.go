@@ -15,3 +15,12 @@ func TestCanPromptInteractively_ForcedOff(t *testing.T) {
 		t.Error("CanPromptInteractively() = true; want false when ENTIRE_TEST_TTY=0")
 	}
 }
+
+func TestCanPromptInteractively_CIEnv(t *testing.T) {
+	// Unset the test override so the real env checks run.
+	t.Setenv("ENTIRE_TEST_TTY", "")
+	t.Setenv("CI", "true")
+	if CanPromptInteractively() {
+		t.Error("CanPromptInteractively() = true; want false when CI is set")
+	}
+}
