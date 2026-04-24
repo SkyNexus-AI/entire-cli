@@ -42,17 +42,14 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
-      - name: Setup Keyring
+      - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y gnome-keyring
+          sudo apt-get install -y gnome-keyring tmux
           echo 'somecredstorepass' | gnome-keyring-daemon --unlock
 
       - name: Setup mise
         uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4
-
-      - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y tmux
 
       - name: Build entire CLI
         run: go build -o /usr/local/bin/entire ./cmd/entire
