@@ -50,11 +50,7 @@ func tryPushRef(ctx context.Context, target string, refName plumbing.ReferenceNa
 	result, err := remote.Push(ctx, target, refSpec)
 	outputStr := result.Output
 	if err != nil {
-		if strings.Contains(outputStr, "non-fast-forward") ||
-			strings.Contains(outputStr, "rejected") {
-			return pushResult{}, errors.New("non-fast-forward")
-		}
-		return pushResult{}, fmt.Errorf("push failed: %s", outputStr)
+		return pushResult{}, classifyPushOutput(outputStr)
 	}
 
 	return parsePushResult(outputStr), nil
@@ -64,18 +60,27 @@ func tryPushRef(ctx context.Context, target string, refName plumbing.ReferenceNa
 func doPushRef(ctx context.Context, target string, refName plumbing.ReferenceName) error {
 	displayTarget := target
 	if remote.IsURL(target) {
-		displayTarget = "checkpoint remote"
+		displayTarget = checkpointRemoteDisplayName
 	}
 
 	shortRef := shortRefName(refName)
 	fmt.Fprintf(os.Stderr, "[entire] Pushing %s to %s...", shortRef, displayTarget)
 	stop := startProgressDots(os.Stderr)
 
-	if result, err := tryPushRef(ctx, target, refName); err == nil {
+	result, err := tryPushRef(ctx, target, refName)
+	if err == nil {
 		finishPush(ctx, stop, result, target)
 		return nil
 	}
 	stop("")
+
+	// Skip the fetch+merge retry for protected-ref rejections — the remote is
+	// refusing the ref itself, not rejecting history.
+	var protectedErr *protectedRefError
+	if errors.As(err, &protectedErr) {
+		printProtectedRefBlock(os.Stderr, shortRef, target)
+		return nil
+	}
 
 	fmt.Fprintf(os.Stderr, "[entire] Syncing %s with remote...", shortRef)
 	stop = startProgressDots(os.Stderr)
