@@ -220,6 +220,24 @@ func (s *V2GitStore) updateCommittedFullTranscript(ctx context.Context, opts Upd
 	// same content — preserve them and skip chunking + zlib.
 	rawTranscriptPath := sessionPath + paths.V2RawTranscriptFileName
 	rawHashPath := sessionPath + paths.V2RawTranscriptHashFileName
+	v1TranscriptPath := sessionPath + paths.TranscriptFileName
+	v1HashPath := sessionPath + paths.ContentHashFileName
+
+	hasLegacyV1Files := false
+	for key := range entries {
+		switch {
+		case key == v1TranscriptPath:
+			hasLegacyV1Files = true
+		case strings.HasPrefix(key, v1TranscriptPath+"."):
+			hasLegacyV1Files = true
+		case key == v1HashPath:
+			hasLegacyV1Files = true
+		}
+		if hasLegacyV1Files {
+			break
+		}
+	}
+
 	var newContentHash string
 	if precomputed != nil {
 		newContentHash = precomputed.ContentHash
@@ -231,7 +249,7 @@ func (s *V2GitStore) updateCommittedFullTranscript(ctx context.Context, opts Upd
 			if rdr, rerr := blob.Reader(); rerr == nil {
 				existingHash, readErr := io.ReadAll(rdr)
 				_ = rdr.Close()
-				if readErr == nil && string(existingHash) == newContentHash {
+				if readErr == nil && string(existingHash) == newContentHash && !hasLegacyV1Files {
 					// Content unchanged — skip tree surgery and ref advance to
 					// avoid a no-op commit on /full/current. The existing ref
 					// already references the correct tree.
@@ -245,8 +263,6 @@ func (s *V2GitStore) updateCommittedFullTranscript(ctx context.Context, opts Upd
 	// Preserve non-transcript metadata under the same session (e.g., tasks/*).
 	// Also clean up v1-named files (full.jsonl, content_hash.txt) that may have been
 	// written by older CLI versions to /full/current before the v2 rename to raw_transcript.
-	v1TranscriptPath := sessionPath + paths.TranscriptFileName
-	v1HashPath := sessionPath + paths.ContentHashFileName
 	for key := range entries {
 		switch {
 		case key == rawTranscriptPath:
