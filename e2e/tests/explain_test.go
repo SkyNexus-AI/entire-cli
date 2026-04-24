@@ -4,6 +4,8 @@ package tests
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -67,7 +69,20 @@ func TestExplainCheckpointFromClonedRepo(t *testing.T) {
 		s.Git(t, "push", "-u", "origin", "feature")
 		testutil.PushCheckpointRefs(t, s.Dir)
 
-		cloneDir := testutil.CloneAndEnableEntire(t, bareDir, s.Agent.EntireAgent())
+		cloneDir := t.TempDir()
+		if resolved, symErr := filepath.EvalSymlinks(cloneDir); symErr == nil {
+			cloneDir = resolved
+		}
+		require.NoError(t, os.RemoveAll(cloneDir))
+		testutil.Git(t, "", "clone", bareDir, cloneDir)
+		testutil.Git(t, cloneDir, "config", "user.name", "E2E Clone")
+		testutil.Git(t, cloneDir, "config", "user.email", "e2e-clone@test.local")
+		_, err = testutil.GitOutputErr(cloneDir, "rev-parse", "--verify", testutil.CheckpointVerifyRef())
+		require.Error(t, err, "checkpoint metadata ref should not exist locally in clone before explain")
+
+		entire.Enable(t, cloneDir, s.Agent.EntireAgent())
+		testutil.ApplySuiteCheckpointsMode(t, cloneDir)
+		testutil.CommitIfDirty(t, cloneDir, "Enable entire in clone")
 
 		out := entire.Explain(t, cloneDir, checkpointID)
 		assert.Contains(t, out, "Checkpoint: "+checkpointID, "explain output should include the checkpoint ID")

@@ -4,6 +4,8 @@ package tests
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -36,10 +38,15 @@ func TestAttachSessionCreatesCheckpoint(t *testing.T) {
 		assert.Contains(t, out, "Created checkpoint")
 		checkpointID := testutil.AssertHasCheckpointTrailer(t, s.Dir, "HEAD")
 
-		resumeOut, resumeErr := entire.Resume(s.Dir, "feature")
+		transcriptPath := filepath.Join(homeDir, ".vogon", "sessions", sessionID+".jsonl")
+		require.NoError(t, os.Remove(transcriptPath), "remove prepared vogon session before resume")
+
+		resumeOut, resumeErr := entire.ResumeWithEnv(s.Dir, "feature", extraEnv)
 		require.NoError(t, resumeErr, "entire resume failed after attach: %s", resumeOut)
 		assert.Contains(t, resumeOut, sessionID, "resume output should reference the attached session")
 		assert.Contains(t, resumeOut, "To continue", "resume output should show follow-up instructions")
+		_, statErr := os.Stat(transcriptPath)
+		assert.NoError(t, statErr, "resume should restore the transcript into the isolated vogon HOME")
 
 		s.Git(t, "checkout", mainBranch)
 		explainOut := entire.Explain(t, s.Dir, checkpointID)
@@ -82,6 +89,11 @@ func TestAttachSessionAddsToExistingCheckpoint(t *testing.T) {
 		assert.Contains(t, out, "Added to existing checkpoint "+checkpointID)
 		assert.Equal(t, checkpointID, testutil.AssertHasCheckpointTrailer(t, s.Dir, "HEAD"),
 			"attach should reuse the existing checkpoint trailer")
+
+		checkpointMeta := testutil.ReadCheckpointMetadata(t, s.Dir, checkpointID)
+		assert.Len(t, checkpointMeta.Sessions, 2, "attach should append a second session to checkpoint metadata")
+		attachedSessionMeta := testutil.ReadSessionMetadata(t, s.Dir, checkpointID, 1)
+		assert.Equal(t, sessionID, attachedSessionMeta.SessionID, "attach should persist the attached session metadata")
 	})
 }
 
