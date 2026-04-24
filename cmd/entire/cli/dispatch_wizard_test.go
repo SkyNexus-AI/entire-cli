@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,6 +13,8 @@ import (
 
 	"github.com/charmbracelet/huh"
 	dispatchpkg "github.com/entireio/cli/cmd/entire/cli/dispatch"
+	"github.com/entireio/cli/cmd/entire/cli/testutil"
+	"github.com/spf13/cobra"
 )
 
 func TestNewDispatchWizardState_Defaults(t *testing.T) {
@@ -42,9 +45,10 @@ func TestDispatchWizardState_ResolveLocalAllBranches(t *testing.T) {
 	t.Parallel()
 
 	state := newDispatchWizardState()
+	state.currentBranch = testDispatchPreviewBranch
 	state.localBranchMode = dispatchWizardBranchAll
 
-	opts, err := state.resolve(func() (string, error) { return testDispatchPreviewBranch, nil })
+	opts, err := state.resolve()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,10 +62,11 @@ func TestDispatchWizardState_CloudIgnoresLocalBranchMode(t *testing.T) {
 
 	state := newDispatchWizardState()
 	state.modeChoice = dispatchWizardModeServer
+	state.currentBranch = testDispatchPreviewBranch
 	state.selectedRepos = []string{"entireio/cli"}
 	state.localBranchMode = dispatchWizardBranchAll
 
-	opts, err := state.resolve(func() (string, error) { return testDispatchPreviewBranch, nil })
+	opts, err := state.resolve()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,9 +101,10 @@ func TestDispatchWizardState_CloudResolvesSelectedRepos(t *testing.T) {
 
 	state := newDispatchWizardState()
 	state.modeChoice = dispatchWizardModeServer
+	state.currentBranch = testDispatchPreviewBranch
 	state.selectedRepos = []string{"entireio/cli"}
 
-	opts, err := state.resolve(func() (string, error) { return testDispatchPreviewBranch, nil })
+	opts, err := state.resolve()
 	if err != nil {
 		t.Fatalf("expected cloud mode to resolve selected repos, got %v", err)
 	}
@@ -139,8 +145,9 @@ func TestDispatchWizardState_ResolveVoiceInput(t *testing.T) {
 	t.Parallel()
 
 	state := newDispatchWizardState()
+	state.currentBranch = testDispatchPreviewBranch
 	state.voicePreset = testDispatchVoicePresetMarvin
-	opts, err := state.resolve(func() (string, error) { return testDispatchPreviewBranch, nil })
+	opts, err := state.resolve()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,7 +156,7 @@ func TestDispatchWizardState_ResolveVoiceInput(t *testing.T) {
 	}
 
 	state.voicePreset = testDispatchVoicePresetNeutral
-	opts, err = state.resolve(func() (string, error) { return testDispatchPreviewBranch, nil })
+	opts, err = state.resolve()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,7 +165,7 @@ func TestDispatchWizardState_ResolveVoiceInput(t *testing.T) {
 	}
 	state.voicePreset = testDispatchVoicePresetCustom
 	state.voiceCustom = "dry, skeptical release note narrator"
-	opts, err = state.resolve(func() (string, error) { return testDispatchPreviewBranch, nil })
+	opts, err = state.resolve()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,10 +178,11 @@ func TestDispatchWizardState_ResolveEmptyVoiceDefaultsToNeutral(t *testing.T) {
 	t.Parallel()
 
 	state := newDispatchWizardState()
+	state.currentBranch = testDispatchPreviewBranch
 	state.voicePreset = testDispatchVoicePresetCustom
 	state.voiceCustom = "   "
 
-	opts, err := state.resolve(func() (string, error) { return testDispatchPreviewBranch, nil })
+	opts, err := state.resolve()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -327,6 +335,31 @@ func TestDiscoverLocalRepoRoots_LimitsConcurrentResolution(t *testing.T) {
 	}
 	if maxConcurrent > dispatchWizardRepoDiscoveryConcurrencyLimit {
 		t.Fatalf("expected max concurrency <= %d, got %d", dispatchWizardRepoDiscoveryConcurrencyLimit, maxConcurrent)
+	}
+}
+
+func TestRunDispatchWizard_FailsEarlyWhenCurrentBranchCannotBeResolved(t *testing.T) {
+	dir := t.TempDir()
+	testutil.InitRepo(t, dir)
+	t.Chdir(dir)
+
+	oldGetCurrentBranch := getDispatchWizardCurrentBranch
+	getDispatchWizardCurrentBranch = func(context.Context) (string, error) {
+		return "", errors.New("not on a branch (detached HEAD)")
+	}
+	t.Cleanup(func() {
+		getDispatchWizardCurrentBranch = oldGetCurrentBranch
+	})
+
+	cmd := &cobra.Command{}
+	cmd.SetContext(context.Background())
+
+	_, err := runDispatchWizard(cmd)
+	if err == nil {
+		t.Fatal("expected current-branch resolution error")
+	}
+	if !strings.Contains(err.Error(), "resolve current branch for local dispatch: not on a branch (detached HEAD)") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

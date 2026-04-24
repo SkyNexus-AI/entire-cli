@@ -22,6 +22,7 @@ import (
 var errDispatchCancelled = errors.New("dispatch cancelled")
 var listDispatchWizardRepos = discoverAuthenticatedDispatchWizardRepos
 var resolveDispatchWizardTopLevel = resolveGitTopLevel
+var getDispatchWizardCurrentBranch = GetCurrentBranch
 
 const (
 	dispatchWizardRepoDiscoveryConcurrencyLimit = 8
@@ -39,6 +40,7 @@ type dispatchWizardState struct {
 	modeChoice       string
 	timeWindowPreset string
 	localBranchMode  string
+	currentBranch    string
 	selectedRepos    []string
 	voicePreset      string
 	voiceCustom      string
@@ -94,7 +96,7 @@ func (s dispatchWizardState) showLocalBranchMode() bool {
 	return s.isLocal()
 }
 
-func (s dispatchWizardState) resolve(currentBranch func() (string, error)) (dispatchpkg.Options, error) {
+func (s dispatchWizardState) resolve() (dispatchpkg.Options, error) {
 	allBranches := s.isLocal() && s.localBranchMode == dispatchWizardBranchAll
 	opts, err := resolveDispatchOptions(
 		s.isLocal(),
@@ -104,7 +106,9 @@ func (s dispatchWizardState) resolve(currentBranch func() (string, error)) (disp
 		s.resolveCloudRepos(),
 		s.voiceValue(),
 		false,
-		currentBranch,
+		func() (string, error) {
+			return s.currentBranch, nil
+		},
 	)
 	if err != nil {
 		return dispatchpkg.Options{}, err
@@ -230,9 +234,11 @@ func runDispatchWizard(cmd *cobra.Command) (dispatchpkg.Options, error) {
 	go loadRepos()
 
 	state := newDispatchWizardState()
-	currentBranch := func() (string, error) {
-		return GetCurrentBranch(ctx)
+	currentBranch, err := getDispatchWizardCurrentBranch(ctx)
+	if err != nil {
+		return dispatchpkg.Options{}, fmt.Errorf("resolve current branch for local dispatch: %w", err)
 	}
+	state.currentBranch = currentBranch
 
 	form := NewAccessibleForm(
 		huh.NewGroup(
@@ -309,7 +315,7 @@ func runDispatchWizard(cmd *cobra.Command) (dispatchpkg.Options, error) {
 			huh.NewNote().
 				Title("Resolved options").
 				DescriptionFunc(func() string {
-					opts, resolveErr := state.resolve(currentBranch)
+					opts, resolveErr := state.resolve()
 					if resolveErr != nil {
 						return "Validation error: " + resolveErr.Error()
 					}
@@ -318,7 +324,7 @@ func runDispatchWizard(cmd *cobra.Command) (dispatchpkg.Options, error) {
 			huh.NewNote().
 				Title("Command").
 				DescriptionFunc(func() string {
-					opts, resolveErr := state.resolve(currentBranch)
+					opts, resolveErr := state.resolve()
 					if resolveErr != nil {
 						return "Validation error: " + resolveErr.Error()
 					}
@@ -345,7 +351,7 @@ func runDispatchWizard(cmd *cobra.Command) (dispatchpkg.Options, error) {
 		return dispatchpkg.Options{}, errDispatchCancelled
 	}
 
-	return state.resolve(currentBranch)
+	return state.resolve()
 }
 
 // newLazyOptions returns a func that runs loader once (under sync.Once) and
