@@ -317,6 +317,31 @@ func (s *GitStore) writeStandardCheckpointEntries(ctx context.Context, opts Writ
 	// Determine session index: reuse existing slot if session ID matches, otherwise append
 	sessionIndex := s.findSessionIndex(ctx, basePath, existingSummary, entries, opts.SessionID)
 
+	// Refuse if slot 0 already holds metadata for a DIFFERENT session ID.
+	// findSessionIndex only returns 0 when existingSummary is nil (fresh write)
+	// or when the summary claims slot 0 belongs to us — either way, the tree
+	// actually holding session-0 metadata for someone else is a corruption /
+	// stale-summary shape. Writing through it would overwrite data we don't
+	// know about. Bail instead of silently clobbering.
+	//
+	// We read and capture BEFORE writeSessionToSubdirectory clears the subtree,
+	// otherwise we'd only ever see our own write.
+	if sessionIndex == 0 {
+		if entry, exists := entries[fmt.Sprintf("%s0/%s", basePath, paths.MetadataFileName)]; exists {
+			if existingMeta, readErr := s.readMetadataFromBlob(entry.Hash); readErr == nil && existingMeta.SessionID != opts.SessionID {
+				logging.Error(ctx, "refusing checkpoint write: session 0 holds a different sessionID",
+					slog.String("checkpoint_id", opts.CheckpointID.String()),
+					slog.String("existing_session_id", existingMeta.SessionID),
+					slog.String("write_session_id", opts.SessionID),
+					slog.Bool("existing_summary_nil", existingSummary == nil))
+				return fmt.Errorf(
+					"refusing to overwrite session 0 of checkpoint %s: existing session ID %q differs from write session ID %q. The checkpoint tree is inconsistent (session 0 belongs to a different session than this write claims). No automated repair exists for this shape — please report it along with the output of `git ls-tree entire/checkpoints/v1 %s/`",
+					opts.CheckpointID, existingMeta.SessionID, opts.SessionID, opts.CheckpointID.Path(),
+				)
+			}
+		}
+	}
+
 	// Write session files to numbered subdirectory
 	sessionPath := fmt.Sprintf("%s%d/", basePath, sessionIndex)
 	sessionFilePaths, err := s.writeSessionToSubdirectory(ctx, opts, sessionPath, entries)
