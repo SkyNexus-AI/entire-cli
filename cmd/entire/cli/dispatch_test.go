@@ -278,3 +278,56 @@ func TestNewDispatchCmd_TerminalUsesInteractiveRenderer(t *testing.T) {
 		t.Fatalf("unexpected stderr: %q", got)
 	}
 }
+
+func TestNewDispatchCmd_AccessibleModeSkipsInteractiveRenderer(t *testing.T) {
+	t.Setenv("ACCESSIBLE", "1")
+
+	oldRunDispatch := runDispatch
+	oldTerminalMode := dispatchTerminalMode
+	oldInteractive := runInteractiveDispatch
+	oldGlow := renderTerminalMarkdown
+	oldMarkdown := renderDispatchMarkdown
+	runDispatch = func(_ context.Context, _ dispatchpkg.Options) (*dispatchpkg.Dispatch, error) {
+		return &dispatchpkg.Dispatch{GeneratedText: "generated dispatch"}, nil
+	}
+	dispatchTerminalMode = func(_ io.Writer) bool { return true }
+	runInteractiveDispatch = func(_ context.Context, _ io.Writer, _ dispatchpkg.Options) (string, error) {
+		t.Fatal("did not expect interactive renderer in accessible mode")
+		return "", nil
+	}
+	renderTerminalMarkdown = func(_ io.Writer, _ string) (string, error) {
+		t.Fatal("did not expect terminal markdown renderer in accessible mode")
+		return "", nil
+	}
+	renderDispatchMarkdown = func(dispatch *dispatchpkg.Dispatch) string {
+		if dispatch.GeneratedText != "generated dispatch" {
+			t.Fatalf("unexpected dispatch: %+v", dispatch)
+		}
+		return testDispatchGeneratedMarkdown
+	}
+	t.Cleanup(func() {
+		runDispatch = oldRunDispatch
+		dispatchTerminalMode = oldTerminalMode
+		runInteractiveDispatch = oldInteractive
+		renderTerminalMarkdown = oldGlow
+		renderDispatchMarkdown = oldMarkdown
+	})
+
+	cmd := newDispatchCmd()
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{"--repos", "entireio/cli"})
+	cmd.SetContext(context.Background())
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if got := stdout.String(); got != testDispatchGeneratedMarkdown {
+		t.Fatalf("unexpected stdout: %q", got)
+	}
+	if got := stderr.String(); got != "" {
+		t.Fatalf("unexpected stderr: %q", got)
+	}
+}

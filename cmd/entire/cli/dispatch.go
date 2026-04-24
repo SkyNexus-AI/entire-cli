@@ -82,7 +82,7 @@ Examples:
 }
 
 func runDispatchCommand(ctx context.Context, outW io.Writer, opts dispatchpkg.Options) error {
-	if dispatchTerminalMode(outW) {
+	if dispatchTerminalMode(outW) && !IsAccessibleMode() {
 		markdown, err := runInteractiveDispatch(ctx, outW, opts)
 		if err != nil {
 			return err
