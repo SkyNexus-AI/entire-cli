@@ -12,7 +12,7 @@ import (
 
 	"github.com/entireio/cli/cmd/entire/cli/auth"
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint"
-	checkpointid "github.com/entireio/cli/cmd/entire/cli/checkpoint/id"
+	"github.com/entireio/cli/cmd/entire/cli/logging"
 	"github.com/entireio/cli/cmd/entire/cli/paths"
 	"github.com/entireio/cli/cmd/entire/cli/search"
 	"github.com/entireio/cli/cmd/entire/cli/trailers"
@@ -159,6 +159,10 @@ func enumerateRepoCandidates(ctx context.Context, repoRoot string, opts Options,
 			return nil, err
 		}
 	}
+	commitSubjectsByCheckpoint, err := loadCommitSubjectsByCheckpoint(ctx, repoRoot, since)
+	if err != nil {
+		return nil, err
+	}
 
 	store := checkpoint.NewGitStore(repo)
 	infos, err := store.ListCommitted(ctx)
@@ -173,7 +177,11 @@ func enumerateRepoCandidates(ctx context.Context, repoRoot string, opts Options,
 		}
 
 		summary, err := store.ReadCommitted(ctx, info.CheckpointID)
-		if err != nil || summary == nil {
+		if err != nil {
+			logging.Warn(ctx, "failed to read committed checkpoint for dispatch", "checkpoint_id", info.CheckpointID.String(), "error", err)
+			continue
+		}
+		if summary == nil {
 			continue
 		}
 		if _, onSelectedBranch := branchSet[summary.Branch]; !onSelectedBranch {
@@ -196,7 +204,7 @@ func enumerateRepoCandidates(ctx context.Context, repoRoot string, opts Options,
 			}
 		}
 
-		commitSubject, _ := findCommitSubjectByCheckpoint(ctx, repoRoot, info.CheckpointID) //nolint:errcheck // missing subject falls through to other fallbacks
+		commitSubject := commitSubjectsByCheckpoint[info.CheckpointID.String()]
 		candidates = append(candidates, candidate{
 			CheckpointID:      info.CheckpointID.String(),
 			RepoFullName:      repoFullName,
@@ -341,17 +349,44 @@ func localBranchNames(repo *git.Repository) ([]string, error) {
 	return names, nil
 }
 
-func findCommitSubjectByCheckpoint(ctx context.Context, repoRoot string, checkpointID checkpointid.CheckpointID) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", "-C", repoRoot, "log", "--all", "--format=%s%x00", "--grep", "Entire-Checkpoint: "+checkpointID.String())
+func loadCommitSubjectsByCheckpoint(ctx context.Context, repoRoot string, since time.Time) (map[string]string, error) {
+	cmd := exec.CommandContext(
+		ctx,
+		"git",
+		"-C",
+		repoRoot,
+		"log",
+		"--all",
+		"--since="+since.UTC().Format(time.RFC3339),
+		"--grep",
+		"Entire-Checkpoint:",
+		"--format=%s%x00%B%x00%x00",
+	)
 	output, err := cmd.Output()
 	if err != nil {
-		return "", fmt.Errorf("git log --grep: %w", err)
+		return nil, fmt.Errorf("git log --grep: %w", err)
 	}
-	parts := strings.SplitN(string(output), "\x00", 2)
-	if len(parts) == 0 {
-		return "", nil
+
+	subjects := make(map[string]string)
+	for _, record := range strings.Split(string(output), "\x00\x00") {
+		record = strings.TrimSuffix(record, "\x00")
+		if record == "" {
+			continue
+		}
+		parts := strings.SplitN(record, "\x00", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		subject := strings.TrimSpace(parts[0])
+		for _, checkpointID := range trailers.ParseAllCheckpoints(parts[1]) {
+			id := checkpointID.String()
+			if _, ok := subjects[id]; ok {
+				continue
+			}
+			subjects[id] = subject
+		}
 	}
-	return strings.TrimSpace(parts[0]), nil
+	return subjects, nil
 }
 
 func coveredRepos(candidates []candidate) []string {

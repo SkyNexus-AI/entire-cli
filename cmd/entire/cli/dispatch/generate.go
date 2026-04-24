@@ -133,8 +133,8 @@ Write the final dispatch in markdown.`, dispatchGenerationSystemPrompt, escapeDi
 
 func marshalDispatchPromptPayload(dispatch *Dispatch, voice string) (string, error) {
 	payload := dispatchPromptPayload{
-		Title:        summarizeLocalDispatchTitle(dispatch.CoveredRepos),
-		CoveredRepos: append([]string(nil), dispatch.CoveredRepos...),
+		Title:        sanitizeDispatchPromptString(summarizeLocalDispatchTitle(dispatch.CoveredRepos)),
+		CoveredRepos: sanitizePromptStringSlice(dispatch.CoveredRepos),
 		Branches:     make([]string, 0),
 		Voice:        resolvedDispatchVoicePreference(voice),
 		Window: dispatchPromptWindow{
@@ -148,16 +148,16 @@ func marshalDispatchPromptPayload(dispatch *Dispatch, voice string) (string, err
 	seenBranches := map[string]struct{}{}
 	for _, repo := range dispatch.Repos {
 		outRepo := dispatchPromptRepo{
-			FullName: repo.FullName,
+			FullName: sanitizeDispatchPromptString(repo.FullName),
 			Sections: make([]dispatchPromptSection, 0, len(repo.Sections)),
 		}
 		for _, section := range repo.Sections {
 			outSection := dispatchPromptSection{
-				Label:   section.Label,
+				Label:   sanitizeDispatchPromptString(section.Label),
 				Bullets: make([]dispatchPromptBullet, 0, len(section.Bullets)),
 			}
 			for _, bullet := range section.Bullets {
-				branch := strings.TrimSpace(bullet.Branch)
+				branch := strings.TrimSpace(sanitizeDispatchPromptString(bullet.Branch))
 				if branch != "" {
 					if _, ok := seenBranches[branch]; !ok {
 						seenBranches[branch] = struct{}{}
@@ -166,11 +166,11 @@ func marshalDispatchPromptPayload(dispatch *Dispatch, voice string) (string, err
 				}
 				outSection.Bullets = append(outSection.Bullets, dispatchPromptBullet{
 					CheckpointID: bullet.CheckpointID,
-					Text:         bullet.Text,
-					Source:       bullet.Source,
-					Branch:       bullet.Branch,
+					Text:         sanitizeDispatchPromptString(bullet.Text),
+					Source:       sanitizeDispatchPromptString(bullet.Source),
+					Branch:       branch,
 					CreatedAt:    formatDispatchTime(bullet.CreatedAt),
-					Labels:       append([]string(nil), bullet.Labels...),
+					Labels:       sanitizePromptStringSlice(bullet.Labels),
 				})
 			}
 			outRepo.Sections = append(outRepo.Sections, outSection)
@@ -192,6 +192,10 @@ func escapeDispatchPrompt(text string) string {
 }
 
 func sanitizeDispatchVoice(raw string) string {
+	return sanitizeDispatchPromptString(raw)
+}
+
+func sanitizeDispatchPromptString(raw string) string {
 	normalized := strings.ReplaceAll(raw, "\r\n", "\n")
 	normalized = strings.ReplaceAll(normalized, "\r", "\n")
 	return strings.TrimSpace(strings.Map(func(r rune) rune {
@@ -204,6 +208,14 @@ func sanitizeDispatchVoice(raw string) string {
 			return r
 		}
 	}, normalized))
+}
+
+func sanitizePromptStringSlice(values []string) []string {
+	sanitized := make([]string, 0, len(values))
+	for _, value := range values {
+		sanitized = append(sanitized, sanitizeDispatchPromptString(value))
+	}
+	return sanitized
 }
 
 func resolvedDispatchVoicePreference(voice string) string {

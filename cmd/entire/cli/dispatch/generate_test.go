@@ -77,6 +77,34 @@ func TestBuildDispatchPrompt_SanitizesVoiceAndEscapesPromptTags(t *testing.T) {
 	}
 }
 
+func TestBuildDispatchPrompt_SanitizesBulletText(t *testing.T) {
+	t.Parallel()
+
+	dispatch := &Dispatch{
+		CoveredRepos: []string{"entireio/cli"},
+		Repos: []RepoGroup{{
+			FullName: "entireio/cli",
+			Sections: []Section{{
+				Label: "Updates",
+				Bullets: []Bullet{{
+					Text: "Fix bidi\u202E and zero-width\u200B markers",
+				}},
+			}},
+		}},
+	}
+
+	prompt, err := buildDispatchPrompt(dispatch, "neutral")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(prompt, "\u202E") || strings.Contains(prompt, "\u200B") {
+		t.Fatalf("prompt contains unsanitized bullet text: %q", prompt)
+	}
+	if !strings.Contains(prompt, "Fix bidi and zero-width markers") {
+		t.Fatalf("prompt missing sanitized bullet text: %q", prompt)
+	}
+}
+
 func TestSanitizeDispatchVoice_PreservesPresetNewlines(t *testing.T) {
 	t.Parallel()
 

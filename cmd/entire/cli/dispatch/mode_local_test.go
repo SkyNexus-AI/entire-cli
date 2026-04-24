@@ -661,6 +661,50 @@ func TestReachableCheckpointIDsInRange_LimitsLogToWindowAndCheckpointTrailers(t 
 	}
 }
 
+func TestLoadCommitSubjectsByCheckpoint_UsesSingleWindowedLogScan(t *testing.T) {
+	tmpDir := t.TempDir()
+	argsFile := filepath.Join(tmpDir, "git-args.txt")
+	gitPath := filepath.Join(tmpDir, "git")
+
+	script := "#!/bin/sh\n" +
+		"if [ \"$3\" = \"log\" ]; then\n" +
+		"  printf '%s\\n' \"$@\" > \"$TEST_GIT_ARGS_FILE\"\n" +
+		"  printf 'latest subject\\000latest body\\n\\nEntire-Checkpoint: " + testCheckpointID + "\\000\\000older subject\\000older body\\n\\nEntire-Checkpoint: " + testCheckpointID + "\\000\\000'\n" +
+		"  exit 0\n" +
+		"fi\n" +
+		"exit 1\n"
+	if err := os.WriteFile(gitPath, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("PATH", tmpDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("TEST_GIT_ARGS_FILE", argsFile)
+
+	since := time.Date(2026, 4, 1, 12, 30, 0, 0, time.UTC)
+	subjects, err := loadCommitSubjectsByCheckpoint(context.Background(), "/tmp/repo", since)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := subjects[testCheckpointID]; got != "latest subject" {
+		t.Fatalf("expected newest subject to win, got %q", got)
+	}
+
+	argsBytes, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := string(argsBytes)
+	if !strings.Contains(args, "--since=2026-04-01T12:30:00Z") {
+		t.Fatalf("expected git log to bound history by since window, got args %q", args)
+	}
+	if !strings.Contains(args, "--grep") || !strings.Contains(args, "Entire-Checkpoint:") {
+		t.Fatalf("expected git log to filter checkpoint trailers, got args %q", args)
+	}
+	if strings.Contains(args, testCheckpointID) {
+		t.Fatalf("did not expect one git log invocation per checkpoint, got args %q", args)
+	}
+}
+
 func mustCheckpointID(t *testing.T, value string) checkpointid.CheckpointID {
 	t.Helper()
 
