@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/entireio/cli/cmd/entire/cli/agent"
+	"github.com/entireio/cli/cmd/entire/cli/versioninfo"
 )
 
 // testBinaryDir creates a temp directory with a mock entire-agent-test binary.
