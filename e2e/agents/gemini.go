@@ -20,7 +20,8 @@ func init() {
 }
 
 const geminiDefaultModel = "gemini-2.5-flash"
-const geminiTrustWorkspaceEnv = "GEMINI_CLI_TRUST_WORKSPACE=true"
+const geminiTrustWorkspaceEnvKey = "GEMINI_CLI_TRUST_WORKSPACE"
+const geminiTrustWorkspaceEnv = geminiTrustWorkspaceEnvKey + "=true"
 
 type Gemini struct{}
 
@@ -151,7 +152,7 @@ func geminiTestHomeDir(repoDir string) string {
 
 func geminiPromptEnv(repoDir string) []string {
 	return append(
-		filterEnv(os.Environ(), "ENTIRE_TEST_TTY", "GEMINI_CLI_TRUST_WORKSPACE"),
+		filterEnv(os.Environ(), "ENTIRE_TEST_TTY", geminiTrustWorkspaceEnvKey),
 		"ACCESSIBLE=1",
 		geminiTrustWorkspaceEnv,
 		"HOME="+geminiTestHomeDir(repoDir),
