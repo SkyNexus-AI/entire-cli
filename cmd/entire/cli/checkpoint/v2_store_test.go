@@ -1130,3 +1130,76 @@ func TestV2GitStore_UpdateCommittedFullTranscript_CleansUpV1NamedFiles(t *testin
 	assert.False(t, fileNames[paths.TranscriptFileName+".001"], "full.jsonl.001 should be cleaned up after update")
 	assert.False(t, fileNames[paths.ContentHashFileName], "content_hash.txt should be cleaned up after update")
 }
+
+// TestV2GitStore_UpdateCommittedFullTranscript_SameContentCleansUpV1Files verifies
+// that v1-named files are cleaned up even when the transcript content is identical
+// (hash matches), which would normally trigger the short-circuit that skips tree surgery.
+func TestV2GitStore_UpdateCommittedFullTranscript_SameContentCleansUpV1Files(t *testing.T) {
+	t.Parallel()
+	repo := initTestRepo(t)
+	store := NewV2GitStore(repo, "origin")
+	ctx := context.Background()
+
+	cpID := id.MustCheckpointID("962fcec4a874")
+	transcript := []byte(`{"type":"human","message":"same content"}` + "\n")
+
+	// Write initial checkpoint.
+	err := store.WriteCommitted(ctx, WriteCommittedOptions{
+		CheckpointID: cpID,
+		SessionID:    "test-session-same-content",
+		Strategy:     "manual-commit",
+		Transcript:   redact.AlreadyRedacted(transcript),
+		Agent:        agent.AgentTypeClaudeCode,
+		AuthorName:   "Test",
+		AuthorEmail:  "test@test.com",
+	})
+	require.NoError(t, err)
+
+	// Inject v1-named files into /full/current.
+	refName := plumbing.ReferenceName(paths.V2FullCurrentRefName)
+	parentHash, rootTreeHash, err := store.GetRefState(refName)
+	require.NoError(t, err)
+
+	basePath := cpID.Path() + "/"
+	sessionPath := basePath + "0/"
+
+	entries, err := store.gs.flattenCheckpointEntries(rootTreeHash, cpID.Path())
+	require.NoError(t, err)
+
+	v1Blob, err := CreateBlobFromContent(repo, []byte(`{"type":"human","message":"v1 data"}`+"\n"))
+	require.NoError(t, err)
+
+	entries[sessionPath+paths.TranscriptFileName] = object.TreeEntry{
+		Name: sessionPath + paths.TranscriptFileName,
+		Mode: filemode.Regular,
+		Hash: v1Blob,
+	}
+
+	newTreeHash, err := store.gs.spliceCheckpointSubtree(ctx, rootTreeHash, cpID, basePath, entries)
+	require.NoError(t, err)
+	err = store.updateRef(ctx, refName, newTreeHash, parentHash, "Inject v1 file", "Test", "test@test.com")
+	require.NoError(t, err)
+
+	// Call UpdateCommitted with the SAME transcript content (hash will match raw_transcript_hash.txt).
+	// Without the !hasLegacyV1Files guard, the short-circuit would return early and leave full.jsonl.
+	err = store.UpdateCommitted(ctx, UpdateCommittedOptions{
+		CheckpointID: cpID,
+		SessionID:    "test-session-same-content",
+		Transcript:   redact.AlreadyRedacted(transcript),
+		Agent:        agent.AgentTypeClaudeCode,
+	})
+	require.NoError(t, err)
+
+	// Verify v1 file is gone despite identical content.
+	tree := v2FullTree(t, repo)
+	sessionTree, err := tree.Tree(cpID.Path() + "/0")
+	require.NoError(t, err)
+
+	fileNames := make(map[string]bool)
+	for _, entry := range sessionTree.Entries {
+		fileNames[entry.Name] = true
+	}
+
+	assert.True(t, fileNames[paths.V2RawTranscriptFileName], "raw_transcript should exist")
+	assert.False(t, fileNames[paths.TranscriptFileName], "full.jsonl should be cleaned up even with identical content")
+}

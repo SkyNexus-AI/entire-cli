@@ -223,18 +223,15 @@ func (s *V2GitStore) updateCommittedFullTranscript(ctx context.Context, opts Upd
 	v1TranscriptPath := sessionPath + paths.TranscriptFileName
 	v1HashPath := sessionPath + paths.ContentHashFileName
 
-	hasLegacyV1Files := false
-	for key := range entries {
-		switch {
-		case key == v1TranscriptPath:
-			hasLegacyV1Files = true
-		case strings.HasPrefix(key, v1TranscriptPath+"."):
-			hasLegacyV1Files = true
-		case key == v1HashPath:
-			hasLegacyV1Files = true
-		}
-		if hasLegacyV1Files {
-			break
+	_, hasV1Transcript := entries[v1TranscriptPath]
+	_, hasV1Hash := entries[v1HashPath]
+	hasLegacyV1Files := hasV1Transcript || hasV1Hash
+	if !hasLegacyV1Files {
+		for key := range entries {
+			if strings.HasPrefix(key, v1TranscriptPath+".") {
+				hasLegacyV1Files = true
+				break
+			}
 		}
 	}
 
