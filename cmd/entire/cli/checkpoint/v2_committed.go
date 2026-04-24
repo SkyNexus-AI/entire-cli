@@ -243,6 +243,10 @@ func (s *V2GitStore) updateCommittedFullTranscript(ctx context.Context, opts Upd
 
 	// Clear existing transcript artifacts for this session path before writing new ones.
 	// Preserve non-transcript metadata under the same session (e.g., tasks/*).
+	// Also clean up v1-named files (full.jsonl, content_hash.txt) that may have been
+	// written by older CLI versions to /full/current before the v2 rename to raw_transcript.
+	v1TranscriptPath := sessionPath + paths.TranscriptFileName
+	v1HashPath := sessionPath + paths.ContentHashFileName
 	for key := range entries {
 		switch {
 		case key == rawTranscriptPath:
@@ -250,6 +254,12 @@ func (s *V2GitStore) updateCommittedFullTranscript(ctx context.Context, opts Upd
 		case strings.HasPrefix(key, rawTranscriptPath+"."):
 			delete(entries, key)
 		case key == rawHashPath:
+			delete(entries, key)
+		case key == v1TranscriptPath:
+			delete(entries, key)
+		case strings.HasPrefix(key, v1TranscriptPath+"."):
+			delete(entries, key)
+		case key == v1HashPath:
 			delete(entries, key)
 		}
 	}

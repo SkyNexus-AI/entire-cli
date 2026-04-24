@@ -1023,3 +1023,110 @@ func TestWriteCommitted_NoRotationBelowThreshold(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 3, noRotCount)
 }
+
+// TestV2GitStore_UpdateCommittedFullTranscript_CleansUpV1NamedFiles verifies that
+// updateCommittedFullTranscript removes legacy v1-named files (full.jsonl,
+// content_hash.txt) that may have been written by older CLI versions, preventing
+// duplicate transcript files on /full/current.
+func TestV2GitStore_UpdateCommittedFullTranscript_CleansUpV1NamedFiles(t *testing.T) {
+	t.Parallel()
+	repo := initTestRepo(t)
+	store := NewV2GitStore(repo, "origin")
+	ctx := context.Background()
+
+	cpID := id.MustCheckpointID("851fcec4a874")
+
+	// Step 1: Write initial checkpoint via WriteCommitted (sets up both /main and /full/current).
+	initialTranscript := []byte(`{"type":"human","message":"initial"}` + "\n")
+	err := store.WriteCommitted(ctx, WriteCommittedOptions{
+		CheckpointID: cpID,
+		SessionID:    "test-session-v1-cleanup",
+		Strategy:     "manual-commit",
+		Transcript:   redact.AlreadyRedacted(initialTranscript),
+		Agent:        agent.AgentTypeClaudeCode,
+		AuthorName:   "Test",
+		AuthorEmail:  "test@test.com",
+	})
+	require.NoError(t, err)
+
+	// Step 2: Inject v1-named files (full.jsonl, full.jsonl.001, content_hash.txt)
+	// directly into the /full/current tree to simulate legacy data.
+	refName := plumbing.ReferenceName(paths.V2FullCurrentRefName)
+	parentHash, rootTreeHash, err := store.GetRefState(refName)
+	require.NoError(t, err)
+
+	basePath := cpID.Path() + "/"
+	sessionPath := basePath + "0/"
+
+	entries, err := store.gs.flattenCheckpointEntries(rootTreeHash, cpID.Path())
+	require.NoError(t, err)
+
+	// Add v1-named files
+	v1Blob, err := CreateBlobFromContent(repo, []byte(`{"type":"human","message":"v1 data"}`+"\n"))
+	require.NoError(t, err)
+	v1HashBlob, err := CreateBlobFromContent(repo, []byte("sha256:v1hash"))
+	require.NoError(t, err)
+	v1ChunkBlob, err := CreateBlobFromContent(repo, []byte(`{"type":"assistant","message":"v1 chunk"}`+"\n"))
+	require.NoError(t, err)
+
+	entries[sessionPath+paths.TranscriptFileName] = object.TreeEntry{
+		Name: sessionPath + paths.TranscriptFileName,
+		Mode: filemode.Regular,
+		Hash: v1Blob,
+	}
+	entries[sessionPath+paths.TranscriptFileName+".001"] = object.TreeEntry{
+		Name: sessionPath + paths.TranscriptFileName + ".001",
+		Mode: filemode.Regular,
+		Hash: v1ChunkBlob,
+	}
+	entries[sessionPath+paths.ContentHashFileName] = object.TreeEntry{
+		Name: sessionPath + paths.ContentHashFileName,
+		Mode: filemode.Regular,
+		Hash: v1HashBlob,
+	}
+
+	newTreeHash, err := store.gs.spliceCheckpointSubtree(ctx, rootTreeHash, cpID, basePath, entries)
+	require.NoError(t, err)
+	err = store.updateRef(ctx, refName, newTreeHash, parentHash, "Inject v1 files", "Test", "test@test.com")
+	require.NoError(t, err)
+
+	// Verify v1-named files exist alongside v2-named files before the update.
+	tree := v2FullTree(t, repo)
+	cpPath := cpID.Path()
+	sessionTree, err := tree.Tree(cpPath + "/0")
+	require.NoError(t, err)
+	v1FileNames := make(map[string]bool)
+	for _, entry := range sessionTree.Entries {
+		v1FileNames[entry.Name] = true
+	}
+	assert.True(t, v1FileNames[paths.TranscriptFileName], "full.jsonl should exist before update")
+	assert.True(t, v1FileNames[paths.TranscriptFileName+".001"], "full.jsonl.001 should exist before update")
+	assert.True(t, v1FileNames[paths.ContentHashFileName], "content_hash.txt should exist before update")
+	assert.True(t, v1FileNames[paths.V2RawTranscriptFileName], "raw_transcript should exist before update")
+
+	// Step 3: Call UpdateCommitted, which calls updateCommittedFullTranscript.
+	updatedTranscript := []byte(`{"type":"human","message":"updated"}` + "\n")
+	err = store.UpdateCommitted(ctx, UpdateCommittedOptions{
+		CheckpointID: cpID,
+		SessionID:    "test-session-v1-cleanup",
+		Transcript:   redact.AlreadyRedacted(updatedTranscript),
+		Agent:        agent.AgentTypeClaudeCode,
+	})
+	require.NoError(t, err)
+
+	// Step 4: Verify v1-named files are gone, v2-named files are present.
+	tree = v2FullTree(t, repo)
+	sessionTree, err = tree.Tree(cpPath + "/0")
+	require.NoError(t, err)
+
+	fileNames := make(map[string]bool)
+	for _, entry := range sessionTree.Entries {
+		fileNames[entry.Name] = true
+	}
+
+	assert.True(t, fileNames[paths.V2RawTranscriptFileName], "raw_transcript should exist after update")
+	assert.True(t, fileNames[paths.V2RawTranscriptHashFileName], "raw_transcript_hash.txt should exist after update")
+	assert.False(t, fileNames[paths.TranscriptFileName], "full.jsonl should be cleaned up after update")
+	assert.False(t, fileNames[paths.TranscriptFileName+".001"], "full.jsonl.001 should be cleaned up after update")
+	assert.False(t, fileNames[paths.ContentHashFileName], "content_hash.txt should be cleaned up after update")
+}
