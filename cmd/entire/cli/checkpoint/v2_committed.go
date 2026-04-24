@@ -223,6 +223,8 @@ func (s *V2GitStore) updateCommittedFullTranscript(ctx context.Context, opts Upd
 	v1TranscriptPath := sessionPath + paths.TranscriptFileName
 	v1HashPath := sessionPath + paths.ContentHashFileName
 
+	// Detect legacy v1 files so the content-hash short-circuit below doesn't
+	// skip cleanup when the transcript content is unchanged.
 	_, hasV1Transcript := entries[v1TranscriptPath]
 	_, hasV1Hash := entries[v1HashPath]
 	hasLegacyV1Files := hasV1Transcript || hasV1Hash
