@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/huh"
+	"github.com/entireio/cli/cmd/entire/cli/api"
 	dispatchpkg "github.com/entireio/cli/cmd/entire/cli/dispatch"
 	"github.com/entireio/cli/cmd/entire/cli/testutil"
 	"github.com/spf13/cobra"
@@ -91,8 +92,8 @@ func TestBuildDispatchRepoOptions_UsesFullSlugLabels(t *testing.T) {
 	t.Parallel()
 
 	options := buildDispatchRepoOptions([]string{"entireio/entire.io", "entireio/cli"})
-	if got := strings.Join(optionKeys(options), ","); got != "entireio/cli,entireio/entire.io" {
-		t.Fatalf("expected repo options to use org/repo labels sorted, got %q", got)
+	if got := strings.Join(optionKeys(options), ","); got != "entireio/entire.io,entireio/cli" {
+		t.Fatalf("expected repo options to use org/repo labels in caller order, got %q", got)
 	}
 }
 
@@ -285,11 +286,11 @@ func TestBuildDispatchCommand_AllBranches(t *testing.T) {
 	}
 }
 
-func TestBuildDispatchRepoOptions_DedupesAndSorts(t *testing.T) {
+func TestBuildDispatchRepoOptions_DedupesAndPreservesOrder(t *testing.T) {
 	t.Parallel()
 
 	options := buildDispatchRepoOptions([]string{"entireio/entire.io", "entireio/cli", "entireio/cli"})
-	if got := strings.Join(optionValues(options), ","); got != "entireio/cli,entireio/entire.io" {
+	if got := strings.Join(optionValues(options), ","); got != "entireio/entire.io,entireio/cli" {
 		t.Fatalf("unexpected repo options: %v", optionValues(options))
 	}
 }
@@ -374,6 +375,31 @@ func TestDispatchWizardState_CloudIgnoresCurrentBranchResolutionError(t *testing
 	}
 	if got := strings.Join(opts.RepoPaths, ","); got != "entireio/cli" {
 		t.Fatalf("expected selected repo path to propagate, got %q", got)
+	}
+}
+
+func TestDiscoverAuthenticatedDispatchWizardRepos_FiltersEmptyCheckpointsAndPreservesRecentOrder(t *testing.T) {
+	t.Parallel()
+
+	old := listDispatchWizardRepoResources
+	listDispatchWizardRepoResources = func(context.Context) ([]api.Repository, error) {
+		return []api.Repository{
+			{FullName: "entireio/most-recent", CheckpointCount: 3},
+			{FullName: "entireio/never-dispatched", CheckpointCount: 0},
+			{FullName: "entireio/older", CheckpointCount: 1},
+			{FullName: "", CheckpointCount: 5},
+		}, nil
+	}
+	t.Cleanup(func() {
+		listDispatchWizardRepoResources = old
+	})
+
+	slugs, err := discoverAuthenticatedDispatchWizardRepos(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(slugs, ","); got != "entireio/most-recent,entireio/older" {
+		t.Fatalf("expected recent-first order with empty-checkpoint and blank repos filtered, got %q", got)
 	}
 }
 
