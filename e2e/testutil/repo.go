@@ -53,18 +53,18 @@ func SetupRepo(t *testing.T, agent agents.Agent) *RepoState {
 	// $HOME/.cache/entire-e2e-repos/ instead.
 	root := ""
 	if agent.Name() == "codex" {
-		home, herr := os.UserHomeDir()
-		if herr != nil {
-			t.Fatalf("resolve user home dir: %v", herr)
+		cache, cerr := os.UserCacheDir()
+		if cerr != nil {
+			t.Fatalf("resolve user cache dir: %v", cerr)
 		}
-		root = filepath.Join(home, ".cache", "entire-e2e-repos")
+		root = filepath.Join(cache, "entire-e2e-repos")
 		if err := os.MkdirAll(root, 0o755); err != nil {
 			t.Fatalf("create e2e repo root %q: %v", root, err)
 		}
 	}
 	dir, err := os.MkdirTemp(root, "e2e-repo-*")
 	if err != nil {
-		t.Fatalf("create temp dir: %v", err)
+		t.Fatalf("create temporary e2e repo under %q: %v", root, err)
 	}
 	if keepRepos {
 		t.Logf("E2E_KEEP_REPOS: repo will be preserved at %s", dir)

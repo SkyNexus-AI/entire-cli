@@ -67,17 +67,17 @@ func (c *Codex) IsTransientError(out Output, err error) bool {
 // recent Codex versions refuse to install PATH helper binaries when CODEX_HOME
 // sits under /tmp, which breaks subsequent tool calls.
 func codexHome() (string, func(), error) {
-	home, err := os.UserHomeDir()
+	cache, err := os.UserCacheDir()
 	if err != nil {
-		return "", nil, fmt.Errorf("resolve user home dir: %w", err)
+		return "", nil, fmt.Errorf("resolve user cache dir: %w", err)
 	}
-	base := filepath.Join(home, ".cache", "entire-e2e")
+	base := filepath.Join(cache, "entire-e2e")
 	if err := os.MkdirAll(base, 0o755); err != nil {
 		return "", nil, fmt.Errorf("create codex home base %q: %w", base, err)
 	}
 	dir, err := os.MkdirTemp(base, "codex-home-*")
 	if err != nil {
-		return "", nil, err
+		return "", nil, fmt.Errorf("create temporary codex home under %q: %w", base, err)
 	}
 	return dir, func() { _ = os.RemoveAll(dir) }, nil
 }
