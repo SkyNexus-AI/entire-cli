@@ -206,7 +206,7 @@ func migrateOneCheckpoint(ctx context.Context, repo *git.Repository, v1Store *ch
 			shouldCopyTaskMetadata = true
 		}
 
-		opts := buildMigrateWriteOpts(content, info)
+		opts := buildMigrateWriteOpts(content, info, summary.CombinedAttribution)
 
 		compacted := tryCompactTranscript(ctx, content.Transcript, content.Metadata)
 		if compacted != nil {
@@ -392,7 +392,7 @@ func backfillCompactTranscripts(ctx context.Context, v1Store *checkpoint.GitStor
 	return nil
 }
 
-func buildMigrateWriteOpts(content *checkpoint.SessionContent, info checkpoint.CommittedInfo) checkpoint.WriteCommittedOptions {
+func buildMigrateWriteOpts(content *checkpoint.SessionContent, info checkpoint.CommittedInfo, combinedAttribution *checkpoint.InitialAttribution) checkpoint.WriteCommittedOptions {
 	m := content.Metadata
 
 	prompts := checkpoint.SplitPromptContent(content.Prompts)
@@ -414,6 +414,8 @@ func buildMigrateWriteOpts(content *checkpoint.SessionContent, info checkpoint.C
 		TokenUsage:                  m.TokenUsage,
 		SessionMetrics:              m.SessionMetrics,
 		InitialAttribution:          m.InitialAttribution,
+		PromptAttributionsJSON:      m.PromptAttributions,
+		CombinedAttribution:         combinedAttribution,
 		Summary:                     m.Summary,
 		CheckpointTranscriptStart:   m.GetTranscriptStart(),
 		TranscriptIdentifierAtStart: m.TranscriptIdentifierAtStart,
