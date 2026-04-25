@@ -1024,11 +1024,10 @@ func TestWriteCommitted_NoRotationBelowThreshold(t *testing.T) {
 	assert.Equal(t, 3, noRotCount)
 }
 
-// TestV2GitStore_UpdateCommittedFullTranscript_CleansUpV1NamedFiles verifies that
-// updateCommittedFullTranscript removes legacy v1-named files (full.jsonl,
-// content_hash.txt) that may have been written by older CLI versions, preventing
-// duplicate transcript files on /full/current.
-func TestV2GitStore_UpdateCommittedFullTranscript_CleansUpV1NamedFiles(t *testing.T) {
+// TestV2GitStore_CleanupV1TranscriptFiles verifies that CleanupV1TranscriptFiles
+// removes legacy v1-named files (full.jsonl, full.jsonl.*, content_hash.txt)
+// from /full/current while preserving v2-named files.
+func TestV2GitStore_CleanupV1TranscriptFiles(t *testing.T) {
 	t.Parallel()
 	repo := initTestRepo(t)
 	store := NewV2GitStore(repo, "origin")
@@ -1036,20 +1035,19 @@ func TestV2GitStore_UpdateCommittedFullTranscript_CleansUpV1NamedFiles(t *testin
 
 	cpID := id.MustCheckpointID("851fcec4a874")
 
-	// Step 1: Write initial checkpoint via WriteCommitted (sets up both /main and /full/current).
-	initialTranscript := []byte(`{"type":"human","message":"initial"}` + "\n")
+	// Write initial checkpoint (sets up both /main and /full/current with v2 naming).
 	err := store.WriteCommitted(ctx, WriteCommittedOptions{
 		CheckpointID: cpID,
 		SessionID:    "test-session-v1-cleanup",
 		Strategy:     "manual-commit",
-		Transcript:   redact.AlreadyRedacted(initialTranscript),
+		Transcript:   redact.AlreadyRedacted([]byte(`{"type":"human","message":"initial"}` + "\n")),
 		Agent:        agent.AgentTypeClaudeCode,
 		AuthorName:   "Test",
 		AuthorEmail:  "test@test.com",
 	})
 	require.NoError(t, err)
 
-	// Step 2: Inject v1-named files (full.jsonl, full.jsonl.001, content_hash.txt)
+	// Inject v1-named files (full.jsonl, full.jsonl.001, content_hash.txt)
 	// directly into the /full/current tree to simulate legacy data.
 	refName := plumbing.ReferenceName(paths.V2FullCurrentRefName)
 	parentHash, rootTreeHash, err := store.GetRefState(refName)
@@ -1061,7 +1059,6 @@ func TestV2GitStore_UpdateCommittedFullTranscript_CleansUpV1NamedFiles(t *testin
 	entries, err := store.gs.flattenCheckpointEntries(rootTreeHash, cpID.Path())
 	require.NoError(t, err)
 
-	// Add v1-named files
 	v1Blob, err := CreateBlobFromContent(repo, []byte(`{"type":"human","message":"v1 data"}`+"\n"))
 	require.NoError(t, err)
 	v1HashBlob, err := CreateBlobFromContent(repo, []byte("sha256:v1hash"))
@@ -1090,116 +1087,72 @@ func TestV2GitStore_UpdateCommittedFullTranscript_CleansUpV1NamedFiles(t *testin
 	err = store.updateRef(ctx, refName, newTreeHash, parentHash, "Inject v1 files", "Test", "test@test.com")
 	require.NoError(t, err)
 
-	// Verify v1-named files exist alongside v2-named files before the update.
+	// Verify v1-named files exist before cleanup.
 	tree := v2FullTree(t, repo)
 	cpPath := cpID.Path()
 	sessionTree, err := tree.Tree(cpPath + "/0")
 	require.NoError(t, err)
-	v1FileNames := make(map[string]bool)
+	preCleanup := make(map[string]bool)
 	for _, entry := range sessionTree.Entries {
-		v1FileNames[entry.Name] = true
+		preCleanup[entry.Name] = true
 	}
-	assert.True(t, v1FileNames[paths.TranscriptFileName], "full.jsonl should exist before update")
-	assert.True(t, v1FileNames[paths.TranscriptFileName+".001"], "full.jsonl.001 should exist before update")
-	assert.True(t, v1FileNames[paths.ContentHashFileName], "content_hash.txt should exist before update")
-	assert.True(t, v1FileNames[paths.V2RawTranscriptFileName], "raw_transcript should exist before update")
+	assert.True(t, preCleanup[paths.TranscriptFileName], "full.jsonl should exist before cleanup")
+	assert.True(t, preCleanup[paths.TranscriptFileName+".001"], "full.jsonl.001 should exist before cleanup")
+	assert.True(t, preCleanup[paths.ContentHashFileName], "content_hash.txt should exist before cleanup")
+	assert.True(t, preCleanup[paths.V2RawTranscriptFileName], "raw_transcript should exist before cleanup")
 
-	// Step 3: Call UpdateCommitted, which calls updateCommittedFullTranscript.
-	updatedTranscript := []byte(`{"type":"human","message":"updated"}` + "\n")
-	err = store.UpdateCommitted(ctx, UpdateCommittedOptions{
-		CheckpointID: cpID,
-		SessionID:    "test-session-v1-cleanup",
-		Transcript:   redact.AlreadyRedacted(updatedTranscript),
-		Agent:        agent.AgentTypeClaudeCode,
-	})
+	// Run cleanup.
+	err = store.CleanupV1TranscriptFiles(ctx, cpID, 1)
 	require.NoError(t, err)
 
-	// Step 4: Verify v1-named files are gone, v2-named files are present.
+	// Verify v1-named files are gone, v2-named files are preserved.
 	tree = v2FullTree(t, repo)
 	sessionTree, err = tree.Tree(cpPath + "/0")
 	require.NoError(t, err)
 
-	fileNames := make(map[string]bool)
+	postCleanup := make(map[string]bool)
 	for _, entry := range sessionTree.Entries {
-		fileNames[entry.Name] = true
+		postCleanup[entry.Name] = true
 	}
 
-	assert.True(t, fileNames[paths.V2RawTranscriptFileName], "raw_transcript should exist after update")
-	assert.True(t, fileNames[paths.V2RawTranscriptHashFileName], "raw_transcript_hash.txt should exist after update")
-	assert.False(t, fileNames[paths.TranscriptFileName], "full.jsonl should be cleaned up after update")
-	assert.False(t, fileNames[paths.TranscriptFileName+".001"], "full.jsonl.001 should be cleaned up after update")
-	assert.False(t, fileNames[paths.ContentHashFileName], "content_hash.txt should be cleaned up after update")
+	assert.True(t, postCleanup[paths.V2RawTranscriptFileName], "raw_transcript should exist after cleanup")
+	assert.True(t, postCleanup[paths.V2RawTranscriptHashFileName], "raw_transcript_hash.txt should exist after cleanup")
+	assert.False(t, postCleanup[paths.TranscriptFileName], "full.jsonl should be removed after cleanup")
+	assert.False(t, postCleanup[paths.TranscriptFileName+".001"], "full.jsonl.001 should be removed after cleanup")
+	assert.False(t, postCleanup[paths.ContentHashFileName], "content_hash.txt should be removed after cleanup")
 }
 
-// TestV2GitStore_UpdateCommittedFullTranscript_SameContentCleansUpV1Files verifies
-// that v1-named files are cleaned up even when the transcript content is identical
-// (hash matches), which would normally trigger the short-circuit that skips tree surgery.
-func TestV2GitStore_UpdateCommittedFullTranscript_SameContentCleansUpV1Files(t *testing.T) {
+// TestV2GitStore_CleanupV1TranscriptFiles_NoopWhenClean verifies that
+// CleanupV1TranscriptFiles is a no-op when no v1 files exist.
+func TestV2GitStore_CleanupV1TranscriptFiles_NoopWhenClean(t *testing.T) {
 	t.Parallel()
 	repo := initTestRepo(t)
 	store := NewV2GitStore(repo, "origin")
 	ctx := context.Background()
 
 	cpID := id.MustCheckpointID("962fcec4a874")
-	transcript := []byte(`{"type":"human","message":"same content"}` + "\n")
 
-	// Write initial checkpoint.
 	err := store.WriteCommitted(ctx, WriteCommittedOptions{
 		CheckpointID: cpID,
-		SessionID:    "test-session-same-content",
+		SessionID:    "test-session-noop",
 		Strategy:     "manual-commit",
-		Transcript:   redact.AlreadyRedacted(transcript),
+		Transcript:   redact.AlreadyRedacted([]byte(`{"type":"human","message":"clean"}` + "\n")),
 		Agent:        agent.AgentTypeClaudeCode,
 		AuthorName:   "Test",
 		AuthorEmail:  "test@test.com",
 	})
 	require.NoError(t, err)
 
-	// Inject v1-named files into /full/current.
-	refName := plumbing.ReferenceName(paths.V2FullCurrentRefName)
-	parentHash, rootTreeHash, err := store.GetRefState(refName)
+	// Get tree hash before cleanup.
+	_, treeBefore, err := store.GetRefState(plumbing.ReferenceName(paths.V2FullCurrentRefName))
 	require.NoError(t, err)
 
-	basePath := cpID.Path() + "/"
-	sessionPath := basePath + "0/"
-
-	entries, err := store.gs.flattenCheckpointEntries(rootTreeHash, cpID.Path())
+	// Cleanup should be a no-op (no v1 files to remove).
+	err = store.CleanupV1TranscriptFiles(ctx, cpID, 1)
 	require.NoError(t, err)
 
-	v1Blob, err := CreateBlobFromContent(repo, []byte(`{"type":"human","message":"v1 data"}`+"\n"))
+	// Tree hash should be unchanged (no commit created).
+	_, treeAfter, err := store.GetRefState(plumbing.ReferenceName(paths.V2FullCurrentRefName))
 	require.NoError(t, err)
-
-	entries[sessionPath+paths.TranscriptFileName] = object.TreeEntry{
-		Name: sessionPath + paths.TranscriptFileName,
-		Mode: filemode.Regular,
-		Hash: v1Blob,
-	}
-
-	newTreeHash, err := store.gs.spliceCheckpointSubtree(ctx, rootTreeHash, cpID, basePath, entries)
-	require.NoError(t, err)
-	err = store.updateRef(ctx, refName, newTreeHash, parentHash, "Inject v1 file", "Test", "test@test.com")
-	require.NoError(t, err)
-
-	// Call UpdateCommitted with the SAME transcript content (hash will match raw_transcript_hash.txt).
-	// Without the !hasLegacyV1Files guard, the short-circuit would return early and leave full.jsonl.
-	err = store.UpdateCommitted(ctx, UpdateCommittedOptions{
-		CheckpointID: cpID,
-		SessionID:    "test-session-same-content",
-		Transcript:   redact.AlreadyRedacted(transcript),
-		Agent:        agent.AgentTypeClaudeCode,
-	})
-	require.NoError(t, err)
-
-	// Verify v1 file is gone despite identical content.
-	tree := v2FullTree(t, repo)
-	sessionTree, err := tree.Tree(cpID.Path() + "/0")
-	require.NoError(t, err)
-
-	fileNames := make(map[string]bool)
-	for _, entry := range sessionTree.Entries {
-		fileNames[entry.Name] = true
-	}
-
-	assert.True(t, fileNames[paths.V2RawTranscriptFileName], "raw_transcript should exist")
-	assert.False(t, fileNames[paths.TranscriptFileName], "full.jsonl should be cleaned up even with identical content")
+	assert.Equal(t, treeBefore, treeAfter, "tree should be unchanged when no v1 files exist")
 }

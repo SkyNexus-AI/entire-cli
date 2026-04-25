@@ -220,23 +220,6 @@ func (s *V2GitStore) updateCommittedFullTranscript(ctx context.Context, opts Upd
 	// same content — preserve them and skip chunking + zlib.
 	rawTranscriptPath := sessionPath + paths.V2RawTranscriptFileName
 	rawHashPath := sessionPath + paths.V2RawTranscriptHashFileName
-	v1TranscriptPath := sessionPath + paths.TranscriptFileName
-	v1HashPath := sessionPath + paths.ContentHashFileName
-
-	// Detect legacy v1 files so the content-hash short-circuit below doesn't
-	// skip cleanup when the transcript content is unchanged.
-	_, hasV1Transcript := entries[v1TranscriptPath]
-	_, hasV1Hash := entries[v1HashPath]
-	hasLegacyV1Files := hasV1Transcript || hasV1Hash
-	if !hasLegacyV1Files {
-		for key := range entries {
-			if strings.HasPrefix(key, v1TranscriptPath+".") {
-				hasLegacyV1Files = true
-				break
-			}
-		}
-	}
-
 	var newContentHash string
 	if precomputed != nil {
 		newContentHash = precomputed.ContentHash
@@ -248,7 +231,7 @@ func (s *V2GitStore) updateCommittedFullTranscript(ctx context.Context, opts Upd
 			if rdr, rerr := blob.Reader(); rerr == nil {
 				existingHash, readErr := io.ReadAll(rdr)
 				_ = rdr.Close()
-				if readErr == nil && string(existingHash) == newContentHash && !hasLegacyV1Files {
+				if readErr == nil && string(existingHash) == newContentHash {
 					// Content unchanged — skip tree surgery and ref advance to
 					// avoid a no-op commit on /full/current. The existing ref
 					// already references the correct tree.
@@ -260,8 +243,6 @@ func (s *V2GitStore) updateCommittedFullTranscript(ctx context.Context, opts Upd
 
 	// Clear existing transcript artifacts for this session path before writing new ones.
 	// Preserve non-transcript metadata under the same session (e.g., tasks/*).
-	// Also clean up v1-named files (full.jsonl, content_hash.txt) that may have been
-	// written by older CLI versions to /full/current before the v2 rename to raw_transcript.
 	for key := range entries {
 		switch {
 		case key == rawTranscriptPath:
@@ -269,12 +250,6 @@ func (s *V2GitStore) updateCommittedFullTranscript(ctx context.Context, opts Upd
 		case strings.HasPrefix(key, rawTranscriptPath+"."):
 			delete(entries, key)
 		case key == rawHashPath:
-			delete(entries, key)
-		case key == v1TranscriptPath:
-			delete(entries, key)
-		case strings.HasPrefix(key, v1TranscriptPath+"."):
-			delete(entries, key)
-		case key == v1HashPath:
 			delete(entries, key)
 		}
 	}
@@ -752,4 +727,55 @@ func (s *V2GitStore) UpdateSummary(ctx context.Context, checkpointID id.Checkpoi
 	authorName, authorEmail := GetGitAuthorFromRepo(s.repo)
 	commitMsg := fmt.Sprintf("Update summary for checkpoint %s (session: %s)", checkpointID, metadata.SessionID)
 	return s.updateRef(ctx, refName, newTreeHash, parentHash, commitMsg, authorName, authorEmail)
+}
+
+// CleanupV1TranscriptFiles removes legacy v1-named transcript files (full.jsonl,
+// full.jsonl.*, content_hash.txt) from /full/current for a given checkpoint.
+// Older CLI versions wrote these before the rename to raw_transcript.
+// Returns nil if /full/current doesn't exist or no v1 files were found.
+func (s *V2GitStore) CleanupV1TranscriptFiles(ctx context.Context, checkpointID id.CheckpointID, sessionCount int) error {
+	refName := plumbing.ReferenceName(paths.V2FullCurrentRefName)
+	parentHash, rootTreeHash, err := s.GetRefState(refName)
+	if err != nil {
+		return nil //nolint:nilerr // /full/current doesn't exist yet — nothing to clean
+	}
+
+	checkpointPath := checkpointID.Path()
+	basePath := checkpointPath + "/"
+
+	entries, err := s.gs.flattenCheckpointEntries(rootTreeHash, checkpointPath)
+	if err != nil {
+		return nil //nolint:nilerr // Checkpoint not in tree — nothing to clean
+	}
+
+	changed := false
+	for sessionIdx := range sessionCount {
+		sessionPath := fmt.Sprintf("%s%d/", basePath, sessionIdx)
+		v1TranscriptPath := sessionPath + paths.TranscriptFileName
+		v1HashPath := sessionPath + paths.ContentHashFileName
+
+		for key := range entries {
+			switch {
+			case key == v1TranscriptPath,
+				strings.HasPrefix(key, v1TranscriptPath+"."),
+				key == v1HashPath:
+				delete(entries, key)
+				changed = true
+			}
+		}
+	}
+
+	if !changed {
+		return nil
+	}
+
+	newTreeHash, err := s.gs.spliceCheckpointSubtree(ctx, rootTreeHash, checkpointID, basePath, entries)
+	if err != nil {
+		return fmt.Errorf("tree surgery failed: %w", err)
+	}
+
+	authorName, authorEmail := GetGitAuthorFromRepo(s.repo)
+	return s.updateRef(ctx, refName, newTreeHash, parentHash,
+		fmt.Sprintf("Clean up v1 transcript files for %s\n", checkpointID),
+		authorName, authorEmail)
 }
