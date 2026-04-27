@@ -250,7 +250,7 @@ func (m searchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint:ireturn
 
 func (m searchModel) updateSearchMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) { //nolint:ireturn // bubbletea pattern
 	switch msg.String() {
-	case "esc":
+	case tuiEscKey:
 		m.mode = modeBrowse
 		m.input.Blur()
 		m = m.refreshBrowseContent()
@@ -292,7 +292,7 @@ func (m searchModel) updateSearchMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) { //n
 func (m searchModel) updateBrowseMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) { //nolint:ireturn // bubbletea pattern
 	pageLen := len(m.pageResults())
 	switch msg.String() {
-	case "q", "ctrl+c":
+	case "q", "ctrl+c", tuiEscKey, "h":
 		return m, tea.Quit
 	case "up", "k":
 		if m.cursor > 0 {
@@ -304,6 +304,21 @@ func (m searchModel) updateBrowseMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) { //n
 			m.cursor++
 			m = m.refreshBrowseContent()
 		}
+	case "home", "g":
+		m.page = 0
+		m.cursor = 0
+		m = m.refreshBrowseContent()
+		m.browseVP.GotoTop()
+	case "end", "G":
+		if len(m.results) > 0 {
+			lastLoaded := len(m.results) - 1
+			m.page = min(lastLoaded/resultsPerPage, m.totalPages()-1)
+			if pageLen := len(m.pageResults()); pageLen > 0 {
+				m.cursor = pageLen - 1
+			}
+			m = m.refreshBrowseContent()
+		}
+		m.browseVP.GotoBottom()
 	case "n", "right":
 		if m.page < m.totalPages()-1 {
 			m.page++
@@ -348,7 +363,7 @@ func (m searchModel) updateBrowseMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) { //n
 
 func (m searchModel) updateDetailMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) { //nolint:ireturn // bubbletea pattern
 	switch msg.String() {
-	case "esc", "backspace":
+	case tuiEscKey, "backspace":
 		m.mode = modeBrowse
 		return m, nil
 	case "q", "ctrl+c":
@@ -680,7 +695,7 @@ func (m searchModel) viewDetailFull() string {
 	scrollPct := m.styles.render(m.styles.dim, fmt.Sprintf("%3.f%%", m.detailVP.ScrollPercent()*100))
 	help := m.styles.render(m.styles.helpKey, "j/k") + " scroll" +
 		m.styles.render(m.styles.helpSep, " · ") +
-		m.styles.render(m.styles.helpKey, "esc") + " back" +
+		m.styles.render(m.styles.helpKey, tuiEscKey) + " back" +
 		m.styles.render(m.styles.helpSep, " · ") +
 		m.styles.render(m.styles.helpKey, "q") + " quit"
 
@@ -698,14 +713,14 @@ func (m searchModel) viewHelp() string {
 
 	if m.mode == modeSearch {
 		return m.styles.render(m.styles.helpKey, "enter") + " search" + dot +
-			m.styles.render(m.styles.helpKey, "esc") + " cancel" + "\n"
+			m.styles.render(m.styles.helpKey, tuiEscKey) + " cancel" + "\n"
 	}
 
 	pages := m.totalPages()
 
 	left := m.styles.render(m.styles.helpKey, "/") + " search" + dot +
-		m.styles.render(m.styles.helpKey, "j/k") + " navigate" + dot +
-		m.styles.render(m.styles.helpKey, "enter") + " detail"
+		m.styles.render(m.styles.helpKey, "↑/↓, j/k") + " scroll" + dot +
+		m.styles.render(m.styles.helpKey, "home/end, g/G") + " top/bottom"
 	if pages > 1 {
 		left += dot + m.styles.render(m.styles.helpKey, "n/p") + " page"
 	}
