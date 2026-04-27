@@ -141,6 +141,14 @@ type Reviewer struct {
 	Status ReviewerStatus `json:"status"`
 }
 
+// Author identifies the user who created a trail.
+// Nullable on the wire: the API returns null when the original author can no
+// longer be resolved (e.g. the GitHub user no longer exists).
+type Author struct {
+	ID    int64  `json:"id"`
+	Login string `json:"login"`
+}
+
 // Metadata represents the metadata for a trail, matching the web PR format.
 type Metadata struct {
 	TrailID   ID         `json:"trail_id"`
@@ -149,7 +157,7 @@ type Metadata struct {
 	Title     string     `json:"title"`
 	Body      string     `json:"body"`
 	Status    Status     `json:"status"`
-	Author    string     `json:"author"`
+	Author    *Author    `json:"author"`
 	Assignees []string   `json:"assignees"`
 	Labels    []string   `json:"labels"`
 	CreatedAt time.Time  `json:"created_at"`
@@ -158,6 +166,15 @@ type Metadata struct {
 	Priority  Priority   `json:"priority,omitempty"`
 	Type      Type       `json:"type,omitempty"`
 	Reviewers []Reviewer `json:"reviewers,omitempty"`
+}
+
+// AuthorLogin returns the trail author's login, or an empty string if the
+// author is unknown (nil — user no longer exists).
+func (m *Metadata) AuthorLogin() string {
+	if m == nil || m.Author == nil {
+		return ""
+	}
+	return m.Author.Login
 }
 
 // Discussion holds the discussion/comments for a trail.
