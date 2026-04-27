@@ -95,7 +95,7 @@ func defaultListTokens(ctx context.Context, token string) ([]api.Token, error) {
 	return api.NewClient(token).ListTokens(ctx) //nolint:wrapcheck // ListTokens already wraps with action context
 }
 
-func runAuthStatus(ctx context.Context, w io.Writer, store logoutTokenStore, list authTokenLister, baseURL string) error {
+func runAuthStatus(ctx context.Context, w io.Writer, store tokenStore, list authTokenLister, baseURL string) error {
 	token, err := store.GetToken(baseURL)
 	if err != nil {
 		return fmt.Errorf("read keychain: %w", err)
@@ -143,7 +143,7 @@ func newAuthListCmd() *cobra.Command {
 	return cmd
 }
 
-func runAuthList(ctx context.Context, w io.Writer, store logoutTokenStore, list authTokenLister, baseURL string, jsonOut bool) error {
+func runAuthList(ctx context.Context, w io.Writer, store tokenStore, list authTokenLister, baseURL string, jsonOut bool) error {
 	token, err := store.GetToken(baseURL)
 	if err != nil {
 		return fmt.Errorf("read keychain: %w", err)
@@ -171,14 +171,19 @@ func runAuthList(ctx context.Context, w io.Writer, store logoutTokenStore, list 
 		return nil
 	}
 
-	// Stable order: most recently used first, then created.
+	// Deterministic order: most recently used first, then most recently
+	// created, then by id as a final tie-breaker so the output is fully
+	// specified regardless of the server's response order.
 	sort.Slice(tokens, func(i, j int) bool {
 		li := lastUsedSortKey(tokens[i])
 		lj := lastUsedSortKey(tokens[j])
 		if li != lj {
 			return li > lj
 		}
-		return tokens[i].CreatedAt > tokens[j].CreatedAt
+		if tokens[i].CreatedAt != tokens[j].CreatedAt {
+			return tokens[i].CreatedAt > tokens[j].CreatedAt
+		}
+		return tokens[i].ID < tokens[j].ID
 	})
 
 	sty := newAuthListStyles(w)
@@ -419,10 +424,10 @@ func defaultRevokeTokenByID(ctx context.Context, callerToken, id string) error {
 func runAuthRevoke(
 	ctx context.Context,
 	outW, errW io.Writer,
-	store logoutTokenStore,
+	store tokenStore,
 	list authTokenLister,
 	revokeByID authTokenRevoker,
-	revokeCurrent logoutRevokeFunc,
+	revokeCurrent revokeCurrentFunc,
 	baseURL, id string,
 	current bool,
 ) error {

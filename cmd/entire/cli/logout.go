@@ -11,16 +11,17 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// logoutTokenStore abstracts keyring access so runLogout can be unit-tested
-// without hitting the real OS keyring.
-type logoutTokenStore interface {
+// tokenStore abstracts keyring access so commands that read or delete the
+// stored bearer token can be unit-tested without hitting the real OS keyring.
+// Used by logout and the auth subcommands.
+type tokenStore interface {
 	GetToken(baseURL string) (string, error)
 	DeleteToken(baseURL string) error
 }
 
-// logoutRevokeFunc revokes the supplied token server-side. It mirrors the
+// revokeCurrentFunc revokes the supplied token server-side. Mirrors the
 // openURL injection pattern in login.go so tests can replace the real HTTP call.
-type logoutRevokeFunc func(ctx context.Context, token string) error
+type revokeCurrentFunc func(ctx context.Context, token string) error
 
 func newLogoutCmd() *cobra.Command {
 	var insecureHTTPAuth bool
@@ -43,7 +44,7 @@ func defaultRevokeCurrentToken(ctx context.Context, token string) error {
 	return api.NewClient(token).RevokeCurrentToken(ctx) //nolint:wrapcheck // RevokeCurrentToken already wraps with action context
 }
 
-func runLogout(ctx context.Context, outW, errW io.Writer, store logoutTokenStore, revoke logoutRevokeFunc, baseURL string) error {
+func runLogout(ctx context.Context, outW, errW io.Writer, store tokenStore, revoke revokeCurrentFunc, baseURL string) error {
 	token, err := store.GetToken(baseURL)
 	if err != nil {
 		// Fall through to the local delete: we still want the keyring entry
