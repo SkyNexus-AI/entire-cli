@@ -1870,7 +1870,7 @@ func SignCommitBestEffort(ctx context.Context, commit *object.Commit) {
 	commit.Signature = string(sig)
 }
 
-func loadObjectSigner(ctx context.Context) (plugin.Signer, bool) {
+func loadObjectSigner(ctx context.Context) (plugin.Signer, bool) { //nolint:ireturn // go-git object signing uses the plugin.Signer interface
 	cfgSource, err := plugin.Get(plugin.ConfigLoader())
 	if err != nil {
 		// No config loader registered; signing not possible.
@@ -1909,7 +1909,7 @@ func loadObjectSigner(ctx context.Context) (plugin.Signer, bool) {
 
 // connectSSHAgent connects to the SSH agent via SSH_AUTH_SOCK.
 // Returns nil if the agent is unavailable.
-func connectSSHAgent(ctx context.Context) sshagent.Agent {
+func connectSSHAgent(ctx context.Context) sshagent.Agent { //nolint:ireturn // auto signer requires the ssh agent interface
 	sock := os.Getenv("SSH_AUTH_SOCK")
 	if sock == "" {
 		return nil
