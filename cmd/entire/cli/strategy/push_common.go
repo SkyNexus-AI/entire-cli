@@ -64,10 +64,14 @@ func hasUnpushedSessionsCommon(repo *git.Repository, remoteName string, localHas
 	return localHash != remoteRef.Hash()
 }
 
-// checkpointRemoteDisplayName is the user-facing label we show instead of a
-// raw URL when pushing/fetching a configured checkpoint remote. Hiding the URL
-// prevents tokens or private repo paths from leaking into stderr.
-const checkpointRemoteDisplayName = "checkpoint remote"
+const (
+	// checkpointRemoteDisplayName avoids echoing checkpoint URLs or tokens to stderr.
+	checkpointRemoteDisplayName   = "checkpoint remote"
+	protectedV1ActionLine         = "allow pushes to `entire/*` in your ruleset, or set"
+	protectedV1ActionContinuation = "`checkpoint_remote` in .entire/settings.json to a separate repo."
+	protectedV2ActionLine         = "set `checkpoint_remote` in .entire/settings.json to a separate repo,"
+	protectedV2ActionContinuation = "or adjust the repository push rule blocking checkpoint refs."
+)
 
 // doPushBranch pushes the given branch to the target with fetch+merge recovery.
 // The target can be a remote name or a URL.
@@ -88,13 +92,10 @@ func doPushBranch(ctx context.Context, target, branchName string) error {
 	}
 	stop("")
 
-	// Protected-ref rejections cannot be resolved by fetch+rebase — the remote
-	// is refusing the ref itself, not rejecting history. Bail out with a loud
-	// block instead of entering the sync retry loop, which would just fail
-	// again with the same confusing "non-fast-forward" wording.
+	// Protected refs cannot be fixed by syncing and retrying.
 	var protectedErr *protectedRefError
 	if errors.As(err, &protectedErr) {
-		printProtectedRefBlock(os.Stderr, branchName, target)
+		printProtectedRefBlock(os.Stderr, branchName, target, protectedV1ActionLine, protectedV1ActionContinuation)
 		return nil
 	}
 
@@ -289,11 +290,7 @@ func tryPushSessionsCommon(ctx context.Context, remoteName, branchName string) (
 	return parsePushResult(outputStr), nil
 }
 
-// protectedRefError indicates the remote refused the push because of branch
-// protection or a repository ruleset (e.g. GitHub's GH013). Unlike a plain
-// non-fast-forward rejection, this cannot be resolved by fetch+rebase — the
-// remote is blocking the ref itself, so the caller should skip the sync retry
-// and surface a loud, actionable message instead.
+// protectedRefError means the remote is blocking writes to the ref itself.
 type protectedRefError struct {
 	output string
 }
@@ -302,22 +299,14 @@ func (e *protectedRefError) Error() string {
 	return "remote rejected push to protected ref"
 }
 
-// isProtectedRefRejection reports whether push stderr carries a marker for a
-// GitHub branch-protection or ruleset rejection. The three patterns cover the
-// current ruleset error code ("GH013"), its human-readable tail
-// ("Cannot update this protected ref"), and the legacy branch-protection
-// rejection ("protected branch hook declined") so we catch both old and new
-// GitHub configurations, plus self-hosted forges that reuse the same wording.
+// isProtectedRefRejection detects GitHub ruleset and branch-protection failures.
 func isProtectedRefRejection(output string) bool {
 	return strings.Contains(output, "GH013") ||
 		strings.Contains(output, "Cannot update this protected ref") ||
 		strings.Contains(output, "protected branch hook declined")
 }
 
-// classifyPushOutput maps failing push stderr to a typed error. The
-// protected-ref check runs before the broad "rejected" matcher because GH013
-// output also contains "rejected" — without this ordering, a protected-ref
-// push would be swallowed as non-fast-forward and trigger a pointless rebase.
+// classifyPushOutput maps failing push stderr to a typed error.
 func classifyPushOutput(output string) error {
 	if isProtectedRefRejection(output) {
 		return &protectedRefError{output: output}
@@ -329,11 +318,8 @@ func classifyPushOutput(output string) error {
 	return fmt.Errorf("push failed: %s", output)
 }
 
-// printProtectedRefBlock prints a loud, bracketed multi-line stderr block
-// explaining that the remote refused the push because the ref is protected.
-// URL targets are obfuscated to "checkpoint remote" so users don't see raw
-// tokens or repo URLs echoed back during routine pre-push runs.
-func printProtectedRefBlock(w io.Writer, ref, target string) {
+// printProtectedRefBlock explains that checkpoint syncing was blocked remotely.
+func printProtectedRefBlock(w io.Writer, ref, target, actionLine, actionContinuation string) {
 	const banner = "[entire] ============================================================"
 	displayTarget := target
 	if remote.IsURL(target) {
@@ -341,11 +327,11 @@ func printProtectedRefBlock(w io.Writer, ref, target string) {
 	}
 	fmt.Fprintln(w, banner)
 	fmt.Fprintf(w, "[entire] BLOCKED: remote rejected push to %s\n", ref)
-	fmt.Fprintln(w, "[entire] Reason:  GitHub branch protection or repository ruleset (GH013)")
+	fmt.Fprintln(w, "[entire] Reason:  GitHub branch protection or repository ruleset (e.g. GH013)")
 	fmt.Fprintf(w, "[entire] Target:  %s\n", displayTarget)
 	fmt.Fprintln(w, "[entire] Impact:  checkpoints are saved locally but NOT synced to this remote.")
-	fmt.Fprintln(w, "[entire] Action:  allow pushes to `entire/*` in your ruleset, or set")
-	fmt.Fprintln(w, "[entire]          `checkpoint_remote` in .entire/settings.json to a separate repo.")
+	fmt.Fprintf(w, "[entire] Action:  %s\n", actionLine)
+	fmt.Fprintf(w, "[entire]          %s\n", actionContinuation)
 	fmt.Fprintln(w, banner)
 }
 

@@ -1524,10 +1524,10 @@ func TestPrintProtectedRefBlock(t *testing.T) {
 	t.Run("remote-name target", func(t *testing.T) {
 		t.Parallel()
 		var buf bytes.Buffer
-		printProtectedRefBlock(&buf, "entire/checkpoints/v1", "origin")
+		printProtectedRefBlock(&buf, "entire/checkpoints/v1", "origin", protectedV1ActionLine, protectedV1ActionContinuation)
 
 		out := buf.String()
-		for _, want := range []string{"BLOCKED", "entire/checkpoints/v1", "GH013", "checkpoints are saved locally", "checkpoint_remote"} {
+		for _, want := range []string{"BLOCKED", "entire/checkpoints/v1", "e.g. GH013", "entire/*", "checkpoints are saved locally", "checkpoint_remote"} {
 			assert.Contains(t, out, want)
 		}
 		banner := strings.Repeat("=", 20)
@@ -1537,10 +1537,20 @@ func TestPrintProtectedRefBlock(t *testing.T) {
 	t.Run("URL target is masked", func(t *testing.T) {
 		t.Parallel()
 		var buf bytes.Buffer
-		printProtectedRefBlock(&buf, "entire/checkpoints/v1", "git@github.com:org/repo.git")
+		printProtectedRefBlock(&buf, "entire/checkpoints/v1", "git@github.com:org/repo.git", protectedV1ActionLine, protectedV1ActionContinuation)
 
 		out := buf.String()
 		assert.Contains(t, out, "checkpoint remote")
 		assert.NotContains(t, out, "git@github.com:org/repo.git")
+	})
+
+	t.Run("v2 ref action avoids branch protection pattern", func(t *testing.T) {
+		t.Parallel()
+		var buf bytes.Buffer
+		printProtectedRefBlock(&buf, "v2/main", "origin", protectedV2ActionLine, protectedV2ActionContinuation)
+
+		out := buf.String()
+		assert.Contains(t, out, "repository push rule")
+		assert.NotContains(t, out, "allow pushes to `entire/*`")
 	})
 }

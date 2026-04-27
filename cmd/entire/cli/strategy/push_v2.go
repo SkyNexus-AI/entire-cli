@@ -74,11 +74,10 @@ func doPushRef(ctx context.Context, target string, refName plumbing.ReferenceNam
 	}
 	stop("")
 
-	// Skip the fetch+merge retry for protected-ref rejections — the remote is
-	// refusing the ref itself, not rejecting history.
+	// Protected refs cannot be fixed by syncing and retrying.
 	var protectedErr *protectedRefError
 	if errors.As(err, &protectedErr) {
-		printProtectedRefBlock(os.Stderr, shortRef, target)
+		printProtectedRefBlock(os.Stderr, shortRef, target, protectedV2ActionLine, protectedV2ActionContinuation)
 		return nil
 	}
 
