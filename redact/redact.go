@@ -19,6 +19,11 @@ import (
 // Base64 and JWT tokens are still caught via high-entropy segments between slashes.
 var secretPattern = regexp.MustCompile(`[A-Za-z0-9+_=-]{10,}`)
 
+// credentialedURIPattern matches URLs that embed userinfo with a password, such
+// as postgres://user:pass@host/db or redis://:pass@host/0. These often have
+// moderate entropy and are not reliably covered by vendor-specific scanners.
+var credentialedURIPattern = regexp.MustCompile(`(?i)\b[a-z][a-z0-9+.-]{1,31}://[^\s/?#@"'` + "`" + `<>:]*:[^\s/?#@"'` + "`" + `<>]+@[^\s"'` + "`" + `<>]+`)
+
 // entropyThreshold is the minimum Shannon entropy for a string to be considered
 // a secret. 4.5 was chosen through trial and error: high enough to avoid false
 // positives on common words and identifiers, low enough to catch typical API keys
@@ -86,7 +91,8 @@ type taggedRegion struct {
 // String replaces secrets and PII in s using layered detection:
 // 1. Entropy-based: high-entropy alphanumeric sequences (threshold 4.5)
 // 2. Pattern-based: betterleaks regex rules (260+ known secret formats)
-// 3. PII detection: email, phone, address patterns (only when configured via ConfigurePII)
+// 3. Credentialed URIs: URLs containing userinfo passwords
+// 4. PII detection: email, phone, address patterns (only when configured via ConfigurePII)
 // A string is redacted if ANY method flags it.
 func String(s string) string {
 	var regions []taggedRegion
@@ -135,7 +141,12 @@ func String(s string) string {
 		}
 	}
 
-	// 3. PII detection (opt-in — only runs when configured).
+	// 3. Credentialed URIs (secrets — always on).
+	for _, loc := range credentialedURIPattern.FindAllStringIndex(s, -1) {
+		regions = append(regions, taggedRegion{region: region{loc[0], loc[1]}})
+	}
+
+	// 4. PII detection (opt-in — only runs when configured).
 	regions = append(regions, detectPII(getPIIConfig(), s)...)
 
 	if len(regions) == 0 {
