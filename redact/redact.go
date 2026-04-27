@@ -265,31 +265,18 @@ func trimConnectionStringEnd(s string, start, end int) int {
 }
 
 func hasJDBCPassword(candidate string) bool {
-	withoutPrefix, ok := strings.CutPrefix(strings.ToLower(candidate), "jdbc:")
-	if !ok {
+	if !strings.HasPrefix(strings.ToLower(candidate), "jdbc:") {
 		return false
 	}
-	return hasURIUserPassword(withoutPrefix) || hasNonPlaceholderPasswordAssignment(candidate)
+	return hasNonPlaceholderPasswordAssignment(candidate)
 }
 
 func hasDatabaseURLSecret(candidate string) bool {
-	if hasURIUserPassword(candidate) {
-		return true
-	}
 	u, err := url.Parse(candidate)
 	if err != nil || u.Scheme == "" || u.Host == "" {
 		return false
 	}
 	return hasNonPlaceholderPasswordValue(u.Query().Get("password"))
-}
-
-func hasURIUserPassword(candidate string) bool {
-	u, err := url.Parse(candidate)
-	if err != nil || u.Scheme == "" || u.Host == "" || u.User == nil {
-		return false
-	}
-	password, ok := u.User.Password()
-	return ok && password != "" && !isPlaceholderSecretValue(password)
 }
 
 func hasKeywordDSNPassword(candidate string) bool {

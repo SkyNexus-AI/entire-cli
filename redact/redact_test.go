@@ -430,6 +430,50 @@ func TestString_DatabaseConnectionStringRedaction(t *testing.T) {
 	})
 }
 
+func TestDatabaseConnectionStringRuleScope(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		candidate string
+		hasSecret func(string) bool
+		want      bool
+	}{
+		{
+			name:      "database URL query password is in scope",
+			candidate: "postgresql://db.example.com:5432/app?user=svc&password=secret&sslmode=require",
+			hasSecret: hasDatabaseURLSecret,
+			want:      true,
+		},
+		{
+			name:      "database URL userinfo password is handled by credentialed URI detection",
+			candidate: "postgresql://svc:secret@db.example.com:5432/app",
+			hasSecret: hasDatabaseURLSecret,
+			want:      false,
+		},
+		{
+			name:      "JDBC query password is in scope",
+			candidate: "jdbc:postgresql://db.example.com:5432/app?user=svc&password=secret",
+			hasSecret: hasJDBCPassword,
+			want:      true,
+		},
+		{
+			name:      "JDBC userinfo password is handled by credentialed URI detection",
+			candidate: "jdbc:postgresql://svc:secret@db.example.com:5432/app",
+			hasSecret: hasJDBCPassword,
+			want:      false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := tt.hasSecret(tt.candidate)
+			if got != tt.want {
+				t.Errorf("hasSecret(%q) = %v, want %v", tt.candidate, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestString_BoundedCredentialValueRedaction(t *testing.T) {
 	t.Parallel()
 	assertStringRedactionCases(t, []stringRedactionCase{

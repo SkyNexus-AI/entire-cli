@@ -38,7 +38,7 @@ If your AI sessions will touch sensitive data:
 
 ### Secrets (always on)
 
-Betterleaks pattern matching covers cloud providers (AWS, GCP, Azure), version control platforms (GitHub, GitLab, Bitbucket), payment processors (Stripe, Square), communication tools (Slack, Discord, Twilio), private key blocks (RSA, DSA, EC, PGP), and generic credentials (bearer tokens, basic auth, JWTs). Dedicated credentialed URI and database connection-string detection covers database credentials and other URLs that embed passwords. Entropy scoring catches secrets that don't match any known pattern.
+Betterleaks pattern matching covers cloud providers (AWS, GCP, Azure), version control platforms (GitHub, GitLab, Bitbucket), payment processors (Stripe, Square), communication tools (Slack, Discord, Twilio), private key blocks (RSA, DSA, EC, PGP), and generic credentials (bearer tokens, basic auth, JWTs). Dedicated credentialed URI detection covers URLs that embed passwords. Additional database connection-string detection covers DB DSNs and query-parameter passwords not reliably covered by generic secret rules. Entropy scoring catches secrets that don't match any known pattern.
 
 All detected secrets are replaced with `REDACTED`.
 
