@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"net/url"
 	"regexp"
 	"sort"
 	"strings"
@@ -23,6 +24,22 @@ var secretPattern = regexp.MustCompile(`[A-Za-z0-9+_=-]{10,}`)
 // as postgres://user:pass@host/db or redis://:pass@host/0. These often have
 // moderate entropy and are not reliably covered by vendor-specific scanners.
 var credentialedURIPattern = regexp.MustCompile(`(?i)\b[a-z][a-z0-9+.-]{1,31}://[^\s/?#@"'` + "`" + `<>:]*:[^\s/?#@"'` + "`" + `<>]+@[^\s"'` + "`" + `<>]+`)
+
+var (
+	jdbcPattern            = regexp.MustCompile(`(?i)\bjdbc:[^\s"'<>` + "`" + `]+`)
+	databaseURLPattern     = regexp.MustCompile(`(?i)\b(?:postgres(?:ql)?|mysql|mariadb|mongodb(?:\+srv)?|redis)://[^\s"'<>` + "`" + `]+`)
+	keywordDSNPattern      = regexp.MustCompile(`(?i)\b[a-z_][a-z0-9_]*=(?:"[^"]*"|'[^']*'|[^\s"']+)(?:\s+[a-z_][a-z0-9_]*=(?:"[^"]*"|'[^']*'|[^\s"']+)){2,}`)
+	semicolonConnPattern   = regexp.MustCompile(`(?i)\b[a-z][a-z0-9 _-]*=(?:\{[^}]*\}|[^=;"'\s]+)(?:;[a-z][a-z0-9 _-]*=(?:\{[^}]*\}|[^=;"'\s]+)){2,}`)
+	credentialValuePattern = regexp.MustCompile(`(?i)\b((?:db|database|pg|postgres|postgresql|mysql|mariadb|redis|mongo|mongodb|sqlserver|mssql|jdbc)[_-]?(?:password|passwd|pwd)|pgpassword|mysql_pwd|redis_password|mongo_password|mongodb_password)\s*=\s*("[^"]*"|'[^']*'|[^\s,;&]+)`)
+
+	keywordHostPattern      = regexp.MustCompile(`(?i)(?:^|\s)host=`)
+	keywordUserPattern      = regexp.MustCompile(`(?i)(?:^|\s)user=`)
+	semicolonServerPattern  = regexp.MustCompile(`(?i)(?:^|;)\s*(?:server|data source|datasource|addr|address|network address)\s*=`)
+	semicolonUserPattern    = regexp.MustCompile(`(?i)(?:^|;)\s*(?:user id|userid|user|uid)\s*=`)
+	passwordAssignmentRegex = regexp.MustCompile(`(?i)(?:^|[?&;\s])(?:password|pwd)=("[^"]*"|'[^']*'|[^&;\s"']+)`)
+	credentialJSONKeyRegex  = regexp.MustCompile(`(?i)^(?:(?:db|database|pg|postgres|postgresql|mysql|mariadb|redis|mongo|mongodb|sqlserver|mssql|jdbc)[_-]?(?:password|passwd|pwd)|pgpassword|mysql_pwd|redis_password|mongo_password|mongodb_password)$`)
+	genericPasswordKeyRegex = regexp.MustCompile(`(?i)^(?:password|passwd|pwd)$`)
+)
 
 // entropyThreshold is the minimum Shannon entropy for a string to be considered
 // a secret. 4.5 was chosen through trial and error: high enough to avoid false
@@ -88,11 +105,31 @@ type taggedRegion struct {
 	label string
 }
 
+type jsonReplacement struct {
+	key      string
+	original string
+	redacted string
+}
+
+type connectionStringRule struct {
+	pattern   *regexp.Regexp
+	hasSecret func(string) bool
+}
+
+var connectionStringRules = []connectionStringRule{
+	{pattern: jdbcPattern, hasSecret: hasJDBCPassword},
+	{pattern: databaseURLPattern, hasSecret: hasDatabaseURLSecret},
+	{pattern: keywordDSNPattern, hasSecret: hasKeywordDSNPassword},
+	{pattern: semicolonConnPattern, hasSecret: hasSemicolonConnectionPassword},
+}
+
 // String replaces secrets and PII in s using layered detection:
 // 1. Entropy-based: high-entropy alphanumeric sequences (threshold 4.5)
 // 2. Pattern-based: betterleaks regex rules (260+ known secret formats)
 // 3. Credentialed URIs: URLs containing userinfo passwords
-// 4. PII detection: email, phone, address patterns (only when configured via ConfigurePII)
+// 4. Database connection strings: JDBC, keyword DSNs, and semicolon strings
+// 5. Bounded credential key/value pairs: DB_PASSWORD=...
+// 6. PII detection: email, phone, address patterns (only when configured via ConfigurePII)
 // A string is redacted if ANY method flags it.
 func String(s string) string {
 	var regions []taggedRegion
@@ -146,7 +183,13 @@ func String(s string) string {
 		regions = append(regions, taggedRegion{region: region{loc[0], loc[1]}})
 	}
 
-	// 4. PII detection (opt-in — only runs when configured).
+	// 4. Database and connection-string detection (secrets — always on).
+	regions = append(regions, detectConnectionStrings(s)...)
+
+	// 5. Bounded credential key/value detection (secrets — always on).
+	regions = append(regions, detectCredentialValues(s)...)
+
+	// 6. PII detection (opt-in — only runs when configured).
 	regions = append(regions, detectPII(getPIIConfig(), s)...)
 
 	if len(regions) == 0 {
@@ -185,6 +228,171 @@ func String(s string) string {
 	}
 	b.WriteString(s[prev:])
 	return b.String()
+}
+
+func detectConnectionStrings(s string) []taggedRegion {
+	var regions []taggedRegion
+	for _, rule := range connectionStringRules {
+		regions = append(regions, detectConnectionStringRule(s, rule)...)
+	}
+	return regions
+}
+
+func detectConnectionStringRule(s string, rule connectionStringRule) []taggedRegion {
+	var regions []taggedRegion
+	for _, loc := range rule.pattern.FindAllStringIndex(s, -1) {
+		start, end := loc[0], trimConnectionStringEnd(s, loc[0], loc[1])
+		if start >= end {
+			continue
+		}
+		if rule.hasSecret(s[start:end]) {
+			regions = append(regions, taggedRegion{region: region{start, end}})
+		}
+	}
+	return regions
+}
+
+func trimConnectionStringEnd(s string, start, end int) int {
+	for end > start {
+		switch s[end-1] {
+		case '.', ',', ';', ':', '!', '?', ')', ']':
+			end--
+		default:
+			return end
+		}
+	}
+	return end
+}
+
+func hasJDBCPassword(candidate string) bool {
+	withoutPrefix, ok := strings.CutPrefix(strings.ToLower(candidate), "jdbc:")
+	if !ok {
+		return false
+	}
+	return hasURIUserPassword(withoutPrefix) || hasNonPlaceholderPasswordAssignment(candidate)
+}
+
+func hasDatabaseURLSecret(candidate string) bool {
+	if hasURIUserPassword(candidate) {
+		return true
+	}
+	u, err := url.Parse(candidate)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return false
+	}
+	return hasNonPlaceholderPasswordValue(u.Query().Get("password"))
+}
+
+func hasURIUserPassword(candidate string) bool {
+	u, err := url.Parse(candidate)
+	if err != nil || u.Scheme == "" || u.Host == "" || u.User == nil {
+		return false
+	}
+	password, ok := u.User.Password()
+	return ok && password != "" && !isPlaceholderSecretValue(password)
+}
+
+func hasKeywordDSNPassword(candidate string) bool {
+	return keywordHostPattern.MatchString(candidate) &&
+		keywordUserPattern.MatchString(candidate) &&
+		hasNonPlaceholderPasswordAssignment(candidate)
+}
+
+func hasSemicolonConnectionPassword(candidate string) bool {
+	return semicolonServerPattern.MatchString(candidate) &&
+		semicolonUserPattern.MatchString(candidate) &&
+		hasNonPlaceholderPasswordAssignment(candidate)
+}
+
+func detectCredentialValues(s string) []taggedRegion {
+	var regions []taggedRegion
+	for _, loc := range credentialValuePattern.FindAllStringSubmatchIndex(s, -1) {
+		if len(loc) < 6 || loc[4] < 0 || loc[5] < 0 {
+			continue
+		}
+		start, end := unquoteRange(s, loc[4], loc[5])
+		if hasNonPlaceholderPasswordValue(s[start:end]) {
+			regions = append(regions, taggedRegion{region: region{start, end}})
+		}
+	}
+	return regions
+}
+
+func unquoteRange(s string, start, end int) (int, int) {
+	if end-start < 2 {
+		return start, end
+	}
+	first, last := s[start], s[end-1]
+	if (first == '"' && last == '"') || (first == '\'' && last == '\'') {
+		return start + 1, end - 1
+	}
+	return start, end
+}
+
+func hasNonPlaceholderPasswordAssignment(candidate string) bool {
+	for _, loc := range passwordAssignmentRegex.FindAllStringSubmatchIndex(candidate, -1) {
+		if len(loc) >= 4 && loc[2] >= 0 && loc[3] >= 0 {
+			start, end := unquoteRange(candidate, loc[2], loc[3])
+			if hasNonPlaceholderPasswordValue(candidate[start:end]) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func hasNonPlaceholderPasswordValue(value string) bool {
+	return value != "" && !isPlaceholderSecretValue(value)
+}
+
+func isPlaceholderSecretValue(value string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	normalized = strings.Trim(normalized, `"'`)
+	if normalized == "" {
+		return true
+	}
+	if strings.HasPrefix(normalized, "${") && strings.HasSuffix(normalized, "}") {
+		return true
+	}
+	switch normalized {
+	case "redacted", "[redacted]", "<redacted>", "xxx", "xxxx", "changeme", "example":
+		return true
+	default:
+		return false
+	}
+}
+
+func isCredentialJSONSecretKey(key string, credentialContext bool) bool {
+	normalized := normalizeCredentialJSONKey(key)
+	if credentialJSONKeyRegex.MatchString(normalized) {
+		return true
+	}
+	return credentialContext && genericPasswordKeyRegex.MatchString(normalized)
+}
+
+func isCredentialJSONObject(obj map[string]any) bool {
+	hasHost := hasJSONKey(obj, "host", "hostname", "server", "addr", "address", "datasource", "data_source")
+	hasUser := hasJSONKey(obj, "user", "username", "userid", "user_id", "uid")
+	return hasHost && hasUser
+}
+
+func hasJSONKey(obj map[string]any, keys ...string) bool {
+	for key := range obj {
+		normalized := normalizeCredentialJSONKey(key)
+		for _, want := range keys {
+			if normalized == want {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func normalizeCredentialJSONKey(key string) string {
+	key = strings.ToLower(strings.TrimSpace(key))
+	key = strings.ReplaceAll(key, "-", "_")
+	key = strings.ReplaceAll(key, " ", "_")
+	return key
 }
 
 // Bytes is a convenience wrapper around String for []byte content.
@@ -268,20 +476,35 @@ func JSONLContent(content string) (string, error) {
 // applyJSONReplacements applies collected (original, redacted) string pairs
 // to the raw JSON text, replacing JSON-encoded originals with their redacted forms.
 // Returns s unchanged if repls is empty.
-func applyJSONReplacements(s string, repls [][2]string) (string, error) {
+func applyJSONReplacements(s string, repls []jsonReplacement) (string, error) {
 	if len(repls) == 0 {
 		return s, nil
 	}
 	for _, r := range repls {
-		origJSON, err := jsonEncodeString(r[0])
+		origJSON, err := jsonEncodeString(r.original)
 		if err != nil {
 			return "", err
 		}
-		replJSON, err := jsonEncodeString(r[1])
+		replJSON, err := jsonEncodeString(r.redacted)
 		if err != nil {
 			return "", err
 		}
-		s = strings.ReplaceAll(s, origJSON, replJSON)
+		if r.key == "" {
+			s = strings.ReplaceAll(s, origJSON, replJSON)
+			continue
+		}
+		keyJSON, err := jsonEncodeString(r.key)
+		if err != nil {
+			return "", err
+		}
+		pattern := regexp.MustCompile(`(` + regexp.QuoteMeta(keyJSON) + `\s*:\s*)` + regexp.QuoteMeta(origJSON))
+		s = pattern.ReplaceAllStringFunc(s, func(match string) string {
+			idx := strings.LastIndex(match, origJSON)
+			if idx < 0 {
+				return match
+			}
+			return match[:idx] + replJSON
+		})
 	}
 	return s, nil
 }
@@ -296,37 +519,46 @@ func isSingleJSONValue(dec *json.Decoder) bool {
 	return dec.Decode(&discard) == io.EOF
 }
 
-// collectJSONLReplacements walks a parsed JSON value and collects unique
-// (original, redacted) string pairs for values that need redaction.
-func collectJSONLReplacements(v any) [][2]string {
+// collectJSONLReplacements walks a parsed JSON value and collects unique string
+// replacements for values that need redaction.
+func collectJSONLReplacements(v any) []jsonReplacement {
 	seen := make(map[string]bool)
-	var repls [][2]string
-	var walk func(v any)
-	walk = func(v any) {
+	var repls []jsonReplacement
+	var walk func(key string, credentialContext bool, v any)
+	walk = func(key string, credentialContext bool, v any) {
 		switch val := v.(type) {
 		case map[string]any:
 			if shouldSkipJSONLObject(val) {
 				return
 			}
+			childCredentialContext := credentialContext || isCredentialJSONObject(val)
 			for k, child := range val {
 				if shouldSkipJSONLField(k) {
 					continue
 				}
-				walk(child)
+				walk(k, childCredentialContext, child)
 			}
 		case []any:
 			for _, child := range val {
-				walk(child)
+				walk("", credentialContext, child)
 			}
 		case string:
 			redacted := String(val)
-			if redacted != val && !seen[val] {
-				seen[val] = true
-				repls = append(repls, [2]string{val, redacted})
+			replacementKey := ""
+			if redacted == val && isCredentialJSONSecretKey(key, credentialContext) && hasNonPlaceholderPasswordValue(val) {
+				redacted = RedactedPlaceholder
+				replacementKey = key
+			}
+			if redacted != val {
+				seenKey := replacementKey + "\x00" + val
+				if !seen[seenKey] {
+					seen[seenKey] = true
+					repls = append(repls, jsonReplacement{key: replacementKey, original: val, redacted: redacted})
+				}
 			}
 		}
 	}
-	walk(v)
+	walk("", false, v)
 	return repls
 }
 
