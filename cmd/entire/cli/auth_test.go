@@ -260,26 +260,26 @@ func TestFormatAuthLastUsed_RelativeBuckets(t *testing.T) {
 	}
 }
 
-func TestExpiresState_Buckets(t *testing.T) {
+func TestClassifyExpiresAt_Buckets(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 4, 27, 12, 0, 0, 0, time.UTC)
 
 	tests := map[string]struct {
 		input string
-		want  expiresStateValue
+		want  expiresState
 	}{
-		"empty":   {"", expiresStateNormal},
-		"expired": {now.Add(-time.Hour).Format(time.RFC3339), expiresStateExpired},
-		"soon":    {now.Add(3 * 24 * time.Hour).Format(time.RFC3339), expiresStateSoon},
-		"normal":  {now.Add(60 * 24 * time.Hour).Format(time.RFC3339), expiresStateNormal},
+		"empty":   {"", expiresNormal},
+		"expired": {now.Add(-time.Hour).Format(time.RFC3339), expiresExpired},
+		"soon":    {now.Add(3 * 24 * time.Hour).Format(time.RFC3339), expiresSoon},
+		"normal":  {now.Add(60 * 24 * time.Hour).Format(time.RFC3339), expiresNormal},
 	}
 
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			if got := expiresState(tt.input, now); got != tt.want {
-				t.Errorf("expiresState(%q) = %v, want %v", tt.input, got, tt.want)
+			if got := classifyExpiresAt(tt.input, now); got != tt.want {
+				t.Errorf("classifyExpiresAt(%q) = %v, want %v", tt.input, got, tt.want)
 			}
 		})
 	}

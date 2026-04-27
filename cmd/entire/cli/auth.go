@@ -17,16 +17,19 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// authStatusStore reads the current bearer token from the OS keyring.
-type authStatusStore interface {
-	GetToken(baseURL string) (string, error)
-}
-
 // authTokenLister lists API tokens for the authenticated user.
 type authTokenLister func(ctx context.Context, token string) ([]api.Token, error)
 
 // authTokenRevoker revokes a single API token by id.
 type authTokenRevoker func(ctx context.Context, callerToken, id string) error
+
+// User-visible placeholder strings. Promoted to constants so tests and
+// production share a single source of truth.
+const (
+	placeholderDash = "-"
+	lastUsedNever   = "never"
+	lastUsedJustNow = "just now"
+)
 
 func newAuthCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -60,14 +63,10 @@ func newAuthStatusCmd() *cobra.Command {
 }
 
 func defaultListTokens(ctx context.Context, token string) ([]api.Token, error) {
-	tokens, err := api.NewClient(token).ListTokens(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("list tokens: %w", err)
-	}
-	return tokens, nil
+	return api.NewClient(token).ListTokens(ctx) //nolint:wrapcheck // ListTokens already wraps with action context
 }
 
-func runAuthStatus(ctx context.Context, w io.Writer, store authStatusStore, list authTokenLister, baseURL string) error {
+func runAuthStatus(ctx context.Context, w io.Writer, store logoutTokenStore, list authTokenLister, baseURL string) error {
 	token, err := store.GetToken(baseURL)
 	if err != nil {
 		return fmt.Errorf("read keychain: %w", err)
@@ -110,7 +109,7 @@ func newAuthListCmd() *cobra.Command {
 	return cmd
 }
 
-func runAuthList(ctx context.Context, w io.Writer, store authStatusStore, list authTokenLister, baseURL string, jsonOut bool) error {
+func runAuthList(ctx context.Context, w io.Writer, store logoutTokenStore, list authTokenLister, baseURL string, jsonOut bool) error {
 	token, err := store.GetToken(baseURL)
 	if err != nil {
 		return fmt.Errorf("read keychain: %w", err)
@@ -160,9 +159,9 @@ type authListStyles struct {
 	colorEnabled bool
 
 	header  lipgloss.Style // bold + dim, used for column headers
-	id      lipgloss.Style // dim, like commit hash
+	id      lipgloss.Style // yellow accent
 	name    lipgloss.Style // bold
-	muted   lipgloss.Style // scope, dates
+	value   lipgloss.Style // default fg for scope/dates (no color)
 	dim     lipgloss.Style // "never", "-"
 	warning lipgloss.Style // expires-soon
 	expired lipgloss.Style // already expired
@@ -175,9 +174,9 @@ func newAuthListStyles(w io.Writer) authListStyles {
 		return s
 	}
 	s.header = lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Bold(true)
-	s.id = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	s.id = lipgloss.NewStyle().Foreground(lipgloss.Color("3")) // yellow
 	s.name = lipgloss.NewStyle().Bold(true)
-	s.muted = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	s.value = lipgloss.NewStyle() // default fg
 	s.dim = lipgloss.NewStyle().Faint(true)
 	s.warning = lipgloss.NewStyle().Foreground(lipgloss.Color("3")) // yellow
 	s.expired = lipgloss.NewStyle().Foreground(lipgloss.Color("1")) // red
@@ -191,90 +190,82 @@ func (s authListStyles) render(style lipgloss.Style, text string) string {
 	return style.Render(text)
 }
 
-// renderAuthListTable prints a styled, column-aligned table of tokens. We
-// compute column widths from plain text and pad with spaces using
-// lipgloss.Width — tabwriter doesn't understand ANSI escapes so it can't be
-// used here once cells are styled.
+// renderAuthListTable prints a styled, column-aligned table of tokens. Column
+// padding is computed via lipgloss.Width — it strips ANSI escapes, so a styled
+// cell's visible width matches its plain text. tabwriter can't be used here
+// once cells contain ANSI codes.
 func renderAuthListTable(w io.Writer, sty authListStyles, tokens []api.Token, now time.Time) {
-	headers := []string{"ID", "NAME", "SCOPE", "CREATED", "LAST USED", "EXPIRES"}
-
-	type cell struct {
-		styled string // rendered (may contain ANSI)
-		plain  string // plain text used for width calculation
+	headerCells := []string{"ID", "NAME", "SCOPE", "CREATED", "LAST USED", "EXPIRES"}
+	header := make([]string, len(headerCells))
+	for i, h := range headerCells {
+		header[i] = sty.render(sty.header, h)
 	}
 
-	rows := make([][]cell, 0, len(tokens))
+	rows := make([][]string, 0, len(tokens))
 	for _, t := range tokens {
-		idPlain := t.ID
-		namePlain := fallback(t.Name, "-")
-		scopePlain := fallback(t.Scope, "-")
-		createdPlain := formatAuthDate(t.CreatedAt)
-		lastUsedPlain := formatAuthLastUsed(t.LastUsedAt, now)
-		expiresPlain := formatAuthDate(t.ExpiresAt)
-
-		var nameStyled string
-		if t.Name != "" {
-			nameStyled = sty.render(sty.name, namePlain)
-		} else {
-			nameStyled = sty.render(sty.dim, namePlain)
-		}
-		var lastUsedStyled string
-		if t.LastUsedAt == nil {
-			lastUsedStyled = sty.render(sty.dim, lastUsedPlain)
-		} else {
-			lastUsedStyled = sty.render(sty.muted, lastUsedPlain)
-		}
-		var expiresStyled string
-		switch expiresState(t.ExpiresAt, now) {
-		case expiresStateExpired:
-			expiresStyled = sty.render(sty.expired, expiresPlain)
-		case expiresStateSoon:
-			expiresStyled = sty.render(sty.warning, expiresPlain)
-		case expiresStateNormal:
-			expiresStyled = sty.render(sty.muted, expiresPlain)
-		}
-
-		rows = append(rows, []cell{
-			{styled: sty.render(sty.id, idPlain), plain: idPlain},
-			{styled: nameStyled, plain: namePlain},
-			{styled: sty.render(sty.muted, scopePlain), plain: scopePlain},
-			{styled: sty.render(sty.muted, createdPlain), plain: createdPlain},
-			{styled: lastUsedStyled, plain: lastUsedPlain},
-			{styled: expiresStyled, plain: expiresPlain},
+		rows = append(rows, []string{
+			sty.render(sty.id, t.ID),
+			styleName(sty, t.Name),
+			sty.render(sty.value, fallback(t.Scope, placeholderDash)),
+			sty.render(sty.value, formatAuthDate(t.CreatedAt)),
+			styleLastUsed(sty, t.LastUsedAt, now),
+			styleExpires(sty, t.ExpiresAt, now),
 		})
 	}
 
-	widths := make([]int, len(headers))
-	for i, h := range headers {
+	widths := make([]int, len(headerCells))
+	for i, h := range header {
 		widths[i] = lipgloss.Width(h)
 	}
 	for _, row := range rows {
 		for i, c := range row {
-			if width := lipgloss.Width(c.plain); width > widths[i] {
-				widths[i] = width
+			if cw := lipgloss.Width(c); cw > widths[i] {
+				widths[i] = cw
 			}
 		}
 	}
 
-	// Header row.
-	for i, h := range headers {
-		fmt.Fprint(w, sty.render(sty.header, h))
-		if i < len(headers)-1 {
-			fmt.Fprint(w, strings.Repeat(" ", widths[i]-lipgloss.Width(h)+2))
+	writeRow(w, header, widths)
+	for _, row := range rows {
+		writeRow(w, row, widths)
+	}
+}
+
+func writeRow(w io.Writer, cells []string, widths []int) {
+	for i, c := range cells {
+		fmt.Fprint(w, c)
+		if i < len(cells)-1 {
+			fmt.Fprint(w, strings.Repeat(" ", widths[i]-lipgloss.Width(c)+2))
 		}
 	}
 	fmt.Fprintln(w)
+}
 
-	// Body rows.
-	for _, row := range rows {
-		for i, c := range row {
-			fmt.Fprint(w, c.styled)
-			if i < len(row)-1 {
-				fmt.Fprint(w, strings.Repeat(" ", widths[i]-lipgloss.Width(c.plain)+2))
-			}
-		}
-		fmt.Fprintln(w)
+func styleName(sty authListStyles, name string) string {
+	if name == "" {
+		return sty.render(sty.dim, placeholderDash)
 	}
+	return sty.render(sty.name, name)
+}
+
+func styleLastUsed(sty authListStyles, lastUsed *string, now time.Time) string {
+	if lastUsed == nil {
+		return sty.render(sty.dim, lastUsedNever)
+	}
+	return sty.render(sty.value, formatAuthLastUsed(lastUsed, now))
+}
+
+func styleExpires(sty authListStyles, expiresAt string, now time.Time) string {
+	formatted := formatAuthDate(expiresAt)
+	switch classifyExpiresAt(expiresAt, now) {
+	case expiresExpired:
+		return sty.render(sty.expired, formatted)
+	case expiresSoon:
+		return sty.render(sty.warning, formatted)
+	case expiresNormal:
+		return sty.render(sty.value, formatted)
+	}
+	return sty.render(sty.value, formatted)
 }
 
 func lastUsedSortKey(t api.Token) string {
@@ -284,11 +275,10 @@ func lastUsedSortKey(t api.Token) string {
 	return *t.LastUsedAt
 }
 
-// formatAuthDate renders an RFC3339 timestamp as YYYY-MM-DD. Uses local time so
-// "today" / "yesterday" feel right; tokens are user-scoped so user TZ wins.
+// formatAuthDate renders an RFC3339 timestamp as YYYY-MM-DD in local time.
 func formatAuthDate(s string) string {
 	if s == "" {
-		return "-"
+		return placeholderDash
 	}
 	if ts, err := time.Parse(time.RFC3339, s); err == nil {
 		return ts.Local().Format("2006-01-02")
@@ -296,12 +286,12 @@ func formatAuthDate(s string) string {
 	return s
 }
 
-// formatAuthLastUsed renders a relative "last used" timestamp. Mirrors the
-// commit-list relative-date convention: today → "today", yesterday →
-// "yesterday", recent → "Xh/Xd ago", older → absolute date. nil → "never".
+// formatAuthLastUsed renders a relative "last used" timestamp, with "yesterday"
+// and absolute-date branches that the shared formatRelativeDuration helper
+// doesn't cover.
 func formatAuthLastUsed(s *string, now time.Time) string {
 	if s == nil || *s == "" {
-		return "never"
+		return lastUsedNever
 	}
 	ts, err := time.Parse(time.RFC3339, *s)
 	if err != nil {
@@ -309,50 +299,41 @@ func formatAuthLastUsed(s *string, now time.Time) string {
 	}
 	delta := now.Sub(ts)
 	switch {
-	case delta < 0:
+	case delta < 0, delta >= 30*24*time.Hour:
 		return ts.Local().Format("2006-01-02")
-	case delta < time.Minute:
-		return "just now"
-	case delta < time.Hour:
-		return fmt.Sprintf("%dm ago", int(delta.Minutes()))
-	case delta < 24*time.Hour:
-		return fmt.Sprintf("%dh ago", int(delta.Hours()))
-	case delta < 48*time.Hour:
+	case delta >= 24*time.Hour && delta < 48*time.Hour:
 		return "yesterday"
-	case delta < 30*24*time.Hour:
-		return fmt.Sprintf("%dd ago", int(delta.Hours()/24))
 	default:
-		return ts.Local().Format("2006-01-02")
+		return formatRelativeDuration(delta)
 	}
 }
 
-type expiresStateValue int
+type expiresState int
 
 const (
-	expiresStateNormal expiresStateValue = iota
-	expiresStateSoon
-	expiresStateExpired
+	expiresNormal expiresState = iota
+	expiresSoon
+	expiresExpired
 )
 
-// expiresState classifies an RFC3339 expires-at relative to now: expired
-// (already past), soon (within 7 days), normal (otherwise). Used to color the
-// EXPIRES column so users can spot tokens worth rotating at a glance.
-func expiresState(s string, now time.Time) expiresStateValue {
+// classifyExpiresAt classifies an RFC3339 expires-at relative to now. Used to
+// color the EXPIRES column so tokens worth rotating stand out.
+func classifyExpiresAt(s string, now time.Time) expiresState {
 	if s == "" {
-		return expiresStateNormal
+		return expiresNormal
 	}
 	ts, err := time.Parse(time.RFC3339, s)
 	if err != nil {
-		return expiresStateNormal
+		return expiresNormal
 	}
 	delta := ts.Sub(now)
 	switch {
 	case delta <= 0:
-		return expiresStateExpired
+		return expiresExpired
 	case delta < 7*24*time.Hour:
-		return expiresStateSoon
+		return expiresSoon
 	default:
-		return expiresStateNormal
+		return expiresNormal
 	}
 }
 
@@ -393,10 +374,7 @@ func newAuthRevokeCmd() *cobra.Command {
 }
 
 func defaultRevokeTokenByID(ctx context.Context, callerToken, id string) error {
-	if err := api.NewClient(callerToken).RevokeToken(ctx, id); err != nil {
-		return fmt.Errorf("revoke token: %w", err)
-	}
-	return nil
+	return api.NewClient(callerToken).RevokeToken(ctx, id) //nolint:wrapcheck // RevokeToken already wraps with action context
 }
 
 func runAuthRevoke(
