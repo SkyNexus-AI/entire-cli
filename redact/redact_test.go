@@ -202,7 +202,7 @@ func TestCollectJSONLReplacements_Succeeds(t *testing.T) {
 	}
 	repls := collectJSONLReplacements(obj)
 	// expect one replacement for high-entropy secret
-	want := []jsonReplacement{{original: "token=" + highEntropySecret, redacted: "REDACTED"}}
+	want := []jsonReplacement{{key: "content", original: "token=" + highEntropySecret, redacted: "REDACTED"}}
 	if !slices.Equal(repls, want) {
 		t.Errorf("got %q, want %q", repls, want)
 	}
@@ -272,6 +272,23 @@ func TestShouldSkipJSONLField_RedactionBehavior(t *testing.T) {
 	}
 	if repls[0].original != highEntropySecret {
 		t.Errorf("expected replacement for secret in content field, got %q", repls[0].original)
+	}
+}
+
+func TestJSONLContent_SkippedFieldValueCollision(t *testing.T) {
+	t.Parallel()
+	input := `{"session_id":"` + highEntropySecret + `","content":"` + highEntropySecret + `"}`
+
+	result, err := JSONLContent(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !strings.Contains(result, `"session_id":"`+highEntropySecret+`"`) {
+		t.Fatalf("expected skipped session_id to be preserved, got: %s", result)
+	}
+	if !strings.Contains(result, `"content":"REDACTED"`) {
+		t.Fatalf("expected content field to be redacted, got: %s", result)
 	}
 }
 
@@ -405,6 +422,11 @@ func TestString_DatabaseConnectionStringRedaction(t *testing.T) {
 		{
 			name:  "postgres URL query password without userinfo",
 			input: "DATABASE_URL=postgresql://db.example.com:5432/app?user=svc&password=secret&sslmode=require",
+			want:  "DATABASE_URL=REDACTED",
+		},
+		{
+			name:  "postgres URL query password is case-insensitive",
+			input: "DATABASE_URL=postgresql://db.example.com:5432/app?user=svc&Password=secret&sslmode=require",
 			want:  "DATABASE_URL=REDACTED",
 		},
 		{
@@ -730,7 +752,7 @@ func TestShouldSkipJSONLObject_RedactionBehavior(t *testing.T) {
 		"content": highEntropySecret,
 	}
 	repls2 := collectJSONLReplacements(obj2)
-	wantRepls2 := []jsonReplacement{{original: highEntropySecret, redacted: "REDACTED"}}
+	wantRepls2 := []jsonReplacement{{key: "content", original: highEntropySecret, redacted: "REDACTED"}}
 	if !slices.Equal(repls2, wantRepls2) {
 		t.Errorf("got %q, want %q", repls2, wantRepls2)
 	}

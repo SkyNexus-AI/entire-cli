@@ -276,7 +276,21 @@ func hasDatabaseURLSecret(candidate string) bool {
 	if err != nil || u.Scheme == "" || u.Host == "" {
 		return false
 	}
-	return hasNonPlaceholderPasswordValue(u.Query().Get("password"))
+	for key, values := range u.Query() {
+		if !isPasswordQueryKey(key) {
+			continue
+		}
+		for _, value := range values {
+			if hasNonPlaceholderPasswordValue(value) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func isPasswordQueryKey(key string) bool {
+	return strings.EqualFold(key, "password") || strings.EqualFold(key, "pwd")
 }
 
 func hasKeywordDSNPassword(candidate string) bool {
@@ -532,9 +546,11 @@ func collectJSONLReplacements(v any) []jsonReplacement {
 		case string:
 			redacted := String(val)
 			replacementKey := ""
+			if key != "" {
+				replacementKey = key
+			}
 			if redacted == val && isCredentialJSONSecretKey(key, credentialContext) && hasNonPlaceholderPasswordValue(val) {
 				redacted = RedactedPlaceholder
-				replacementKey = key
 			}
 			if redacted != val {
 				seenKey := replacementKey + "\x00" + val
