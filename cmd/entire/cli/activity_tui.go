@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -113,7 +114,7 @@ func (m activityModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint:iretu
 		return m, nil
 
 	case tea.KeyMsg:
-		if msg.Type == tea.KeyEscape || msg.Type == tea.KeyCtrlC || msg.String() == "q" {
+		if key.Matches(msg, keys.Quit) || key.Matches(msg, keys.Back) {
 			return m, tea.Quit
 		}
 
@@ -222,7 +223,7 @@ func (m activityModel) renderFooter() string {
 	}
 
 	return keyStyle.Render("↑↓") + helpStyle.Render(" scroll") +
-		sep + keyStyle.Render("q") + helpStyle.Render(" quit") +
+		sep + keyStyle.Render(keys.Quit.Help().Key) + helpStyle.Render(" "+keys.Quit.Help().Desc) +
 		scrollPct
 }
 
