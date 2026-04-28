@@ -346,8 +346,8 @@ func TestEnd_SerializesNestedErrorFlags(t *testing.T) {
 
 	attrs := testAttrMap(t, appendChildStepAttrs(nil, root, ""))
 
-	require.True(t, attrs["steps.enrich_commits.why_checkpoint_info_err"].(bool))
-	require.True(t, attrs["steps.enrich_commits.why_checkpoint_info.why_checkpoint_read_session_err"].(bool))
+	require.Equal(t, true, attrs["steps.enrich_commits.why_checkpoint_info_err"])
+	require.Equal(t, true, attrs["steps.enrich_commits.why_checkpoint_info.why_checkpoint_read_session_err"])
 }
 
 func testEndedSpan(name string, duration time.Duration, children ...*Span) *Span {
