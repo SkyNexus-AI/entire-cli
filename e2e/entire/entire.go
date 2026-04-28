@@ -46,6 +46,24 @@ func Disable(t *testing.T, dir string) {
 	run(t, dir, "disable")
 }
 
+// Doctor runs `entire doctor --force` and returns the output.
+func Doctor(t *testing.T, dir string) string {
+	t.Helper()
+	return run(t, dir, "doctor", "--force")
+}
+
+// CleanDryRun runs `entire clean --dry-run` and returns the output.
+func CleanDryRun(t *testing.T, dir string) string {
+	t.Helper()
+	return run(t, dir, "clean", "--dry-run")
+}
+
+// CleanForce runs `entire clean --force` and returns the output.
+func CleanForce(t *testing.T, dir string) string {
+	t.Helper()
+	return run(t, dir, "clean", "--force")
+}
+
 // RewindList runs `entire rewind --list` and parses the JSON output.
 func RewindList(t *testing.T, dir string) []RewindPoint {
 	t.Helper()
@@ -133,6 +151,12 @@ func ExplainGenerate(dir, checkpointID string) (string, error) {
 // Returns (output, error) — for testing failure cases.
 func ExplainCommit(dir, ref string) (string, error) {
 	return runOutput(dir, "explain", "--commit", ref)
+}
+
+// AttachWithEnv runs `entire attach <session-id> --agent <agent> --force`
+// with extra env vars.
+func AttachWithEnv(dir string, extraEnv []string, sessionID, agent string) (string, error) {
+	return runOutputEnv(dir, extraEnv, "attach", sessionID, "--agent", agent, "--force")
 }
 
 // Resume runs `entire resume <branch> --force` and returns the output.
