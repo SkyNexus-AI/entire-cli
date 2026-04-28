@@ -566,9 +566,16 @@ func runExplainCheckpointWithLookup(ctx context.Context, w, errW io.Writer, chec
 	// individual blobs.
 	prefetchCheckpointBlobs(ctx, errW, lookup.repo, fullCheckpointID, lookup.preferCheckpointsV2)
 
+	// Cover the rest of the data-loading pipeline (summary read, session
+	// content reads via cat-file, getAssociatedCommits' git log walk) with
+	// a single spinner. Stop strictly before any write to w (stdout) so
+	// stderr spinner frames and stdout output never interleave.
+	stopLoad := startSpinner(errW, fmt.Sprintf("Loading checkpoint %s", fullCheckpointID))
+
 	// Resolve store and load checkpoint summary with v2 -> v1 fallback.
 	resolvedReader, summary, err := checkpoint.ResolveCommittedReaderForCheckpoint(ctx, fullCheckpointID, lookup.v1Store, lookup.v2Store, lookup.preferCheckpointsV2)
 	if err != nil {
+		stopLoad("")
 		return fmt.Errorf("failed to read checkpoint: %w", err)
 	}
 
@@ -583,34 +590,40 @@ func runExplainCheckpointWithLookup(ctx context.Context, w, errW io.Writer, chec
 	if isCheckpointsV2 && !needsRawTranscript {
 		content, err = readV2ContentFromMain(ctx, v2Reader, fullCheckpointID, summary)
 		if err != nil {
+			stopLoad("")
 			return fmt.Errorf("failed to read checkpoint content: %w", err)
 		}
 	} else {
 		content, err = readLatestSessionContentForExplain(ctx, resolvedReader, fullCheckpointID, summary)
 		if err != nil {
+			stopLoad("")
 			return fmt.Errorf("failed to read checkpoint content: %w", err)
 		}
 	}
 
 	// Handle summary generation — uses raw transcript.
 	if generate {
+		stopLoad("") // generation prints its own progress to w/errW
 		if err := generateCheckpointSummary(ctx, w, errW, lookup.v1Store, lookup.v2Store, fullCheckpointID, summary, content, force); err != nil {
 			return err
 		}
 		// Reload to get the updated summary. After generation we only need
 		// /main data for display, so use the /main-only path for v2.
+		stopLoad = startSpinner(errW, fmt.Sprintf("Reloading checkpoint %s", fullCheckpointID))
 		if isCheckpointsV2 {
 			content, err = readV2ContentFromMain(ctx, v2Reader, fullCheckpointID, summary)
 		} else {
 			content, err = readLatestSessionContentForExplain(ctx, resolvedReader, fullCheckpointID, summary)
 		}
 		if err != nil {
+			stopLoad("")
 			return fmt.Errorf("failed to reload checkpoint: %w", err)
 		}
 	}
 
 	// Handle raw transcript output
 	if rawTranscript {
+		stopLoad("")
 		rawLog, _, rawErr := checkpoint.ResolveRawSessionLogForCheckpoint(ctx, fullCheckpointID, lookup.v1Store, lookup.v2Store, lookup.preferCheckpointsV2)
 		if rawErr != nil {
 			return fmt.Errorf("failed to read raw transcript: %w", rawErr)
@@ -641,8 +654,10 @@ func runExplainCheckpointWithLookup(ctx context.Context, w, errW io.Writer, chec
 		author, _ = lookup.v1Store.GetCheckpointAuthor(ctx, fullCheckpointID) //nolint:errcheck // Author is optional
 	}
 
-	// Format and output
+	// Format and output. Stop spinner BEFORE any write to w to keep stderr
+	// frames and stdout content from interleaving.
 	output := formatCheckpointOutput(summary, content, fullCheckpointID, associatedCommits, author, verbose, full)
+	stopLoad("")
 	outputExplainContent(w, output, noPager)
 	return nil
 }
