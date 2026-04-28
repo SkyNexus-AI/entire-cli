@@ -15,8 +15,9 @@ import (
 const gettingStarted = `
 
 Getting Started:
-  To get started with Entire CLI, run 'entire configure' to configure
-  your repository. For more information, visit:
+  To get started with Entire CLI, run 'entire enable' to enable
+  session tracking in your repository, then 'entire agent add <name>'
+  to install hooks for a specific agent. For more information, visit:
   https://docs.entire.io/introduction
 
 `
@@ -78,31 +79,41 @@ func NewRootCmd() *cobra.Command {
 		},
 	}
 
-	// Add subcommands here
-	cmd.AddCommand(newRewindCmd())
-	cmd.AddCommand(newResumeCmd())
+	// Noun groups (canonical homes for subcommands).
+	cmd.AddCommand(newSessionsCmd())        // 'session' (with 'sessions' as Cobra alias)
+	cmd.AddCommand(newCheckpointGroupCmd()) // 'checkpoint' / 'cp' / 'checkpoints'
+	cmd.AddCommand(newAgentGroupCmd())      // 'agent'
+	cmd.AddCommand(newDoctorCmd())          // 'doctor' (group: trace/logs/bundle)
+
+	// Top-level lifecycle and standalone commands.
 	cmd.AddCommand(newCleanCmd())
-	cmd.AddCommand(newResetCmd())
-	cmd.AddCommand(newSessionsCmd())
-	cmd.AddCommand(newSetupCmd())
+	cmd.AddCommand(newSetupCmd()) // 'configure' (deprecated alias of 'agent')
 	cmd.AddCommand(newEnableCmd())
 	cmd.AddCommand(newDisableCmd())
 	cmd.AddCommand(newStatusCmd())
 	cmd.AddCommand(newLoginCmd())
 	cmd.AddCommand(newLogoutCmd())
-	cmd.AddCommand(newHooksCmd())
 	cmd.AddCommand(newVersionCmd())
-	cmd.AddCommand(newExplainCmd())
-	cmd.AddCommand(newDoctorCmd())
-	cmd.AddCommand(newTraceCmd())
-	cmd.AddCommand(newTrailCmd())
-	cmd.AddCommand(newSearchCmd())
 	cmd.AddCommand(newDispatchCmd())
+	cmd.AddCommand(newActivityCmd())
+
+	// Permanent silent top-level aliases (Phase 1: muscle-memory preservation).
+	cmd.AddCommand(newRewindCmd())  // 'entire rewind' = 'checkpoint rewind'
+	cmd.AddCommand(newResumeCmd())  // 'entire resume' = 'session resume'
+	cmd.AddCommand(newAttachCmd())  // 'entire attach' = 'session attach'
+	cmd.AddCommand(newExplainCmd()) // 'entire explain' = 'checkpoint show'
+	cmd.AddCommand(newTraceCmd())   // 'entire trace' = 'doctor trace'
+	cmd.AddCommand(newSearchCmd())  // 'entire search' = 'checkpoint search' (hidden)
+
+	// Deprecated top-level alias (functional; reset.go marks it Deprecated).
+	cmd.AddCommand(newResetCmd())
+
+	// Hidden infrastructure.
+	cmd.AddCommand(newHooksCmd())
+	cmd.AddCommand(newTrailCmd())
 	cmd.AddCommand(newSendAnalyticsCmd())
-	cmd.AddCommand(newAttachCmd())
 	cmd.AddCommand(newCurlBashPostInstallCmd())
 	cmd.AddCommand(newMigrateCmd())
-	cmd.AddCommand(newActivityCmd())
 
 	cmd.SetVersionTemplate(versionString())
 

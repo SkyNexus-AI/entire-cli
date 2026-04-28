@@ -11,7 +11,7 @@ This repo contains the CLI for Entire.
 ### Commands (`cmd/`)
 
 - `entire/`: Main CLI entry point
-- `entire/cli`: CLI utilities and helpers
+- `entire/cli`: CLI utilities and helpers (Cobra commands, helpers, group roots)
 - `entire/cli/commands`: actual command implementations
 - `entire/cli/agent`: agent implementations (Claude Code, Gemini CLI, OpenCode, Cursor, Factory AI Droid, Copilot CLI) - see [Agent Integration Checklist](docs/architecture/agent-integration-checklist.md) and [Agent Implementation Guide](docs/architecture/agent-guide.md)
 - `entire/cli/strategy`: strategy implementation (manual-commit) - see section below
@@ -19,6 +19,39 @@ This repo contains the CLI for Entire.
 - `entire/cli/session`: session state management
 - `entire/cli/integration_test`: integration tests (simulated hooks)
 - `e2e/`: E2E tests with real agent calls (see [e2e/README.md](e2e/README.md))
+
+### Command Layout
+
+The CLI is organized around four noun groups plus a small set of top-level
+verbs. Phase 1 introduced the groups additively; the previous flat top-level
+verbs remain registered as silent permanent aliases so existing scripts and
+muscle memory continue to work.
+
+- `session` (alias: `sessions`): `list`, `info`, `stop`, `attach`, `resume`, `current`
+- `checkpoint` (aliases: `cp`, `checkpoints`): `list`, `show`, `rewind`, `search`, `diff`
+- `agent`: `list`, `add`, `remove` (replaces flag-driven `entire configure`)
+- `doctor`: bare runs the scan-and-fix flow, plus `trace`, `logs`, `bundle`
+
+Top-level lifecycle and standalone commands: `enable`, `disable`, `status`,
+`login`, `logout`, `clean`, `version`, `dispatch`, `activity`, `help`.
+
+Permanent silent top-level aliases (kept for backwards compatibility):
+`rewind` → `checkpoint rewind`, `resume` → `session resume`, `attach` →
+`session attach`, `explain` → `checkpoint show` (smart-routes between
+checkpoint id, commit sha, and session id), `trace` → `doctor trace`,
+`search` → `checkpoint search` (hidden), `sessions` → `session` (Cobra alias).
+
+Deprecated top-level aliases (functional, print one-time stderr warning):
+`configure` → `agent`, `reset` → `clean`.
+
+Hidden infrastructure commands: `hooks`, `migrate`, `trail`, `git-hook`,
+`curl-bash-post-install`, `__send_analytics`.
+
+Helpers used by the alias surface live in `cmd/entire/cli/aliascmd.go`
+(`aliasOf`, `WithDeprecation`, `warnDeprecatedAliasOnce`). Diagnostic
+subcommands live alongside `doctor.go` as `doctor_logs.go` and
+`doctor_bundle.go`. Group roots and noun-group children live in files
+named `<noun>_group.go` and `<noun>_<verb>.go` respectively.
 
 ## Tech Stack
 

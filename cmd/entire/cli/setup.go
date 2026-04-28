@@ -587,6 +587,11 @@ Use --remove to remove a specific agent non-interactively:
   entire configure --remove claude-code`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
+
+			// Phase 1 deprecation: prefer 'entire agent' for agent CRUD.
+			// Print a one-time warning per process; functionality is preserved.
+			warnDeprecatedAliasOnce(cmd, "configure", "agent")
+
 			if _, err := paths.WorktreeRoot(ctx); err != nil {
 				fmt.Fprintln(cmd.ErrOrStderr(), "Not a git repository. Please run 'entire configure' from within a git repository.")
 				return NewSilentError(errors.New("not a git repository"))
