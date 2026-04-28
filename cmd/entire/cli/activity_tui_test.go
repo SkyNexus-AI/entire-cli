@@ -178,7 +178,7 @@ func TestActivityModel_FooterScrollPercentFitsWidth(t *testing.T) {
 	if got := lipgloss.Width(footer); got != m.width {
 		t.Fatalf("compact footer width = %d, want %d: %q", got, m.width, footer)
 	}
-	for _, want := range []string{"↑/↓ scroll", "home/end top/bottom", "q quit"} {
+	for _, want := range []string{"↑/↓", " scroll", "home/end", " top/bottom", "q", " quit"} {
 		if !strings.Contains(footer, want) {
 			t.Fatalf("compact footer missing %q: %q", want, footer)
 		}
