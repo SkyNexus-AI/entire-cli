@@ -217,6 +217,45 @@ func TestMarshalDispatchPromptPayload_OmitsZeroCheckpointTimesAndDeduplicatesBra
 	}
 }
 
+func TestMarshalDispatchPromptPayload_OmitsRepoURLWhenFullNameSanitized(t *testing.T) {
+	t.Parallel()
+
+	payload, err := marshalDispatchPromptPayload(&Dispatch{
+		Repos: []RepoGroup{{
+			FullName: "entireio/\u200Bcli",
+			Sections: []Section{{
+				Label: "Updates",
+				Bullets: []Bullet{{
+					Text: "Fixed tests.",
+				}},
+			}},
+		}},
+	}, "neutral")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var body map[string]any
+	if err := json.Unmarshal([]byte(payload), &body); err != nil {
+		t.Fatal(err)
+	}
+
+	repos, ok := body["repos"].([]any)
+	if !ok || len(repos) != 1 {
+		t.Fatalf("expected one repo payload, got %T %v", body["repos"], body["repos"])
+	}
+	repo, ok := repos[0].(map[string]any)
+	if !ok {
+		t.Fatalf("expected repo object, got %T", repos[0])
+	}
+	if repo["full_name"] != "entireio/cli" {
+		t.Fatalf("unexpected sanitized full name: %v", repo["full_name"])
+	}
+	if _, ok := repo["url"]; ok {
+		t.Fatalf("expected URL to be omitted when full_name changed during sanitization, got %v", repo["url"])
+	}
+}
+
 func TestGenerateLocalDispatch_PropagatesGeneratorError(t *testing.T) {
 	oldFactory := dispatchTextGeneratorFactory
 	dispatchTextGeneratorFactory = func() (dispatchTextGenerator, error) {

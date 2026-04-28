@@ -149,11 +149,14 @@ func marshalDispatchPromptPayload(dispatch *Dispatch, voice string) (string, err
 	}
 	seenBranches := map[string]struct{}{}
 	for _, repo := range dispatch.Repos {
+		trimmedFullName := strings.TrimSpace(repo.FullName)
 		fullName := sanitizeDispatchPromptString(repo.FullName)
 		outRepo := dispatchPromptRepo{
 			FullName: fullName,
-			URL:      githubRepoURL(fullName),
 			Sections: make([]dispatchPromptSection, 0, len(repo.Sections)),
+		}
+		if fullName == trimmedFullName {
+			outRepo.URL = githubRepoURL(trimmedFullName)
 		}
 		for _, section := range repo.Sections {
 			outSection := dispatchPromptSection{
