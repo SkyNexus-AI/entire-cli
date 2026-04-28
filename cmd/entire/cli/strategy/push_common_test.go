@@ -1524,7 +1524,7 @@ func TestPrintProtectedRefBlock(t *testing.T) {
 	t.Run("remote-name target", func(t *testing.T) {
 		t.Parallel()
 		var buf bytes.Buffer
-		printProtectedRefBlock(&buf, "entire/checkpoints/v1", "origin", protectedV1ActionLine, protectedV1ActionContinuation)
+		printProtectedRefBlock(&buf, "entire/checkpoints/v1", "origin")
 
 		out := buf.String()
 		for _, want := range []string{"BLOCKED", "entire/checkpoints/v1", "e.g. GH013", "entire/*", "checkpoints are saved locally", "checkpoint_remote"} {
@@ -1537,10 +1537,10 @@ func TestPrintProtectedRefBlock(t *testing.T) {
 	t.Run("URL target is masked", func(t *testing.T) {
 		t.Parallel()
 		var buf bytes.Buffer
-		printProtectedRefBlock(&buf, "entire/checkpoints/v1", "git@github.com:org/repo.git", protectedV1ActionLine, protectedV1ActionContinuation)
+		printProtectedRefBlock(&buf, "entire/checkpoints/v1", "git@github.com:org/repo.git")
 
 		out := buf.String()
-		assert.Contains(t, out, "checkpoint remote")
+		assert.Contains(t, out, displayPushTarget("git@github.com:org/repo.git"))
 		assert.NotContains(t, out, "git@github.com:org/repo.git")
 	})
 }

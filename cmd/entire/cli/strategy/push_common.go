@@ -64,20 +64,17 @@ func hasUnpushedSessionsCommon(repo *git.Repository, remoteName string, localHas
 	return localHash != remoteRef.Hash()
 }
 
-const (
-	// checkpointRemoteDisplayName avoids echoing checkpoint URLs or tokens to stderr.
-	checkpointRemoteDisplayName   = "checkpoint remote"
-	protectedV1ActionLine         = "allow pushes to `entire/*` in your ruleset, or set"
-	protectedV1ActionContinuation = "`checkpoint_remote` in .entire/settings.json to a separate repo."
-)
+func displayPushTarget(target string) string {
+	if remote.IsURL(target) {
+		return "checkpoint remote"
+	}
+	return target
+}
 
 // doPushBranch pushes the given branch to the target with fetch+merge recovery.
 // The target can be a remote name or a URL.
 func doPushBranch(ctx context.Context, target, branchName string) error {
-	displayTarget := target
-	if remote.IsURL(target) {
-		displayTarget = checkpointRemoteDisplayName
-	}
+	displayTarget := displayPushTarget(target)
 
 	fmt.Fprintf(os.Stderr, "[entire] Pushing %s to %s...", branchName, displayTarget)
 	stop := startProgressDots(os.Stderr)
@@ -93,7 +90,7 @@ func doPushBranch(ctx context.Context, target, branchName string) error {
 	// Protected refs cannot be fixed by syncing and retrying.
 	var protectedErr *protectedRefError
 	if errors.As(err, &protectedErr) {
-		printProtectedRefBlock(os.Stderr, branchName, target, protectedV1ActionLine, protectedV1ActionContinuation)
+		printProtectedRefBlock(os.Stderr, branchName, target)
 		return nil
 	}
 
@@ -317,19 +314,16 @@ func classifyPushOutput(output string) error {
 }
 
 // printProtectedRefBlock explains that checkpoint syncing was blocked remotely.
-func printProtectedRefBlock(w io.Writer, ref, target, actionLine, actionContinuation string) {
+func printProtectedRefBlock(w io.Writer, ref, target string) {
 	const banner = "[entire] ============================================================"
-	displayTarget := target
-	if remote.IsURL(target) {
-		displayTarget = checkpointRemoteDisplayName
-	}
+	displayTarget := displayPushTarget(target)
 	fmt.Fprintln(w, banner)
 	fmt.Fprintf(w, "[entire] BLOCKED: remote rejected push to %s\n", ref)
 	fmt.Fprintln(w, "[entire] Reason:  GitHub branch protection or repository ruleset (e.g. GH013)")
 	fmt.Fprintf(w, "[entire] Target:  %s\n", displayTarget)
 	fmt.Fprintln(w, "[entire] Impact:  checkpoints are saved locally but NOT synced to this remote.")
-	fmt.Fprintf(w, "[entire] Action:  %s\n", actionLine)
-	fmt.Fprintf(w, "[entire]          %s\n", actionContinuation)
+	fmt.Fprintln(w, "[entire] Action:  allow pushes to `entire/*` in your ruleset, or set")
+	fmt.Fprintln(w, "[entire]          `checkpoint_remote` in .entire/settings.json to a separate repo.")
 	fmt.Fprintln(w, banner)
 }
 
