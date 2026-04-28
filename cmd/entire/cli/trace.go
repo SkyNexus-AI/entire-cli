@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // traceStep represents a single timed step within a trace span.
@@ -116,7 +117,6 @@ type traceStepNode struct {
 
 func buildTraceSteps(stepDurations map[string]int64, stepErrors map[string]bool) []traceStep {
 	nodes := make(map[string]*traceStepNode, len(stepDurations))
-	names := make([]string, 0, len(stepDurations))
 	for name, ms := range stepDurations {
 		nodes[name] = &traceStepNode{
 			step: traceStep{
@@ -125,18 +125,16 @@ func buildTraceSteps(stepDurations map[string]int64, stepErrors map[string]bool)
 				Error:      stepErrors[name],
 			},
 		}
-		names = append(names, name)
 	}
-	slices.Sort(names)
 
 	roots := make([]*traceStepNode, 0, len(nodes))
-	for _, name := range names {
+	for name, node := range nodes {
 		parentName, ok := traceStepParent(name, stepDurations)
 		if !ok {
-			roots = append(roots, nodes[name])
+			roots = append(roots, node)
 			continue
 		}
-		nodes[parentName].children = append(nodes[parentName].children, nodes[name])
+		nodes[parentName].children = append(nodes[parentName].children, node)
 	}
 
 	return traceStepNodesToSteps(roots, "")
@@ -340,5 +338,5 @@ func traceStepChildPrefix(prefix string, i, total int) string {
 }
 
 func displayWidth(s string) int {
-	return len([]rune(s))
+	return utf8.RuneCountInString(s)
 }
