@@ -135,6 +135,14 @@ func (t *FetchingTree) PreFetch() (int, error) {
 	return len(missing), nil
 }
 
+// CollectMissingBlobs returns the hashes of every blob entry in this tree
+// (recursively) that isn't present in the local object store. Useful for
+// callers that want to decide whether network work is needed before
+// running PreFetch (e.g., to avoid showing a spinner in fast no-op cases).
+func (t *FetchingTree) CollectMissingBlobs() []plumbing.Hash {
+	return t.collectMissingBlobs(t.inner)
+}
+
 // collectMissingBlobs recursively walks a tree and returns hashes of blob
 // entries that are not present in the local object store.
 func (t *FetchingTree) collectMissingBlobs(tree *object.Tree) []plumbing.Hash {

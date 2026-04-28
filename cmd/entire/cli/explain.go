@@ -498,6 +498,7 @@ func runExplainCheckpointWithLookup(ctx context.Context, w, errW io.Writer, chec
 	// and return a fresh repo handle (which we discard; the post-fetch
 	// rebuild via newExplainCheckpointLookup opens its own).
 	if len(matches) == 0 {
+		stop := startSpinner(errW, "Fetching checkpoint metadata from remote")
 		_, _, v1Err := getMetadataTree(ctx)
 		v2OK := false
 		if lookup.preferCheckpointsV2 {
@@ -505,6 +506,7 @@ func runExplainCheckpointWithLookup(ctx context.Context, w, errW io.Writer, chec
 				v2OK = true
 			}
 		}
+		stop("")
 		if v1Err == nil || v2OK {
 			if freshLookup, freshErr := newExplainCheckpointLookup(ctx); freshErr == nil {
 				lookup = freshLookup
@@ -560,7 +562,7 @@ func runExplainCheckpointWithLookup(ctx context.Context, w, errW io.Writer, chec
 	// round-trip via fetch-pack. Best-effort: if prefetch fails, the
 	// per-File fallback fetcher on v1Store / v2Store still recovers
 	// individual blobs.
-	prefetchCheckpointBlobs(ctx, lookup.repo, fullCheckpointID, lookup.preferCheckpointsV2)
+	prefetchCheckpointBlobs(ctx, errW, lookup.repo, fullCheckpointID, lookup.preferCheckpointsV2)
 
 	// Resolve store and load checkpoint summary with v2 -> v1 fallback.
 	resolvedReader, summary, err := checkpoint.ResolveCommittedReaderForCheckpoint(ctx, fullCheckpointID, lookup.v1Store, lookup.v2Store, lookup.preferCheckpointsV2)
@@ -645,21 +647,45 @@ func runExplainCheckpointWithLookup(ctx context.Context, w, errW io.Writer, chec
 
 // prefetchCheckpointBlobs navigates to the checkpoint's subtree(s) — v1
 // always, v2 when enabled — collects every locally-missing blob, and
-// fetches them all in a single `git fetch-pack <url> <hash1> <hash2>...`
-// invocation per store. Best-effort — failure is logged and the read path
-// falls back to the FetchingTree's per-File fetcher.
-func prefetchCheckpointBlobs(ctx context.Context, repo *git.Repository, cpID id.CheckpointID, preferV2 bool) {
-	if rootTree, err := loadV1MetadataRootTree(repo); err == nil {
-		prefetchSubtreeBlobs(ctx, repo, rootTree, cpID, "v1")
-	}
+// fetches them all in a single `git fetch-pack` invocation per store. A
+// spinner with a count message shows on errW only when blobs are actually
+// missing, so warm runs (everything already local) stay silent.
+//
+// Best-effort — failure is logged and the read path falls back to the
+// FetchingTree's per-File fetcher.
+func prefetchCheckpointBlobs(ctx context.Context, errW io.Writer, repo *git.Repository, cpID id.CheckpointID, preferV2 bool) {
+	v1FT := buildCheckpointFetchingTree(ctx, repo, cpID, "v1", loadV1MetadataRootTree)
+	var v2FT *checkpoint.FetchingTree
 	if preferV2 {
-		if rootTree, err := loadV2MainRootTree(repo); err == nil {
-			prefetchSubtreeBlobs(ctx, repo, rootTree, cpID, "v2")
-		}
+		v2FT = buildCheckpointFetchingTree(ctx, repo, cpID, "v2", loadV2MainRootTree)
 	}
+
+	missingCount := 0
+	if v1FT != nil {
+		missingCount += len(v1FT.CollectMissingBlobs())
+	}
+	if v2FT != nil {
+		missingCount += len(v2FT.CollectMissingBlobs())
+	}
+	if missingCount == 0 {
+		return
+	}
+
+	stop := startSpinner(errW, fmt.Sprintf("Fetching %d checkpoint blob(s) from remote", missingCount))
+	defer stop("")
+
+	runPreFetch(ctx, v1FT, cpID, "v1")
+	runPreFetch(ctx, v2FT, cpID, "v2")
 }
 
-func prefetchSubtreeBlobs(ctx context.Context, repo *git.Repository, rootTree *object.Tree, cpID id.CheckpointID, label string) {
+// buildCheckpointFetchingTree navigates to the checkpoint subtree using
+// loadRoot and wraps it in a FetchingTree with FetchBlobsByHash. Returns
+// nil when the root tree or cp subtree isn't navigable.
+func buildCheckpointFetchingTree(ctx context.Context, repo *git.Repository, cpID id.CheckpointID, label string, loadRoot func(*git.Repository) (*object.Tree, error)) *checkpoint.FetchingTree {
+	rootTree, err := loadRoot(repo)
+	if err != nil {
+		return nil
+	}
 	cpSubtree, err := rootTree.Tree(cpID.Path())
 	if err != nil {
 		logging.Debug(ctx, "explain prefetch: cp subtree not found",
@@ -667,9 +693,15 @@ func prefetchSubtreeBlobs(ctx context.Context, repo *git.Repository, rootTree *o
 			slog.String("checkpoint_id", cpID.String()),
 			slog.String("error", err.Error()),
 		)
+		return nil
+	}
+	return checkpoint.NewFetchingTree(ctx, cpSubtree, repo.Storer, FetchBlobsByHash)
+}
+
+func runPreFetch(ctx context.Context, ft *checkpoint.FetchingTree, cpID id.CheckpointID, label string) {
+	if ft == nil {
 		return
 	}
-	ft := checkpoint.NewFetchingTree(ctx, cpSubtree, repo.Storer, FetchBlobsByHash)
 	prefetched, err := ft.PreFetch()
 	if err != nil {
 		logging.Debug(ctx, "explain prefetch: PreFetch failed",
