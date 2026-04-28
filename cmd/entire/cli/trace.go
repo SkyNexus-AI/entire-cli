@@ -12,7 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode/utf8"
+
+	"github.com/charmbracelet/lipgloss"
 )
 
 // traceStep represents a single timed step within a trace span.
@@ -141,14 +142,17 @@ func buildTraceSteps(stepDurations map[string]int64, stepErrors map[string]bool)
 }
 
 func traceStepParent(name string, allSteps map[string]int64) (string, bool) {
-	for lastDot := strings.LastIndex(name, "."); lastDot >= 0; {
-		parent := name[:lastDot]
-		if _, exists := allSteps[parent]; exists {
-			return parent, true
+	candidate := name
+	for {
+		idx := strings.LastIndex(candidate, ".")
+		if idx < 0 {
+			return "", false
 		}
-		lastDot = strings.LastIndex(parent, ".")
+		candidate = candidate[:idx]
+		if _, ok := allSteps[candidate]; ok {
+			return candidate, true
+		}
 	}
-	return "", false
 }
 
 func traceStepNodesToSteps(nodes []*traceStepNode, parentName string) []traceStep {
@@ -255,7 +259,6 @@ func renderTraceEntries(w io.Writer, entries []traceEntry) {
 			fmt.Fprintln(w)
 		}
 
-		// Header line: op  duration  [timestamp]
 		header := fmt.Sprintf("%s  %dms", entry.Op, entry.DurationMs)
 		if !entry.Time.IsZero() {
 			header += "  " + entry.Time.Format(time.RFC3339)
@@ -267,52 +270,51 @@ func renderTraceEntries(w io.Writer, entries []traceEntry) {
 			continue
 		}
 
-		nameWidth := traceStepNameWidth(entry.Steps)
+		rows := flattenTraceSteps(entry.Steps)
+		nameWidth := lipgloss.Width("STEP")
+		for _, r := range rows {
+			nameWidth = max(nameWidth, lipgloss.Width(r.label))
+		}
 
-		// Column header
 		renderTraceTableRow(w, nameWidth, "STEP", "DURATION", false)
-
-		// Step rows
-		for _, s := range entry.Steps {
-			dur := fmt.Sprintf("%dms", s.DurationMs)
-			renderTraceTableRow(w, nameWidth, s.Name, dur, s.Error)
-			renderTraceStepChildren(w, s.SubSteps, nameWidth, "  ")
+		for _, r := range rows {
+			renderTraceTableRow(w, nameWidth, r.label, fmt.Sprintf("%dms", r.durationMs), r.err)
 		}
 	}
 }
 
-func traceStepNameWidth(steps []traceStep) int {
-	width := displayWidth("STEP")
-	for _, step := range steps {
-		width = max(width, displayWidth(step.Name))
-		width = max(width, traceStepChildrenNameWidth(step.SubSteps, "  "))
-	}
-	return width
+type traceRenderRow struct {
+	label      string
+	durationMs int64
+	err        bool
 }
 
-func traceStepChildrenNameWidth(steps []traceStep, prefix string) int {
-	width := 0
-	for i, step := range steps {
-		connector := traceStepConnector(i, len(steps))
-		label := prefix + connector + " " + step.Name
-		width = max(width, displayWidth(label))
-		width = max(width, traceStepChildrenNameWidth(step.SubSteps, traceStepChildPrefix(prefix, i, len(steps))))
+func flattenTraceSteps(steps []traceStep) []traceRenderRow {
+	var rows []traceRenderRow
+	for _, s := range steps {
+		rows = append(rows, traceRenderRow{label: s.Name, durationMs: s.DurationMs, err: s.Error})
+		appendChildRows(&rows, s.SubSteps, "  ")
 	}
-	return width
+	return rows
 }
 
-func renderTraceStepChildren(w io.Writer, steps []traceStep, nameWidth int, prefix string) {
+func appendChildRows(rows *[]traceRenderRow, steps []traceStep, prefix string) {
 	for i, step := range steps {
-		connector := traceStepConnector(i, len(steps))
-		label := prefix + connector + " " + step.Name
-		dur := fmt.Sprintf("%dms", step.DurationMs)
-		renderTraceTableRow(w, nameWidth, label, dur, step.Error)
-		renderTraceStepChildren(w, step.SubSteps, nameWidth, traceStepChildPrefix(prefix, i, len(steps)))
+		connector, childPrefix := "├─", prefix+"│  "
+		if i == len(steps)-1 {
+			connector, childPrefix = "└─", prefix+"   "
+		}
+		*rows = append(*rows, traceRenderRow{
+			label:      prefix + connector + " " + step.Name,
+			durationMs: step.DurationMs,
+			err:        step.Error,
+		})
+		appendChildRows(rows, step.SubSteps, childPrefix)
 	}
 }
 
 func renderTraceTableRow(w io.Writer, nameWidth int, label, duration string, hasError bool) {
-	pad := nameWidth - displayWidth(label)
+	pad := nameWidth - lipgloss.Width(label)
 	if pad < 0 {
 		pad = 0
 	}
@@ -321,22 +323,4 @@ func renderTraceTableRow(w io.Writer, nameWidth int, label, duration string, has
 		line += "  x"
 	}
 	fmt.Fprintln(w, line)
-}
-
-func traceStepConnector(i, total int) string {
-	if i == total-1 {
-		return "└─"
-	}
-	return "├─"
-}
-
-func traceStepChildPrefix(prefix string, i, total int) string {
-	if i == total-1 {
-		return prefix + "   "
-	}
-	return prefix + "│  "
-}
-
-func displayWidth(s string) int {
-	return utf8.RuneCountInString(s)
 }

@@ -12,15 +12,16 @@ import (
 // Span tracks timing for an operation and its substeps.
 // A Span is not safe for concurrent use from multiple goroutines.
 type Span struct {
-	name     string
-	start    time.Time
-	parent   *Span
-	children []*Span
-	duration time.Duration
-	attrs    []slog.Attr
-	ctx      context.Context
-	ended    bool
-	err      error
+	name       string
+	start      time.Time
+	parent     *Span
+	children   []*Span
+	duration   time.Duration
+	attrs      []slog.Attr
+	ctx        context.Context
+	ended      bool
+	err        error
+	isLoopIter bool
 }
 
 // Start begins a new span. If ctx already has a span, the new one becomes a child.
@@ -64,10 +65,8 @@ func (s *Span) End() {
 		return
 	}
 
-	// Build log attributes: op, duration_ms, error flag, then child step durations.
-	// Component is set via context so it appears exactly once in the log line.
 	logCtx := logging.WithComponent(s.ctx, "perf")
-	attrs := make([]any, 0, 3+2*len(s.children)+len(s.attrs))
+	attrs := make([]any, 0, 3+len(s.attrs))
 	attrs = append(attrs, slog.String("op", s.name))
 	attrs = append(attrs, slog.Int64("duration_ms", s.duration.Milliseconds()))
 	if s.err != nil {
@@ -76,7 +75,6 @@ func (s *Span) End() {
 
 	attrs = appendChildStepAttrs(attrs, s, "")
 
-	// Add any extra attributes from Start()
 	for _, a := range s.attrs {
 		attrs = append(attrs, a)
 	}
@@ -86,15 +84,10 @@ func (s *Span) End() {
 
 // appendChildStepAttrs emits the full child timing tree under parent.
 //
-// Normal named children use their span names, with ~N suffixes for duplicate
-// sibling names. Loop iterations created by StartLoop use the same span name as
-// their parent; those keep the historical numeric keys: steps.loop.0_ms,
-// steps.loop.1_ms, etc.
+// Normal children use their span names, with ~N suffixes for duplicate sibling
+// names. Loop iterations (from LoopSpan.Iteration) keep the historical numeric
+// keys: steps.<loopName>.0_ms, steps.<loopName>.1_ms, etc.
 func appendChildStepAttrs(attrs []any, parent *Span, parentKey string) []any {
-	if parent == nil {
-		return attrs
-	}
-
 	seen := make(map[string]int, len(parent.children))
 	loopIndex := 0
 	for _, child := range parent.children {
@@ -102,33 +95,25 @@ func appendChildStepAttrs(attrs []any, parent *Span, parentKey string) []any {
 			child.End()
 		}
 
-		stepKey := childStepPath(parent, child, parentKey, seen, loopIndex)
-		if parentKey != "" && child.name == parent.name {
+		var stepKey string
+		if child.isLoopIter && parentKey != "" {
+			stepKey = fmt.Sprintf("%s.%d", parentKey, loopIndex)
 			loopIndex++
+		} else {
+			stepKey = childStepKey(child.name, seen)
+			if parentKey != "" {
+				stepKey = parentKey + "." + stepKey
+			}
 		}
 
-		key := fmt.Sprintf("steps.%s_ms", stepKey)
-		attrs = append(attrs, slog.Int64(key, child.duration.Milliseconds()))
+		attrs = append(attrs, slog.Int64("steps."+stepKey+"_ms", child.duration.Milliseconds()))
 		if child.err != nil {
-			errKey := fmt.Sprintf("steps.%s_err", stepKey)
-			attrs = append(attrs, slog.Bool(errKey, true))
+			attrs = append(attrs, slog.Bool("steps."+stepKey+"_err", true))
 		}
 
 		attrs = appendChildStepAttrs(attrs, child, stepKey)
 	}
 	return attrs
-}
-
-func childStepPath(parent, child *Span, parentKey string, seen map[string]int, loopIndex int) string {
-	if parentKey != "" && child.name == parent.name {
-		return fmt.Sprintf("%s.%d", parentKey, loopIndex)
-	}
-
-	stepKey := childStepKey(child.name, seen)
-	if parentKey == "" {
-		return stepKey
-	}
-	return parentKey + "." + stepKey
 }
 
 // childStepKey returns a unique key for a child span name.
@@ -171,7 +156,9 @@ func StartLoop(ctx context.Context, name string, attrs ...slog.Attr) (context.Co
 // Iteration creates a child span for a single loop iteration. The caller must
 // call End() on the returned span when the iteration completes.
 func (l *LoopSpan) Iteration(ctx context.Context) (context.Context, *Span) {
-	return Start(ctx, l.span.name)
+	ctx, s := Start(ctx, l.span.name)
+	s.isLoopIter = true
+	return ctx, s
 }
 
 // End completes the loop span, auto-ending any unended iteration children first

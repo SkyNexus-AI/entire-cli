@@ -293,7 +293,9 @@ func TestEnd_SerializesLoopIterationsWithNumericKeys(t *testing.T) {
 	t.Parallel()
 
 	iter0 := testEndedSpan("process_sessions", 100*time.Millisecond)
+	iter0.isLoopIter = true
 	iter1 := testEndedSpan("process_sessions", 200*time.Millisecond)
+	iter1.isLoopIter = true
 	processSessions := testEndedSpan("process_sessions", 300*time.Millisecond, iter0, iter1)
 	root := testEndedSpan("post-commit", 350*time.Millisecond, processSessions)
 
