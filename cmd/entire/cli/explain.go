@@ -360,7 +360,7 @@ func runExplain(ctx context.Context, w, errW io.Writer, sessionID, commitRef, ch
 // an ambiguity pre-check to avoid writing a summary to the wrong
 // checkpoint on short-prefix collisions.
 func runExplainAuto(ctx context.Context, w, errW io.Writer, target string, noPager, verbose, full, rawTranscript, generate, force, searchAll bool) error {
-	lookup, lookupErr := newExplainCheckpointLookup(ctx, nil)
+	lookup, lookupErr := newExplainCheckpointLookup(ctx)
 	if generate {
 		if err := runExplainAutoAmbiguityGuard(ctx, target, lookup, lookupErr); err != nil {
 			return err
@@ -476,7 +476,7 @@ func runExplainCheckpoint(ctx context.Context, w, errW io.Writer, checkpointIDPr
 func runExplainCheckpointWithLookup(ctx context.Context, w, errW io.Writer, checkpointIDPrefix string, noPager, verbose, full, rawTranscript, generate, force, searchAll bool, lookup *explainCheckpointLookup, lookupErr error) error {
 	if lookup == nil {
 		var err error
-		lookup, err = newExplainCheckpointLookup(ctx, nil)
+		lookup, err = newExplainCheckpointLookup(ctx)
 		if err != nil {
 			return err
 		}
@@ -492,31 +492,23 @@ func runExplainCheckpointWithLookup(ctx context.Context, w, errW io.Writer, chec
 		}
 	}
 
-	// If not found locally, fetch metadata from remote and retry.
-	// This handles the case where we're looking at a checkpoint from another
-	// collaborator's PR whose metadata hasn't been fetched yet.
-	// Try origin first (fast treeless fetch, ~1-2s), then checkpoint_remote
-	// if configured and origin didn't have it. Fetch both v1 and v2 refs.
+	// If not found locally, fetch metadata from remote and retry. Reuses
+	// resume's getMetadataTree / getV2MetadataTree helpers — they already
+	// implement the checkpoint_remote → treeless origin → full origin chain
+	// and return a fresh repo handle (which we discard; the post-fetch
+	// rebuild via newExplainCheckpointLookup opens its own).
 	if len(matches) == 0 {
-		anyFetched := FetchMetadataTreeOnly(ctx) == nil
-		if !anyFetched {
-			anyFetched = FetchMetadataFromCheckpointRemote(ctx) == nil
-		}
+		_, _, v1Err := getMetadataTree(ctx)
+		var v2Err error
 		if lookup.preferCheckpointsV2 {
-			v2Fetched := FetchV2MainTreeOnly(ctx) == nil
-			if !v2Fetched {
-				v2Fetched = FetchV2MetadataFromCheckpointRemote(ctx) == nil
-			}
-			anyFetched = anyFetched || v2Fetched
+			_, _, v2Err = getV2MetadataTree(ctx)
 		}
-		if anyFetched {
-			if freshLookup, freshErr := newExplainCheckpointLookup(ctx, nil); freshErr == nil {
+		if v1Err == nil || v2Err == nil {
+			if freshLookup, freshErr := newExplainCheckpointLookup(ctx); freshErr == nil {
 				lookup = freshLookup
-				if freshCommitted := lookup.committed; freshCommitted != nil {
-					for _, info := range freshCommitted {
-						if strings.HasPrefix(info.CheckpointID.String(), checkpointIDPrefix) {
-							matches = append(matches, info.CheckpointID)
-						}
+				for _, info := range lookup.committed {
+					if strings.HasPrefix(info.CheckpointID.String(), checkpointIDPrefix) {
+						matches = append(matches, info.CheckpointID)
 					}
 				}
 			}
@@ -561,6 +553,11 @@ func runExplainCheckpointWithLookup(ctx context.Context, w, errW io.Writer, chec
 		}
 		return fmt.Errorf("ambiguous checkpoint prefix %q matches %d checkpoints: %s", checkpointIDPrefix, len(matches), strings.Join(examples, ", "))
 	}
+
+	// Batch-prefetch all blobs in the checkpoint's subtree in one network
+	// round-trip via fetch-pack. Best-effort: if prefetch fails, the
+	// per-File fallback fetcher on v1Store still recovers individual blobs.
+	prefetchCheckpointBlobs(ctx, lookup.repo, fullCheckpointID)
 
 	// Resolve store and load checkpoint summary with v2 -> v1 fallback.
 	resolvedReader, summary, err := checkpoint.ResolveCommittedReaderForCheckpoint(ctx, fullCheckpointID, lookup.v1Store, lookup.v2Store, lookup.preferCheckpointsV2)
@@ -643,13 +640,43 @@ func runExplainCheckpointWithLookup(ctx context.Context, w, errW io.Writer, chec
 	return nil
 }
 
-func newExplainCheckpointLookup(ctx context.Context, repo *git.Repository) (*explainCheckpointLookup, error) {
-	if repo == nil {
-		var err error
-		repo, err = openRepository(ctx)
+// prefetchCheckpointBlobs navigates to the checkpoint's subtree, collects
+// every locally-missing blob in one pass, and fetches them all in a single
+// `git fetch-pack <url> <hash1> <hash2>...` invocation. Best-effort —
+// failure is logged and the read path falls back to the FetchingTree's
+// per-File fetcher.
+func prefetchCheckpointBlobs(ctx context.Context, repo *git.Repository, cpID id.CheckpointID) {
+	rootTree, err := strategy.GetMetadataBranchTree(repo)
+	if err != nil {
+		rootTree, err = strategy.GetRemoteMetadataBranchTree(repo)
 		if err != nil {
-			return nil, fmt.Errorf("not a git repository: %w", err)
+			logging.Debug(ctx, "explain prefetch: no v1 metadata tree", slog.String("error", err.Error()))
+			return
 		}
+	}
+	cpSubtree, err := rootTree.Tree(cpID.Path())
+	if err != nil {
+		logging.Debug(ctx, "explain prefetch: cp subtree not found", slog.String("checkpoint_id", cpID.String()), slog.String("error", err.Error()))
+		return
+	}
+	ft := checkpoint.NewFetchingTree(ctx, cpSubtree, repo.Storer, FetchBlobsByHash)
+	prefetched, err := ft.PreFetch()
+	if err != nil {
+		logging.Debug(ctx, "explain prefetch: PreFetch failed", slog.String("checkpoint_id", cpID.String()), slog.String("error", err.Error()))
+		return
+	}
+	if prefetched > 0 {
+		logging.Debug(ctx, "explain prefetch: blobs fetched in one round-trip",
+			slog.String("checkpoint_id", cpID.String()),
+			slog.Int("blob_count", prefetched),
+		)
+	}
+}
+
+func newExplainCheckpointLookup(ctx context.Context) (*explainCheckpointLookup, error) {
+	repo, err := openRepository(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("not a git repository: %w", err)
 	}
 
 	v2URL, err := remote.FetchURL(ctx)
@@ -660,9 +687,16 @@ func newExplainCheckpointLookup(ctx context.Context, repo *git.Repository) (*exp
 		v2URL = ""
 	}
 
+	v1Store := checkpoint.NewGitStore(repo)
+	// FetchBlobsByHash now uses `git fetch-pack` under the hood, which
+	// works against GitHub for individual blob SHAs (porcelain `git fetch`
+	// fails them due to partial-clone integrity checks). Falls back to a
+	// full metadata-branch fetch if even fetch-pack can't get the blobs.
+	v1Store.SetBlobFetcher(FetchBlobsByHash)
+
 	lookup := &explainCheckpointLookup{
 		repo:                repo,
-		v1Store:             checkpoint.NewGitStore(repo),
+		v1Store:             v1Store,
 		v2Store:             checkpoint.NewV2GitStore(repo, v2URL),
 		preferCheckpointsV2: settings.IsCheckpointsV2Enabled(ctx),
 	}
