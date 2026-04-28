@@ -25,6 +25,8 @@ func (p fakeDispatchProgram) Run() (tea.Model, error) {
 }
 
 func TestDefaultRunInteractiveDispatch_DoesNotUseAltScreen(t *testing.T) {
+	// Cannot run in parallel: mutates package-level newDispatchProgram, which
+	// races with TestDefaultRunInteractiveDispatch_ClearsLoadingCardBeforeReturn.
 	oldProgramFactory := newDispatchProgram
 	newDispatchProgram = func(model tea.Model, _ io.Writer, altScreen bool) dispatchProgram {
 		if altScreen {
@@ -71,6 +73,8 @@ func TestDispatchStatusModel_ViewRendersInlineCard(t *testing.T) {
 }
 
 func TestDefaultRunInteractiveDispatch_ClearsLoadingCardBeforeReturn(t *testing.T) {
+	// Cannot run in parallel: mutates package-level newDispatchProgram, which
+	// races with TestDefaultRunInteractiveDispatch_DoesNotUseAltScreen.
 	oldProgramFactory := newDispatchProgram
 	newDispatchProgram = func(model tea.Model, _ io.Writer, _ bool) dispatchProgram {
 		return fakeDispatchProgram{model: model}
