@@ -360,7 +360,9 @@ func runExplain(ctx context.Context, w, errW io.Writer, sessionID, commitRef, ch
 // an ambiguity pre-check to avoid writing a summary to the wrong
 // checkpoint on short-prefix collisions.
 func runExplainAuto(ctx context.Context, w, errW io.Writer, target string, noPager, verbose, full, rawTranscript, generate, force, searchAll bool) error {
+	stop := startSpinner(errW, "Loading checkpoints")
 	lookup, lookupErr := newExplainCheckpointLookup(ctx)
+	stop("")
 	if generate {
 		if err := runExplainAutoAmbiguityGuard(ctx, target, lookup, lookupErr); err != nil {
 			return err
