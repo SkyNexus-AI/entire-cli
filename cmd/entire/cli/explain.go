@@ -556,8 +556,9 @@ func runExplainCheckpointWithLookup(ctx context.Context, w, errW io.Writer, chec
 
 	// Batch-prefetch all blobs in the checkpoint's subtree in one network
 	// round-trip via fetch-pack. Best-effort: if prefetch fails, the
-	// per-File fallback fetcher on v1Store still recovers individual blobs.
-	prefetchCheckpointBlobs(ctx, lookup.repo, fullCheckpointID)
+	// per-File fallback fetcher on v1Store / v2Store still recovers
+	// individual blobs.
+	prefetchCheckpointBlobs(ctx, lookup.repo, fullCheckpointID, lookup.preferCheckpointsV2)
 
 	// Resolve store and load checkpoint summary with v2 -> v1 fallback.
 	resolvedReader, summary, err := checkpoint.ResolveCommittedReaderForCheckpoint(ctx, fullCheckpointID, lookup.v1Store, lookup.v2Store, lookup.preferCheckpointsV2)
@@ -640,37 +641,76 @@ func runExplainCheckpointWithLookup(ctx context.Context, w, errW io.Writer, chec
 	return nil
 }
 
-// prefetchCheckpointBlobs navigates to the checkpoint's subtree, collects
-// every locally-missing blob in one pass, and fetches them all in a single
-// `git fetch-pack <url> <hash1> <hash2>...` invocation. Best-effort —
-// failure is logged and the read path falls back to the FetchingTree's
-// per-File fetcher.
-func prefetchCheckpointBlobs(ctx context.Context, repo *git.Repository, cpID id.CheckpointID) {
-	rootTree, err := strategy.GetMetadataBranchTree(repo)
-	if err != nil {
-		rootTree, err = strategy.GetRemoteMetadataBranchTree(repo)
-		if err != nil {
-			logging.Debug(ctx, "explain prefetch: no v1 metadata tree", slog.String("error", err.Error()))
-			return
+// prefetchCheckpointBlobs navigates to the checkpoint's subtree(s) — v1
+// always, v2 when enabled — collects every locally-missing blob, and
+// fetches them all in a single `git fetch-pack <url> <hash1> <hash2>...`
+// invocation per store. Best-effort — failure is logged and the read path
+// falls back to the FetchingTree's per-File fetcher.
+func prefetchCheckpointBlobs(ctx context.Context, repo *git.Repository, cpID id.CheckpointID, preferV2 bool) {
+	if rootTree, err := loadV1MetadataRootTree(repo); err == nil {
+		prefetchSubtreeBlobs(ctx, repo, rootTree, cpID, "v1")
+	}
+	if preferV2 {
+		if rootTree, err := loadV2MainRootTree(repo); err == nil {
+			prefetchSubtreeBlobs(ctx, repo, rootTree, cpID, "v2")
 		}
 	}
+}
+
+func prefetchSubtreeBlobs(ctx context.Context, repo *git.Repository, rootTree *object.Tree, cpID id.CheckpointID, label string) {
 	cpSubtree, err := rootTree.Tree(cpID.Path())
 	if err != nil {
-		logging.Debug(ctx, "explain prefetch: cp subtree not found", slog.String("checkpoint_id", cpID.String()), slog.String("error", err.Error()))
+		logging.Debug(ctx, "explain prefetch: cp subtree not found",
+			slog.String("store", label),
+			slog.String("checkpoint_id", cpID.String()),
+			slog.String("error", err.Error()),
+		)
 		return
 	}
 	ft := checkpoint.NewFetchingTree(ctx, cpSubtree, repo.Storer, FetchBlobsByHash)
 	prefetched, err := ft.PreFetch()
 	if err != nil {
-		logging.Debug(ctx, "explain prefetch: PreFetch failed", slog.String("checkpoint_id", cpID.String()), slog.String("error", err.Error()))
+		logging.Debug(ctx, "explain prefetch: PreFetch failed",
+			slog.String("store", label),
+			slog.String("checkpoint_id", cpID.String()),
+			slog.String("error", err.Error()),
+		)
 		return
 	}
 	if prefetched > 0 {
 		logging.Debug(ctx, "explain prefetch: blobs fetched in one round-trip",
+			slog.String("store", label),
 			slog.String("checkpoint_id", cpID.String()),
 			slog.Int("blob_count", prefetched),
 		)
 	}
+}
+
+func loadV1MetadataRootTree(repo *git.Repository) (*object.Tree, error) {
+	if tree, err := strategy.GetMetadataBranchTree(repo); err == nil {
+		return tree, nil
+	}
+	tree, err := strategy.GetRemoteMetadataBranchTree(repo)
+	if err != nil {
+		return nil, fmt.Errorf("read v1 metadata tree (local + remote-tracking): %w", err)
+	}
+	return tree, nil
+}
+
+func loadV2MainRootTree(repo *git.Repository) (*object.Tree, error) {
+	ref, err := repo.Reference(plumbing.ReferenceName(paths.V2MainRefName), true)
+	if err != nil {
+		return nil, fmt.Errorf("v2 /main ref not found: %w", err)
+	}
+	commit, err := repo.CommitObject(ref.Hash())
+	if err != nil {
+		return nil, fmt.Errorf("read v2 /main commit: %w", err)
+	}
+	tree, err := commit.Tree()
+	if err != nil {
+		return nil, fmt.Errorf("read v2 /main tree: %w", err)
+	}
+	return tree, nil
 }
 
 func newExplainCheckpointLookup(ctx context.Context) (*explainCheckpointLookup, error) {
@@ -687,17 +727,20 @@ func newExplainCheckpointLookup(ctx context.Context) (*explainCheckpointLookup, 
 		v2URL = ""
 	}
 
+	// FetchBlobsByHash uses `git fetch-pack` for blob SHAs (porcelain
+	// `git fetch` fails against partial-clone repos with "did not send all
+	// necessary objects"). Falls back to a full metadata-branch fetch if
+	// fetch-pack also can't reach the blobs.
 	v1Store := checkpoint.NewGitStore(repo)
-	// FetchBlobsByHash now uses `git fetch-pack` under the hood, which
-	// works against GitHub for individual blob SHAs (porcelain `git fetch`
-	// fails them due to partial-clone integrity checks). Falls back to a
-	// full metadata-branch fetch if even fetch-pack can't get the blobs.
 	v1Store.SetBlobFetcher(FetchBlobsByHash)
+
+	v2Store := checkpoint.NewV2GitStore(repo, v2URL)
+	v2Store.SetBlobFetcher(FetchBlobsByHash)
 
 	lookup := &explainCheckpointLookup{
 		repo:                repo,
 		v1Store:             v1Store,
-		v2Store:             checkpoint.NewV2GitStore(repo, v2URL),
+		v2Store:             v2Store,
 		preferCheckpointsV2: settings.IsCheckpointsV2Enabled(ctx),
 	}
 
