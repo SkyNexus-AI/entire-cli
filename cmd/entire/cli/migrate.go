@@ -275,7 +275,7 @@ func readV1SessionForMigration(ctx context.Context, out io.Writer, prefix string
 			warnMissingV1Session(ctx, out, prefix, checkpointID, sessionIdx, readErr)
 			return nil, true, nil
 		}
-		return nil, false, readErr
+		return nil, false, fmt.Errorf("read v1 session content: %w", readErr)
 	}
 	return content, false, nil
 }
