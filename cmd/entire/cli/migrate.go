@@ -88,8 +88,7 @@ func runMigrateCheckpointsV2(ctx context.Context, cmd *cobra.Command, force bool
 		return err
 	}
 
-	fmt.Fprintf(out, "\nMigration complete: %d migrated, %d skipped, %d failed\n",
-		result.migrated, result.skipped, result.failed)
+	printMigrateCheckpointsV2Completion(out, result)
 
 	if result.failed > 0 {
 		fmt.Fprintf(out, "%d checkpoint(s) failed to migrate. Check .entire/logs/ for details.\n", result.failed)
@@ -97,6 +96,14 @@ func runMigrateCheckpointsV2(ctx context.Context, cmd *cobra.Command, force bool
 	}
 
 	return nil
+}
+
+func printMigrateCheckpointsV2Completion(out io.Writer, result *migrateResult) {
+	fmt.Fprintf(out, "\nMigration complete: %d migrated, %d skipped, %d failed\n",
+		result.migrated, result.skipped, result.failed)
+	fmt.Fprintln(out, "Note, V2 checkpoints are stored as custom refs under refs/entire/checkpoints/v2/*, not as a branch visible in the GitHub UI.")
+	fmt.Fprintf(out, "To inspect pushed v2 checkpoint refs locally, run: git ls-remote %s 'refs/entire/checkpoints/v2/*'\n", migrateRemoteName)
+	fmt.Fprintln(out, `You may also open a checkpoint's details in entire.io and click the "session logs" link to view the log files and metadata.`)
 }
 
 var (
