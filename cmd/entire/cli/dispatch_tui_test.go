@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	dispatchpkg "github.com/entireio/cli/cmd/entire/cli/dispatch"
 )
 
@@ -60,7 +60,7 @@ func TestDispatchStatusModel_ViewRendersInlineCard(t *testing.T) {
 	model.width = 80
 	model.height = 24
 
-	view := model.View()
+	view := model.View().Content
 	if !strings.HasPrefix(view, "\n") {
 		t.Fatalf("expected inline view with a leading blank line: %q", view)
 	}

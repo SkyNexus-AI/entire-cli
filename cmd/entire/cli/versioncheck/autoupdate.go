@@ -9,7 +9,7 @@ import (
 	"os/exec"
 	"runtime"
 
-	"github.com/charmbracelet/huh"
+	"charm.land/huh/v2"
 
 	"github.com/entireio/cli/cmd/entire/cli/interactive"
 	"github.com/entireio/cli/cmd/entire/cli/logging"
@@ -80,7 +80,7 @@ func realConfirmUpdate() (bool, error) {
 				Negative("No").
 				Value(&confirmed),
 		),
-	).WithTheme(huh.ThemeDracula())
+	).WithTheme(huh.ThemeFunc(huh.ThemeDracula))
 	if os.Getenv("ACCESSIBLE") != "" {
 		form = form.WithAccessible(true)
 	}
