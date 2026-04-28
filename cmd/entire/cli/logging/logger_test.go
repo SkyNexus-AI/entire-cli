@@ -548,9 +548,10 @@ func TestLogging_ConcurrentInitAndLog(t *testing.T) {
 	defer Close()
 
 	const (
-		logGoroutines  = 8
-		initGoroutines = 4
-		iterations     = 200
+		logGoroutines   = 8
+		initGoroutines  = 4
+		closeGoroutines = 2
+		iterations      = 200
 	)
 
 	var wg sync.WaitGroup
@@ -577,6 +578,17 @@ func TestLogging_ConcurrentInitAndLog(t *testing.T) {
 					t.Errorf("Init() error = %v", err)
 					return
 				}
+			}
+		}()
+	}
+
+	for range closeGoroutines {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			for range iterations {
+				Close()
 			}
 		}()
 	}

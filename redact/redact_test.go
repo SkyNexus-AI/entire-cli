@@ -519,6 +519,16 @@ func TestString_BoundedCredentialValueRedaction(t *testing.T) {
 			input: "database_password=secret123",
 			want:  "database_password=REDACTED",
 		},
+		{
+			name:  "prefixed db password env var",
+			input: "APP_DB_PASSWORD=secret123",
+			want:  "APP_DB_PASSWORD=REDACTED",
+		},
+		{
+			name:  "prefixed mysql password env var",
+			input: "PROD_MYSQL_PWD=secret123",
+			want:  "PROD_MYSQL_PWD=REDACTED",
+		},
 	})
 }
 

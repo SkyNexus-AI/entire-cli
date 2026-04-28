@@ -254,6 +254,9 @@ func LogDuration(ctx context.Context, level slog.Level, msg string, start time.T
 }
 
 // log is the internal logging function that extracts context values and logs.
+//
+// The read lock is held across l.Log so Init/Close cannot close logBufWriter
+// mid-write; do not shrink the lock scope to a snapshot pattern.
 func log(ctx context.Context, level slog.Level, msg string, attrs ...any) {
 	mu.RLock()
 	defer mu.RUnlock()

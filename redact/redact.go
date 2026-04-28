@@ -30,7 +30,7 @@ var (
 	databaseURLPattern     = regexp.MustCompile(`(?i)\b(?:postgres(?:ql)?|mysql|mariadb|mongodb(?:\+srv)?|redis)://[^\s"'<>` + "`" + `]+`)
 	keywordDSNPattern      = regexp.MustCompile(`(?i)\b[a-z_][a-z0-9_]*=(?:"[^"]*"|'[^']*'|[^\s"']+)(?:\s+[a-z_][a-z0-9_]*=(?:"[^"]*"|'[^']*'|[^\s"']+)){2,}`)
 	semicolonConnPattern   = regexp.MustCompile(`(?i)\b[a-z][a-z0-9 _-]*=(?:\{[^}]*\}|[^=;"'\s]+)(?:;[a-z][a-z0-9 _-]*=(?:\{[^}]*\}|[^=;"'\s]+)){2,}`)
-	credentialValuePattern = regexp.MustCompile(`(?i)\b((?:db|database|pg|postgres|postgresql|mysql|mariadb|redis|mongo|mongodb|sqlserver|mssql|jdbc)[_-]?(?:password|passwd|pwd)|pgpassword|mysql_pwd|redis_password|mongo_password|mongodb_password)\s*=\s*("[^"]*"|'[^']*'|[^\s,;&]+)`)
+	credentialValuePattern = regexp.MustCompile(`(?i)(?:^|[^A-Za-z0-9])((?:db|database|pg|postgres|postgresql|mysql|mariadb|redis|mongo|mongodb|sqlserver|mssql|jdbc)[_-]?(?:password|passwd|pwd)|pgpassword|mysql_pwd|redis_password|mongo_password|mongodb_password)\s*=\s*("[^"]*"|'[^']*'|[^\s,;&]+)`)
 
 	keywordHostPattern      = regexp.MustCompile(`(?i)(?:^|\s)host=`)
 	keywordUserPattern      = regexp.MustCompile(`(?i)(?:^|\s)user=`)
@@ -49,6 +49,17 @@ const entropyThreshold = 4.5
 
 // RedactedPlaceholder is the replacement text used for redacted secrets.
 const RedactedPlaceholder = "REDACTED"
+
+// redactedPlaceholderForms holds the lowercase variants of RedactedPlaceholder
+// used to recognize already-redacted values (so we don't double-redact).
+var redactedPlaceholderForms = func() map[string]struct{} {
+	lower := strings.ToLower(RedactedPlaceholder)
+	return map[string]struct{}{
+		lower:             {},
+		"[" + lower + "]": {},
+		"<" + lower + ">": {},
+	}
+}()
 
 // RedactedBytes represents transcript data that has been through secret
 // redaction. Consumers that require pre-redacted input (e.g., compact.Compact,
@@ -231,6 +242,9 @@ func String(s string) string {
 }
 
 func detectConnectionStrings(s string) []taggedRegion {
+	if !strings.ContainsRune(s, '=') {
+		return nil
+	}
 	var regions []taggedRegion
 	for _, rule := range connectionStringRules {
 		regions = append(regions, detectConnectionStringRule(s, rule)...)
@@ -355,8 +369,11 @@ func isPlaceholderSecretValue(value string) bool {
 	if strings.HasPrefix(normalized, "${") && strings.HasSuffix(normalized, "}") {
 		return true
 	}
+	if _, ok := redactedPlaceholderForms[normalized]; ok {
+		return true
+	}
 	switch normalized {
-	case "redacted", "[redacted]", "<redacted>", "xxx", "xxxx", "changeme", "example":
+	case "xxx", "xxxx", "changeme", "example":
 		return true
 	default:
 		return false
@@ -372,18 +389,16 @@ func isCredentialJSONSecretKey(key string, credentialContext bool) bool {
 }
 
 func isCredentialJSONObject(obj map[string]any) bool {
-	hasHost := hasJSONKey(obj, "host", "hostname", "server", "addr", "address", "datasource", "data_source")
-	hasUser := hasJSONKey(obj, "user", "username", "userid", "user_id", "uid")
-	return hasHost && hasUser
-}
-
-func hasJSONKey(obj map[string]any, keys ...string) bool {
+	var hasHost, hasUser bool
 	for key := range obj {
-		normalized := normalizeCredentialJSONKey(key)
-		for _, want := range keys {
-			if normalized == want {
-				return true
-			}
+		switch normalizeCredentialJSONKey(key) {
+		case "host", "hostname", "server", "addr", "address", "datasource", "data_source":
+			hasHost = true
+		case "user", "username", "userid", "user_id", "uid":
+			hasUser = true
+		}
+		if hasHost && hasUser {
+			return true
 		}
 	}
 	return false
@@ -498,16 +513,56 @@ func applyJSONReplacements(s string, repls []jsonReplacement) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		pattern := regexp.MustCompile(`(` + regexp.QuoteMeta(keyJSON) + `\s*:\s*)` + regexp.QuoteMeta(origJSON))
-		s = pattern.ReplaceAllStringFunc(s, func(match string) string {
-			idx := strings.LastIndex(match, origJSON)
-			if idx < 0 {
-				return match
-			}
-			return match[:idx] + replJSON
-		})
+		s = replaceKeyedJSONValue(s, keyJSON, origJSON, replJSON)
 	}
 	return s, nil
+}
+
+// replaceKeyedJSONValue replaces every occurrence of origJSON that follows
+// keyJSON + optional whitespace + ':' + optional whitespace. Restricts
+// substitution to value positions so a key's own redacted text is not
+// rewritten when it collides with another field's value.
+func replaceKeyedJSONValue(s, keyJSON, origJSON, replJSON string) string {
+	if !strings.Contains(s, keyJSON) {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	i := 0
+	for i < len(s) {
+		j := strings.Index(s[i:], keyJSON)
+		if j < 0 {
+			b.WriteString(s[i:])
+			break
+		}
+		keyEnd := i + j + len(keyJSON)
+		b.WriteString(s[i : i+j])
+		b.WriteString(keyJSON)
+		p := keyEnd
+		for p < len(s) && isJSONWhitespace(s[p]) {
+			p++
+		}
+		if p >= len(s) || s[p] != ':' {
+			i = keyEnd
+			continue
+		}
+		p++
+		for p < len(s) && isJSONWhitespace(s[p]) {
+			p++
+		}
+		if p+len(origJSON) <= len(s) && s[p:p+len(origJSON)] == origJSON {
+			b.WriteString(s[keyEnd:p])
+			b.WriteString(replJSON)
+			i = p + len(origJSON)
+			continue
+		}
+		i = keyEnd
+	}
+	return b.String()
+}
+
+func isJSONWhitespace(c byte) bool {
+	return c == ' ' || c == '\t' || c == '\n' || c == '\r'
 }
 
 // isSingleJSONValue returns true if the decoder has reached EOF (no more
@@ -545,18 +600,14 @@ func collectJSONLReplacements(v any) []jsonReplacement {
 			}
 		case string:
 			redacted := String(val)
-			replacementKey := ""
-			if key != "" {
-				replacementKey = key
-			}
 			if redacted == val && isCredentialJSONSecretKey(key, credentialContext) && hasNonPlaceholderPasswordValue(val) {
 				redacted = RedactedPlaceholder
 			}
 			if redacted != val {
-				seenKey := replacementKey + "\x00" + val
+				seenKey := key + "\x00" + val
 				if !seen[seenKey] {
 					seen[seenKey] = true
-					repls = append(repls, jsonReplacement{key: replacementKey, original: val, redacted: redacted})
+					repls = append(repls, jsonReplacement{key: key, original: val, redacted: redacted})
 				}
 			}
 		}

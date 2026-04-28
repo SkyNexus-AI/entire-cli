@@ -42,7 +42,7 @@ Betterleaks pattern matching covers cloud providers (AWS, GCP, Azure), version c
 
 All detected secrets are replaced with `REDACTED`.
 
-To reduce over-redaction, Entire preserves structural transcript fields such as IDs and paths, ignores common placeholder values, and redacts only credential values for bounded key/value forms. Connection strings are redacted as a unit because partial fragments can still expose sensitive material.
+To reduce over-redaction, Entire preserves structural transcript fields such as IDs and paths, ignores common placeholder values, and redacts only credential values for bounded key/value forms. When a connection string contains a real (non-placeholder) password, it is redacted as a unit because partial fragments can still expose sensitive material; connection strings whose passwords are placeholders (e.g. `${DB_PASSWORD}`) are left intact.
 
 ## Limitations
 

@@ -50,6 +50,8 @@ type dispatchProgram interface {
 	Run() (tea.Model, error)
 }
 
+// newDispatchProgram is overridden by tests via assignment. Tests that mutate
+// it cannot use t.Parallel() — they would race each other's factory.
 var newDispatchProgram = func(model tea.Model, outW io.Writer, altScreen bool) dispatchProgram {
 	options := []tea.ProgramOption{tea.WithOutput(outW)}
 	if altScreen {
