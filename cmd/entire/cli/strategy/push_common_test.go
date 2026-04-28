@@ -1543,14 +1543,4 @@ func TestPrintProtectedRefBlock(t *testing.T) {
 		assert.Contains(t, out, "checkpoint remote")
 		assert.NotContains(t, out, "git@github.com:org/repo.git")
 	})
-
-	t.Run("v2 ref action avoids branch protection pattern", func(t *testing.T) {
-		t.Parallel()
-		var buf bytes.Buffer
-		printProtectedRefBlock(&buf, "v2/main", "origin", protectedV2ActionLine, protectedV2ActionContinuation)
-
-		out := buf.String()
-		assert.Contains(t, out, "repository push rule")
-		assert.NotContains(t, out, "allow pushes to `entire/*`")
-	})
 }

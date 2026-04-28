@@ -69,8 +69,6 @@ const (
 	checkpointRemoteDisplayName   = "checkpoint remote"
 	protectedV1ActionLine         = "allow pushes to `entire/*` in your ruleset, or set"
 	protectedV1ActionContinuation = "`checkpoint_remote` in .entire/settings.json to a separate repo."
-	protectedV2ActionLine         = "set `checkpoint_remote` in .entire/settings.json to a separate repo,"
-	protectedV2ActionContinuation = "or adjust the repository push rule blocking checkpoint refs."
 )
 
 // doPushBranch pushes the given branch to the target with fetch+merge recovery.

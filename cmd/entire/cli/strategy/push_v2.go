@@ -50,7 +50,11 @@ func tryPushRef(ctx context.Context, target string, refName plumbing.ReferenceNa
 	result, err := remote.Push(ctx, target, refSpec)
 	outputStr := result.Output
 	if err != nil {
-		return pushResult{}, classifyPushOutput(outputStr)
+		if strings.Contains(outputStr, "non-fast-forward") ||
+			strings.Contains(outputStr, "rejected") {
+			return pushResult{}, errors.New("non-fast-forward")
+		}
+		return pushResult{}, fmt.Errorf("push failed: %s", outputStr)
 	}
 
 	return parsePushResult(outputStr), nil
@@ -60,26 +64,18 @@ func tryPushRef(ctx context.Context, target string, refName plumbing.ReferenceNa
 func doPushRef(ctx context.Context, target string, refName plumbing.ReferenceName) error {
 	displayTarget := target
 	if remote.IsURL(target) {
-		displayTarget = checkpointRemoteDisplayName
+		displayTarget = "checkpoint remote"
 	}
 
 	shortRef := shortRefName(refName)
 	fmt.Fprintf(os.Stderr, "[entire] Pushing %s to %s...", shortRef, displayTarget)
 	stop := startProgressDots(os.Stderr)
 
-	result, err := tryPushRef(ctx, target, refName)
-	if err == nil {
+	if result, err := tryPushRef(ctx, target, refName); err == nil {
 		finishPush(ctx, stop, result, target)
 		return nil
 	}
 	stop("")
-
-	// Protected refs cannot be fixed by syncing and retrying.
-	var protectedErr *protectedRefError
-	if errors.As(err, &protectedErr) {
-		printProtectedRefBlock(os.Stderr, shortRef, target, protectedV2ActionLine, protectedV2ActionContinuation)
-		return nil
-	}
 
 	fmt.Fprintf(os.Stderr, "[entire] Syncing %s with remote...", shortRef)
 	stop = startProgressDots(os.Stderr)
