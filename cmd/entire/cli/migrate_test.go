@@ -238,6 +238,81 @@ func TestMigrateCheckpointsV2_MultiSession(t *testing.T) {
 	assert.GreaterOrEqual(t, len(summary.Sessions), 2, "should have at least 2 sessions")
 }
 
+func TestMigrateCheckpointsV2_SkipsV1SessionWithoutTranscript(t *testing.T) {
+	t.Parallel()
+	repo := initMigrateTestRepo(t)
+	v1Store, v2Store := newMigrateStores(repo)
+
+	cpID := id.MustCheckpointID("445566778899")
+
+	writeV1Checkpoint(t, v1Store, cpID, "session-real",
+		[]byte("{\"type\":\"assistant\",\"message\":\"real session\"}\n"),
+		[]string{"real prompt"},
+	)
+
+	err := v1Store.WriteCommitted(context.Background(), checkpoint.WriteCommittedOptions{
+		CheckpointID: cpID,
+		SessionID:    "session-without-transcript",
+		Strategy:     "manual-commit",
+		Transcript:   redact.AlreadyRedacted(nil),
+		Prompts:      []string{"metadata-only prompt"},
+		AuthorName:   "Test",
+		AuthorEmail:  "test@test.com",
+	})
+	require.NoError(t, err)
+
+	var stdout bytes.Buffer
+	result, migrateErr := migrateCheckpointsV2(context.Background(), repo, v1Store, v2Store, &stdout, false)
+	require.NoError(t, migrateErr)
+	assert.Equal(t, 1, result.migrated)
+	assert.Equal(t, 0, result.skipped)
+	assert.Equal(t, 0, result.failed)
+
+	output := stdout.String()
+	assert.Contains(t, output, "warning: skipping v1 session 1")
+	assert.Contains(t, output, "no transcript/session content exists for that session")
+	assert.Contains(t, output, "skipped 1 session(s) with missing transcript/session content")
+
+	summary, readErr := v2Store.ReadCommitted(context.Background(), cpID)
+	require.NoError(t, readErr)
+	require.NotNil(t, summary)
+	require.Len(t, summary.Sessions, 1)
+	assert.Equal(t, "/"+cpID.Path()+"/0/metadata.json", summary.Sessions[0].Metadata)
+}
+
+func TestMigrateCheckpointsV2_SkipsCheckpointWhenAllV1SessionsMissingTranscript(t *testing.T) {
+	t.Parallel()
+	repo := initMigrateTestRepo(t)
+	v1Store, v2Store := newMigrateStores(repo)
+
+	cpID := id.MustCheckpointID("5566778899bb")
+	err := v1Store.WriteCommitted(context.Background(), checkpoint.WriteCommittedOptions{
+		CheckpointID: cpID,
+		SessionID:    "metadata-only-session",
+		Strategy:     "manual-commit",
+		Transcript:   redact.AlreadyRedacted(nil),
+		Prompts:      []string{"metadata-only prompt"},
+		AuthorName:   "Test",
+		AuthorEmail:  "test@test.com",
+	})
+	require.NoError(t, err)
+
+	var stdout bytes.Buffer
+	result, migrateErr := migrateCheckpointsV2(context.Background(), repo, v1Store, v2Store, &stdout, false)
+	require.NoError(t, migrateErr)
+	assert.Equal(t, 0, result.migrated)
+	assert.Equal(t, 1, result.skipped)
+	assert.Equal(t, 0, result.failed)
+
+	output := stdout.String()
+	assert.Contains(t, output, "warning: skipping v1 session 0")
+	assert.Contains(t, output, "skipped (no migratable v1 sessions")
+
+	summary, readErr := v2Store.ReadCommitted(context.Background(), cpID)
+	require.NoError(t, readErr)
+	assert.Nil(t, summary)
+}
+
 func TestMigrateCheckpointsV2_NoV1Branch(t *testing.T) {
 	t.Parallel()
 	repo := initMigrateTestRepo(t)
