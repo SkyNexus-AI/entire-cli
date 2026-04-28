@@ -499,11 +499,13 @@ func runExplainCheckpointWithLookup(ctx context.Context, w, errW io.Writer, chec
 	// rebuild via newExplainCheckpointLookup opens its own).
 	if len(matches) == 0 {
 		_, _, v1Err := getMetadataTree(ctx)
-		var v2Err error
+		v2OK := false
 		if lookup.preferCheckpointsV2 {
-			_, _, v2Err = getV2MetadataTree(ctx)
+			if _, _, v2Err := getV2MetadataTree(ctx); v2Err == nil {
+				v2OK = true
+			}
 		}
-		if v1Err == nil || v2Err == nil {
+		if v1Err == nil || v2OK {
 			if freshLookup, freshErr := newExplainCheckpointLookup(ctx); freshErr == nil {
 				lookup = freshLookup
 				for _, info := range lookup.committed {

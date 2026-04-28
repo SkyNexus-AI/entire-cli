@@ -13,6 +13,7 @@ import (
 
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint"
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint/id"
+	"github.com/entireio/cli/cmd/entire/cli/execx"
 	"github.com/entireio/cli/cmd/entire/cli/jsonutil"
 	"github.com/entireio/cli/cmd/entire/cli/paths"
 	"github.com/entireio/cli/cmd/entire/cli/testutil"
@@ -967,12 +968,14 @@ func writeV2Settings(t *testing.T, dir string) {
 }
 
 // runExplainInDir runs `entire explain --checkpoint <id>` in dir and
-// returns combined output. Fails the test if the command errors.
+// returns combined output. Fails the test if the command errors. Uses
+// execx.NonInteractive (project rule for spawning the entire binary in
+// tests) so the child has no controlling terminal.
 func runExplainInDir(t *testing.T, dir, checkpointID string) string {
 	t.Helper()
-	cmd := exec.CommandContext(t.Context(), getTestBinary(), "explain", "--checkpoint", checkpointID)
+	cmd := execx.NonInteractive(t.Context(), getTestBinary(), "explain", "--checkpoint", checkpointID)
 	cmd.Dir = dir
-	cmd.Env = append(testutil.GitIsolatedEnv(), "ENTIRE_TEST_TTY=0")
+	cmd.Env = testutil.GitIsolatedEnv()
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("explain failed: %v\n%s", err, out)
