@@ -22,7 +22,7 @@ This repo contains the CLI for Entire.
 
 ### Command Layout
 
-The CLI is organized around four noun groups plus a small set of top-level
+The CLI is organized around five noun groups plus a small set of top-level
 verbs. Phase 1 introduced the groups additively; the previous flat top-level
 verbs remain registered as silent permanent aliases so existing scripts and
 muscle memory continue to work.
@@ -30,6 +30,7 @@ muscle memory continue to work.
 - `session` (alias: `sessions`): `list`, `info`, `stop`, `attach`, `resume`, `current`
 - `checkpoint` (aliases: `cp`, `checkpoints`): `list`, `show`, `rewind`, `search`, `diff`
 - `agent`: `list`, `add`, `remove` (replaces flag-driven `entire configure`)
+- `auth`: `login`, `logout`, `status`, `list`, `revoke`
 - `doctor`: bare runs the scan-and-fix flow, plus `trace`, `logs`, `bundle`
 
 Top-level lifecycle and standalone commands: `enable`, `disable`, `status`,
@@ -48,7 +49,7 @@ Hidden infrastructure commands: `hooks`, `migrate`, `trail`, `git-hook`,
 `curl-bash-post-install`, `__send_analytics`.
 
 Helpers used by the alias surface live in `cmd/entire/cli/aliascmd.go`
-(`aliasOf`, `WithDeprecation`, `warnDeprecatedAliasOnce`). Diagnostic
+(`warnDeprecatedAliasOnce`). Diagnostic
 subcommands live alongside `doctor.go` as `doctor_logs.go` and
 `doctor_bundle.go`. Group roots and noun-group children live in files
 named `<noun>_group.go` and `<noun>_<verb>.go` respectively.

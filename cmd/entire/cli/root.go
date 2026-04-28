@@ -83,6 +83,7 @@ func NewRootCmd() *cobra.Command {
 	cmd.AddCommand(newSessionsCmd())        // 'session' (with 'sessions' as Cobra alias)
 	cmd.AddCommand(newCheckpointGroupCmd()) // 'checkpoint' / 'cp' / 'checkpoints'
 	cmd.AddCommand(newAgentGroupCmd())      // 'agent'
+	cmd.AddCommand(newAuthCmd())            // 'auth'
 	cmd.AddCommand(newDoctorCmd())          // 'doctor' (group: trace/logs/bundle)
 
 	// Top-level lifecycle and standalone commands.
