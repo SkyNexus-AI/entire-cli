@@ -15,7 +15,8 @@ import (
 )
 
 // traceStep represents a single timed step within a trace span.
-// Group steps (from nested spans) have SubSteps with 0-based iteration numbering.
+// Nested spans are represented as SubSteps. Loop iterations keep their numeric
+// suffixes in the step name, e.g. "process_sessions.0".
 type traceStep struct {
 	Name       string
 	DurationMs int64
@@ -103,90 +104,99 @@ func parseTraceEntry(line string) *traceEntry {
 		}
 	}
 
-	// Separate parent steps from sub-steps.
-	// A key like "foo.0" is a sub-step of "foo" if "foo" also exists as a parent
-	// and the last segment is a non-negative integer.
-	subStepDurations := make(map[string]map[int]int64) // parent -> index -> ms
-	subStepErrors := make(map[string]map[int]bool)     // parent -> index -> err
-	parentStepDurations := make(map[string]int64)
-	parentStepErrors := make(map[string]bool)
-
-	for name, ms := range stepDurations {
-		if parent, idx, ok := parseSubStepKey(name, stepDurations); ok {
-			if subStepDurations[parent] == nil {
-				subStepDurations[parent] = make(map[int]int64)
-			}
-			subStepDurations[parent][idx] = ms
-			if stepErrors[name] {
-				if subStepErrors[parent] == nil {
-					subStepErrors[parent] = make(map[int]bool)
-				}
-				subStepErrors[parent][idx] = true
-			}
-		} else {
-			parentStepDurations[name] = ms
-			parentStepErrors[name] = stepErrors[name]
-		}
-	}
-
-	// Build steps slice sorted alphabetically by name
-	steps := make([]traceStep, 0, len(parentStepDurations))
-	for name, ms := range parentStepDurations {
-		step := traceStep{
-			Name:       name,
-			DurationMs: ms,
-			Error:      parentStepErrors[name],
-		}
-
-		// Attach sub-steps if any, sorted by numeric index
-		if subs, ok := subStepDurations[name]; ok {
-			indices := make([]int, 0, len(subs))
-			for idx := range subs {
-				indices = append(indices, idx)
-			}
-			slices.Sort(indices)
-
-			subList := make([]traceStep, 0, len(subs))
-			for _, idx := range indices {
-				subList = append(subList, traceStep{
-					Name:       fmt.Sprintf("%s.%d", name, idx),
-					DurationMs: subs[idx],
-					Error:      subStepErrors[name][idx],
-				})
-			}
-			step.SubSteps = subList
-		}
-
-		steps = append(steps, step)
-	}
-	slices.SortFunc(steps, func(a, b traceStep) int {
-		return cmp.Compare(a.Name, b.Name)
-	})
-
-	entry.Steps = steps
+	entry.Steps = buildTraceSteps(stepDurations, stepErrors)
 
 	return entry
 }
 
-// parseSubStepKey checks if a step name like "foo.0" is a sub-step of "foo".
-// Returns the parent name, index, and true if it is a sub-step.
-// A name is a sub-step if: the last segment after the final "." is a non-negative
-// integer AND the parent name exists in allSteps.
-func parseSubStepKey(name string, allSteps map[string]int64) (string, int, bool) {
-	lastDot := strings.LastIndex(name, ".")
-	if lastDot < 0 {
-		return "", 0, false
+type traceStepNode struct {
+	step     traceStep
+	children []*traceStepNode
+}
+
+func buildTraceSteps(stepDurations map[string]int64, stepErrors map[string]bool) []traceStep {
+	nodes := make(map[string]*traceStepNode, len(stepDurations))
+	names := make([]string, 0, len(stepDurations))
+	for name, ms := range stepDurations {
+		nodes[name] = &traceStepNode{
+			step: traceStep{
+				Name:       name,
+				DurationMs: ms,
+				Error:      stepErrors[name],
+			},
+		}
+		names = append(names, name)
 	}
-	parent := name[:lastDot]
-	suffix := name[lastDot+1:]
+	slices.Sort(names)
+
+	roots := make([]*traceStepNode, 0, len(nodes))
+	for _, name := range names {
+		parentName, ok := traceStepParent(name, stepDurations)
+		if !ok {
+			roots = append(roots, nodes[name])
+			continue
+		}
+		nodes[parentName].children = append(nodes[parentName].children, nodes[name])
+	}
+
+	return traceStepNodesToSteps(roots, "")
+}
+
+func traceStepParent(name string, allSteps map[string]int64) (string, bool) {
+	for lastDot := strings.LastIndex(name, "."); lastDot >= 0; {
+		parent := name[:lastDot]
+		if _, exists := allSteps[parent]; exists {
+			return parent, true
+		}
+		lastDot = strings.LastIndex(parent, ".")
+	}
+	return "", false
+}
+
+func traceStepNodesToSteps(nodes []*traceStepNode, parentName string) []traceStep {
+	sortTraceStepNodes(nodes, parentName)
+
+	steps := make([]traceStep, 0, len(nodes))
+	for _, node := range nodes {
+		step := node.step
+		step.SubSteps = traceStepNodesToSteps(node.children, step.Name)
+		steps = append(steps, step)
+	}
+	return steps
+}
+
+func sortTraceStepNodes(nodes []*traceStepNode, parentName string) {
+	slices.SortFunc(nodes, func(a, b *traceStepNode) int {
+		if parentName == "" {
+			return cmp.Compare(a.step.Name, b.step.Name)
+		}
+
+		aIdx, aNumeric := traceStepChildIndex(parentName, a.step.Name)
+		bIdx, bNumeric := traceStepChildIndex(parentName, b.step.Name)
+		if aNumeric && bNumeric {
+			return cmp.Compare(aIdx, bIdx)
+		}
+		if aNumeric {
+			return -1
+		}
+		if bNumeric {
+			return 1
+		}
+		return cmp.Compare(a.step.Name, b.step.Name)
+	})
+}
+
+func traceStepChildIndex(parentName, childName string) (int, bool) {
+	prefix := parentName + "."
+	if !strings.HasPrefix(childName, prefix) {
+		return 0, false
+	}
+	suffix := strings.TrimPrefix(childName, prefix)
 	idx, err := strconv.Atoi(suffix)
 	if err != nil || idx < 0 {
-		return "", 0, false
+		return 0, false
 	}
-	if _, exists := allSteps[parent]; !exists {
-		return "", 0, false
-	}
-	return parent, idx, true
+	return idx, true
 }
 
 // collectTraceEntries reads a JSONL log file and returns the last N trace entries,
@@ -259,53 +269,76 @@ func renderTraceEntries(w io.Writer, entries []traceEntry) {
 			continue
 		}
 
-		// Compute max name display width (at least len("STEP")).
-		// Sub-steps are indented 5 extra display columns relative to parent rows
-		// ("    " + "├─ " = 7 display cols vs "  " = 2 display cols).
-		const subExtraIndent = 5
-		nameWidth := len("STEP")
-		for _, s := range entry.Steps {
-			if len(s.Name) > nameWidth {
-				nameWidth = len(s.Name)
-			}
-			for _, sub := range s.SubSteps {
-				if needed := len(sub.Name) + subExtraIndent; needed > nameWidth {
-					nameWidth = needed
-				}
-			}
-		}
+		nameWidth := traceStepNameWidth(entry.Steps)
 
 		// Column header
-		fmt.Fprintf(w, "  %-*s  %8s\n", nameWidth, "STEP", "DURATION")
+		renderTraceTableRow(w, nameWidth, "STEP", "DURATION", false)
 
 		// Step rows
 		for _, s := range entry.Steps {
 			dur := fmt.Sprintf("%dms", s.DurationMs)
-			line := fmt.Sprintf("  %-*s  %8s", nameWidth, s.Name, dur)
-			if s.Error {
-				line += "  x"
-			}
-			fmt.Fprintln(w, line)
-
-			// Sub-step rows with ASCII tree connectors.
-			// Pad manually to avoid multi-byte UTF-8 box-drawing chars
-			// (├─, └─) breaking Go's byte-based %-*s alignment.
-			for i, sub := range s.SubSteps {
-				connector := "├─"
-				if i == len(s.SubSteps)-1 {
-					connector = "└─"
-				}
-				subDur := fmt.Sprintf("%dms", sub.DurationMs)
-				pad := nameWidth - subExtraIndent - len(sub.Name)
-				if pad < 0 {
-					pad = 0
-				}
-				subLine := fmt.Sprintf("    %s %s%s  %8s", connector, sub.Name, strings.Repeat(" ", pad), subDur)
-				if sub.Error {
-					subLine += "  x"
-				}
-				fmt.Fprintln(w, subLine)
-			}
+			renderTraceTableRow(w, nameWidth, s.Name, dur, s.Error)
+			renderTraceStepChildren(w, s.SubSteps, nameWidth, "  ")
 		}
 	}
+}
+
+func traceStepNameWidth(steps []traceStep) int {
+	width := displayWidth("STEP")
+	for _, step := range steps {
+		width = max(width, displayWidth(step.Name))
+		width = max(width, traceStepChildrenNameWidth(step.SubSteps, "  "))
+	}
+	return width
+}
+
+func traceStepChildrenNameWidth(steps []traceStep, prefix string) int {
+	width := 0
+	for i, step := range steps {
+		connector := traceStepConnector(i, len(steps))
+		label := prefix + connector + " " + step.Name
+		width = max(width, displayWidth(label))
+		width = max(width, traceStepChildrenNameWidth(step.SubSteps, traceStepChildPrefix(prefix, i, len(steps))))
+	}
+	return width
+}
+
+func renderTraceStepChildren(w io.Writer, steps []traceStep, nameWidth int, prefix string) {
+	for i, step := range steps {
+		connector := traceStepConnector(i, len(steps))
+		label := prefix + connector + " " + step.Name
+		dur := fmt.Sprintf("%dms", step.DurationMs)
+		renderTraceTableRow(w, nameWidth, label, dur, step.Error)
+		renderTraceStepChildren(w, step.SubSteps, nameWidth, traceStepChildPrefix(prefix, i, len(steps)))
+	}
+}
+
+func renderTraceTableRow(w io.Writer, nameWidth int, label, duration string, hasError bool) {
+	pad := nameWidth - displayWidth(label)
+	if pad < 0 {
+		pad = 0
+	}
+	line := fmt.Sprintf("  %s%s  %8s", label, strings.Repeat(" ", pad), duration)
+	if hasError {
+		line += "  x"
+	}
+	fmt.Fprintln(w, line)
+}
+
+func traceStepConnector(i, total int) string {
+	if i == total-1 {
+		return "└─"
+	}
+	return "├─"
+}
+
+func traceStepChildPrefix(prefix string, i, total int) string {
+	if i == total-1 {
+		return prefix + "   "
+	}
+	return prefix + "│  "
+}
+
+func displayWidth(s string) int {
+	return len([]rune(s))
 }
