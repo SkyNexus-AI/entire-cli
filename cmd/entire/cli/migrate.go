@@ -243,7 +243,11 @@ func migrateOneCheckpoint(ctx context.Context, repo *git.Repository, v1Store *ch
 		if writeErr := v2Store.WriteCommitted(ctx, opts); writeErr != nil {
 			return fmt.Errorf("failed to write v2 session %d: %w", sessionIdx, writeErr)
 		}
-		v1ToV2SessionIdx[sessionIdx] = migratedSessions
+		v2SessionIdx, findErr := findV2SessionIndexByID(ctx, v2Store, info.CheckpointID, content.Metadata.SessionID)
+		if findErr != nil {
+			return fmt.Errorf("failed to find migrated v2 session for v1 session %d: %w", sessionIdx, findErr)
+		}
+		v1ToV2SessionIdx[sessionIdx] = v2SessionIdx
 		migratedSessions++
 	}
 
@@ -278,7 +282,7 @@ func migrateOneCheckpoint(ctx context.Context, repo *git.Repository, v1Store *ch
 func readV1SessionForMigration(ctx context.Context, out io.Writer, prefix string, v1Store *checkpoint.GitStore, checkpointID id.CheckpointID, sessionIdx int) (*checkpoint.SessionContent, bool, error) {
 	content, readErr := v1Store.ReadSessionContent(ctx, checkpointID, sessionIdx)
 	if readErr != nil {
-		if errors.Is(readErr, checkpoint.ErrNoTranscript) {
+		if errors.Is(readErr, checkpoint.ErrNoTranscript) || errors.Is(readErr, checkpoint.ErrCheckpointNotFound) {
 			warnMissingV1Session(ctx, out, prefix, checkpointID, sessionIdx, readErr)
 			return nil, true, nil
 		}
@@ -350,6 +354,31 @@ func pruneV2CheckpointRef(ctx context.Context, repo *git.Repository, v2Store *ch
 		return fmt.Errorf("failed to update ref %s: %w", refName, err)
 	}
 	return nil
+}
+
+func findV2SessionIndexByID(ctx context.Context, v2Store *checkpoint.V2GitStore, checkpointID id.CheckpointID, sessionID string) (int, error) {
+	summary, err := v2Store.ReadCommitted(ctx, checkpointID)
+	if err != nil {
+		return 0, fmt.Errorf("read v2 checkpoint summary: %w", err)
+	}
+	if summary == nil {
+		return 0, fmt.Errorf("%w: v2 checkpoint %s", checkpoint.ErrCheckpointNotFound, checkpointID)
+	}
+
+	for sessionIdx := range len(summary.Sessions) {
+		content, readErr := v2Store.ReadSessionMetadataAndPrompts(ctx, checkpointID, sessionIdx)
+		if errors.Is(readErr, checkpoint.ErrCheckpointNotFound) {
+			continue
+		}
+		if readErr != nil {
+			return 0, fmt.Errorf("read v2 session %d metadata: %w", sessionIdx, readErr)
+		}
+		if content.Metadata.SessionID == sessionID {
+			return sessionIdx, nil
+		}
+	}
+
+	return 0, fmt.Errorf("session ID %q not found in v2 checkpoint %s", sessionID, checkpointID)
 }
 
 func repairPartialV2Checkpoint(ctx context.Context, v1Store *checkpoint.GitStore, v2Store *checkpoint.V2GitStore, info checkpoint.CommittedInfo, v2Summary *checkpoint.CheckpointSummary) (bool, error) {

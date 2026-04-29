@@ -966,7 +966,7 @@ func (s *GitStore) ReadSessionMetadata(ctx context.Context, checkpointID id.Chec
 	sessionPath := fmt.Sprintf("%s/%d", checkpointPath, sessionIndex)
 	sessionTree, err := ft.Tree(sessionPath)
 	if err != nil {
-		return nil, fmt.Errorf("session %d not found: %w", sessionIndex, err)
+		return nil, fmt.Errorf("%w: session %d not found: %w", ErrCheckpointNotFound, sessionIndex, err)
 	}
 
 	metadataFile, err := sessionTree.File(paths.MetadataFileName)
@@ -1012,7 +1012,7 @@ func (s *GitStore) ReadSessionContent(ctx context.Context, checkpointID id.Check
 	sessionDir := strconv.Itoa(sessionIndex)
 	sessionTree, err := checkpointTree.Tree(sessionDir)
 	if err != nil {
-		return nil, fmt.Errorf("session %d not found: %w", sessionIndex, err)
+		return nil, fmt.Errorf("%w: session %d not found: %w", ErrCheckpointNotFound, sessionIndex, err)
 	}
 
 	result := &SessionContent{}
