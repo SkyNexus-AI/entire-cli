@@ -240,12 +240,9 @@ func migrateOneCheckpoint(ctx context.Context, repo *git.Repository, v1Store *ch
 			compactFailed = true
 		}
 
-		if writeErr := v2Store.WriteCommitted(ctx, opts); writeErr != nil {
+		v2SessionIdx, writeErr := v2Store.WriteCommittedWithSessionIndex(ctx, opts)
+		if writeErr != nil {
 			return fmt.Errorf("failed to write v2 session %d: %w", sessionIdx, writeErr)
-		}
-		v2SessionIdx, findErr := findV2SessionIndexByID(ctx, v2Store, info.CheckpointID, content.Metadata.SessionID)
-		if findErr != nil {
-			return fmt.Errorf("failed to find migrated v2 session for v1 session %d: %w", sessionIdx, findErr)
 		}
 		v1ToV2SessionIdx[sessionIdx] = v2SessionIdx
 		migratedSessions++
@@ -331,16 +328,12 @@ func pruneV2CheckpointRef(ctx context.Context, repo *git.Repository, v2Store *ch
 
 	shardPrefix := string(cpID[:2])
 	shardSuffix := string(cpID[2:])
-	newRoot, err := checkpoint.UpdateSubtree(repo, rootTreeHash,
-		[]string{shardPrefix},
-		nil,
-		checkpoint.UpdateSubtreeOptions{
-			MergeMode:   checkpoint.MergeKeepExisting,
-			DeleteNames: []string{shardSuffix},
-		},
-	)
+	newRoot, err := pruneCheckpointFromRoot(repo, rootTreeHash, shardPrefix, shardSuffix)
 	if err != nil {
 		return fmt.Errorf("failed to remove checkpoint subtree from %s: %w", refName, err)
+	}
+	if newRoot == rootTreeHash {
+		return nil
 	}
 
 	commitHash, err := checkpoint.CreateCommit(ctx, repo, newRoot, parentHash,
@@ -356,29 +349,46 @@ func pruneV2CheckpointRef(ctx context.Context, repo *git.Repository, v2Store *ch
 	return nil
 }
 
-func findV2SessionIndexByID(ctx context.Context, v2Store *checkpoint.V2GitStore, checkpointID id.CheckpointID, sessionID string) (int, error) {
-	summary, err := v2Store.ReadCommitted(ctx, checkpointID)
+func pruneCheckpointFromRoot(repo *git.Repository, rootTreeHash plumbing.Hash, shardPrefix, shardSuffix string) (plumbing.Hash, error) {
+	newRoot, err := checkpoint.UpdateSubtree(repo, rootTreeHash,
+		[]string{shardPrefix},
+		nil,
+		checkpoint.UpdateSubtreeOptions{
+			MergeMode:   checkpoint.MergeKeepExisting,
+			DeleteNames: []string{shardSuffix},
+		},
+	)
 	if err != nil {
-		return 0, fmt.Errorf("read v2 checkpoint summary: %w", err)
+		return plumbing.ZeroHash, fmt.Errorf("failed to prune checkpoint from shard: %w", err)
 	}
-	if summary == nil {
-		return 0, fmt.Errorf("%w: v2 checkpoint %s", checkpoint.ErrCheckpointNotFound, checkpointID)
-	}
-
-	for sessionIdx := range len(summary.Sessions) {
-		content, readErr := v2Store.ReadSessionMetadataAndPrompts(ctx, checkpointID, sessionIdx)
-		if errors.Is(readErr, checkpoint.ErrCheckpointNotFound) {
-			continue
-		}
-		if readErr != nil {
-			return 0, fmt.Errorf("read v2 session %d metadata: %w", sessionIdx, readErr)
-		}
-		if content.Metadata.SessionID == sessionID {
-			return sessionIdx, nil
-		}
+	if newRoot == rootTreeHash {
+		return newRoot, nil
 	}
 
-	return 0, fmt.Errorf("session ID %q not found in v2 checkpoint %s", sessionID, checkpointID)
+	newRootTree, err := repo.TreeObject(newRoot)
+	if err != nil {
+		return plumbing.ZeroHash, fmt.Errorf("failed to read pruned root tree: %w", err)
+	}
+	shardTree, err := newRootTree.Tree(shardPrefix)
+	if err != nil {
+		return newRoot, nil //nolint:nilerr // The shard prefix was already absent after pruning.
+	}
+	if len(shardTree.Entries) > 0 {
+		return newRoot, nil
+	}
+
+	prunedRoot, err := checkpoint.UpdateSubtree(repo, rootTreeHash,
+		nil,
+		nil,
+		checkpoint.UpdateSubtreeOptions{
+			MergeMode:   checkpoint.MergeKeepExisting,
+			DeleteNames: []string{shardPrefix},
+		},
+	)
+	if err != nil {
+		return plumbing.ZeroHash, fmt.Errorf("failed to prune empty shard prefix: %w", err)
+	}
+	return prunedRoot, nil
 }
 
 func repairPartialV2Checkpoint(ctx context.Context, v1Store *checkpoint.GitStore, v2Store *checkpoint.V2GitStore, info checkpoint.CommittedInfo, v2Summary *checkpoint.CheckpointSummary) (bool, error) {
@@ -677,7 +687,7 @@ func latestMigratedV2SessionIndex(v1ToV2SessionIdx map[int]int) (int, bool) {
 		}
 	}
 	if latest < 0 {
-		return 0, false
+		return -1, false
 	}
 	return latest, true
 }
