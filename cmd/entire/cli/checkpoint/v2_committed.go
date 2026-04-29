@@ -333,6 +333,29 @@ func (s *V2GitStore) writeMainCheckpointEntries(ctx context.Context, opts WriteC
 	// Determine session index
 	sessionIndex := s.gs.findSessionIndex(ctx, basePath, existingSummary, entries, opts.SessionID)
 
+	// Refuse if slot 0 already holds metadata for a DIFFERENT session ID.
+	// Mirrors GitStore.writeStandardCheckpointEntries: findSessionIndex only
+	// picks slot 0 when existingSummary is nil or when the summary claims slot 0
+	// belongs to us, so the actual tree holding session-0 metadata for someone
+	// else is a corruption / stale-summary shape. Read BEFORE
+	// writeMainSessionToSubdirectory clears the subtree, or we'd only ever see
+	// our own write.
+	if sessionIndex == 0 {
+		if entry, exists := entries[fmt.Sprintf("%s0/%s", basePath, paths.MetadataFileName)]; exists {
+			if existingMeta, readErr := s.gs.readMetadataFromBlob(entry.Hash); readErr == nil && existingMeta.SessionID != opts.SessionID {
+				logging.Error(ctx, "refusing v2 checkpoint write: session 0 holds a different sessionID",
+					slog.String("checkpoint_id", opts.CheckpointID.String()),
+					slog.String("existing_session_id", existingMeta.SessionID),
+					slog.String("write_session_id", opts.SessionID),
+					slog.Bool("existing_summary_nil", existingSummary == nil))
+				return 0, fmt.Errorf(
+					"refusing to overwrite session 0 of checkpoint %s: existing session ID %q differs from write session ID %q. The v2 checkpoint tree is inconsistent (session 0 belongs to a different session than this write claims). No automated repair exists for this shape — please report it along with the output of `git ls-tree %s %s/`",
+					opts.CheckpointID, existingMeta.SessionID, opts.SessionID, paths.V2MainRefName, opts.CheckpointID.Path(),
+				)
+			}
+		}
+	}
+
 	// Write session files (metadata and prompts — no transcript or content hash)
 	sessionPath := fmt.Sprintf("%s%d/", basePath, sessionIndex)
 	sessionFilePaths, err := s.writeMainSessionToSubdirectory(opts, sessionPath, entries)
@@ -707,4 +730,58 @@ func (s *V2GitStore) UpdateSummary(ctx context.Context, checkpointID id.Checkpoi
 	authorName, authorEmail := GetGitAuthorFromRepo(s.repo)
 	commitMsg := fmt.Sprintf("Update summary for checkpoint %s (session: %s)", checkpointID, metadata.SessionID)
 	return s.updateRef(ctx, refName, newTreeHash, parentHash, commitMsg, authorName, authorEmail)
+}
+
+// CleanupV1TranscriptFiles removes legacy v1-named transcript files (full.jsonl,
+// full.jsonl.*, content_hash.txt) from /full/current for a given checkpoint.
+// Older CLI versions wrote these before the rename to raw_transcript.
+// Returns nil if /full/current doesn't exist or no v1 files were found.
+func (s *V2GitStore) CleanupV1TranscriptFiles(ctx context.Context, checkpointID id.CheckpointID, sessionCount int) error {
+	refName := plumbing.ReferenceName(paths.V2FullCurrentRefName)
+	parentHash, rootTreeHash, err := s.GetRefState(refName)
+	if err != nil {
+		if errors.Is(err, plumbing.ErrReferenceNotFound) {
+			return nil // /full/current doesn't exist yet — nothing to clean
+		}
+		return err
+	}
+
+	checkpointPath := checkpointID.Path()
+	basePath := checkpointPath + "/"
+
+	entries, err := s.gs.flattenCheckpointEntries(rootTreeHash, checkpointPath)
+	if err != nil {
+		return err
+	}
+
+	changed := false
+	for sessionIdx := range sessionCount {
+		sessionPath := fmt.Sprintf("%s%d/", basePath, sessionIdx)
+		v1TranscriptPath := sessionPath + paths.TranscriptFileName
+		v1HashPath := sessionPath + paths.ContentHashFileName
+
+		for key := range entries {
+			switch {
+			case key == v1TranscriptPath,
+				strings.HasPrefix(key, v1TranscriptPath+"."),
+				key == v1HashPath:
+				delete(entries, key)
+				changed = true
+			}
+		}
+	}
+
+	if !changed {
+		return nil
+	}
+
+	newTreeHash, err := s.gs.spliceCheckpointSubtree(ctx, rootTreeHash, checkpointID, basePath, entries)
+	if err != nil {
+		return fmt.Errorf("tree surgery failed: %w", err)
+	}
+
+	authorName, authorEmail := GetGitAuthorFromRepo(s.repo)
+	return s.updateRef(ctx, refName, newTreeHash, parentHash,
+		fmt.Sprintf("Clean up v1 transcript files for %s\n", checkpointID),
+		authorName, authorEmail)
 }

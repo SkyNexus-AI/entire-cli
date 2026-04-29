@@ -3,6 +3,7 @@
 package integration
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -20,6 +21,7 @@ import (
 	"github.com/entireio/cli/cmd/entire/cli/agent/types"
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint"
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint/id"
+	"github.com/entireio/cli/cmd/entire/cli/execx"
 	"github.com/entireio/cli/cmd/entire/cli/jsonutil"
 	"github.com/entireio/cli/cmd/entire/cli/paths"
 	"github.com/entireio/cli/cmd/entire/cli/testutil"
@@ -54,6 +56,11 @@ type TestEnv struct {
 	SessionCounter     int
 	gitConfigSnapshot  string
 	gitConfigGuardSet  bool
+
+	// ExtraEnv holds additional environment variables appended to all CLI
+	// invocations (RunPrePush, GitCommitWithShadowHooks, etc.). Use this to
+	// pass ENTIRE_CHECKPOINT_TOKEN, GIT_SSL_CAINFO, and similar per-test env.
+	ExtraEnv []string
 }
 
 // NewTestEnv creates a new isolated test environment.
@@ -112,33 +119,16 @@ func (env *TestEnv) Cleanup() {
 	// No-op - temp dirs are cleaned up by t.TempDir()
 }
 
-// gitEmptyConfigPath returns the path to an empty file suitable for use as
-// GIT_CONFIG_GLOBAL/GIT_CONFIG_SYSTEM. We use an empty file instead of
-// os.DevNull because git on Windows cannot open NUL as a config file.
-var gitEmptyConfig string
-
-func gitEmptyConfigPath() string {
-	if gitEmptyConfig == "" {
-		f, err := os.CreateTemp("", "git-empty-config-*")
-		if err != nil {
-			panic("create empty git config: " + err.Error())
-		}
-		f.Close()
-		gitEmptyConfig = f.Name()
-	}
-	return gitEmptyConfig
-}
-
 // cliEnv returns the environment variables for CLI execution.
 // Includes Claude, Gemini, and OpenCode project dirs so tests work for any agent.
 // Delegates to testutil.GitIsolatedEnv() for git config isolation.
 func (env *TestEnv) cliEnv() []string {
-	return append(testutil.GitIsolatedEnv(),
+	base := append(testutil.GitIsolatedEnv(),
 		"ENTIRE_TEST_CLAUDE_PROJECT_DIR="+env.ClaudeProjectDir,
 		"ENTIRE_TEST_GEMINI_PROJECT_DIR="+env.GeminiProjectDir,
 		"ENTIRE_TEST_OPENCODE_PROJECT_DIR="+env.OpenCodeProjectDir,
-		"ENTIRE_TEST_TTY=0", // Prevent interactive prompts from blocking in tests
 	)
+	return append(base, env.ExtraEnv...)
 }
 
 // RunCLI runs the entire CLI with the given arguments and returns stdout.
@@ -155,8 +145,9 @@ func (env *TestEnv) RunCLI(args ...string) string {
 func (env *TestEnv) RunCLIWithError(args ...string) (string, error) {
 	env.T.Helper()
 
-	// Run CLI using the shared binary
-	cmd := exec.Command(getTestBinary(), args...)
+	// Run CLI using the shared binary, detached from any controlling TTY
+	// so interactive.CanPromptInteractively() returns false in the child.
+	cmd := execx.NonInteractive(context.Background(), getTestBinary(), args...)
 	cmd.Dir = env.RepoDir
 	cmd.Env = env.cliEnv()
 
@@ -168,8 +159,8 @@ func (env *TestEnv) RunCLIWithError(args ...string) (string, error) {
 func (env *TestEnv) RunCLIWithStdin(stdin string, args ...string) string {
 	env.T.Helper()
 
-	// Run CLI with stdin using the shared binary
-	cmd := exec.Command(getTestBinary(), args...)
+	// Run CLI with stdin using the shared binary, detached from controlling TTY.
+	cmd := execx.NonInteractive(context.Background(), getTestBinary(), args...)
 	cmd.Dir = env.RepoDir
 	cmd.Env = env.cliEnv()
 	cmd.Stdin = strings.NewReader(stdin)
@@ -1165,9 +1156,26 @@ func (env *TestEnv) GitCommitWithShadowHooksAsAgent(message string, files ...str
 	env.gitCommitWithShadowHooks(message, false, files...)
 }
 
+// prepareCommitMsgCmd builds the prepare-commit-msg hook command. When
+// simulateTTY is true, ENTIRE_TEST_TTY=1 forces interactive=true (an in-test
+// stand-in for a real terminal — Setsid can't synthesize a TTY). When false,
+// the child runs in a new session without a controlling terminal so its
+// /dev/tty probe fails and CanPromptInteractively() returns false.
+func (env *TestEnv) prepareCommitMsgCmd(simulateTTY bool, hookArgs ...string) *exec.Cmd {
+	args := append([]string{"hooks", "git", "prepare-commit-msg"}, hookArgs...)
+	var cmd *exec.Cmd
+	if simulateTTY {
+		cmd = exec.Command(getTestBinary(), args...)
+		cmd.Env = env.gitHookEnv("ENTIRE_TEST_TTY=1")
+	} else {
+		cmd = execx.NonInteractive(context.Background(), getTestBinary(), args...)
+		cmd.Env = env.gitHookEnv()
+	}
+	cmd.Dir = env.RepoDir
+	return cmd
+}
+
 // gitCommitWithShadowHooks is the shared implementation for committing with shadow hooks.
-// When simulateTTY is true, sets ENTIRE_TEST_TTY=1 to simulate a human at the terminal.
-// When false, filters it out to simulate an agent subprocess (no controlling terminal).
 func (env *TestEnv) gitCommitWithShadowHooks(message string, simulateTTY bool, files ...string) {
 	env.T.Helper()
 
@@ -1184,17 +1192,7 @@ func (env *TestEnv) gitCommitWithShadowHooks(message string, simulateTTY bool, f
 
 	// Run prepare-commit-msg hook using the shared binary.
 	// Pass source="message" to match real `git commit -m` behavior.
-	prepCmd := exec.Command(getTestBinary(), "hooks", "git", "prepare-commit-msg", msgFile, "message")
-	prepCmd.Dir = env.RepoDir
-	if simulateTTY {
-		// Simulate human at terminal: ENTIRE_TEST_TTY=1 makes hasTTY() return true
-		// and askConfirmTTY() return defaultYes without reading from /dev/tty.
-		prepCmd.Env = env.gitHookEnv("ENTIRE_TEST_TTY=1")
-	} else {
-		// Simulate agent: ENTIRE_TEST_TTY=0 makes hasTTY() return false,
-		// triggering the fast path that adds trailers for ACTIVE sessions.
-		prepCmd.Env = env.gitHookEnv("ENTIRE_TEST_TTY=0")
-	}
+	prepCmd := env.prepareCommitMsgCmd(simulateTTY, msgFile, "message")
 	if output, err := prepCmd.CombinedOutput(); err != nil {
 		env.T.Logf("prepare-commit-msg output: %s", output)
 		// Don't fail - hook may silently succeed
@@ -1447,13 +1445,7 @@ func (env *TestEnv) gitCommitStagedWithShadowHooks(message string, simulateTTY b
 	}
 
 	// Run prepare-commit-msg hook using the shared binary.
-	prepCmd := exec.Command(getTestBinary(), "hooks", "git", "prepare-commit-msg", msgFile, "message")
-	prepCmd.Dir = env.RepoDir
-	if simulateTTY {
-		prepCmd.Env = env.gitHookEnv("ENTIRE_TEST_TTY=1")
-	} else {
-		prepCmd.Env = env.gitHookEnv("ENTIRE_TEST_TTY=0")
-	}
+	prepCmd := env.prepareCommitMsgCmd(simulateTTY, msgFile, "message")
 	if output, err := prepCmd.CombinedOutput(); err != nil {
 		env.T.Logf("prepare-commit-msg output: %s", output)
 	}
