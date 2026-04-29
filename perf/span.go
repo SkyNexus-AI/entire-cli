@@ -66,7 +66,7 @@ func (s *Span) End() {
 	}
 
 	logCtx := logging.WithComponent(s.ctx, "perf")
-	attrs := make([]any, 0, 3+len(s.attrs))
+	attrs := make([]any, 0, 3+len(s.attrs)+countChildStepAttrs(s))
 	attrs = append(attrs, slog.String("op", s.name))
 	attrs = append(attrs, slog.Int64("duration_ms", s.duration.Milliseconds()))
 	if s.err != nil {
@@ -114,6 +114,18 @@ func appendChildStepAttrs(attrs []any, parent *Span, parentKey string) []any {
 		attrs = appendChildStepAttrs(attrs, child, stepKey)
 	}
 	return attrs
+}
+
+func countChildStepAttrs(parent *Span) int {
+	count := 0
+	for _, child := range parent.children {
+		count++
+		if child.err != nil {
+			count++
+		}
+		count += countChildStepAttrs(child)
+	}
+	return count
 }
 
 // childStepKey returns a unique key for a child span name.
