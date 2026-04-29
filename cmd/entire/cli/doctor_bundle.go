@@ -23,18 +23,26 @@ import (
 
 func newDoctorBundleCmd() *cobra.Command {
 	var outFlag string
+	var rawFlag bool
 
 	cmd := &cobra.Command{
 		Use:   "bundle",
-		Short: "Produce a diagnostic bundle (zip) for bug reports",
+		Short: "Produce a diagnostic bundle (zip) for bug reports — secrets are redacted by default",
 		Long: `Produce a zip archive containing logs, settings, and a git snapshot suitable
 for attaching to bug reports.
 
 The archive includes:
-  - .entire/logs/  (operational logs)
-  - .entire/settings.json and settings.local.json (if present)
+  - logs/                       (operational logs from .entire/logs/)
+  - settings/settings.json and settings/settings.local.json (if present)
   - git-status.txt, git-log.txt, git-remote.txt
   - version.txt with CLI version, Go version, OS/Arch
+
+Redaction:
+  By default the bundle redacts known secrets (API keys, credentialed URIs,
+  database connection strings, bounded KEY=value credentials) from log files,
+  settings JSON, and git command output before zipping. Pass --raw to skip
+  redaction; use it only when support has explicitly requested an unredacted
+  bundle.
 
 By default the archive is written to a path inside the OS temp directory and
 that path is printed to stdout. Use --out to choose a specific path.`,
@@ -51,20 +59,26 @@ that path is printed to stdout. Use --out to choose a specific path.`,
 				outPath = filepath.Join(os.TempDir(), fmt.Sprintf("entire-bundle-%s.zip", time.Now().UTC().Format("20060102-150405")))
 			}
 
-			if err := writeDoctorBundle(ctx, repoRoot, outPath); err != nil {
+			if err := writeDoctorBundle(ctx, repoRoot, outPath, rawFlag); err != nil {
 				return err
 			}
 
+			if rawFlag {
+				fmt.Fprintf(cmd.ErrOrStderr(), "Bundle written (RAW — contains unredacted contents): %s\n", outPath)
+			} else {
+				fmt.Fprintf(cmd.ErrOrStderr(), "Bundle written (redacted): %s\n", outPath)
+			}
 			fmt.Fprintln(cmd.OutOrStdout(), outPath)
 			return nil
 		},
 	}
 
 	cmd.Flags().StringVarP(&outFlag, "out", "o", "", "Path to write the bundle archive (default: OS temp dir)")
+	cmd.Flags().BoolVar(&rawFlag, "raw", false, "Skip secret redaction. The archive will contain raw log lines, settings, and git output. Use only when support has asked for an unredacted bundle.")
 	return cmd
 }
 
-func writeDoctorBundle(ctx context.Context, repoRoot, outPath string) error {
+func writeDoctorBundle(ctx context.Context, repoRoot, outPath string, raw bool) error {
 	out, err := os.OpenFile(outPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600) //nolint:gosec // user-provided output path is intentional
 	if err != nil {
 		return fmt.Errorf("create bundle: %w", err)
@@ -89,28 +103,28 @@ func writeDoctorBundle(ctx context.Context, repoRoot, outPath string) error {
 	}()
 
 	logsDir := filepath.Join(repoRoot, logging.LogsDir)
-	if err := addDirToZip(zw, logsDir, "logs"); err != nil {
+	if err := addDirToZip(zw, logsDir, "logs", raw); err != nil {
 		return err
 	}
 
 	for _, name := range []string{"settings.json", "settings.local.json"} {
 		src := filepath.Join(repoRoot, ".entire", name)
-		if err := addFileToZip(zw, src, path.Join("settings", name)); err != nil {
+		if err := addFileToZip(zw, src, path.Join("settings", name), raw); err != nil {
 			return err
 		}
 	}
 
-	if err := addCommandOutput(ctx, zw, "git-status.txt", repoRoot, "git", "status", "--short", "--branch"); err != nil {
+	if err := addCommandOutput(ctx, zw, "git-status.txt", repoRoot, raw, "git", "status", "--short", "--branch"); err != nil {
 		return err
 	}
-	if err := addCommandOutput(ctx, zw, "git-log.txt", repoRoot, "git", "log", "-n", "50", "--oneline"); err != nil {
+	if err := addCommandOutput(ctx, zw, "git-log.txt", repoRoot, raw, "git", "log", "-n", "50", "--oneline"); err != nil {
 		return err
 	}
-	if err := addCommandOutput(ctx, zw, "git-remote.txt", repoRoot, "git", "remote", "-v"); err != nil {
+	if err := addCommandOutput(ctx, zw, "git-remote.txt", repoRoot, raw, "git", "remote", "-v"); err != nil {
 		return err
 	}
 
-	if err := addStringToZip(zw, "version.txt", versionInfoString()); err != nil {
+	if err := addStringToZip(zw, "version.txt", versionInfoString(), raw); err != nil {
 		return err
 	}
 
@@ -135,7 +149,7 @@ func versionInfoString() string {
 	return sb.String()
 }
 
-func addDirToZip(zw *zip.Writer, srcDir, archivePrefix string) error {
+func addDirToZip(zw *zip.Writer, srcDir, archivePrefix string, raw bool) error {
 	info, err := os.Stat(srcDir)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -157,7 +171,7 @@ func addDirToZip(zw *zip.Writer, srcDir, archivePrefix string) error {
 		if err != nil {
 			return fmt.Errorf("rel: %w", err)
 		}
-		return addFileToZip(zw, path, zipEntryName(archivePrefix, rel))
+		return addFileToZip(zw, path, zipEntryName(archivePrefix, rel), raw)
 	})
 	if walkErr != nil {
 		return fmt.Errorf("walk %s: %w", srcDir, walkErr)
@@ -176,7 +190,7 @@ func zipEntryName(parts ...string) string {
 	return path.Join(cleanParts...)
 }
 
-func addFileToZip(zw *zip.Writer, src, archivePath string) error {
+func addFileToZip(zw *zip.Writer, src, archivePath string, raw bool) error {
 	f, err := os.Open(src) //nolint:gosec // path comes from repo-internal walk
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -191,30 +205,63 @@ func addFileToZip(zw *zip.Writer, src, archivePath string) error {
 	if err != nil {
 		return fmt.Errorf("zip create %s: %w", entryName, err)
 	}
-	if _, err := io.Copy(w, f); err != nil {
-		return fmt.Errorf("zip copy %s: %w", entryName, err)
-	}
-	return nil
-}
 
-func addStringToZip(zw *zip.Writer, archivePath, contents string) error {
-	entryName := zipEntryName(archivePath)
-	w, err := zw.Create(entryName)
-	if err != nil {
-		return fmt.Errorf("zip create %s: %w", entryName, err)
+	if raw {
+		if _, err := io.Copy(w, f); err != nil {
+			return fmt.Errorf("zip copy %s: %w", entryName, err)
+		}
+		return nil
 	}
-	if _, err := io.WriteString(w, contents); err != nil {
+
+	contents, err := io.ReadAll(f)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", src, err)
+	}
+	redacted := redactBundleEntry(entryName, contents)
+	if _, err := w.Write(redacted); err != nil {
 		return fmt.Errorf("zip write %s: %w", entryName, err)
 	}
 	return nil
 }
 
-func addCommandOutput(ctx context.Context, zw *zip.Writer, archivePath, dir, name string, args ...string) error {
+func addStringToZip(zw *zip.Writer, archivePath, contents string, raw bool) error {
+	entryName := zipEntryName(archivePath)
+	w, err := zw.Create(entryName)
+	if err != nil {
+		return fmt.Errorf("zip create %s: %w", entryName, err)
+	}
+	body := contents
+	if !raw {
+		body = string(redactBundleEntry(entryName, []byte(contents)))
+	}
+	if _, err := io.WriteString(w, body); err != nil {
+		return fmt.Errorf("zip write %s: %w", entryName, err)
+	}
+	return nil
+}
+
+func addCommandOutput(ctx context.Context, zw *zip.Writer, archivePath, dir string, raw bool, name string, args ...string) error {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		out = append(out, []byte(fmt.Sprintf("\n[error: %v]\n", err))...)
 	}
-	return addStringToZip(zw, archivePath, redact.String(string(out)))
+	// addStringToZip applies redaction when raw=false; pass through verbatim otherwise.
+	return addStringToZip(zw, archivePath, string(out), raw)
+}
+
+// redactBundleEntry chooses a redaction strategy per file shape. JSON / JSONL
+// entries get the field-aware redactor (preserves structure, skips ID fields);
+// everything else uses the byte-level scrubber.
+func redactBundleEntry(entryName string, contents []byte) []byte {
+	ext := strings.ToLower(path.Ext(entryName))
+	if ext == ".json" || ext == ".jsonl" {
+		out, err := redact.JSONLContent(string(contents))
+		if err == nil {
+			return []byte(out)
+		}
+		// Fall through to plain redaction if the JSON redactor refuses (malformed input, etc.)
+	}
+	return redact.Bytes(contents)
 }
