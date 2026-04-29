@@ -8,12 +8,12 @@ import (
 )
 
 // newCheckpointGroupCmd builds the `entire checkpoint` parent command and
-// registers list/explain/rewind/search/diff as children.
+// registers list/explain/rewind/search as children.
 func newCheckpointGroupCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "checkpoint",
 		Aliases: []string{"cp", "checkpoints"},
-		Short:   "Inspect, rewind, search, and diff checkpoints",
+		Short:   "Inspect, rewind, and search checkpoints",
 		Long: `Operations on checkpoints — the persistent records of agent work tied to commits.
 
 Commands:
@@ -21,14 +21,12 @@ Commands:
   explain  Explain a checkpoint, commit, or session
   rewind   Browse and rewind to a checkpoint
   search   Search checkpoints (semantic + keyword)
-  diff     Compare two checkpoints
 
 Examples:
   entire checkpoint list
   entire checkpoint explain <id|sha>
   entire checkpoint rewind --to <id>
-  entire checkpoint search "fix login"
-  entire checkpoint diff <a> <b>`,
+  entire checkpoint search "fix login"`,
 		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
 			if _, err := paths.WorktreeRoot(cmd.Context()); err != nil {
 				return errors.New("not a git repository")
@@ -41,7 +39,6 @@ Examples:
 	cmd.AddCommand(newExplainCmd())
 	cmd.AddCommand(newRewindCmd())
 	cmd.AddCommand(newCheckpointSearchCmd())
-	cmd.AddCommand(newCheckpointDiffCmd())
 
 	return cmd
 }

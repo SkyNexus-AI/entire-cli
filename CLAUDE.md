@@ -28,7 +28,7 @@ shortcuts remain functional but hidden, and emit a deprecation hint pointing
 at the canonical group form.
 
 - `session` (alias: `sessions`): `list`, `info`, `stop`, `attach`, `resume`, `current`
-- `checkpoint` (aliases: `cp`, `checkpoints`): `list`, `explain`, `rewind`, `search`, `diff`
+- `checkpoint` (aliases: `cp`, `checkpoints`): `list`, `explain`, `rewind`, `search`
 - `agent`: bare opens the interactive agent selector, plus `list`, `add`, `remove`
 - `configure`: bare prints help and a hint pointing at `entire agent`; flags
   manage non-agent settings (telemetry, git-hook installation mode, strategy

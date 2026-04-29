@@ -238,7 +238,7 @@ go test -tags=integration ./cmd/entire/cli/integration_test -run TestLogin
 | `entire disable` | Remove Entire hooks from repository                                                               |
 | `entire doctor`  | Fix or clean up stuck sessions                                                                    |
 | `entire enable`  | Enable Entire in your repository                                                                  |
-| `entire checkpoint`        | List, explain, rewind, search, and diff checkpoints                                     |
+| `entire checkpoint`        | List, explain, rewind, and search checkpoints                                           |
 | `entire checkpoint explain` | Explain a session, commit, or checkpoint                                               |
 | `entire checkpoint rewind` | Rewind to a previous checkpoint                                                         |
 | `entire login`   | Authenticate the CLI with Entire device auth                                                      |
