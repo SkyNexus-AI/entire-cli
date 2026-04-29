@@ -25,6 +25,7 @@ import (
 	"github.com/entireio/cli/cmd/entire/cli/agent/skilldiscovery"
 	"github.com/entireio/cli/cmd/entire/cli/agent/types"
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint"
+	checkpointID "github.com/entireio/cli/cmd/entire/cli/checkpoint/id"
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint/remote"
 	"github.com/entireio/cli/cmd/entire/cli/logging"
 	"github.com/entireio/cli/cmd/entire/cli/paths"
@@ -676,13 +677,23 @@ func runReview(ctx context.Context, cmd *cobra.Command, agentOverride string, de
 		return fmt.Errorf("resolve worktree root: %w", err)
 	}
 
+	// Best-effort: show the user what's in scope so they can tell whether
+	// the review target is what they expected. Scope is also used to append
+	// checkpoint context to the default generated skills prompt; custom
+	// Prompt configs still win verbatim.
+	var scope reviewScope
+	if detectedScope, scopeErr := detectReviewScope(ctx); scopeErr == nil {
+		scope = detectedScope
+		fmt.Fprintln(out, formatReviewScope(scope))
+	} else {
+		logging.Debug(ctx, "review scope detection failed", slog.String("error", scopeErr.Error()))
+	}
+
 	// 6. Compose the review prompt once, then write the pending marker. The
 	// composed prompt is carried on the marker so adoption records exactly
 	// what the agent was asked to do (the same string passed to LaunchCmd
-	// below), rather than recomposing on the hook side. When the user has
-	// configured a custom Prompt, it wins verbatim; otherwise Skills are
-	// composed into the default "run these in order" template.
-	prompt := composeReviewPrompt(cfg)
+	// below), rather than recomposing on the hook side.
+	prompt := buildReviewPrompt(ctx, cfg, scope)
 	if err := WritePendingReviewMarker(ctx, PendingReviewMarker{
 		AgentName:    agentName,
 		Skills:       cfg.Skills,
@@ -722,12 +733,6 @@ func runReview(ctx context.Context, cmd *cobra.Command, agentOverride string, de
 			logging.Debug(ctx, "cleanup unadopted review marker", slog.String("error", clearErr.Error()))
 		}
 	}()
-	// Best-effort: show the user what's in scope so they can tell whether
-	// the review target is what they expected. Failures are silent — scope
-	// is informational, not load-bearing.
-	if scope, scopeErr := detectReviewScope(ctx); scopeErr == nil {
-		fmt.Fprintln(out, formatReviewScope(scope))
-	}
 	execCmd, err := launcher.LaunchCmd(ctx, prompt)
 	if err != nil {
 		return fmt.Errorf("launch %s: %w", agentName, err)
@@ -902,6 +907,293 @@ func composeReviewPrompt(cfg settings.ReviewConfig) string {
 	return sb.String()
 }
 
+func buildReviewPrompt(ctx context.Context, cfg settings.ReviewConfig, scope reviewScope) string {
+	prompt := composeReviewPrompt(cfg)
+	if prompt == "" || cfg.Prompt != "" {
+		return prompt
+	}
+	brief := renderReviewBrief(ctx, scope)
+	if brief == "" {
+		return prompt
+	}
+	return prompt + "\n" + brief
+}
+
+type reviewBriefRow struct {
+	commit     string
+	checkpoint string
+	files      int
+	agent      string
+	subject    string
+}
+
+type committedSessionMetadataReader interface {
+	ReadSessionMetadata(ctx context.Context, checkpointID checkpointID.CheckpointID, sessionIndex int) (*checkpoint.CommittedMetadata, error)
+}
+
+func renderReviewBrief(ctx context.Context, scope reviewScope) (brief string) {
+	defer func() {
+		if r := recover(); r != nil {
+			logging.Debug(ctx, "review brief: panic while rendering", slog.Any("panic", r))
+			brief = ""
+		}
+	}()
+
+	repoRoot, err := paths.WorktreeRoot(ctx)
+	if err != nil {
+		logging.Debug(ctx, "review brief: locate worktree root", slog.String("error", err.Error()))
+		return ""
+	}
+	return renderReviewBriefForRepo(ctx, repoRoot, scope)
+}
+
+func renderReviewBriefForRepo(ctx context.Context, repoRoot string, scope reviewScope) (brief string) {
+	defer func() {
+		if r := recover(); r != nil {
+			logging.Debug(ctx, "review brief: panic while rendering for repo", slog.Any("panic", r))
+			brief = ""
+		}
+	}()
+
+	if scope.BaseRef == "" {
+		return ""
+	}
+	head := reviewScopeHeadRef(scope)
+	commits, err := gitLines(ctx, repoRoot, "rev-list", scope.BaseRef+".."+head)
+	if err != nil {
+		logging.Debug(ctx, "review brief: list commits",
+			slog.String("base_ref", scope.BaseRef),
+			slog.String("head", head),
+			slog.String("error", err.Error()))
+		return ""
+	}
+	if len(commits) == 0 {
+		return ""
+	}
+
+	repo, err := git.PlainOpen(repoRoot)
+	if err != nil {
+		logging.Debug(ctx, "review brief: open repository", slog.String("error", err.Error()))
+		return ""
+	}
+	v1Store := checkpoint.NewGitStore(repo)
+	v2URL, urlErr := remote.FetchURL(ctx)
+	if urlErr != nil {
+		logging.Debug(ctx, "review brief: no configured v2 fetch remote", slog.String("error", urlErr.Error()))
+		v2URL = ""
+	}
+	v2Store := checkpoint.NewV2GitStore(repo, v2URL)
+	preferV2 := settings.IsCheckpointsV2Enabled(ctx)
+
+	rows := make([]reviewBriefRow, 0, len(commits))
+	for _, commit := range commits {
+		row := reviewBriefRow{
+			commit:     shortCommit(commit),
+			checkpoint: "-",
+			files:      gitChangedFileCount(ctx, repoRoot, commit),
+			agent:      "-",
+			subject:    truncateReviewSubject(gitString(ctx, repoRoot, "show", "-s", "--format=%s", commit)),
+		}
+
+		message := gitString(ctx, repoRoot, "show", "-s", "--format=%B", commit)
+		if checkpointID, ok := trailers.ParseCheckpoint(message); ok {
+			row.checkpoint = checkpointID.String()
+			reader, summary, resolveErr := checkpoint.ResolveCommittedReaderForCheckpoint(
+				ctx,
+				checkpointID,
+				v1Store,
+				v2Store,
+				preferV2,
+			)
+			if resolveErr != nil || summary == nil {
+				logging.Debug(ctx, "review brief: unresolved checkpoint",
+					slog.String("commit", commit),
+					slog.String("checkpoint_id", checkpointID.String()),
+					slog.Any("error", resolveErr))
+				row.checkpoint = checkpointID.String() + " (unresolved)"
+			} else {
+				row.files = len(summary.FilesTouched)
+				row.agent = latestNonReviewAgent(ctx, reader, checkpointID, summary)
+			}
+		}
+
+		rows = append(rows, row)
+	}
+
+	return formatReviewBriefTable(rows)
+}
+
+func reviewScopeHeadRef(scope reviewScope) string {
+	if scope.Branch != "" {
+		return scope.Branch
+	}
+	if scope.HeadSHA != "" {
+		return scope.HeadSHA
+	}
+	return detachedHEADDisplay
+}
+
+func gitLines(ctx context.Context, repoRoot string, args ...string) ([]string, error) {
+	full := append([]string{"-C", repoRoot}, args...)
+	output, err := exec.CommandContext(ctx, "git", full...).Output()
+	if err != nil {
+		return nil, fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
+	}
+	trimmed := strings.TrimSpace(string(output))
+	if trimmed == "" {
+		return nil, nil
+	}
+	lines := strings.Split(trimmed, "\n")
+	result := lines[:0]
+	for _, line := range lines {
+		if line = strings.TrimSpace(line); line != "" {
+			result = append(result, line)
+		}
+	}
+	return result, nil
+}
+
+func shortCommit(commit string) string {
+	const shortCommitLength = 12
+	if len(commit) <= shortCommitLength {
+		return commit
+	}
+	return commit[:shortCommitLength]
+}
+
+func truncateReviewSubject(subject string) string {
+	const maxSubjectLength = 64
+	subject = strings.TrimSpace(subject)
+	if len(subject) <= maxSubjectLength {
+		return subject
+	}
+	return strings.TrimSpace(subject[:maxSubjectLength-3]) + "..."
+}
+
+func gitChangedFileCount(ctx context.Context, repoRoot string, commit string) int {
+	lines, err := gitLines(ctx, repoRoot, "diff-tree", "--no-commit-id", "--name-only", "-r", "--root", commit)
+	if err != nil {
+		logging.Debug(ctx, "review brief: count changed files",
+			slog.String("commit", commit),
+			slog.String("error", err.Error()))
+		return 0
+	}
+	return len(lines)
+}
+
+func latestNonReviewAgent(
+	ctx context.Context,
+	reader checkpoint.CommittedReader,
+	checkpointID checkpointID.CheckpointID,
+	summary *checkpoint.CheckpointSummary,
+) string {
+	for i := len(summary.Sessions) - 1; i >= 0; i-- {
+		metadata, err := readCommittedSessionMetadata(ctx, reader, checkpointID, i)
+		if err != nil {
+			logging.Debug(ctx, "review brief: read session metadata",
+				slog.String("checkpoint_id", checkpointID.String()),
+				slog.Int("session_index", i),
+				slog.String("error", err.Error()))
+			continue
+		}
+		if metadata == nil {
+			continue
+		}
+		if session.Kind(metadata.Kind).IsReview() {
+			continue
+		}
+		if metadata.Agent == "" {
+			continue
+		}
+		ag, err := agent.GetByAgentType(metadata.Agent)
+		if err != nil {
+			return string(metadata.Agent)
+		}
+		return string(ag.Name())
+	}
+	return "-"
+}
+
+func readCommittedSessionMetadata(
+	ctx context.Context,
+	reader checkpoint.CommittedReader,
+	checkpointID checkpointID.CheckpointID,
+	sessionIndex int,
+) (*checkpoint.CommittedMetadata, error) {
+	if metadataReader, ok := reader.(committedSessionMetadataReader); ok {
+		metadata, err := metadataReader.ReadSessionMetadata(ctx, checkpointID, sessionIndex)
+		if err != nil {
+			return nil, fmt.Errorf("read session metadata: %w", err)
+		}
+		return metadata, nil
+	}
+	content, err := reader.ReadSessionContent(ctx, checkpointID, sessionIndex)
+	if err != nil {
+		return nil, fmt.Errorf("read session content: %w", err)
+	}
+	if content == nil {
+		return nil, errors.New("session content is nil")
+	}
+	return &content.Metadata, nil
+}
+
+func formatReviewBriefTable(rows []reviewBriefRow) string {
+	const (
+		commitHeader     = "commit"
+		checkpointHeader = "checkpoint"
+		filesHeader      = "files"
+		agentHeader      = "agent"
+		subjectHeader    = "subject"
+	)
+
+	commitWidth := len(commitHeader)
+	checkpointWidth := len(checkpointHeader)
+	filesWidth := len(filesHeader)
+	agentWidth := len(agentHeader)
+	for _, row := range rows {
+		commitWidth = max(commitWidth, len(row.commit))
+		checkpointWidth = max(checkpointWidth, len(row.checkpoint))
+		filesWidth = max(filesWidth, len(strconv.Itoa(row.files)))
+		agentWidth = max(agentWidth, len(row.agent))
+	}
+
+	var sb strings.Builder
+	sb.WriteString("Commits in scope (newest first):\n\n")
+	fmt.Fprintf(&sb, "  %-*s  %-*s  %*s  %-*s  %s\n",
+		commitWidth, commitHeader,
+		checkpointWidth, checkpointHeader,
+		filesWidth, filesHeader,
+		agentWidth, agentHeader,
+		subjectHeader)
+	for _, row := range rows {
+		fmt.Fprintf(&sb, "  %-*s  %-*s  %*d  %-*s  %s\n",
+			commitWidth, row.commit,
+			checkpointWidth, row.checkpoint,
+			filesWidth, row.files,
+			agentWidth, row.agent,
+			row.subject)
+	}
+	sb.WriteString("\n")
+	sb.WriteString("Use checkpoint IDs and commit hashes to inspect details:\n")
+	sb.WriteString("  - `entire explain <id>` (for example `entire explain ")
+	sb.WriteString(firstCheckpointExample(rows))
+	sb.WriteString("`)\n")
+	sb.WriteString("  - `entire explain <id> --raw-transcript` (for example `entire explain ")
+	sb.WriteString(firstCheckpointExample(rows))
+	sb.WriteString(" --raw-transcript`) for the raw checkpoint transcript\n")
+	sb.WriteString("  - `git show <commit>` for the commit diff\n")
+	return sb.String()
+}
+
+func firstCheckpointExample(rows []reviewBriefRow) string {
+	for _, row := range rows {
+		if row.checkpoint != "-" && !strings.Contains(row.checkpoint, " ") {
+			return row.checkpoint
+		}
+	}
+	return "<id>"
+}
+
 // currentHeadSHA returns the current HEAD commit hash as a 40-char hex string.
 func currentHeadSHA(ctx context.Context) (string, error) {
 	repoRoot, err := paths.WorktreeRoot(ctx)
@@ -923,9 +1215,15 @@ type reviewScope struct {
 	Branch       string // current branch short name; "" if detached
 	HeadSHA      string // short HEAD SHA (always set when non-empty scope)
 	Base         string // base branch (e.g. "main"); "" if unknown
-	AheadCommits int    // commits in base..HEAD; 0 if Base == ""
-	FilesChanged int    // files in base..HEAD diff; 0 if Base == ""
+	BaseRef      string // exact git ref for range commands (e.g. "origin/main"); "" if unknown
+	AheadCommits int    // commits in baseRef..HEAD; 0 if BaseRef == ""
+	FilesChanged int    // files in baseRef..HEAD diff; 0 if BaseRef == ""
 	Uncommitted  int    // files from `git status --porcelain`
+}
+
+type baseBranchRef struct {
+	display string
+	ref     string
 }
 
 // detectReviewScope runs a handful of cheap `git` queries to describe the
@@ -942,12 +1240,18 @@ func detectReviewScope(ctx context.Context) (reviewScope, error) {
 		s.Branch = ""
 	}
 	s.HeadSHA = gitString(ctx, repoRoot, "rev-parse", "--short", "HEAD")
-	s.Base = detectBaseBranch(ctx, repoRoot)
-	if s.Base != "" && s.Branch != "" && s.Base != s.Branch {
-		if n, ok := gitCount(ctx, repoRoot, "rev-list", "--count", s.Base+".."+s.Branch); ok {
+	base := detectBaseBranchRef(ctx, repoRoot)
+	s.Base = base.display
+	s.BaseRef = base.ref
+	headRef := s.Branch
+	if headRef == "" {
+		headRef = detachedHEADDisplay
+	}
+	if s.BaseRef != "" && (s.Branch == "" || s.BaseRef != s.Branch) {
+		if n, ok := gitCount(ctx, repoRoot, "rev-list", "--count", s.BaseRef+".."+headRef); ok {
 			s.AheadCommits = n
 		}
-		if files := gitString(ctx, repoRoot, "diff", "--name-only", s.Base+"..."+s.Branch); files != "" {
+		if files := gitString(ctx, repoRoot, "diff", "--name-only", s.BaseRef+"..."+headRef); files != "" {
 			s.FilesChanged = len(strings.Split(files, "\n"))
 		}
 	}
@@ -963,21 +1267,28 @@ func detectReviewScope(ctx context.Context) (reviewScope, error) {
 // reflect the team's convention; local branches are the fallback for repos
 // that haven't been `git fetch`'d recently.
 func detectBaseBranch(ctx context.Context, repoRoot string) string {
+	return detectBaseBranchRef(ctx, repoRoot).display
+}
+
+func detectBaseBranchRef(ctx context.Context, repoRoot string) baseBranchRef {
 	if target := gitString(ctx, repoRoot, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"); target != "" {
-		return strings.TrimPrefix(target, "origin/")
+		if gitOK(ctx, repoRoot, "rev-parse", "--verify", "--quiet", target) {
+			return baseBranchRef{display: strings.TrimPrefix(target, "origin/"), ref: target}
+		}
 	}
 	candidates := []string{defaultBaseBranch, masterBaseBranch}
 	for _, candidate := range candidates {
-		if gitOK(ctx, repoRoot, "rev-parse", "--verify", "--quiet", "refs/remotes/origin/"+candidate) {
-			return candidate
+		ref := "origin/" + candidate
+		if gitOK(ctx, repoRoot, "rev-parse", "--verify", "--quiet", "refs/remotes/"+ref) {
+			return baseBranchRef{display: candidate, ref: ref}
 		}
 	}
 	for _, candidate := range candidates {
 		if gitOK(ctx, repoRoot, "rev-parse", "--verify", "--quiet", "refs/heads/"+candidate) {
-			return candidate
+			return baseBranchRef{display: candidate, ref: candidate}
 		}
 	}
-	return ""
+	return baseBranchRef{}
 }
 
 // gitString runs `git -C repoRoot <args...>` and returns trimmed stdout, or
@@ -1017,8 +1328,9 @@ func formatReviewScope(s reviewScope) string {
 	if head == "" {
 		head = detachedHEADDisplay + " " + s.HeadSHA
 	}
+	hasBaseRange := s.Base != "" && (s.Branch == "" || s.Base != s.Branch || (s.BaseRef != "" && s.BaseRef != s.Branch))
 	var parts []string
-	if s.Base != "" && s.Branch != "" && s.Base != s.Branch && (s.AheadCommits > 0 || s.FilesChanged > 0) {
+	if hasBaseRange && (s.AheadCommits > 0 || s.FilesChanged > 0) {
 		parts = append(parts,
 			fmt.Sprintf("%d commits", s.AheadCommits),
 			fmt.Sprintf("%d files changed", s.FilesChanged),
@@ -1031,7 +1343,7 @@ func formatReviewScope(s reviewScope) string {
 	if len(parts) > 0 {
 		suffix = strings.Join(parts, ", ")
 	}
-	if s.Base != "" && s.Branch != "" && s.Base != s.Branch {
+	if hasBaseRange {
 		return fmt.Sprintf("Reviewing %s vs %s: %s", head, s.Base, suffix)
 	}
 	return fmt.Sprintf("Reviewing %s: %s", head, suffix)

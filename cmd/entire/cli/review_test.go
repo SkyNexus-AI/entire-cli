@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -10,12 +11,17 @@ import (
 	"testing"
 	"time"
 
+	git "github.com/go-git/go-git/v6"
+
 	"github.com/entireio/cli/cmd/entire/cli/agent"
 	"github.com/entireio/cli/cmd/entire/cli/agent/skilldiscovery"
 	"github.com/entireio/cli/cmd/entire/cli/agent/types"
+	"github.com/entireio/cli/cmd/entire/cli/checkpoint"
+	checkpointid "github.com/entireio/cli/cmd/entire/cli/checkpoint/id"
 	"github.com/entireio/cli/cmd/entire/cli/session"
 	"github.com/entireio/cli/cmd/entire/cli/settings"
 	"github.com/entireio/cli/cmd/entire/cli/testutil"
+	"github.com/entireio/cli/redact"
 )
 
 // installHooksForTest installs the given agent's hooks into CWD-relative
@@ -402,6 +408,239 @@ func TestMergePickerResults(t *testing.T) {
 	}
 }
 
+func TestBuildReviewPrompt_OmitsEmptyBrief(t *testing.T) {
+	t.Parallel()
+	got := buildReviewPrompt(context.Background(), settings.ReviewConfig{Skills: []string{"/review-pr"}}, reviewScope{})
+	want := "Please run these review skills in order:\n  1. /review-pr\n"
+	if got != want {
+		t.Errorf("buildReviewPrompt() =\n%q\nwant:\n%q", got, want)
+	}
+}
+
+func TestBuildReviewPrompt_IncludesRenderedBrief(t *testing.T) {
+	// Uses t.Chdir so renderReviewBrief resolves the temp repo.
+	ctx := context.Background()
+	tmp := newReviewBriefRepo(t)
+	t.Chdir(tmp)
+
+	const checkpointID = "a1b2c3d4e5f6"
+	writeReviewBriefCheckpoint(t, tmp, checkpointID, []string{"checkpointed.go"}, agent.AgentTypeClaudeCode, "")
+	commitWithMessage(t, tmp, "checkpointed.go", "checkpointed\n", "implement checkpointed change", "Entire-Checkpoint: "+checkpointID)
+
+	prompt := buildReviewPrompt(ctx, settings.ReviewConfig{Skills: []string{"/review-pr"}}, reviewScope{Branch: "feat/review", BaseRef: testMainBranch})
+	for _, want := range []string{
+		"/review-pr",
+		"Commits in scope (newest first):",
+		checkpointID,
+		"entire explain " + checkpointID,
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
+func TestBuildReviewPrompt_CustomPromptWinsVerbatim(t *testing.T) {
+	// Uses t.Chdir so renderReviewBrief would resolve this temp repo if
+	// buildReviewPrompt tried to append a brief to a custom prompt.
+	ctx := context.Background()
+	tmp := newReviewBriefRepo(t)
+	t.Chdir(tmp)
+
+	const checkpointID = "a2b2c3d4e5f6"
+	writeReviewBriefCheckpoint(t, tmp, checkpointID, []string{"checkpointed.go"}, agent.AgentTypeClaudeCode, "")
+	commitWithMessage(t, tmp, "checkpointed.go", "checkpointed\n", "implement checkpointed change", "Entire-Checkpoint: "+checkpointID)
+
+	custom := "Focus on security regressions this week."
+	got := buildReviewPrompt(ctx, settings.ReviewConfig{Skills: []string{"/review-pr"}, Prompt: custom}, reviewScope{Branch: "feat/review", BaseRef: testMainBranch})
+	if got != custom {
+		t.Errorf("buildReviewPrompt() = %q, want custom prompt verbatim %q", got, custom)
+	}
+}
+
+func TestRenderReviewBriefForRepo_MixedCommits(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	tmp := newReviewBriefRepo(t)
+
+	const checkpointID = "a1b2c3d4e5f6"
+	writeReviewBriefCheckpoint(t, tmp, checkpointID, []string{"checkpointed.go", "extra.go"}, agent.AgentTypeClaudeCode, "")
+	commitWithMessage(t, tmp, "checkpointed.go", "checkpointed\n", "implement checkpointed change", "Entire-Checkpoint: "+checkpointID)
+	noCheckpointCommit := commitWithMessage(t, tmp, "plain.go", "plain\n", "add plain change", "")
+
+	brief := renderReviewBriefForRepo(ctx, tmp, reviewScope{Branch: "feat/review", BaseRef: testMainBranch})
+	if brief == "" {
+		t.Fatal("expected review brief, got empty string")
+	}
+	for _, want := range []string{
+		"Commits in scope (newest first):",
+		checkpointID,
+		"claude-code",
+		"implement checkpointed change",
+		"add plain change",
+		shortCommit(noCheckpointCommit),
+		"entire explain " + checkpointID,
+		"entire explain " + checkpointID + " --raw-transcript",
+		"git show <commit>",
+	} {
+		if !strings.Contains(brief, want) {
+			t.Errorf("brief missing %q:\n%s", want, brief)
+		}
+	}
+}
+
+func TestRenderReviewBrief_UsesV2OnlyCheckpointMetadata(t *testing.T) {
+	ctx := context.Background()
+	tmp := newReviewBriefRepo(t)
+	t.Chdir(tmp)
+	writeReviewSettings(t, tmp, `{"enabled": true, "strategy_options": {"checkpoints_v2": true}}`)
+
+	const checkpointID = "f1b2c3d4e5f6"
+	writeReviewBriefV2Checkpoint(t, tmp, checkpointID, []string{"v2.go"}, agent.AgentTypeClaudeCode, "")
+	commitWithMessage(t, tmp, "v2.go", "v2\n", "implement v2-only checkpointed change", "Entire-Checkpoint: "+checkpointID)
+
+	brief := renderReviewBrief(ctx, reviewScope{Branch: "feat/review", BaseRef: testMainBranch})
+	for _, want := range []string{
+		checkpointID,
+		"claude-code",
+		"implement v2-only checkpointed change",
+		"entire explain " + checkpointID,
+	} {
+		if !strings.Contains(brief, want) {
+			t.Errorf("brief missing %q:\n%s", want, brief)
+		}
+	}
+}
+
+func TestRenderReviewBriefForRepo_EmptyScopeReturnsEmpty(t *testing.T) {
+	t.Parallel()
+	tmp := newReviewBriefRepo(t)
+
+	got := renderReviewBriefForRepo(context.Background(), tmp, reviewScope{})
+	if got != "" {
+		t.Fatalf("renderReviewBriefForRepo() = %q, want empty", got)
+	}
+}
+
+func TestRenderReviewBriefForRepo_MissingBaseRefReturnsEmpty(t *testing.T) {
+	t.Parallel()
+	tmp := newReviewBriefRepo(t)
+	commitWithMessage(t, tmp, "feature.go", "feature\n", "feature", "")
+
+	got := renderReviewBriefForRepo(context.Background(), tmp, reviewScope{Branch: "feat/review", BaseRef: "missing/base"})
+	if got != "" {
+		t.Fatalf("renderReviewBriefForRepo() = %q, want empty", got)
+	}
+}
+
+func TestRenderReviewBriefForRepo_UnresolvedTrailer(t *testing.T) {
+	t.Parallel()
+	tmp := newReviewBriefRepo(t)
+
+	const checkpointID = "b1b2c3d4e5f6"
+	commitWithMessage(t, tmp, "feature.go", "feature\n", "feature with missing checkpoint", "Entire-Checkpoint: "+checkpointID)
+
+	brief := renderReviewBriefForRepo(context.Background(), tmp, reviewScope{Branch: "feat/review", BaseRef: testMainBranch})
+	if !strings.Contains(brief, checkpointID+" (unresolved)") {
+		t.Fatalf("brief missing unresolved checkpoint marker:\n%s", brief)
+	}
+	if !strings.Contains(brief, " - ") {
+		t.Fatalf("brief missing placeholder columns:\n%s", brief)
+	}
+}
+
+func TestRenderReviewBriefForRepo_LatestNonReviewAgentSkipsLaterReview(t *testing.T) {
+	t.Parallel()
+	tmp := newReviewBriefRepo(t)
+
+	const checkpointID = "c1b2c3d4e5f6"
+	writeReviewBriefCheckpoint(t, tmp, checkpointID, []string{"feature.go"}, agent.AgentTypeClaudeCode, "")
+	writeReviewBriefCheckpoint(t, tmp, checkpointID, []string{"feature.go"}, agent.AgentTypeCodex, session.KindAgentReview)
+	commitWithMessage(t, tmp, "feature.go", "feature\n", "feature with review session", "Entire-Checkpoint: "+checkpointID)
+
+	brief := renderReviewBriefForRepo(context.Background(), tmp, reviewScope{Branch: "feat/review", BaseRef: testMainBranch})
+	if !strings.Contains(brief, "claude-code") {
+		t.Fatalf("brief should display implementation agent, not later review session:\n%s", brief)
+	}
+	if strings.Contains(brief, "codex") {
+		t.Fatalf("brief should skip review agent:\n%s", brief)
+	}
+}
+
+func TestRenderReviewBriefForRepo_OnlyReviewSessionsUsesPlaceholderAgent(t *testing.T) {
+	t.Parallel()
+	tmp := newReviewBriefRepo(t)
+
+	const checkpointID = "d1b2c3d4e5f6"
+	writeReviewBriefCheckpoint(t, tmp, checkpointID, []string{"feature.go"}, agent.AgentTypeCodex, session.KindAgentReview)
+	commitWithMessage(t, tmp, "feature.go", "feature\n", "feature with only review", "Entire-Checkpoint: "+checkpointID)
+
+	brief := renderReviewBriefForRepo(context.Background(), tmp, reviewScope{Branch: "feat/review", BaseRef: testMainBranch})
+	row := findReviewBriefRow(t, brief, checkpointID)
+	if !strings.Contains(row, " - ") {
+		t.Fatalf("row should contain placeholder agent:\n%s", row)
+	}
+	if strings.Contains(row, "codex") {
+		t.Fatalf("row should not display review-only agent:\n%s", row)
+	}
+}
+
+func TestRenderReviewBriefForRepo_TruncatesLongSubject(t *testing.T) {
+	t.Parallel()
+	tmp := newReviewBriefRepo(t)
+
+	longSubject := "this is a very long review subject that should be shortened before it reaches the prompt table"
+	commitWithMessage(t, tmp, "feature.go", "feature\n", longSubject, "")
+
+	brief := renderReviewBriefForRepo(context.Background(), tmp, reviewScope{Branch: "feat/review", BaseRef: testMainBranch})
+	if strings.Contains(brief, longSubject) {
+		t.Fatalf("brief contains full long subject:\n%s", brief)
+	}
+	if !strings.Contains(brief, "...") {
+		t.Fatalf("brief missing truncation ellipsis:\n%s", brief)
+	}
+}
+
+func TestRenderReviewBriefForRepo_NewestFirst(t *testing.T) {
+	t.Parallel()
+	tmp := newReviewBriefRepo(t)
+
+	oldCommit := commitWithMessage(t, tmp, "old.go", "old\n", "old feature", "")
+	newCommit := commitWithMessage(t, tmp, "new.go", "new\n", "new feature", "")
+
+	brief := renderReviewBriefForRepo(context.Background(), tmp, reviewScope{Branch: "feat/review", BaseRef: testMainBranch})
+	oldIndex := strings.Index(brief, shortCommit(oldCommit))
+	newIndex := strings.Index(brief, shortCommit(newCommit))
+	if oldIndex == -1 || newIndex == -1 {
+		t.Fatalf("brief missing expected commits:\n%s", brief)
+	}
+	if newIndex > oldIndex {
+		t.Fatalf("commits not newest-first:\n%s", brief)
+	}
+}
+
+func TestLatestNonReviewAgent_UsesMetadataOnlyReader(t *testing.T) {
+	t.Parallel()
+	cpID := checkpointid.MustCheckpointID("e1b2c3d4e5f6")
+	reader := &metadataOnlyReviewReader{
+		metadata: []checkpoint.CommittedMetadata{
+			{Agent: agent.AgentTypeClaudeCode},
+			{Agent: agent.AgentTypeCodex, Kind: string(session.KindAgentReview)},
+		},
+	}
+	summary := &checkpoint.CheckpointSummary{
+		Sessions: make([]checkpoint.SessionFilePaths, len(reader.metadata)),
+	}
+
+	got := latestNonReviewAgent(context.Background(), reader, cpID, summary)
+	if got != string(agent.AgentNameClaudeCode) {
+		t.Fatalf("latestNonReviewAgent() = %q, want %s", got, agent.AgentNameClaudeCode)
+	}
+	if reader.readContentCalls != 0 {
+		t.Fatalf("latestNonReviewAgent called ReadSessionContent %d times; want metadata-only reads", reader.readContentCalls)
+	}
+}
+
 func TestNewReviewCmd_NoHiddenFlags(t *testing.T) {
 	t.Parallel()
 	cmd := newReviewCmd()
@@ -443,6 +682,14 @@ func TestFormatReviewScope(t *testing.T) {
 			want: "Reviewing main: 4 uncommitted",
 		},
 		{
+			name: "local base branch ahead of remote",
+			scope: reviewScope{
+				Branch: testMainBranch, Base: testMainBranch, BaseRef: "origin/main",
+				AheadCommits: 1, FilesChanged: 1,
+			},
+			want: "Reviewing main vs main: 1 commits, 1 files changed",
+		},
+		{
 			name: "clean default branch — nothing to review",
 			scope: reviewScope{
 				Branch: testMainBranch, Base: testMainBranch,
@@ -455,6 +702,13 @@ func TestFormatReviewScope(t *testing.T) {
 				HeadSHA: "a3b2c4d", Uncommitted: 1,
 			},
 			want: "Reviewing HEAD a3b2c4d: 1 uncommitted",
+		},
+		{
+			name: "detached HEAD ahead of base",
+			scope: reviewScope{
+				HeadSHA: "a3b2c4d", Base: testMainBranch, BaseRef: testMainBranch, AheadCommits: 1, FilesChanged: 2,
+			},
+			want: "Reviewing HEAD a3b2c4d vs main: 1 commits, 2 files changed",
 		},
 		{
 			name: "base unknown, branch only",
@@ -505,6 +759,9 @@ func TestDetectReviewScope_FeatureBranchAheadOfMain(t *testing.T) {
 	if got.Base != testMainBranch {
 		t.Errorf("Base = %q, want %s", got.Base, testMainBranch)
 	}
+	if got.BaseRef != testMainBranch {
+		t.Errorf("BaseRef = %q, want %s", got.BaseRef, testMainBranch)
+	}
 	if got.AheadCommits != 2 {
 		t.Errorf("AheadCommits = %d, want 2", got.AheadCommits)
 	}
@@ -513,6 +770,113 @@ func TestDetectReviewScope_FeatureBranchAheadOfMain(t *testing.T) {
 	}
 	if got.Uncommitted != 1 {
 		t.Errorf("Uncommitted = %d, want 1", got.Uncommitted)
+	}
+}
+
+func TestDetectReviewScope_UsesOriginMainBaseRefWhenNoLocalMain(t *testing.T) {
+	tmp := t.TempDir()
+	testutil.InitRepo(t, tmp)
+	testutil.WriteFile(t, tmp, "a.txt", "hello")
+	testutil.GitAdd(t, tmp, "a.txt")
+	testutil.GitCommit(t, tmp, "init")
+
+	headSHA := testutil.GetHeadHash(t, tmp)
+	runGit(t, tmp, "update-ref", "refs/remotes/origin/main", headSHA)
+	testutil.GitCheckoutNewBranch(t, tmp, "feat/x")
+	runGit(t, tmp, "branch", "-D", "master")
+	testutil.WriteFile(t, tmp, "b.txt", "new")
+	testutil.GitAdd(t, tmp, "b.txt")
+	testutil.GitCommit(t, tmp, "add b")
+	t.Chdir(tmp)
+
+	got, err := detectReviewScope(context.Background())
+	if err != nil {
+		t.Fatalf("detectReviewScope: %v", err)
+	}
+	if got.Base != testMainBranch {
+		t.Errorf("Base = %q, want %s", got.Base, testMainBranch)
+	}
+	if got.BaseRef != "origin/main" {
+		t.Errorf("BaseRef = %q, want origin/main", got.BaseRef)
+	}
+	if got.AheadCommits != 1 {
+		t.Errorf("AheadCommits = %d, want 1", got.AheadCommits)
+	}
+	if got.FilesChanged != 1 {
+		t.Errorf("FilesChanged = %d, want 1", got.FilesChanged)
+	}
+}
+
+func TestDetectReviewScope_LocalMainAheadOfOriginMain(t *testing.T) {
+	tmp := t.TempDir()
+	testutil.InitRepo(t, tmp)
+	testutil.WriteFile(t, tmp, "a.txt", "hello")
+	testutil.GitAdd(t, tmp, "a.txt")
+	testutil.GitCommit(t, tmp, "init")
+	runGit(t, tmp, "branch", "-M", testMainBranch)
+
+	headSHA := testutil.GetHeadHash(t, tmp)
+	runGit(t, tmp, "update-ref", "refs/remotes/origin/main", headSHA)
+	testutil.WriteFile(t, tmp, "b.txt", "new")
+	testutil.GitAdd(t, tmp, "b.txt")
+	testutil.GitCommit(t, tmp, "add b")
+	t.Chdir(tmp)
+
+	got, err := detectReviewScope(context.Background())
+	if err != nil {
+		t.Fatalf("detectReviewScope: %v", err)
+	}
+	if got.Branch != testMainBranch {
+		t.Errorf("Branch = %q, want %s", got.Branch, testMainBranch)
+	}
+	if got.Base != testMainBranch {
+		t.Errorf("Base = %q, want %s", got.Base, testMainBranch)
+	}
+	if got.BaseRef != "origin/main" {
+		t.Errorf("BaseRef = %q, want origin/main", got.BaseRef)
+	}
+	if got.AheadCommits != 1 {
+		t.Errorf("AheadCommits = %d, want 1", got.AheadCommits)
+	}
+	if got.FilesChanged != 1 {
+		t.Errorf("FilesChanged = %d, want 1", got.FilesChanged)
+	}
+}
+
+func TestDetectReviewScope_DetachedHeadAheadOfMain(t *testing.T) {
+	tmp := t.TempDir()
+	testutil.InitRepo(t, tmp)
+	testutil.WriteFile(t, tmp, "a.txt", "hello")
+	testutil.GitAdd(t, tmp, "a.txt")
+	testutil.GitCommit(t, tmp, "init")
+	runGit(t, tmp, "branch", "-M", testMainBranch)
+
+	testutil.GitCheckoutNewBranch(t, tmp, "feat/detached")
+	testutil.WriteFile(t, tmp, "b.txt", "new")
+	testutil.GitAdd(t, tmp, "b.txt")
+	testutil.GitCommit(t, tmp, "add b")
+	headSHA := testutil.GetHeadHash(t, tmp)
+	runGit(t, tmp, "checkout", "--detach", headSHA)
+	t.Chdir(tmp)
+
+	got, err := detectReviewScope(context.Background())
+	if err != nil {
+		t.Fatalf("detectReviewScope: %v", err)
+	}
+	if got.Branch != "" {
+		t.Errorf("Branch = %q, want detached empty branch", got.Branch)
+	}
+	if got.Base != testMainBranch {
+		t.Errorf("Base = %q, want %s", got.Base, testMainBranch)
+	}
+	if got.BaseRef != testMainBranch {
+		t.Errorf("BaseRef = %q, want %s", got.BaseRef, testMainBranch)
+	}
+	if got.AheadCommits != 1 {
+		t.Errorf("AheadCommits = %d, want 1", got.AheadCommits)
+	}
+	if got.FilesChanged != 1 {
+		t.Errorf("FilesChanged = %d, want 1", got.FilesChanged)
 	}
 }
 
@@ -557,6 +921,24 @@ func TestDetectBaseBranch_UsesOriginMainWhenNoLocalMain(t *testing.T) {
 	got := detectBaseBranch(context.Background(), tmp)
 	if got != testMainBranch {
 		t.Errorf("detectBaseBranch = %q, want %s (should resolve via refs/remotes/origin/main)", got, testMainBranch)
+	}
+}
+
+func TestDetectBaseBranch_StaleOriginHeadFallsBackToResolvableCandidate(t *testing.T) {
+	tmp := t.TempDir()
+	testutil.InitRepo(t, tmp)
+	testutil.WriteFile(t, tmp, "a.txt", "hello")
+	testutil.GitAdd(t, tmp, "a.txt")
+	testutil.GitCommit(t, tmp, "init")
+	runGit(t, tmp, "branch", "-M", testMainBranch)
+
+	headSHA := testutil.GetHeadHash(t, tmp)
+	runGit(t, tmp, "update-ref", "refs/remotes/origin/master", headSHA)
+	runGit(t, tmp, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+
+	got := detectBaseBranch(context.Background(), tmp)
+	if got != "master" {
+		t.Errorf("detectBaseBranch = %q, want master (stale origin/HEAD should fall back to origin/master)", got)
 	}
 }
 
@@ -1006,4 +1388,136 @@ func TestRunReview_MultiAgentNoFlagTriggersPicker(t *testing.T) {
 	if m.AgentName != testPickerAgentB {
 		t.Errorf("AgentName = %q, want %s", m.AgentName, testPickerAgentB)
 	}
+}
+
+func newReviewBriefRepo(t *testing.T) string {
+	t.Helper()
+	tmp := t.TempDir()
+	testutil.InitRepo(t, tmp)
+	testutil.WriteFile(t, tmp, "base.txt", "base\n")
+	testutil.GitAdd(t, tmp, "base.txt")
+	testutil.GitCommit(t, tmp, "base")
+	runGit(t, tmp, "branch", "-M", testMainBranch)
+	testutil.GitCheckoutNewBranch(t, tmp, "feat/review")
+	return tmp
+}
+
+func commitWithMessage(t *testing.T, repoRoot, path, content, subject, body string) string {
+	t.Helper()
+	testutil.WriteFile(t, repoRoot, path, content)
+	testutil.GitAdd(t, repoRoot, path)
+	args := []string{"commit", "-m", subject}
+	if body != "" {
+		args = append(args, "-m", body)
+	}
+	runGit(t, repoRoot, args...)
+	return testutil.GetHeadHash(t, repoRoot)
+}
+
+func writeReviewBriefCheckpoint(
+	t *testing.T,
+	repoRoot string,
+	checkpointID string,
+	filesTouched []string,
+	agentType types.AgentType,
+	kind session.Kind,
+) {
+	t.Helper()
+	repo, err := git.PlainOpen(repoRoot)
+	if err != nil {
+		t.Fatalf("open repo: %v", err)
+	}
+	store := checkpoint.NewGitStore(repo)
+	cpID := checkpointid.MustCheckpointID(checkpointID)
+	err = store.WriteCommitted(context.Background(), checkpoint.WriteCommittedOptions{
+		CheckpointID:     cpID,
+		SessionID:        checkpointID + "-" + strings.ReplaceAll(string(kind), "_", "-"),
+		Strategy:         "manual-commit",
+		Branch:           "feat/review",
+		Transcript:       redact.AlreadyRedacted([]byte(`{"event":"test"}` + "\n")),
+		Prompts:          []string{"test prompt"},
+		FilesTouched:     filesTouched,
+		CheckpointsCount: 1,
+		Agent:            agentType,
+		Kind:             string(kind),
+		HasReview:        kind.IsReview(),
+	})
+	if err != nil {
+		t.Fatalf("write checkpoint: %v", err)
+	}
+}
+
+func writeReviewBriefV2Checkpoint(
+	t *testing.T,
+	repoRoot string,
+	checkpointID string,
+	filesTouched []string,
+	agentType types.AgentType,
+	kind session.Kind,
+) {
+	t.Helper()
+	repo, err := git.PlainOpen(repoRoot)
+	if err != nil {
+		t.Fatalf("open repo: %v", err)
+	}
+	store := checkpoint.NewV2GitStore(repo, "")
+	cpID := checkpointid.MustCheckpointID(checkpointID)
+	err = store.WriteCommitted(context.Background(), checkpoint.WriteCommittedOptions{
+		CheckpointID:     cpID,
+		SessionID:        checkpointID + "-v2-" + strings.ReplaceAll(string(kind), "_", "-"),
+		Strategy:         "manual-commit",
+		Branch:           "feat/review",
+		Prompts:          []string{"test prompt"},
+		FilesTouched:     filesTouched,
+		CheckpointsCount: 1,
+		Agent:            agentType,
+		Kind:             string(kind),
+		HasReview:        kind.IsReview(),
+	})
+	if err != nil {
+		t.Fatalf("write v2 checkpoint: %v", err)
+	}
+}
+
+func writeReviewSettings(t *testing.T, repoRoot, settingsJSON string) {
+	t.Helper()
+	entireDir := filepath.Join(repoRoot, ".entire")
+	if err := os.MkdirAll(entireDir, 0o750); err != nil {
+		t.Fatalf("create .entire dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(entireDir, "settings.json"), []byte(settingsJSON), 0o600); err != nil {
+		t.Fatalf("write review settings: %v", err)
+	}
+}
+
+func findReviewBriefRow(t *testing.T, brief, needle string) string {
+	t.Helper()
+	for _, line := range strings.Split(brief, "\n") {
+		if strings.Contains(line, needle) {
+			return line
+		}
+	}
+	t.Fatalf("brief missing row containing %q:\n%s", needle, brief)
+	return ""
+}
+
+type metadataOnlyReviewReader struct {
+	metadata         []checkpoint.CommittedMetadata
+	readContentCalls int
+}
+
+func (r *metadataOnlyReviewReader) ReadCommitted(context.Context, checkpointid.CheckpointID) (*checkpoint.CheckpointSummary, error) {
+	return &checkpoint.CheckpointSummary{Sessions: make([]checkpoint.SessionFilePaths, len(r.metadata))}, nil
+}
+
+func (r *metadataOnlyReviewReader) ReadSessionContent(context.Context, checkpointid.CheckpointID, int) (*checkpoint.SessionContent, error) {
+	r.readContentCalls++
+	return nil, errors.New("ReadSessionContent should not be called by latestNonReviewAgent")
+}
+
+func (r *metadataOnlyReviewReader) ReadSessionMetadata(_ context.Context, _ checkpointid.CheckpointID, sessionIndex int) (*checkpoint.CommittedMetadata, error) {
+	if sessionIndex < 0 || sessionIndex >= len(r.metadata) {
+		return nil, errors.New("session not found")
+	}
+	return &r.metadata[sessionIndex], nil
 }

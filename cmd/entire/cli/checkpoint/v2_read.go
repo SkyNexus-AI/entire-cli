@@ -187,29 +187,11 @@ func (s *V2GitStore) ReadSessionCompactTranscript(ctx context.Context, checkpoin
 // (transcript.jsonl) on /main can substitute for display.
 // Returns ErrCheckpointNotFound if the checkpoint or session doesn't exist on /main.
 func (s *V2GitStore) ReadSessionMetadataAndPrompts(ctx context.Context, checkpointID id.CheckpointID, sessionIndex int) (*SessionContent, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err //nolint:wrapcheck // Propagating context cancellation
-	}
-
-	refName := plumbing.ReferenceName(paths.V2MainRefName)
-	_, rootTreeHash, err := s.GetRefState(refName)
+	sessionTree, err := s.sessionTreeFromMain(ctx, checkpointID, sessionIndex)
 	if err != nil {
-		return nil, ErrCheckpointNotFound
-	}
-
-	rootTree, err := s.repo.TreeObject(rootTreeHash)
-	if err != nil {
-		return nil, ErrCheckpointNotFound
-	}
-
-	cpTree, err := rootTree.Tree(checkpointID.Path())
-	if err != nil {
-		return nil, ErrCheckpointNotFound
-	}
-
-	sessionDir := strconv.Itoa(sessionIndex)
-	sessionTree, err := cpTree.Tree(sessionDir)
-	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr //nolint:wrapcheck // Propagating context cancellation
+		}
 		return nil, ErrCheckpointNotFound
 	}
 
@@ -239,6 +221,36 @@ func (s *V2GitStore) ReadSessionMetadataAndPrompts(ctx context.Context, checkpoi
 	return result, nil
 }
 
+// ReadSessionMetadata reads only the session metadata.json from the v2 /main ref.
+// This avoids prompting or transcript reads for callers that only need session
+// classification fields such as Kind and Agent.
+func (s *V2GitStore) ReadSessionMetadata(ctx context.Context, checkpointID id.CheckpointID, sessionIndex int) (*CommittedMetadata, error) {
+	sessionTree, err := s.sessionTreeFromMain(ctx, checkpointID, sessionIndex)
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr //nolint:wrapcheck // Propagating context cancellation
+		}
+		return nil, ErrCheckpointNotFound
+	}
+
+	metadataFile, err := sessionTree.File(paths.MetadataFileName)
+	if err != nil {
+		return nil, fmt.Errorf("metadata.json not found for session %d: %w", sessionIndex, err)
+	}
+
+	content, err := metadataFile.Contents()
+	if err != nil {
+		return nil, fmt.Errorf("failed to read session metadata: %w", err)
+	}
+
+	var metadata CommittedMetadata
+	if err := json.Unmarshal([]byte(content), &metadata); err != nil {
+		return nil, fmt.Errorf("failed to parse session metadata: %w", err)
+	}
+
+	return &metadata, nil
+}
+
 // ReadSessionContent reads a session's metadata and prompts from the v2 /main ref,
 // and the raw transcript (raw_transcript) from /full/* refs (current + archived generations).
 // This is the v2 equivalent of GitStore.ReadSessionContent — it reads the raw agent
@@ -246,30 +258,9 @@ func (s *V2GitStore) ReadSessionMetadataAndPrompts(ctx context.Context, checkpoi
 // Returns ErrNoTranscript if the session exists but no raw transcript is available.
 // Returns ErrCheckpointNotFound if the checkpoint or session doesn't exist on /main.
 func (s *V2GitStore) ReadSessionContent(ctx context.Context, checkpointID id.CheckpointID, sessionIndex int) (*SessionContent, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err //nolint:wrapcheck // Propagating context cancellation
-	}
-
-	refName := plumbing.ReferenceName(paths.V2MainRefName)
-	_, rootTreeHash, err := s.GetRefState(refName)
+	sessionTree, err := s.sessionTreeFromMain(ctx, checkpointID, sessionIndex)
 	if err != nil {
-		return nil, ErrCheckpointNotFound
-	}
-
-	rootTree, err := s.repo.TreeObject(rootTreeHash)
-	if err != nil {
-		return nil, ErrCheckpointNotFound
-	}
-
-	cpTree, err := rootTree.Tree(checkpointID.Path())
-	if err != nil {
-		return nil, ErrCheckpointNotFound
-	}
-
-	sessionDir := strconv.Itoa(sessionIndex)
-	sessionTree, err := cpTree.Tree(sessionDir)
-	if err != nil {
-		return nil, fmt.Errorf("session %d not found: %w", sessionIndex, err)
+		return nil, err
 	}
 
 	result := &SessionContent{}
@@ -298,6 +289,36 @@ func (s *V2GitStore) ReadSessionContent(ctx context.Context, checkpointID id.Che
 	result.Transcript = transcript
 
 	return result, nil
+}
+
+func (s *V2GitStore) sessionTreeFromMain(ctx context.Context, checkpointID id.CheckpointID, sessionIndex int) (*object.Tree, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err //nolint:wrapcheck // Propagating context cancellation
+	}
+
+	refName := plumbing.ReferenceName(paths.V2MainRefName)
+	_, rootTreeHash, err := s.GetRefState(refName)
+	if err != nil {
+		return nil, ErrCheckpointNotFound
+	}
+
+	rootTree, err := s.repo.TreeObject(rootTreeHash)
+	if err != nil {
+		return nil, ErrCheckpointNotFound
+	}
+
+	cpTree, err := rootTree.Tree(checkpointID.Path())
+	if err != nil {
+		return nil, ErrCheckpointNotFound
+	}
+
+	sessionDir := strconv.Itoa(sessionIndex)
+	sessionTree, err := cpTree.Tree(sessionDir)
+	if err != nil {
+		return nil, fmt.Errorf("session %d not found: %w", sessionIndex, err)
+	}
+
+	return sessionTree, nil
 }
 
 // readTranscriptFromFullRefs reads the raw transcript for a checkpoint session
