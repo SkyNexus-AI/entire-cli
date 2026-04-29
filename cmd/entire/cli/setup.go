@@ -868,9 +868,6 @@ for you and (optionally) create a matching GitHub repository via the gh CLI.`,
 		return defaultFlagErr(c, err)
 	})
 
-	// Add subcommands for automation/testing
-	cmd.AddCommand(newSetupGitHookCmd())
-
 	return cmd
 }
 
@@ -1584,32 +1581,6 @@ func setupEntireDirectory(ctx context.Context) (bool, error) { //nolint:unparam 
 	}
 
 	return created, nil
-}
-
-// setupGitHook installs the prepare-commit-msg hook for context trailers.
-func setupGitHook(ctx context.Context) error {
-	s, err := settings.Load(ctx)
-	localDev := err == nil && s.LocalDev
-	absoluteHookPath := err == nil && s.AbsoluteGitHookPath
-	if _, err := strategy.InstallGitHook(ctx, false, localDev, absoluteHookPath); err != nil {
-		return fmt.Errorf("failed to install git hook: %w", err)
-	}
-	strategy.CheckAndWarnHookManagers(ctx, os.Stderr, localDev, absoluteHookPath)
-	return nil
-}
-
-// newSetupGitHookCmd creates the standalone git-hook setup command
-func newSetupGitHookCmd() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:    "git-hook",
-		Short:  "Install git hook for session context trailers",
-		Hidden: true, // Hidden as it's mainly for testing
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			return setupGitHook(cmd.Context())
-		},
-	}
-
-	return cmd
 }
 
 func newCurlBashPostInstallCmd() *cobra.Command {
