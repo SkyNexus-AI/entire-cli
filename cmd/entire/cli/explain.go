@@ -560,46 +560,21 @@ func runExplainCheckpointWithLookup(ctx context.Context, w, errW io.Writer, chec
 		return fmt.Errorf("ambiguous checkpoint prefix %q matches %d checkpoints: %s", checkpointIDPrefix, len(matches), strings.Join(examples, ", "))
 	}
 
-	// Batch-prefetch all blobs in the checkpoint's subtree in one network
-	// round-trip via fetch-pack. Best-effort: if prefetch fails, the
-	// per-File fallback fetcher on v1Store / v2Store still recovers
-	// individual blobs.
-	prefetchCheckpointBlobs(ctx, errW, lookup.repo, fullCheckpointID, lookup.preferCheckpointsV2)
-
-	// Cover the rest of the data-loading pipeline (summary read, session
-	// content reads via cat-file, getAssociatedCommits' git log walk) with
-	// a single spinner. Stop strictly before any write to w (stdout) so
-	// stderr spinner frames and stdout output never interleave.
+	// One spinner covers the entire data-loading pipeline: prefetch's
+	// missing-blob analysis (which spawns one cat-file -e per blob and
+	// can take seconds on a deep checkpoint subtree), the prefetch fetch
+	// itself, ResolveCommittedReader's metadata read, session content
+	// reads, and getAssociatedCommits' git log walk. Stop strictly before
+	// any write to w (stdout) so stderr spinner frames and stdout output
+	// never interleave.
 	stopLoad := startSpinner(errW, fmt.Sprintf("Loading checkpoint %s", fullCheckpointID))
 
-	// Resolve store and load checkpoint summary with v2 -> v1 fallback.
-	resolvedReader, summary, err := checkpoint.ResolveCommittedReaderForCheckpoint(ctx, fullCheckpointID, lookup.v1Store, lookup.v2Store, lookup.preferCheckpointsV2)
+	resolvedReader, summary, content, err := loadCheckpointForExplain(ctx, errW, lookup, fullCheckpointID, full, generate, rawTranscript)
 	if err != nil {
 		stopLoad("")
-		return fmt.Errorf("failed to read checkpoint: %w", err)
+		return err
 	}
-
-	// For v2 checkpoints in default display modes (not --full, --generate, or
-	// --raw-transcript), read only from /main — metadata, prompts, and the
-	// compact transcript.jsonl. The raw transcript on /full/* is never needed
-	// for human-readable output and may be unavailable (rotated, not fetched).
-	needsRawTranscript := full || generate || rawTranscript
 	v2Reader, isCheckpointsV2 := resolvedReader.(*checkpoint.V2GitStore)
-
-	var content *checkpoint.SessionContent
-	if isCheckpointsV2 && !needsRawTranscript {
-		content, err = readV2ContentFromMain(ctx, v2Reader, fullCheckpointID, summary)
-		if err != nil {
-			stopLoad("")
-			return fmt.Errorf("failed to read checkpoint content: %w", err)
-		}
-	} else {
-		content, err = readLatestSessionContentForExplain(ctx, resolvedReader, fullCheckpointID, summary)
-		if err != nil {
-			stopLoad("")
-			return fmt.Errorf("failed to read checkpoint content: %w", err)
-		}
-	}
 
 	// Handle summary generation — uses raw transcript.
 	if generate {
@@ -662,15 +637,49 @@ func runExplainCheckpointWithLookup(ctx context.Context, w, errW io.Writer, chec
 	return nil
 }
 
+// loadCheckpointForExplain runs prefetchCheckpointBlobs + summary read +
+// session content read for the given checkpoint. Extracts the bulk of the
+// data-load pipeline out of runExplainCheckpointWithLookup so that
+// function stays under maintidx limits. Caller is responsible for the
+// surrounding spinner.
+func loadCheckpointForExplain(ctx context.Context, errW io.Writer, lookup *explainCheckpointLookup, cpID id.CheckpointID, full, generate, rawTranscript bool) (checkpoint.CommittedReader, *checkpoint.CheckpointSummary, *checkpoint.SessionContent, error) {
+	prefetchCheckpointBlobs(ctx, errW, lookup.repo, cpID, lookup.preferCheckpointsV2)
+
+	reader, summary, err := checkpoint.ResolveCommittedReaderForCheckpoint(ctx, cpID, lookup.v1Store, lookup.v2Store, lookup.preferCheckpointsV2)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("failed to read checkpoint: %w", err)
+	}
+
+	// Default display modes for v2 checkpoints read only from /main —
+	// metadata, prompts, and the compact transcript. The raw transcript
+	// on /full/* refs is never needed for human-readable output and may
+	// be unavailable (rotated, not fetched).
+	needsRawTranscript := full || generate || rawTranscript
+	if v2Reader, ok := reader.(*checkpoint.V2GitStore); ok && !needsRawTranscript {
+		content, contentErr := readV2ContentFromMain(ctx, v2Reader, cpID, summary)
+		if contentErr != nil {
+			return nil, nil, nil, fmt.Errorf("failed to read checkpoint content: %w", contentErr)
+		}
+		return reader, summary, content, nil
+	}
+	content, contentErr := readLatestSessionContentForExplain(ctx, reader, cpID, summary)
+	if contentErr != nil {
+		return nil, nil, nil, fmt.Errorf("failed to read checkpoint content: %w", contentErr)
+	}
+	return reader, summary, content, nil
+}
+
 // prefetchCheckpointBlobs navigates to the checkpoint's subtree(s) — v1
 // always, v2 when enabled — collects every locally-missing blob, and
-// fetches them all in a single `git fetch-pack` invocation per store. A
-// spinner with a count message shows on errW only when blobs are actually
-// missing, so warm runs (everything already local) stay silent.
-//
+// fetches them all in a single `git fetch-pack` invocation per store.
 // Best-effort — failure is logged and the read path falls back to the
 // FetchingTree's per-File fetcher.
-func prefetchCheckpointBlobs(ctx context.Context, errW io.Writer, repo *git.Repository, cpID id.CheckpointID, preferV2 bool) {
+//
+// Caller is expected to wrap this with a spinner; both the missing-blob
+// analysis (one cat-file -e per blob) and the actual fetch are silent
+// inside this function so the caller's spinner provides continuous
+// feedback.
+func prefetchCheckpointBlobs(ctx context.Context, _ io.Writer, repo *git.Repository, cpID id.CheckpointID, preferV2 bool) {
 	v1FT := buildCheckpointFetchingTree(ctx, repo, cpID, "v1", loadV1MetadataRootTree)
 	var v2FT *checkpoint.FetchingTree
 	if preferV2 {
@@ -687,9 +696,10 @@ func prefetchCheckpointBlobs(ctx context.Context, errW io.Writer, repo *git.Repo
 	if missingCount == 0 {
 		return
 	}
-
-	stop := startSpinner(errW, fmt.Sprintf("Fetching %d checkpoint blob(s) from remote", missingCount))
-	defer stop("")
+	logging.Debug(ctx, "explain prefetch: fetching missing checkpoint blobs",
+		slog.String("checkpoint_id", cpID.String()),
+		slog.Int("blob_count", missingCount),
+	)
 
 	runPreFetch(ctx, v1FT, cpID, "v1")
 	runPreFetch(ctx, v2FT, cpID, "v2")
