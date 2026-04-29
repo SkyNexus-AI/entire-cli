@@ -51,11 +51,13 @@ func (s *V2GitStore) WriteCommitted(ctx context.Context, opts WriteCommittedOpti
 	return nil
 }
 
-// UpdateCommitted replaces the prompts and/or transcript for an existing v2 checkpoint.
-// Called at stop time to finalize checkpoints with the complete session transcript.
+// UpdateCommitted replaces the prompts and/or transcript for an existing v2
+// checkpoint. Called at stop time to finalize checkpoints with the complete
+// session transcript.
 //
 // On /main: replaces prompts and compact transcript (if provided).
-// On /full/current: replaces the raw transcript (if provided).
+// On /full/*: replaces the raw transcript where the session artifacts already
+// live, or writes to /full/current if the session has no full artifacts yet.
 //
 // Returns ErrCheckpointNotFound if the checkpoint doesn't exist on /main.
 func (s *V2GitStore) UpdateCommitted(ctx context.Context, opts UpdateCommittedOptions) error {
@@ -70,16 +72,16 @@ func (s *V2GitStore) UpdateCommitted(ctx context.Context, opts UpdateCommittedOp
 
 	if opts.Transcript.Len() > 0 {
 		if err := s.updateCommittedFullTranscript(ctx, opts, sessionIndex); err != nil {
-			return fmt.Errorf("v2 /full/current update failed: %w", err)
+			return fmt.Errorf("v2 /full/* update failed: %w", err)
 		}
 	}
 
 	return nil
 }
 
-// FullSessionArtifacts describes where a checkpoint session's raw transcript
+// fullSessionArtifacts describes where a checkpoint session's raw transcript
 // artifacts live across the v2 /full/* refs.
-type FullSessionArtifacts struct {
+type fullSessionArtifacts struct {
 	RefName       plumbing.ReferenceName
 	Found         bool
 	HasTranscript bool
@@ -96,17 +98,17 @@ func (s *V2GitStore) HasFullSessionArtifacts(checkpointID id.CheckpointID, sessi
 	return artifacts.Found && artifacts.HasTranscript && artifacts.HasHash, nil
 }
 
-func (s *V2GitStore) findFullSessionArtifacts(checkpointID id.CheckpointID, sessionIndex int) (FullSessionArtifacts, error) {
+func (s *V2GitStore) findFullSessionArtifacts(checkpointID id.CheckpointID, sessionIndex int) (fullSessionArtifacts, error) {
 	refNames, err := s.fullRefSearchOrder()
 	if err != nil {
-		return FullSessionArtifacts{}, err
+		return fullSessionArtifacts{}, err
 	}
 
-	var firstFound FullSessionArtifacts
+	var firstFound fullSessionArtifacts
 	for _, refName := range refNames {
 		artifacts, inspectErr := s.inspectFullSessionArtifacts(refName, checkpointID, sessionIndex)
 		if inspectErr != nil {
-			return FullSessionArtifacts{}, inspectErr
+			return fullSessionArtifacts{}, inspectErr
 		}
 		if !artifacts.Found {
 			continue
@@ -123,7 +125,7 @@ func (s *V2GitStore) findFullSessionArtifacts(checkpointID id.CheckpointID, sess
 		return firstFound, nil
 	}
 
-	return FullSessionArtifacts{}, nil
+	return fullSessionArtifacts{}, nil
 }
 
 func (s *V2GitStore) fullRefSearchOrder() ([]plumbing.ReferenceName, error) {
@@ -140,30 +142,30 @@ func (s *V2GitStore) fullRefSearchOrder() ([]plumbing.ReferenceName, error) {
 	return refNames, nil
 }
 
-func (s *V2GitStore) inspectFullSessionArtifacts(refName plumbing.ReferenceName, checkpointID id.CheckpointID, sessionIndex int) (FullSessionArtifacts, error) {
+func (s *V2GitStore) inspectFullSessionArtifacts(refName plumbing.ReferenceName, checkpointID id.CheckpointID, sessionIndex int) (fullSessionArtifacts, error) {
 	_, rootTreeHash, err := s.GetRefState(refName)
 	if err != nil {
 		if errors.Is(err, plumbing.ErrReferenceNotFound) {
-			return FullSessionArtifacts{}, nil
+			return fullSessionArtifacts{}, nil
 		}
-		return FullSessionArtifacts{}, err
+		return fullSessionArtifacts{}, err
 	}
 
 	rootTree, err := s.repo.TreeObject(rootTreeHash)
 	if err != nil {
-		return FullSessionArtifacts{}, fmt.Errorf("failed to read %s tree: %w", refName, err)
+		return fullSessionArtifacts{}, fmt.Errorf("failed to read %s tree: %w", refName, err)
 	}
 
 	sessionPath := fmt.Sprintf("%s/%d", checkpointID.Path(), sessionIndex)
 	sessionTree, err := rootTree.Tree(sessionPath)
 	if err != nil {
 		if errors.Is(err, object.ErrDirectoryNotFound) {
-			return FullSessionArtifacts{}, nil
+			return fullSessionArtifacts{}, nil
 		}
-		return FullSessionArtifacts{}, fmt.Errorf("failed to read %s session tree %s: %w", refName, sessionPath, err)
+		return fullSessionArtifacts{}, fmt.Errorf("failed to read %s session tree %s: %w", refName, sessionPath, err)
 	}
 
-	artifacts := FullSessionArtifacts{RefName: refName, Found: true}
+	artifacts := fullSessionArtifacts{RefName: refName, Found: true}
 	for _, entry := range sessionTree.Entries {
 		switch {
 		case entry.Name == paths.V2RawTranscriptFileName:
