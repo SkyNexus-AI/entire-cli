@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/entireio/cli/cmd/entire/cli/agent"
 	"github.com/entireio/cli/cmd/entire/cli/paths"
 	"github.com/entireio/cli/cmd/entire/cli/session"
 	"github.com/go-git/go-git/v6"
@@ -579,6 +580,100 @@ func TestLoadModelHint_TrimsWhitespace(t *testing.T) {
 	if got != "claude-opus-4-6" {
 		t.Errorf("LoadModelHint() = %q, want %q (should trim whitespace)", got, "claude-opus-4-6")
 	}
+}
+
+// --- Agent type hint file tests ---
+
+func TestStoreAgentTypeHint_RoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	_, err := git.PlainInit(dir, false)
+	require.NoError(t, err)
+	t.Chdir(dir)
+
+	ctx := context.Background()
+	sessionID := "2026-01-01-agent-roundtrip"
+
+	require.NoError(t, StoreAgentTypeHint(ctx, sessionID, agent.AgentTypeCursor))
+
+	got := LoadAgentTypeHint(ctx, sessionID)
+	require.Equal(t, agent.AgentTypeCursor, got)
+}
+
+func TestStoreAgentTypeHint_FirstWriterWins(t *testing.T) {
+	dir := t.TempDir()
+	_, err := git.PlainInit(dir, false)
+	require.NoError(t, err)
+	t.Chdir(dir)
+
+	ctx := context.Background()
+	sessionID := "2026-01-01-agent-firstwriter"
+
+	// Cursor claims the session first.
+	require.NoError(t, StoreAgentTypeHint(ctx, sessionID, agent.AgentTypeCursor))
+
+	// Claude Code's hook fires next (concurrent forwarded-hook scenario).
+	// Should be a no-op — does not overwrite the existing hint.
+	require.NoError(t, StoreAgentTypeHint(ctx, sessionID, agent.AgentTypeClaudeCode))
+
+	got := LoadAgentTypeHint(ctx, sessionID)
+	require.Equal(t, agent.AgentTypeCursor, got, "first writer's hint must persist")
+}
+
+func TestStoreAgentTypeHint_EmptyOrUnknown_NoOp(t *testing.T) {
+	dir := t.TempDir()
+	_, err := git.PlainInit(dir, false)
+	require.NoError(t, err)
+	t.Chdir(dir)
+
+	ctx := context.Background()
+
+	require.NoError(t, StoreAgentTypeHint(ctx, "2026-01-01-empty", ""))
+	require.NoError(t, StoreAgentTypeHint(ctx, "2026-01-01-unknown", agent.AgentTypeUnknown))
+
+	stateDir, sdErr := getSessionStateDir(ctx)
+	require.NoError(t, sdErr)
+
+	for _, sid := range []string{"2026-01-01-empty", "2026-01-01-unknown"} {
+		hintPath := filepath.Join(stateDir, sid+".agent")
+		_, statErr := os.Stat(hintPath)
+		require.True(t, os.IsNotExist(statErr), "no hint file should be created for empty/Unknown agent type")
+	}
+}
+
+func TestLoadAgentTypeHint_NoFile_ReturnsEmpty(t *testing.T) {
+	dir := t.TempDir()
+	_, err := git.PlainInit(dir, false)
+	require.NoError(t, err)
+	t.Chdir(dir)
+
+	got := LoadAgentTypeHint(context.Background(), "2026-01-01-nonexistent")
+	require.Empty(t, string(got))
+}
+
+func TestStoreAgentTypeHint_InvalidSessionID_ReturnsError(t *testing.T) {
+	dir := t.TempDir()
+	_, err := git.PlainInit(dir, false)
+	require.NoError(t, err)
+	t.Chdir(dir)
+
+	err = StoreAgentTypeHint(context.Background(), "../../../etc/passwd", agent.AgentTypeCursor)
+	require.Error(t, err)
+}
+
+func TestClearSessionState_RemovesAgentHint(t *testing.T) {
+	dir := t.TempDir()
+	_, err := git.PlainInit(dir, false)
+	require.NoError(t, err)
+	t.Chdir(dir)
+
+	ctx := context.Background()
+	sessionID := "2026-01-01-clear-agent-hint"
+
+	require.NoError(t, StoreAgentTypeHint(ctx, sessionID, agent.AgentTypeCursor))
+	require.NoError(t, ClearSessionState(ctx, sessionID))
+
+	got := LoadAgentTypeHint(ctx, sessionID)
+	require.Empty(t, string(got))
 }
 
 func TestClearSessionState_RemovesHintFile(t *testing.T) {

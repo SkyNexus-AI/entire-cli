@@ -179,6 +179,63 @@ func newMockHookResponseAgent() *mockHookResponseAgent {
 	}
 }
 
+// TestHandleLifecycleSessionStart_StoresAgentTypeHint verifies the
+// SessionStart hook claims the session for its agent so a wrapper agent's
+// later TurnStart hook (e.g., Cursor IDE forwarding to Claude Code's hook
+// system) cannot re-label the session.
+func TestHandleLifecycleSessionStart_StoresAgentTypeHint(t *testing.T) {
+	tmpDir := t.TempDir()
+	testutil.InitRepo(t, tmpDir)
+	testutil.WriteFile(t, tmpDir, "init.txt", "init")
+	testutil.GitAdd(t, tmpDir, "init.txt")
+	testutil.GitCommit(t, tmpDir, "init")
+	t.Chdir(tmpDir)
+	paths.ClearWorktreeRootCache()
+
+	ag := newMockHookResponseAgent()
+	ag.agentType = "Cursor"
+	event := &agent.Event{
+		Type:      agent.SessionStart,
+		SessionID: "test-agent-hint",
+		Timestamp: time.Now(),
+	}
+	require.NoError(t, handleLifecycleSessionStart(context.Background(), ag, event))
+
+	got := strategy.LoadAgentTypeHint(context.Background(), "test-agent-hint")
+	require.Equal(t, types.AgentType("Cursor"), got)
+}
+
+// TestHandleLifecycleSessionStart_AgentTypeHintFirstWriterWins verifies that
+// when multiple agents fire SessionStart for the same session ID, only the
+// first agent's claim is recorded.
+func TestHandleLifecycleSessionStart_AgentTypeHintFirstWriterWins(t *testing.T) {
+	tmpDir := t.TempDir()
+	testutil.InitRepo(t, tmpDir)
+	testutil.WriteFile(t, tmpDir, "init.txt", "init")
+	testutil.GitAdd(t, tmpDir, "init.txt")
+	testutil.GitCommit(t, tmpDir, "init")
+	t.Chdir(tmpDir)
+	paths.ClearWorktreeRootCache()
+
+	ctx := context.Background()
+	sessionID := "test-agent-hint-race"
+
+	first := newMockHookResponseAgent()
+	first.agentType = "Cursor"
+	require.NoError(t, handleLifecycleSessionStart(ctx, first, &agent.Event{
+		Type: agent.SessionStart, SessionID: sessionID, Timestamp: time.Now(),
+	}))
+
+	second := newMockHookResponseAgent()
+	second.agentType = testAgentClaude
+	require.NoError(t, handleLifecycleSessionStart(ctx, second, &agent.Event{
+		Type: agent.SessionStart, SessionID: sessionID, Timestamp: time.Now(),
+	}))
+
+	got := strategy.LoadAgentTypeHint(ctx, sessionID)
+	require.Equal(t, types.AgentType("Cursor"), got, "first SessionStart caller must own the session")
+}
+
 func TestHandleLifecycleSessionStart_EmptyRepoWarning(t *testing.T) {
 	// Cannot use t.Parallel() because we use t.Chdir()
 	tmpDir := t.TempDir()

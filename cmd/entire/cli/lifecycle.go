@@ -121,6 +121,16 @@ func handleLifecycleSessionStart(ctx context.Context, ag agent.Agent, event *age
 		}
 	}
 
+	// Claim the session for this agent. First-writer-wins: if another agent
+	// (e.g., Cursor IDE forwarding hooks to both .cursor/hooks.json and
+	// .claude/settings.json) already claimed this session ID, this is a no-op.
+	// InitializeSession reads the hint at TurnStart to override the firing
+	// hook's agent when a different agent owns the session.
+	if err := strategy.StoreAgentTypeHint(ctx, event.SessionID, ag.Type()); err != nil {
+		logging.Warn(logCtx, "failed to store agent hint on session start",
+			slog.String("error", err.Error()))
+	}
+
 	// Fire EventSessionStart for the current session (if state exists).
 	if state, loadErr := strategy.LoadSessionState(ctx, event.SessionID); loadErr != nil {
 		logging.Warn(logCtx, "failed to load session state on start",

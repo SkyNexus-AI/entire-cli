@@ -2,12 +2,16 @@ package strategy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/entireio/cli/cmd/entire/cli/agent"
+	"github.com/entireio/cli/cmd/entire/cli/agent/types"
+	"github.com/entireio/cli/cmd/entire/cli/filelock"
 	"github.com/entireio/cli/cmd/entire/cli/jsonutil"
 	"github.com/entireio/cli/cmd/entire/cli/logging"
 	"github.com/entireio/cli/cmd/entire/cli/paths"
@@ -267,6 +271,116 @@ func LoadModelHint(ctx context.Context, sessionID string) string {
 	return strings.TrimSpace(string(data))
 }
 
+// AcquireSessionLock takes an exclusive per-session-id lock. Used to
+// serialize concurrent processes that initialize the same session — when
+// Cursor IDE forwards a single user prompt to both its own hook system and
+// Claude Code's, two `entire` hook processes can otherwise each
+// create-from-scratch in parallel and race for the last write. With the lock
+// the second arrival sees the existing state and goes through the cheap
+// update path (correctSessionAgentType repairs AgentType if the transcript
+// path indicates a different agent).
+//
+// Lock files live under a dedicated `entire-locks/` directory in the git
+// common dir — separate from `entire-sessions/` so callers that enumerate
+// session state files (status, doctor, tests) don't have to filter lock
+// artifacts.
+func AcquireSessionLock(ctx context.Context, sessionID string) (*filelock.Lock, error) {
+	if err := validation.ValidateSessionID(sessionID); err != nil {
+		return nil, fmt.Errorf("invalid session ID: %w", err)
+	}
+	commonDir, err := GetGitCommonDir(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get git common dir: %w", err)
+	}
+	lockDir := filepath.Join(commonDir, "entire-locks")
+	if err := os.MkdirAll(lockDir, 0o750); err != nil {
+		return nil, fmt.Errorf("failed to create lock directory: %w", err)
+	}
+	lock, err := filelock.Acquire(filepath.Join(lockDir, sessionID+".lock"))
+	if err != nil {
+		return nil, fmt.Errorf("failed to acquire session lock: %w", err)
+	}
+	return lock, nil
+}
+
+// StoreAgentTypeHint records the agent type that owns a session before
+// SessionState exists. Used by the lifecycle dispatcher when SessionStart fires
+// (state isn't created until TurnStart, so we need a place to remember which
+// agent claimed the session first).
+//
+// Semantics: first writer wins. When multiple agents fire hooks for the same
+// session ID — e.g., Cursor IDE running cursor-agent while also forwarding to
+// Claude Code's hook system — only the agent that fires SessionStart first
+// gets recorded. Subsequent calls return nil without overwriting.
+//
+// At TurnStart, InitializeSession reads this hint to override agentType when
+// the hook firing isn't the same agent that owns the session. After the state
+// file is written, the hint is unused but remains until ClearSessionState
+// removes it alongside the state file.
+//
+// Returns nil for empty agentType or AgentTypeUnknown (don't pollute the hint
+// with non-identifying values).
+func StoreAgentTypeHint(ctx context.Context, sessionID string, agentType types.AgentType) error {
+	if err := validation.ValidateSessionID(sessionID); err != nil {
+		return fmt.Errorf("invalid session ID: %w", err)
+	}
+	if agentType == "" || agentType == agent.AgentTypeUnknown {
+		return nil
+	}
+
+	stateDir, err := getSessionStateDir(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get session state directory: %w", err)
+	}
+	if err := os.MkdirAll(stateDir, 0o750); err != nil {
+		return fmt.Errorf("failed to create session state directory: %w", err)
+	}
+
+	hintFile := filepath.Join(stateDir, sessionID+".agent")
+	f, err := os.OpenFile(hintFile, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600) //nolint:gosec // hintFile path is built from validated sessionID
+	if err != nil {
+		if errors.Is(err, os.ErrExist) {
+			// First-writer-wins: another agent already claimed this session.
+			return nil
+		}
+		return fmt.Errorf("failed to create agent hint file: %w", err)
+	}
+	defer f.Close()
+	if _, err := f.WriteString(string(agentType)); err != nil {
+		return fmt.Errorf("failed to write agent hint file: %w", err)
+	}
+	return nil
+}
+
+// LoadAgentTypeHint reads the agent type hint written by SessionStart.
+// Returns empty string if the hint file doesn't exist, can't be read, or the
+// value isn't a registered agent type.
+func LoadAgentTypeHint(ctx context.Context, sessionID string) types.AgentType {
+	if err := validation.ValidateSessionID(sessionID); err != nil {
+		return ""
+	}
+
+	stateDir, err := getSessionStateDir(ctx)
+	if err != nil {
+		logging.Warn(logging.WithComponent(ctx, "session"), "failed to resolve state dir for agent hint",
+			slog.String("session_id", sessionID),
+			slog.Any("error", err))
+		return ""
+	}
+
+	hintPath := filepath.Join(stateDir, sessionID+".agent")
+	data, err := os.ReadFile(hintPath) //nolint:gosec // sessionID is validated above
+	if err != nil {
+		if !os.IsNotExist(err) {
+			logging.Warn(logging.WithComponent(ctx, "session"), "failed to read agent hint file",
+				slog.String("path", hintPath),
+				slog.Any("error", err))
+		}
+		return ""
+	}
+	return types.AgentType(strings.TrimSpace(string(data)))
+}
+
 // ClearSessionState removes the session state file for the given session ID.
 func ClearSessionState(ctx context.Context, sessionID string) error {
 	// Validate session ID to prevent path traversal
@@ -283,6 +397,11 @@ func ClearSessionState(ctx context.Context, sessionID string) error {
 	matches, _ := filepath.Glob(filepath.Join(stateDir, sessionID+".*")) //nolint:errcheck // pattern is always valid
 	for _, f := range matches {
 		_ = os.Remove(f)
+	}
+
+	// Remove the lock file (lives in a separate directory; see AcquireSessionLock).
+	if commonDir, cdErr := GetGitCommonDir(ctx); cdErr == nil {
+		_ = os.Remove(filepath.Join(commonDir, "entire-locks", sessionID+".lock"))
 	}
 
 	return nil

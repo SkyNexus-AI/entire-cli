@@ -134,6 +134,105 @@ func (d *detectableAgent) DetectPresence(_ context.Context) (bool, error) {
 	return true, nil
 }
 
+// sessionDirAgent is a mock with a configurable session dir, for path-prefix tests.
+type sessionDirAgent struct {
+	mockAgent
+
+	name       types.AgentName
+	agentType  types.AgentType
+	sessionDir string
+}
+
+func (s *sessionDirAgent) Name() types.AgentName                  { return s.name }
+func (s *sessionDirAgent) Type() types.AgentType                  { return s.agentType }
+func (s *sessionDirAgent) GetSessionDir(_ string) (string, error) { return s.sessionDir, nil }
+
+func TestAgentForTranscriptPath(t *testing.T) {
+	originalRegistry := make(map[types.AgentName]Factory)
+	registryMu.Lock()
+	for k, v := range registry {
+		originalRegistry[k] = v
+	}
+	registry = make(map[types.AgentName]Factory)
+	registryMu.Unlock()
+	t.Cleanup(func() {
+		registryMu.Lock()
+		registry = originalRegistry
+		registryMu.Unlock()
+	})
+
+	cursor := &sessionDirAgent{
+		name:       types.AgentName("cursor"),
+		agentType:  types.AgentType("Cursor"),
+		sessionDir: "/home/u/.cursor/projects/repo/agent-transcripts",
+	}
+	claude := &sessionDirAgent{
+		name:       types.AgentName("claude-code"),
+		agentType:  types.AgentType("Claude Code"),
+		sessionDir: "/home/u/.claude/projects/repo",
+	}
+	Register(cursor.name, func() Agent { return cursor })
+	Register(claude.name, func() Agent { return claude })
+
+	cases := []struct {
+		name       string
+		transcript string
+		wantAgent  types.AgentType
+		wantOK     bool
+	}{
+		{
+			name:       "cursor IDE nested layout",
+			transcript: "/home/u/.cursor/projects/repo/agent-transcripts/abc/abc.jsonl",
+			wantAgent:  cursor.Type(),
+			wantOK:     true,
+		},
+		{
+			name:       "cursor CLI flat layout",
+			transcript: "/home/u/.cursor/projects/repo/agent-transcripts/abc.jsonl",
+			wantAgent:  cursor.Type(),
+			wantOK:     true,
+		},
+		{
+			name:       "claude code transcript",
+			transcript: "/home/u/.claude/projects/repo/abc.jsonl",
+			wantAgent:  claude.Type(),
+			wantOK:     true,
+		},
+		{
+			name:       "empty transcript path returns false",
+			transcript: "",
+			wantOK:     false,
+		},
+		{
+			name:       "unrelated path returns false",
+			transcript: "/home/u/somewhere/else/transcript.jsonl",
+			wantOK:     false,
+		},
+		{
+			name: "directory-prefix collision is rejected",
+			// Without a separator-aware prefix check, this would erroneously
+			// match an agent rooted at /home/u/.cursor/projects/rep.
+			transcript: "/home/u/.cursor/projects/repository/agent-transcripts/x.jsonl",
+			wantOK:     false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ag, ok := AgentForTranscriptPath(tc.transcript, "/repo")
+			if ok != tc.wantOK {
+				t.Fatalf("ok = %v, want %v", ok, tc.wantOK)
+			}
+			if !tc.wantOK {
+				return
+			}
+			if ag.Type() != tc.wantAgent {
+				t.Errorf("agent = %q, want %q", ag.Type(), tc.wantAgent)
+			}
+		})
+	}
+}
+
 func TestAgentNameConstants(t *testing.T) {
 	if AgentNameClaudeCode != "claude-code" {
 		t.Errorf("expected AgentNameClaudeCode %q, got %q", "claude-code", AgentNameClaudeCode)
