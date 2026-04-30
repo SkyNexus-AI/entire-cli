@@ -38,6 +38,32 @@ func DispatchLifecycleEvent(ctx context.Context, ag agent.Agent, event *agent.Ev
 		return errors.New("event cannot be nil")
 	}
 
+	// Skip events from non-owning agents. Cursor IDE forwards hooks to both
+	// .cursor/hooks.json and .claude/settings.json, so the non-owning agent's
+	// process otherwise duplicates work — extra checkpoints, torn writes on
+	// shared metadata files, doubled step counts. Once SessionState records
+	// the owning agent (set by InitializeSession's transcript-path resolution
+	// at TurnStart), any other agent's events for that session no-op here.
+	//
+	// Bypassed events:
+	//   - SessionStart: runs before SessionState exists; the hint file dedup
+	//     in handleLifecycleSessionStart protects the banner.
+	//   - TurnStart: InitializeSession's transcript-path resolution can repair
+	//     a wrongly-set AgentType. Skipping at the dispatcher would lock in
+	//     a bad state forever.
+	if event.Type != agent.SessionStart && event.Type != agent.TurnStart && event.SessionID != "" {
+		if state, _ := strategy.LoadSessionState(ctx, event.SessionID); state != nil && state.AgentType != "" && state.AgentType != ag.Type() { //nolint:errcheck // load failures fall through to normal dispatch
+			logging.Info(logging.WithAgent(logging.WithComponent(ctx, "lifecycle"), ag.Name()),
+				"skipping forwarded hook for non-owning agent",
+				slog.String("event", event.Type.String()),
+				slog.String("session_id", event.SessionID),
+				slog.String("owning_agent", string(state.AgentType)),
+				slog.String("firing_agent", string(ag.Type())),
+			)
+			return nil
+		}
+	}
+
 	switch event.Type {
 	case agent.SessionStart:
 		return handleLifecycleSessionStart(ctx, ag, event)

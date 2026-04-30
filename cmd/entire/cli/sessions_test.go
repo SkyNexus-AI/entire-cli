@@ -18,6 +18,7 @@ import (
 
 const (
 	testAgentClaude    = "Claude Code"
+	testAgentCursor    = "Cursor"
 	testCheckpointID   = "a3b2c4d5e6f7"
 	testPromptFixLogin = "fix the login bug"
 )
