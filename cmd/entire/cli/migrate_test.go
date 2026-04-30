@@ -127,6 +127,34 @@ func TestMigrateCheckpointsV2_Basic(t *testing.T) {
 	assert.Equal(t, cpID, summary.CheckpointID)
 }
 
+func TestMigrateCheckpointsV2_PreservesCreatedAt(t *testing.T) {
+	t.Parallel()
+	repo := initMigrateTestRepo(t)
+	v1Store, v2Store := newMigrateStores(repo)
+
+	createdAt := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	cpID := id.MustCheckpointID("b1c2d3e4f5a6")
+	err := v1Store.WriteCommitted(context.Background(), checkpoint.WriteCommittedOptions{
+		CheckpointID: cpID,
+		SessionID:    "session-created-at",
+		CreatedAt:    createdAt,
+		Strategy:     "manual-commit",
+		Transcript:   redact.AlreadyRedacted([]byte("{\"type\":\"assistant\",\"message\":\"hello\"}\n")),
+		AuthorName:   "Test",
+		AuthorEmail:  "test@test.com",
+	})
+	require.NoError(t, err)
+
+	var stdout bytes.Buffer
+	result, err := migrateCheckpointsV2(context.Background(), repo, v1Store, v2Store, &stdout, false)
+	require.NoError(t, err)
+	assert.Equal(t, 1, result.migrated)
+
+	content, err := v2Store.ReadSessionContent(context.Background(), cpID, 0)
+	require.NoError(t, err)
+	assert.True(t, content.Metadata.CreatedAt.Equal(createdAt))
+}
+
 func TestMigrateCheckpointsV2_Idempotent(t *testing.T) {
 	t.Parallel()
 	repo := initMigrateTestRepo(t)

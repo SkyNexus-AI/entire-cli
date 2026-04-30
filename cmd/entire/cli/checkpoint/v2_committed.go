@@ -9,7 +9,6 @@ import (
 	"log/slog"
 	"os"
 	"strings"
-	"time"
 
 	"github.com/entireio/cli/cmd/entire/cli/agent"
 	"github.com/entireio/cli/cmd/entire/cli/agent/types"
@@ -565,7 +564,7 @@ func (s *V2GitStore) writeMainSessionToSubdirectory(opts WriteCommittedOptions, 
 		CheckpointID:                opts.CheckpointID,
 		SessionID:                   opts.SessionID,
 		Strategy:                    opts.Strategy,
-		CreatedAt:                   time.Now().UTC(),
+		CreatedAt:                   checkpointCreatedAt(opts),
 		Branch:                      opts.Branch,
 		CheckpointsCount:            opts.CheckpointsCount,
 		FilesTouched:                opts.FilesTouched,

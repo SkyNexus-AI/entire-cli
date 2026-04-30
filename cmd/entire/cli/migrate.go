@@ -524,6 +524,7 @@ func buildMigrateWriteOpts(content *checkpoint.SessionContent, info checkpoint.C
 	return checkpoint.WriteCommittedOptions{
 		CheckpointID: info.CheckpointID,
 		SessionID:    m.SessionID,
+		CreatedAt:    m.CreatedAt,
 		Strategy:     m.Strategy,
 		Branch:       m.Branch,
 		// content.Transcript comes from persisted checkpoint storage and is
