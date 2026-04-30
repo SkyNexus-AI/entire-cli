@@ -13,6 +13,7 @@ import (
 	"github.com/entireio/cli/redact"
 	"github.com/go-git/go-git/v6"
 	"github.com/go-git/go-git/v6/plumbing"
+	"github.com/go-git/go-git/v6/plumbing/filemode"
 	"github.com/go-git/go-git/v6/plumbing/object"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -501,6 +502,55 @@ func TestComputeGenerationCheckpointTimestamps_FallsBackToRawTranscript(t *testi
 	require.True(t, ok)
 	assert.True(t, gen.OldestCheckpointAt.Equal(oldest))
 	assert.True(t, gen.NewestCheckpointAt.Equal(newest))
+}
+
+func TestComputeGenerationCheckpointTimestamps_UnreadableCheckpointForcesFallback(t *testing.T) {
+	t.Parallel()
+	repo := initTestRepo(t)
+	store := NewV2GitStore(repo, "origin")
+
+	timestamp := time.Date(2025, 12, 23, 10, 27, 44, 0, time.UTC)
+	transcript := fmt.Sprintf("{\"type\":\"user\",\"timestamp\":%q}\n", timestamp.Format(time.RFC3339Nano))
+	transcriptBlobHash, err := CreateBlobFromContent(repo, []byte(transcript))
+	require.NoError(t, err)
+
+	readableCheckpointTree, err := BuildTreeFromEntries(context.Background(), repo, map[string]object.TreeEntry{
+		"0/" + paths.V2RawTranscriptFileName: {
+			Name: paths.V2RawTranscriptFileName,
+			Mode: filemode.Regular,
+			Hash: transcriptBlobHash,
+		},
+	})
+	require.NoError(t, err)
+
+	bucketTree, err := storeTree(repo, []object.TreeEntry{
+		{
+			Name: "bbccddeeff",
+			Mode: filemode.Dir,
+			Hash: readableCheckpointTree,
+		},
+		{
+			Name: "ccddeeff00",
+			Mode: filemode.Dir,
+			Hash: plumbing.NewHash("1111111111111111111111111111111111111111"),
+		},
+	})
+	require.NoError(t, err)
+
+	rootTreeHash, err := storeTree(repo, []object.TreeEntry{
+		{
+			Name: "aa",
+			Mode: filemode.Dir,
+			Hash: bucketTree,
+		},
+	})
+	require.NoError(t, err)
+
+	gen, ok, err := store.ComputeGenerationCheckpointTimestamps(rootTreeHash)
+	require.NoError(t, err)
+	assert.False(t, ok, "partial checkpoint timestamp coverage should force fallback")
+	assert.True(t, gen.OldestCheckpointAt.IsZero())
+	assert.True(t, gen.NewestCheckpointAt.IsZero())
 }
 
 func TestUpdateCommittedFullTranscript_UpdatesArchivedGeneration(t *testing.T) {

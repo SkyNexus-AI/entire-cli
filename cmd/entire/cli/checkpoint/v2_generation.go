@@ -183,6 +183,7 @@ func (s *V2GitStore) ComputeGenerationCheckpointTimestamps(rootTreeHash plumbing
 
 		cpTree, treeErr := s.repo.TreeObject(cpTreeHash)
 		if treeErr != nil {
+			missingCheckpointTimestamp = true
 			return nil //nolint:nilerr // Skip unreadable checkpoint trees and fall back to generation.json.
 		}
 		if cpGen, ok := checkpointTimestampRangeFromFullTree(cpTree); ok {
