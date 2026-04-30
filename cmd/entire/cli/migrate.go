@@ -594,6 +594,18 @@ func pruneV2CheckpointForForce(ctx context.Context, repo *git.Repository, v2Stor
 			return err
 		}
 	}
+
+	archived, err := v2Store.ListArchivedGenerations()
+	if err != nil {
+		return fmt.Errorf("failed to list archived v2 generations while pruning checkpoint %s: %w", cpID, err)
+	}
+	for _, generation := range archived {
+		refName := plumbing.ReferenceName(paths.V2FullRefPrefix + generation)
+		if err := pruneV2ArchivedCheckpointRef(ctx, repo, v2Store, refName, cpID); err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 
@@ -635,6 +647,84 @@ func pruneV2CheckpointRef(ctx context.Context, repo *git.Repository, v2Store *ch
 		return fmt.Errorf("failed to update ref %s: %w", refName, err)
 	}
 	return nil
+}
+
+func pruneV2ArchivedCheckpointRef(ctx context.Context, repo *git.Repository, v2Store *checkpoint.V2GitStore, refName plumbing.ReferenceName, cpID id.CheckpointID) error {
+	parentHash, rootTreeHash, err := v2Store.GetRefState(refName)
+	if err != nil {
+		if errors.Is(err, plumbing.ErrReferenceNotFound) {
+			return nil
+		}
+		return fmt.Errorf("failed to get v2 ref state for %s: %w", refName, err)
+	}
+
+	rootTree, err := repo.TreeObject(rootTreeHash)
+	if err != nil {
+		return fmt.Errorf("failed to read v2 tree for %s: %w", refName, err)
+	}
+	if _, err := rootTree.Tree(cpID.Path()); err != nil {
+		return nil //nolint:nilerr // Checkpoint is absent from this ref, so there is nothing to prune.
+	}
+
+	shardPrefix := string(cpID[:2])
+	shardSuffix := string(cpID[2:])
+	newRoot, err := pruneCheckpointFromRoot(repo, rootTreeHash, shardPrefix, shardSuffix)
+	if err != nil {
+		return fmt.Errorf("failed to remove checkpoint subtree from %s: %w", refName, err)
+	}
+	if newRoot == rootTreeHash {
+		return nil
+	}
+
+	count, err := v2Store.CountCheckpointsInTree(newRoot)
+	if err != nil {
+		return fmt.Errorf("failed to count checkpoints in pruned %s: %w", refName, err)
+	}
+	if count == 0 {
+		if err := repo.Storer.RemoveReference(refName); err != nil {
+			return fmt.Errorf("failed to remove empty archived v2 generation %s: %w", refName, err)
+		}
+		return nil
+	}
+
+	newRoot, err = addRecomputedGenerationJSON(v2Store, newRoot)
+	if err != nil {
+		return fmt.Errorf("failed to recompute generation metadata for %s: %w", refName, err)
+	}
+
+	commitHash, err := checkpoint.CreateCommit(ctx, repo, newRoot, parentHash,
+		fmt.Sprintf("Reset checkpoint before force migration: %s\n", cpID),
+		"Entire Migration", "migration@entire.dev")
+	if err != nil {
+		return fmt.Errorf("failed to create v2 prune commit for %s: %w", refName, err)
+	}
+
+	if err := repo.Storer.SetReference(plumbing.NewHashReference(refName, commitHash)); err != nil {
+		return fmt.Errorf("failed to update ref %s: %w", refName, err)
+	}
+	return nil
+}
+
+func addRecomputedGenerationJSON(v2Store *checkpoint.V2GitStore, treeHash plumbing.Hash) (plumbing.Hash, error) {
+	gen, found, err := v2Store.ComputeGenerationRawTranscriptTimestamps(treeHash)
+	if err != nil {
+		return plumbing.ZeroHash, fmt.Errorf("compute raw transcript timestamps: %w", err)
+	}
+	if !found {
+		gen, found, err = v2Store.ComputeGenerationCheckpointTimestamps(treeHash)
+		if err != nil {
+			return plumbing.ZeroHash, fmt.Errorf("compute checkpoint timestamps: %w", err)
+		}
+	}
+	if !found {
+		return treeHash, nil
+	}
+
+	newTreeHash, err := v2Store.AddGenerationJSONToTree(treeHash, gen)
+	if err != nil {
+		return plumbing.ZeroHash, fmt.Errorf("add generation metadata: %w", err)
+	}
+	return newTreeHash, nil
 }
 
 func pruneCheckpointFromRoot(repo *git.Repository, rootTreeHash plumbing.Hash, shardPrefix, shardSuffix string) (plumbing.Hash, error) {
