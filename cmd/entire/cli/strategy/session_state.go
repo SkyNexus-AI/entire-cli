@@ -11,7 +11,6 @@ import (
 
 	"github.com/entireio/cli/cmd/entire/cli/agent"
 	"github.com/entireio/cli/cmd/entire/cli/agent/types"
-	"github.com/entireio/cli/cmd/entire/cli/filelock"
 	"github.com/entireio/cli/cmd/entire/cli/jsonutil"
 	"github.com/entireio/cli/cmd/entire/cli/logging"
 	"github.com/entireio/cli/cmd/entire/cli/paths"
@@ -271,38 +270,6 @@ func LoadModelHint(ctx context.Context, sessionID string) string {
 	return strings.TrimSpace(string(data))
 }
 
-// AcquireSessionLock takes an exclusive per-session-id lock. Used to
-// serialize concurrent processes that initialize the same session — when
-// Cursor IDE forwards a single user prompt to both its own hook system and
-// Claude Code's, two `entire` hook processes can otherwise each
-// create-from-scratch in parallel and race for the last write. With the lock
-// the second arrival sees the existing state and goes through the cheap
-// update path (correctSessionAgentType repairs AgentType if the transcript
-// path indicates a different agent).
-//
-// Lock files live under a dedicated `entire-locks/` directory in the git
-// common dir — separate from `entire-sessions/` so callers that enumerate
-// session state files (status, doctor, tests) don't have to filter lock
-// artifacts.
-func AcquireSessionLock(ctx context.Context, sessionID string) (*filelock.Lock, error) {
-	if err := validation.ValidateSessionID(sessionID); err != nil {
-		return nil, fmt.Errorf("invalid session ID: %w", err)
-	}
-	commonDir, err := GetGitCommonDir(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get git common dir: %w", err)
-	}
-	lockDir := filepath.Join(commonDir, "entire-locks")
-	if err := os.MkdirAll(lockDir, 0o750); err != nil {
-		return nil, fmt.Errorf("failed to create lock directory: %w", err)
-	}
-	lock, err := filelock.Acquire(filepath.Join(lockDir, sessionID+".lock"))
-	if err != nil {
-		return nil, fmt.Errorf("failed to acquire session lock: %w", err)
-	}
-	return lock, nil
-}
-
 // StoreAgentTypeHint records the agent type that owns a session before
 // SessionState exists. Used by the lifecycle dispatcher when SessionStart fires
 // (state isn't created until TurnStart, so we need a place to remember which
@@ -403,11 +370,6 @@ func ClearSessionState(ctx context.Context, sessionID string) error {
 	matches, _ := filepath.Glob(filepath.Join(stateDir, sessionID+".*")) //nolint:errcheck // pattern is always valid
 	for _, f := range matches {
 		_ = os.Remove(f)
-	}
-
-	// Remove the lock file (lives in a separate directory; see AcquireSessionLock).
-	if commonDir, cdErr := GetGitCommonDir(ctx); cdErr == nil {
-		_ = os.Remove(filepath.Join(commonDir, "entire-locks", sessionID+".lock"))
 	}
 
 	return nil

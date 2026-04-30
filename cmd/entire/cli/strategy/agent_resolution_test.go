@@ -168,17 +168,16 @@ func TestInitializeSession_TranscriptPathRepairsExistingState(t *testing.T) {
 	assert.Equal(t, cursorTranscript, state.TranscriptPath)
 }
 
-// TestInitializeSession_ConcurrentCallsConvergeToTranscriptOwner simulates
-// the bug from the field: two processes (Cursor IDE forwarding the prompt to
-// both .cursor/hooks.json and .claude/settings.json) call InitializeSession
-// concurrently for the same session ID. Without the per-session lock, the
-// last writer wins. With the lock the runner-up sees the existing state and
-// applies correctSessionAgentType.
-//
-// The transcript-bearing call is the authoritative one. Regardless of which
-// goroutine wins the lock first, the final AgentType must come from the
-// transcript path.
-func TestInitializeSession_ConcurrentCallsConvergeToTranscriptOwner(t *testing.T) {
+// TestInitializeSession_ConcurrentRaceRepairsOnNextTurn simulates the bug
+// from the field: two processes (Cursor IDE forwarding the prompt to both
+// .cursor/hooks.json and .claude/settings.json) call InitializeSession
+// concurrently for the same session ID. We do not serialize them — the
+// race may leave AgentType wrong for a single turn (both goroutines see
+// no existing state and run the "initialize new session" path; last
+// writer wins). The contract is eventual consistency: the next turn that
+// arrives with the cursor transcript path repairs AgentType via
+// correctSessionAgentType.
+func TestInitializeSession_ConcurrentRaceRepairsOnNextTurn(t *testing.T) {
 	dir := setupGitRepo(t)
 	t.Chdir(dir)
 	cursorTranscript := withCursorSessionDir(t)
@@ -191,16 +190,14 @@ func TestInitializeSession_ConcurrentCallsConvergeToTranscriptOwner(t *testing.T
 	require.NoError(t, err)
 
 	// Two parallel hook processes: claude-code (no transcript) and cursor
-	// (with transcript). Whichever grabs the lock first creates the state;
-	// the other follows and either matches or repairs via correctSessionAgentType.
+	// (with transcript). Errors are non-fatal — without serialization the
+	// goroutines may step on each other's writes; convergence is asserted
+	// via the next-turn call below.
 	s := &ManualCommitStrategy{}
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		// Errors here are non-fatal — the goroutines race; either may turn
-		// out to be a no-op or hit a benign concurrent-update edge case.
-		// What we assert is the final state below.
 		_ = s.InitializeSession(ctx, sessionID, agent.AgentTypeClaudeCode, "", "prompt", "") //nolint:errcheck // see comment above
 	}()
 	go func() {
@@ -209,11 +206,15 @@ func TestInitializeSession_ConcurrentCallsConvergeToTranscriptOwner(t *testing.T
 	}()
 	wg.Wait()
 
+	// Simulate the next turn: cursor's hook fires again with its transcript
+	// path. correctSessionAgentType repairs any wrong AgentType from the race.
+	require.NoError(t, s.InitializeSession(ctx, sessionID, agent.AgentTypeCursor, cursorTranscript, "next prompt", ""))
+
 	state, lErr := s.loadSessionState(ctx, sessionID)
 	require.NoError(t, lErr)
 	require.NotNil(t, state)
 	assert.Equal(t, agent.AgentTypeCursor, state.AgentType,
-		"the transcript-bearing call must determine the final AgentType regardless of goroutine ordering")
+		"the transcript-bearing turn must repair AgentType to Cursor regardless of how the prior race resolved")
 }
 
 // TestInitializeSession_ClaudeCodeTranscriptKeepsClaudeCode verifies the negative case:

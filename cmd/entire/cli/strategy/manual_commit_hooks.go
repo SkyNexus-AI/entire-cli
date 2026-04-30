@@ -2210,29 +2210,14 @@ func correctSessionAgentType(ctx context.Context, currentType types.AgentType, t
 // userPrompt is the user's prompt text (stored truncated as LastPrompt for display).
 // model is the LLM model identifier (e.g., "claude-sonnet-4-20250514"); empty if unknown.
 func (s *ManualCommitStrategy) InitializeSession(ctx context.Context, sessionID string, agentType types.AgentType, transcriptPath string, userPrompt string, model string) error {
-	// Serialize concurrent InitializeSession calls for the same session ID.
-	// Cursor IDE forwards a single user prompt to both .cursor/hooks.json and
-	// .claude/settings.json, so two `entire` hook processes can race here. The
-	// lock ensures the runner-up sees the state file the first process wrote
-	// and goes through the cheap update path (correctSessionAgentType handles
-	// any AgentType mismatch via the transcript-path signal).
-	lock, lockErr := AcquireSessionLock(ctx, sessionID)
-	if lockErr != nil {
-		// Logged but not fatal — fall through and accept the existing race.
-		// The most we lose is the correctness improvement; pre-fix behavior.
-		logging.Warn(logging.WithComponent(ctx, "hooks"), "failed to acquire session lock; proceeding without serialization",
-			slog.String("session_id", sessionID),
-			slog.String("error", lockErr.Error()))
-	} else {
-		defer func() {
-			if rErr := lock.Release(); rErr != nil {
-				logging.Warn(logging.WithComponent(ctx, "hooks"), "failed to release session lock",
-					slog.String("session_id", sessionID),
-					slog.String("error", rErr.Error()))
-			}
-		}()
-	}
-
+	// Concurrent InitializeSession calls for the same session ID are possible
+	// — Cursor IDE forwards one prompt to both .cursor/hooks.json and
+	// .claude/settings.json, so two `entire` processes race here. We do not
+	// serialize them: the SessionStart hint plus correctSessionAgentType
+	// converge on the right AgentType across turns. The cost of the race is
+	// at most one redundant full setup (idempotent shadow-branch creation)
+	// and a possibly-wrong AgentType for one turn, which the next turn's
+	// transcript-path repair fixes.
 	repo, err := OpenRepository(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to open git repository: %w", err)
