@@ -189,6 +189,143 @@ func TestDispatchLifecycleEvent_AllowsTurnStartFromMismatchedAgent(t *testing.T)
 	require.NotEmpty(t, state.TurnID, "TurnStart must dispatch (and generate a TurnID) even when the firing agent disagrees with the recorded owner")
 }
 
+// TestDispatchLifecycleEvent_SkipsAllNonBypassEventsFromNonOwner verifies the
+// skip applies uniformly to every non-bypass event type. If the dispatcher
+// had let any of these through, downstream handlers would either error
+// (transcript file not found, etc.) or mutate state — both are detectable.
+func TestDispatchLifecycleEvent_SkipsAllNonBypassEventsFromNonOwner(t *testing.T) {
+	setupStopTestRepo(t)
+
+	ctx := context.Background()
+	sessionID := "test-skip-all-events"
+	require.NoError(t, strategy.SaveSessionState(ctx, &strategy.SessionState{
+		SessionID:  sessionID,
+		AgentType:  agent.AgentTypeCursor,
+		BaseCommit: "abc123",
+		StartedAt:  time.Now(),
+		ModelName:  "initial-model",
+	}))
+
+	nonOwner := newMockAgent()
+	nonOwner.agentType = agent.AgentTypeClaudeCode
+
+	skipEligible := []agent.EventType{
+		agent.TurnEnd,
+		agent.Compaction,
+		agent.SubagentStart,
+		agent.SubagentEnd,
+		agent.ModelUpdate,
+		agent.SessionEnd,
+	}
+
+	for _, et := range skipEligible {
+		t.Run(et.String(), func(t *testing.T) {
+			err := DispatchLifecycleEvent(ctx, nonOwner, &agent.Event{
+				Type:       et,
+				SessionID:  sessionID,
+				SessionRef: "/nonexistent/transcript.jsonl", // would fail in handler
+				Model:      "would-overwrite-on-modelupdate",
+				Timestamp:  time.Now(),
+			})
+			require.NoError(t, err, "skip must return nil; downstream handler would have errored on missing transcript")
+		})
+	}
+
+	// Side-effect assertions: the handlers most likely to mutate state never ran.
+	state, err := strategy.LoadSessionState(ctx, sessionID)
+	require.NoError(t, err)
+	require.NotNil(t, state)
+	require.Nil(t, state.EndedAt, "SessionEnd skipped: EndedAt should remain nil")
+	require.Equal(t, "initial-model", state.ModelName, "ModelUpdate skipped: ModelName should not have been overwritten")
+}
+
+// TestDispatchLifecycleEvent_DoesNotSkipWhenOwnerMatches verifies that when
+// the firing agent IS the recorded owner, the event runs normally.
+func TestDispatchLifecycleEvent_DoesNotSkipWhenOwnerMatches(t *testing.T) {
+	setupStopTestRepo(t)
+
+	ctx := context.Background()
+	sessionID := "test-owner-match"
+	require.NoError(t, strategy.SaveSessionState(ctx, &strategy.SessionState{
+		SessionID:  sessionID,
+		AgentType:  agent.AgentTypeCursor,
+		BaseCommit: "abc123",
+		StartedAt:  time.Now(),
+	}))
+
+	owner := newMockAgent()
+	owner.agentType = agent.AgentTypeCursor
+
+	require.NoError(t, DispatchLifecycleEvent(ctx, owner, &agent.Event{
+		Type:      agent.SessionEnd,
+		SessionID: sessionID,
+		Timestamp: time.Now(),
+	}))
+
+	// Owner's SessionEnd must run markSessionEnded → EndedAt is set.
+	state, err := strategy.LoadSessionState(ctx, sessionID)
+	require.NoError(t, err)
+	require.NotNil(t, state)
+	require.NotNil(t, state.EndedAt, "SessionEnd from the owning agent must transition the session")
+}
+
+// TestDispatchLifecycleEvent_DoesNotSkipWhenAgentTypeUnset verifies the early
+// bootstrap window: SessionStart fired but TurnStart hasn't yet, so
+// state.AgentType is empty. The skip must NOT engage in this state.
+func TestDispatchLifecycleEvent_DoesNotSkipWhenAgentTypeUnset(t *testing.T) {
+	setupStopTestRepo(t)
+
+	ctx := context.Background()
+	sessionID := "test-agenttype-unset"
+	require.NoError(t, strategy.SaveSessionState(ctx, &strategy.SessionState{
+		SessionID:  sessionID,
+		AgentType:  "", // unset
+		BaseCommit: "abc123",
+		StartedAt:  time.Now(),
+	}))
+
+	ag := newMockAgent()
+	ag.agentType = agent.AgentTypeClaudeCode
+
+	require.NoError(t, DispatchLifecycleEvent(ctx, ag, &agent.Event{
+		Type:      agent.SessionEnd,
+		SessionID: sessionID,
+		Timestamp: time.Now(),
+	}))
+
+	// Without a recorded owner, the dispatcher cannot tell who is forwarded;
+	// the event must reach the handler.
+	state, err := strategy.LoadSessionState(ctx, sessionID)
+	require.NoError(t, err)
+	require.NotNil(t, state)
+	require.NotNil(t, state.EndedAt, "with no recorded owner, SessionEnd must run regardless of firing agent")
+}
+
+func TestEventBypassesAgentOwnershipCheck(t *testing.T) {
+	t.Parallel()
+
+	bypassed := []agent.EventType{agent.SessionStart, agent.TurnStart}
+	for _, et := range bypassed {
+		if !eventBypassesAgentOwnershipCheck(et) {
+			t.Errorf("%s must bypass the ownership check", et)
+		}
+	}
+
+	notBypassed := []agent.EventType{
+		agent.TurnEnd,
+		agent.Compaction,
+		agent.SubagentStart,
+		agent.SubagentEnd,
+		agent.ModelUpdate,
+		agent.SessionEnd,
+	}
+	for _, et := range notBypassed {
+		if eventBypassesAgentOwnershipCheck(et) {
+			t.Errorf("%s must be subject to the ownership check", et)
+		}
+	}
+}
+
 func TestDispatchLifecycleEvent_UnknownEventType(t *testing.T) {
 	t.Parallel()
 
