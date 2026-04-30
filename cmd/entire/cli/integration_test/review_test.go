@@ -11,31 +11,41 @@ import (
 
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint"
 	"github.com/entireio/cli/cmd/entire/cli/paths"
+	"github.com/entireio/cli/cmd/entire/cli/review"
 	"github.com/entireio/cli/cmd/entire/cli/session"
 )
 
-// TestReview_MarkerAdoptionCondensesReviewMetadataOnNextCommit exercises
-// the full adoption pipeline: a pending marker written before the agent
-// session is adopted on UserPromptSubmit, then condensed into checkpoint
-// metadata on the next git commit. The marker is written directly rather
-// than through a CLI subcommand so the test focuses on adoption behavior,
-// not on CLI wiring.
-func TestReview_MarkerAdoptionCondensesReviewMetadataOnNextCommit(t *testing.T) {
+// TestReview_EnvVarAdoptionCondensesReviewMetadataOnNextCommit exercises
+// the full adoption pipeline: ENTIRE_REVIEW_* env vars are present when the
+// UserPromptSubmit hook fires (as `entire review` sets them on the spawned
+// agent process), the session is tagged as a review, and the metadata is
+// condensed into the checkpoint on the next git commit.
+func TestReview_EnvVarAdoptionCondensesReviewMetadataOnNextCommit(t *testing.T) {
 	t.Parallel()
 
 	env := NewFeatureBranchEnv(t)
 	enableReviewAgent(t, env, "claude-code")
 
-	env.WritePendingReviewMarker(
-		"claude-code",
-		[]string{"/pr-review-toolkit:review-pr", "/test-auditor"},
-		env.GetHeadHash(),
-	)
+	skills := []string{"/pr-review-toolkit:review-pr", "/test-auditor"}
+	reviewPrompt := composeReviewPromptForTest(skills)
+	skillsJSON, err := review.EncodeSkills(skills)
+	if err != nil {
+		t.Fatalf("encode skills: %v", err)
+	}
+
+	// Simulate the env vars that `entire review` sets on the spawned agent
+	// process before running the hook.
+	reviewEnv := []string{
+		review.EnvSession + "=1",
+		review.EnvAgent + "=claude-code",
+		review.EnvSkills + "=" + skillsJSON,
+		review.EnvPrompt + "=" + reviewPrompt,
+		review.EnvStartingSHA + "=" + env.GetHeadHash(),
+	}
 
 	sess := env.NewSession()
-	reviewPrompt := "review the branch for correctness and missing tests"
-	if err := env.SimulateUserPromptSubmitWithPrompt(sess.ID, reviewPrompt); err != nil {
-		t.Fatalf("SimulateUserPromptSubmitWithPrompt failed: %v", err)
+	if err := env.SimulateUserPromptSubmitWithReviewEnvVars(sess.ID, reviewPrompt, reviewEnv); err != nil {
+		t.Fatalf("SimulateUserPromptSubmitWithReviewEnvVars failed: %v", err)
 	}
 
 	state, err := env.GetSessionState(sess.ID)
@@ -51,8 +61,8 @@ func TestReview_MarkerAdoptionCondensesReviewMetadataOnNextCommit(t *testing.T) 
 	if len(state.ReviewSkills) != 2 || state.ReviewSkills[0] != "/pr-review-toolkit:review-pr" || state.ReviewSkills[1] != "/test-auditor" {
 		t.Fatalf("state.ReviewSkills = %v", state.ReviewSkills)
 	}
-	if !strings.Contains(state.ReviewPrompt, "/pr-review-toolkit:review-pr") || !strings.Contains(state.ReviewPrompt, "/test-auditor") {
-		t.Fatalf("state.ReviewPrompt missing configured skills: %q", state.ReviewPrompt)
+	if state.ReviewPrompt != reviewPrompt {
+		t.Fatalf("state.ReviewPrompt = %q, want %q", state.ReviewPrompt, reviewPrompt)
 	}
 
 	env.WriteFile("review_target.go", "package main\n\nfunc ReviewTarget() string { return \"ok\" }\n")
@@ -148,94 +158,6 @@ func TestReviewAttach_TagsAttachedSessionAsReview(t *testing.T) {
 	}
 }
 
-func TestReview_MarkerAdoption_WrongAgentDoesNotAdoptMarker(t *testing.T) {
-	t.Parallel()
-
-	env := NewFeatureBranchEnv(t)
-	enableReviewAgent(t, env, "claude-code")
-	enableReviewAgent(t, env, "gemini")
-
-	env.WritePendingReviewMarker(
-		"claude-code",
-		[]string{"/pr-review-toolkit:review-pr"},
-		env.GetHeadHash(),
-	)
-
-	geminiSession := env.NewGeminiSession()
-	if err := env.SimulateGeminiBeforeAgent(geminiSession.ID); err != nil {
-		t.Fatalf("SimulateGeminiBeforeAgent failed: %v", err)
-	}
-
-	geminiState, err := env.GetSessionState(geminiSession.ID)
-	if err != nil {
-		t.Fatalf("GetSessionState for Gemini session failed: %v", err)
-	}
-	if geminiState == nil {
-		t.Fatal("expected Gemini session state to be created")
-	}
-	if geminiState.Kind != "" {
-		t.Fatalf("geminiState.Kind = %q, want empty", geminiState.Kind)
-	}
-	if _, err := os.Stat(pendingReviewMarkerPath(env)); err != nil {
-		t.Fatalf("expected pending review marker to remain after wrong-agent session: %v", err)
-	}
-
-	claudeSession := env.NewSession()
-	if err := env.SimulateUserPromptSubmitWithPrompt(claudeSession.ID, "run the configured review"); err != nil {
-		t.Fatalf("SimulateUserPromptSubmitWithPrompt failed: %v", err)
-	}
-
-	claudeState, err := env.GetSessionState(claudeSession.ID)
-	if err != nil {
-		t.Fatalf("GetSessionState for Claude session failed: %v", err)
-	}
-	if claudeState == nil {
-		t.Fatal("expected Claude session state to be created")
-	}
-	if claudeState.Kind != session.KindAgentReview {
-		t.Fatalf("claudeState.Kind = %q, want %q", claudeState.Kind, session.KindAgentReview)
-	}
-	if _, err := os.Stat(pendingReviewMarkerPath(env)); !os.IsNotExist(err) {
-		t.Fatalf("expected marker to be cleared after correct-agent adoption, err=%v", err)
-	}
-}
-
-func TestReview_MarkerAdoption_StaleMarkerIsIgnoredAfterHeadMoves(t *testing.T) {
-	t.Parallel()
-
-	env := NewFeatureBranchEnv(t)
-	enableReviewAgent(t, env, "claude-code")
-
-	env.WritePendingReviewMarker(
-		"claude-code",
-		[]string{"/pr-review-toolkit:review-pr"},
-		env.GetHeadHash(),
-	)
-
-	env.WriteFile("head_move.txt", "new head\n")
-	env.GitAdd("head_move.txt")
-	env.GitCommit("move head before review session starts")
-
-	sess := env.NewSession()
-	if err := env.SimulateUserPromptSubmitWithPrompt(sess.ID, "run the configured review"); err != nil {
-		t.Fatalf("SimulateUserPromptSubmitWithPrompt failed: %v", err)
-	}
-
-	state, err := env.GetSessionState(sess.ID)
-	if err != nil {
-		t.Fatalf("GetSessionState failed: %v", err)
-	}
-	if state == nil {
-		t.Fatal("expected session state to be created")
-	}
-	if state.Kind != "" {
-		t.Fatalf("state.Kind = %q, want empty because marker is stale", state.Kind)
-	}
-	if _, err := os.Stat(pendingReviewMarkerPath(env)); !os.IsNotExist(err) {
-		t.Fatalf("expected stale marker to be cleared, err=%v", err)
-	}
-}
-
 // TestReview_MissingSkillAtSpawn_ErrorsCleanly pins the runtime verification
 // guard: a settings file naming a nonexistent skill must cause entire review
 // to exit non-zero with a clear stderr message and leave no pending marker.
@@ -268,10 +190,6 @@ func TestReview_MissingSkillAtSpawn_ErrorsCleanly(t *testing.T) {
 func enableReviewAgent(t *testing.T, env *TestEnv, name string) {
 	t.Helper()
 	env.RunCLI("enable", "--agent", name, "--telemetry=false")
-}
-
-func pendingReviewMarkerPath(env *TestEnv) string {
-	return filepath.Join(env.RepoDir, ".git", "entire-sessions", "review-pending.json")
 }
 
 func readCheckpointSummary(t *testing.T, env *TestEnv, checkpointID string) checkpoint.CheckpointSummary {

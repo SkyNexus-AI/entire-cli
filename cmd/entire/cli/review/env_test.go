@@ -1,0 +1,57 @@
+package review
+
+import (
+	"testing"
+)
+
+func TestEnvSkillsRoundtrip(t *testing.T) {
+	t.Parallel()
+	skills := []string{"/pr-review-toolkit:review-pr", "/test-auditor"}
+	encoded, err := EncodeSkills(skills)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	decoded, err := DecodeSkills(encoded)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(decoded) != len(skills) {
+		t.Fatalf("got %d skills, want %d", len(decoded), len(skills))
+	}
+	for i := range skills {
+		if decoded[i] != skills[i] {
+			t.Errorf("skill[%d]: got %q, want %q", i, decoded[i], skills[i])
+		}
+	}
+}
+
+func TestEnvNamesAreStable(t *testing.T) {
+	t.Parallel()
+	// Direct comparisons (not map iteration) so each constant is pinned
+	// independently and the failure message names which constant broke.
+	if EnvSession != "ENTIRE_REVIEW_SESSION" {
+		t.Errorf("EnvSession: got %q, want ENTIRE_REVIEW_SESSION", EnvSession)
+	}
+	if EnvAgent != "ENTIRE_REVIEW_AGENT" {
+		t.Errorf("EnvAgent: got %q, want ENTIRE_REVIEW_AGENT", EnvAgent)
+	}
+	if EnvSkills != "ENTIRE_REVIEW_SKILLS" {
+		t.Errorf("EnvSkills: got %q, want ENTIRE_REVIEW_SKILLS", EnvSkills)
+	}
+	if EnvPrompt != "ENTIRE_REVIEW_PROMPT" {
+		t.Errorf("EnvPrompt: got %q, want ENTIRE_REVIEW_PROMPT", EnvPrompt)
+	}
+	if EnvStartingSHA != "ENTIRE_REVIEW_STARTING_SHA" {
+		t.Errorf("EnvStartingSHA: got %q, want ENTIRE_REVIEW_STARTING_SHA", EnvStartingSHA)
+	}
+}
+
+func TestDecodeSkillsRejectsInvalidJSON(t *testing.T) {
+	t.Parallel()
+	if _, err := DecodeSkills("not json"); err == nil {
+		t.Error("expected error for invalid JSON")
+	}
+	if _, err := DecodeSkills(""); err != nil {
+		t.Errorf("expected empty string to decode as empty slice, got error: %v", err)
+	}
+}

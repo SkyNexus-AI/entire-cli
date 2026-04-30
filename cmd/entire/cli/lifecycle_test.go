@@ -12,6 +12,7 @@ import (
 	"github.com/entireio/cli/cmd/entire/cli/agent/opencode"
 	"github.com/entireio/cli/cmd/entire/cli/agent/types"
 	"github.com/entireio/cli/cmd/entire/cli/paths"
+	"github.com/entireio/cli/cmd/entire/cli/review"
 	"github.com/entireio/cli/cmd/entire/cli/session"
 	"github.com/entireio/cli/cmd/entire/cli/strategy"
 	"github.com/entireio/cli/cmd/entire/cli/testutil"
@@ -953,298 +954,224 @@ func TestHandleLifecycleTurnEnd_BackfillsPromptFromOpenCodeTranscript(t *testing
 	require.Contains(t, updated.LastPrompt, "create a file called notes/deep.md")
 }
 
-func TestAdoptPendingReviewMarker(t *testing.T) {
+// TestAdoptReviewEnv_TagsSession verifies that when ENTIRE_REVIEW_* env vars
+// are set on the process (as `entire review` sets them on the spawned agent),
+// handleLifecycleTurnStart tags the session state with Kind=agent_review,
+// ReviewSkills, and ReviewPrompt.
+func TestAdoptReviewEnv_TagsSession(t *testing.T) {
+	// Cannot use t.Parallel() because we use t.Chdir()
 	tmp := t.TempDir()
 	testutil.InitRepo(t, tmp)
 	testutil.WriteFile(t, tmp, "f.txt", "x")
 	testutil.GitAdd(t, tmp, "f.txt")
 	testutil.GitCommit(t, tmp, "init")
 	t.Chdir(tmp)
+	paths.ClearWorktreeRootCache()
 
-	const reviewPrompt = "Please run these review skills in order:\n  1. /pr-review-toolkit:review-pr\n"
-	headSHA := testutil.GetHeadHash(t, tmp)
-	if err := WritePendingReviewMarker(context.Background(), PendingReviewMarker{
-		AgentName:   "claude-code",
-		Skills:      []string{"/pr-review-toolkit:review-pr"},
-		Prompt:      reviewPrompt,
-		StartingSHA: headSHA,
-		StartedAt:   time.Now().UTC(),
-	}); err != nil {
-		t.Fatal(err)
+	t.Setenv(review.EnvSession, "1")
+	t.Setenv(review.EnvAgent, "claude-code")
+	skillsJSON, encErr := review.EncodeSkills([]string{"/pr-review-toolkit:review-pr"})
+	if encErr != nil {
+		t.Fatalf("encode skills: %v", encErr)
 	}
+	t.Setenv(review.EnvSkills, skillsJSON)
+	t.Setenv(review.EnvPrompt, "Review this branch.")
 
-	// Pure-function test of the helper.
-	got, modified, err := adoptPendingReviewMarkerInto(context.Background(), session.State{
-		SessionID: "s1",
-		Kind:      "",
-	}, agent.AgentNameClaudeCode)
-	if err != nil {
-		t.Fatal(err)
+	sessionID := "test-review-env-001"
+	ag := newMockAgent()
+	event := &agent.Event{
+		Type:      agent.TurnStart,
+		SessionID: sessionID,
+		Prompt:    "Review this branch.",
+		Timestamp: time.Now(),
 	}
-	if !modified {
-		t.Fatal("expected modified=true when marker exists")
-	}
-	if got.Kind != session.KindAgentReview {
-		t.Errorf("Kind = %q, want review", got.Kind)
-	}
-	if len(got.ReviewSkills) != 1 || got.ReviewSkills[0] != "/pr-review-toolkit:review-pr" {
-		t.Errorf("ReviewSkills = %v", got.ReviewSkills)
-	}
-	if got.ReviewPrompt != reviewPrompt {
-		t.Errorf("ReviewPrompt = %q, want %q", got.ReviewPrompt, reviewPrompt)
+	if err := handleLifecycleTurnStart(context.Background(), ag, event); err != nil {
+		t.Fatalf("handleLifecycleTurnStart: %v", err)
 	}
 
-	// Marker should be cleared after adoption.
-	_, ok, readErr := ReadPendingReviewMarker(context.Background())
-	if readErr != nil {
-		t.Fatal(readErr)
+	state, loadErr := strategy.LoadSessionState(context.Background(), sessionID)
+	if loadErr != nil {
+		t.Fatalf("load state: %v", loadErr)
 	}
-	if ok {
-		t.Error("expected marker cleared after adoption")
+	if state == nil {
+		t.Fatal("state is nil after turn start")
+	}
+	if state.Kind != session.KindAgentReview {
+		t.Errorf("Kind: got %q, want agent_review", state.Kind)
+	}
+	if len(state.ReviewSkills) != 1 || state.ReviewSkills[0] != "/pr-review-toolkit:review-pr" {
+		t.Errorf("ReviewSkills: got %v", state.ReviewSkills)
+	}
+	if state.ReviewPrompt != "Review this branch." {
+		t.Errorf("ReviewPrompt: got %q", state.ReviewPrompt)
 	}
 }
 
-func TestAdoptPendingReviewMarker_NoMarker(t *testing.T) {
+// TestAdoptReviewEnv_NormalSession verifies that when ENTIRE_REVIEW_SESSION is
+// not set, handleLifecycleTurnStart leaves Kind empty (normal coding session).
+func TestAdoptReviewEnv_NormalSession(t *testing.T) {
+	// Cannot use t.Parallel() because we use t.Chdir()
 	tmp := t.TempDir()
 	testutil.InitRepo(t, tmp)
 	testutil.WriteFile(t, tmp, "f.txt", "x")
 	testutil.GitAdd(t, tmp, "f.txt")
 	testutil.GitCommit(t, tmp, "init")
 	t.Chdir(tmp)
+	paths.ClearWorktreeRootCache()
 
-	// No marker written.
-	got, modified, err := adoptPendingReviewMarkerInto(context.Background(), session.State{SessionID: "s2"}, agent.AgentNameClaudeCode)
-	if err != nil {
-		t.Fatal(err)
+	// Explicitly ensure the review env vars are absent.
+	t.Setenv(review.EnvSession, "")
+
+	sessionID := "test-review-env-002"
+	ag := newMockAgent()
+	event := &agent.Event{
+		Type:      agent.TurnStart,
+		SessionID: sessionID,
+		Prompt:    "Hello.",
+		Timestamp: time.Now(),
 	}
-	if modified {
-		t.Error("expected modified=false when no marker present")
+	if err := handleLifecycleTurnStart(context.Background(), ag, event); err != nil {
+		t.Fatalf("handleLifecycleTurnStart: %v", err)
 	}
-	if got.Kind != "" {
-		t.Errorf("Kind = %q, want empty", got.Kind)
+
+	state, loadErr := strategy.LoadSessionState(context.Background(), sessionID)
+	if loadErr != nil {
+		t.Fatalf("load state: %v", loadErr)
+	}
+	if state == nil {
+		t.Fatal("state is nil after turn start")
+	}
+	if state.Kind != "" {
+		t.Errorf("Kind: got %q, want empty (normal session)", state.Kind)
 	}
 }
 
-func TestAdoptPendingReviewMarker_AlreadyReview(t *testing.T) {
+// TestAdoptReviewEnv_MalformedSkillsLeavesUntagged verifies that when
+// ENTIRE_REVIEW_SKILLS contains malformed JSON, adoptReviewEnv logs a warning
+// and leaves the session untagged rather than corrupting metadata.
+func TestAdoptReviewEnv_MalformedSkillsLeavesUntagged(t *testing.T) {
+	// Cannot use t.Parallel() because we use t.Chdir() and t.Setenv()
 	tmp := t.TempDir()
 	testutil.InitRepo(t, tmp)
 	testutil.WriteFile(t, tmp, "f.txt", "x")
 	testutil.GitAdd(t, tmp, "f.txt")
 	testutil.GitCommit(t, tmp, "init")
 	t.Chdir(tmp)
+	paths.ClearWorktreeRootCache()
 
-	if err := WritePendingReviewMarker(context.Background(), PendingReviewMarker{
-		AgentName: "claude-code",
-		Skills:    []string{"/x"},
-	}); err != nil {
-		t.Fatal(err)
+	t.Setenv(review.EnvSession, "1")
+	t.Setenv(review.EnvSkills, "not json {[") // malformed JSON
+	t.Setenv(review.EnvAgent, "claude-code")
+	t.Setenv(review.EnvPrompt, "anything")
+
+	sessionID := "test-review-env-malformed"
+	ag := newMockAgent()
+	event := &agent.Event{
+		Type:      agent.TurnStart,
+		SessionID: sessionID,
+		Prompt:    "anything",
+		Timestamp: time.Now(),
 	}
-	// State already tagged — adoption should be a no-op (not a second re-tag).
-	in := session.State{SessionID: "s3", Kind: session.KindAgentReview, ReviewSkills: []string{"/y"}}
-	got, modified, err := adoptPendingReviewMarkerInto(context.Background(), in, agent.AgentNameClaudeCode)
-	if err != nil {
-		t.Fatal(err)
+	if err := handleLifecycleTurnStart(context.Background(), ag, event); err != nil {
+		t.Fatalf("handleLifecycleTurnStart: %v", err)
 	}
-	if modified {
-		t.Error("expected modified=false when session already has Kind=review")
+
+	state, loadErr := strategy.LoadSessionState(context.Background(), sessionID)
+	if loadErr != nil {
+		t.Fatalf("load state: %v", loadErr)
 	}
-	if len(got.ReviewSkills) != 1 || got.ReviewSkills[0] != "/y" {
-		t.Errorf("ReviewSkills should be unchanged: %v", got.ReviewSkills)
+	if state == nil {
+		t.Fatal("state is nil after turn start")
 	}
-	// Marker should NOT be cleared since adoption didn't happen.
-	_, ok, readErr := ReadPendingReviewMarker(context.Background())
-	if readErr != nil {
-		t.Fatal(readErr)
+	if state.Kind != "" {
+		t.Errorf("Kind: got %q, want empty (malformed skills must not tag session)", state.Kind)
 	}
-	if !ok {
-		t.Error("expected marker preserved when adoption was a no-op")
+	if len(state.ReviewSkills) != 0 {
+		t.Errorf("ReviewSkills: got %v, want empty", state.ReviewSkills)
+	}
+	if state.ReviewPrompt != "" {
+		t.Errorf("ReviewPrompt: got %q, want empty", state.ReviewPrompt)
 	}
 }
 
-// Reproduces the concurrent-worktree race: `entire review` in worktree A
-// writes a marker, but a Claude session in worktree B fires its hook first.
-// The other-worktree session must NOT claim the marker, and the marker must
-// survive for the correct session to adopt later.
-func TestAdoptPendingReviewMarker_OtherWorktreeLeavesMarker(t *testing.T) {
+// TestAdoptReviewEnv_AlreadyTaggedNotOverwritten verifies that adoptReviewEnv
+// is idempotent: when state.Kind is already set (e.g. on a subsequent turn of
+// a review session), the function returns without modifying state.
+func TestAdoptReviewEnv_AlreadyTaggedNotOverwritten(t *testing.T) {
+	// Cannot use t.Parallel() because we use t.Chdir() and t.Setenv()
 	tmp := t.TempDir()
 	testutil.InitRepo(t, tmp)
 	testutil.WriteFile(t, tmp, "f.txt", "x")
 	testutil.GitAdd(t, tmp, "f.txt")
 	testutil.GitCommit(t, tmp, "init")
 	t.Chdir(tmp)
+	paths.ClearWorktreeRootCache()
 
-	// Use the real HEAD SHA so the SHA binding doesn't interfere with the
-	// worktree-scope path this test exercises.
-	headSHA := testutil.GetHeadHash(t, tmp)
-	if err := WritePendingReviewMarker(context.Background(), PendingReviewMarker{
-		AgentName:    "claude-code",
-		Skills:       []string{"/pr-review-toolkit:review-pr"},
-		StartingSHA:  headSHA,
-		StartedAt:    time.Now().UTC(),
-		WorktreePath: "/repo/main",
-	}); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = ClearPendingReviewMarker(context.Background()) }) //nolint:errcheck // test cleanup, best-effort
+	sessionID := "test-review-env-already-tagged"
 
-	// A session running in a different worktree must NOT adopt.
-	got, modified, err := adoptPendingReviewMarkerInto(context.Background(), session.State{
-		SessionID:    "other-worktree-session",
-		WorktreePath: "/repo/.worktrees/feature",
-	}, agent.AgentNameClaudeCode)
-	if err != nil {
-		t.Fatal(err)
+	// Run a full first turn with ENTIRE_REVIEW_* set so the session is tagged.
+	t.Setenv(review.EnvSession, "1")
+	oldSkillsJSON, encErr := review.EncodeSkills([]string{"/old-skill"})
+	if encErr != nil {
+		t.Fatalf("encode old skills: %v", encErr)
 	}
-	if modified {
-		t.Fatal("expected modified=false when session worktree differs from marker worktree")
+	t.Setenv(review.EnvSkills, oldSkillsJSON)
+	t.Setenv(review.EnvAgent, "claude-code")
+	t.Setenv(review.EnvPrompt, "old prompt")
+
+	ag := newMockAgent()
+	firstTurn := &agent.Event{
+		Type:      agent.TurnStart,
+		SessionID: sessionID,
+		Prompt:    "old prompt",
+		Timestamp: time.Now(),
 	}
-	if got.Kind != "" {
-		t.Errorf("Kind = %q, want empty (should not be tagged)", got.Kind)
+	if err := handleLifecycleTurnStart(context.Background(), ag, firstTurn); err != nil {
+		t.Fatalf("first handleLifecycleTurnStart: %v", err)
 	}
 
-	// Marker must survive so the correct-worktree session can adopt later.
-	_, ok, readErr := ReadPendingReviewMarker(context.Background())
-	if readErr != nil {
-		t.Fatal(readErr)
+	// Verify the first turn tagged the session correctly.
+	stateAfterFirst, loadErr := strategy.LoadSessionState(context.Background(), sessionID)
+	if loadErr != nil {
+		t.Fatalf("load state after first turn: %v", loadErr)
 	}
-	if !ok {
-		t.Error("expected marker preserved after mismatched-worktree adoption attempt")
-	}
-
-	// Now the same marker; a session in the matching worktree should adopt.
-	got, modified, err = adoptPendingReviewMarkerInto(context.Background(), session.State{
-		SessionID:    "matching-worktree-session",
-		WorktreePath: "/repo/main",
-	}, agent.AgentNameClaudeCode)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !modified {
-		t.Fatal("expected modified=true when worktree matches")
-	}
-	if got.Kind != session.KindAgentReview {
-		t.Errorf("Kind = %q, want review", got.Kind)
-	}
-}
-
-// Reproduces the stale-marker problem: `entire review` for a non-
-// launchable agent writes a marker at SHA A, then the user commits
-// (HEAD moves to SHA B) before starting the review session. The later
-// session must NOT adopt the now-stale marker — that would tag an
-// unrelated session as a review of code that has already moved on.
-// The stale marker is discarded so future sessions start clean.
-func TestAdoptPendingReviewMarker_StaleSHAClearsMarker(t *testing.T) {
-	tmp := t.TempDir()
-	testutil.InitRepo(t, tmp)
-	testutil.WriteFile(t, tmp, "f.txt", "x")
-	testutil.GitAdd(t, tmp, "f.txt")
-	testutil.GitCommit(t, tmp, "init")
-	t.Chdir(tmp)
-
-	// Marker written at a SHA that isn't current HEAD (simulating HEAD
-	// having moved since `entire review` was invoked for a non-launchable
-	// agent and the user then committed before starting the session).
-	const staleSHA = "0000000000000000000000000000000000000000"
-	if err := WritePendingReviewMarker(context.Background(), PendingReviewMarker{
-		AgentName:    string(agent.AgentNameClaudeCode),
-		Skills:       []string{"/pr-review-toolkit:review-pr"},
-		StartingSHA:  staleSHA,
-		StartedAt:    time.Now().UTC(),
-		WorktreePath: tmp,
-	}); err != nil {
-		t.Fatal(err)
+	if stateAfterFirst == nil || stateAfterFirst.Kind != session.KindAgentReview {
+		t.Fatalf("first turn did not tag session; Kind=%q", stateAfterFirst.Kind)
 	}
 
-	// Matching agent + worktree, but SHA has drifted — discard the marker.
-	got, modified, err := adoptPendingReviewMarkerInto(context.Background(), session.State{
-		SessionID:    "later-session",
-		WorktreePath: tmp,
-	}, agent.AgentNameClaudeCode)
-	if err != nil {
-		t.Fatal(err)
+	// Now change env vars to DIFFERENT values and run a second turn.
+	// adoptReviewEnv must short-circuit because Kind is already set.
+	newSkillsJSON, encErr2 := review.EncodeSkills([]string{"/new-skill"})
+	if encErr2 != nil {
+		t.Fatalf("encode new skills: %v", encErr2)
 	}
-	if modified {
-		t.Fatal("expected modified=false when marker SHA != current HEAD SHA")
+	t.Setenv(review.EnvSkills, newSkillsJSON)
+	t.Setenv(review.EnvPrompt, "new prompt")
+
+	secondTurn := &agent.Event{
+		Type:      agent.TurnStart,
+		SessionID: sessionID,
+		Prompt:    "new prompt",
+		Timestamp: time.Now(),
 	}
-	if got.Kind != "" {
-		t.Errorf("Kind = %q, want empty (stale marker must not tag session)", got.Kind)
+	if err := handleLifecycleTurnStart(context.Background(), ag, secondTurn); err != nil {
+		t.Fatalf("second handleLifecycleTurnStart: %v", err)
 	}
 
-	// Marker must be CLEARED (not left in place) — no future session will
-	// legitimately match the stale SHA, so leaving it would let it mis-tag
-	// subsequent unrelated sessions.
-	_, markerPresent, readErr := ReadPendingReviewMarker(context.Background())
-	if readErr != nil {
-		t.Fatal(readErr)
+	state, loadErr2 := strategy.LoadSessionState(context.Background(), sessionID)
+	if loadErr2 != nil {
+		t.Fatalf("load state after second turn: %v", loadErr2)
 	}
-	if markerPresent {
-		t.Error("expected stale marker to be cleared, not preserved")
+	if state == nil {
+		t.Fatal("state is nil after second turn")
 	}
-}
-
-// Reproduces the agent-mismatch steal: `entire review` writes a marker for
-// claude-code, but a cursor session fires its UserPromptSubmit hook first in
-// the same worktree. The wrong-agent session must NOT claim the marker —
-// whichever agent's hook happens to fire first would otherwise silently
-// steal a review meant for a different agent (with different skills).
-func TestAdoptPendingReviewMarker_DifferentAgentLeavesMarker(t *testing.T) {
-	tmp := t.TempDir()
-	testutil.InitRepo(t, tmp)
-	testutil.WriteFile(t, tmp, "f.txt", "x")
-	testutil.GitAdd(t, tmp, "f.txt")
-	testutil.GitCommit(t, tmp, "init")
-	t.Chdir(tmp)
-
-	// Use the real HEAD SHA so the SHA binding doesn't interfere with the
-	// agent-scope path this test exercises.
-	headSHA := testutil.GetHeadHash(t, tmp)
-	if err := WritePendingReviewMarker(context.Background(), PendingReviewMarker{
-		AgentName:    string(agent.AgentNameClaudeCode),
-		Skills:       []string{"/pr-review-toolkit:review-pr"},
-		StartingSHA:  headSHA,
-		StartedAt:    time.Now().UTC(),
-		WorktreePath: tmp,
-	}); err != nil {
-		t.Fatal(err)
+	if state.Kind != session.KindAgentReview {
+		t.Errorf("Kind: got %q, want agent_review", state.Kind)
 	}
-	t.Cleanup(func() { _ = ClearPendingReviewMarker(context.Background()) }) //nolint:errcheck // test cleanup, best-effort
-
-	// A cursor session in the same worktree must NOT adopt a claude-code marker.
-	got, modified, err := adoptPendingReviewMarkerInto(context.Background(), session.State{
-		SessionID:    "cursor-session",
-		WorktreePath: tmp,
-	}, agent.AgentNameCursor)
-	if err != nil {
-		t.Fatal(err)
+	if len(state.ReviewSkills) != 1 || state.ReviewSkills[0] != "/old-skill" {
+		t.Errorf("ReviewSkills: got %v, want [/old-skill] (must not be overwritten on second turn)", state.ReviewSkills)
 	}
-	if modified {
-		t.Fatal("expected modified=false when session's agent differs from marker's agent")
-	}
-	if got.Kind != "" {
-		t.Errorf("Kind = %q, want empty (should not be tagged)", got.Kind)
-	}
-
-	// Marker must survive so the correct claude-code session can adopt later.
-	_, ok, readErr := ReadPendingReviewMarker(context.Background())
-	if readErr != nil {
-		t.Fatal(readErr)
-	}
-	if !ok {
-		t.Fatal("expected marker preserved after mismatched-agent adoption attempt")
-	}
-
-	// Now the correct agent adopts.
-	got, modified, err = adoptPendingReviewMarkerInto(context.Background(), session.State{
-		SessionID:    "claude-session",
-		WorktreePath: tmp,
-	}, agent.AgentNameClaudeCode)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !modified {
-		t.Fatal("expected modified=true when agent matches")
-	}
-	if got.Kind != session.KindAgentReview {
-		t.Errorf("Kind = %q, want review", got.Kind)
+	if state.ReviewPrompt != "old prompt" {
+		t.Errorf("ReviewPrompt: got %q, want %q (must not be overwritten on second turn)", state.ReviewPrompt, "old prompt")
 	}
 }
