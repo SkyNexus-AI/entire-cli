@@ -370,9 +370,9 @@ func ListEligibleV2Generations(ctx context.Context, s *settings.EntireSettings) 
 			continue
 		}
 
-		gen, foundCheckpointTimes, timestampErr := store.ComputeGenerationCheckpointTimestamps(treeHash)
+		gen, foundCheckpointTimes, timestampErr := store.ComputeGenerationRawTranscriptTimestamps(treeHash)
 		if timestampErr != nil {
-			warnings = append(warnings, fmt.Sprintf("generation %s: failed to compute checkpoint timestamps: %v", candidate.Name, timestampErr))
+			warnings = append(warnings, fmt.Sprintf("generation %s: failed to compute raw transcript timestamps: %v", candidate.Name, timestampErr))
 			continue
 		}
 		if !foundCheckpointTimes {
@@ -417,9 +417,10 @@ func ListEligibleV2Generations(ctx context.Context, s *settings.EntireSettings) 
 }
 
 type archivedV2GenerationCandidate struct {
-	Name    string
-	RefName plumbing.ReferenceName
-	RefOID  string
+	Name      string
+	RefName   plumbing.ReferenceName
+	RefOID    string
+	RemoteOID string
 }
 
 func listArchivedV2GenerationCandidates(
@@ -460,6 +461,8 @@ func listArchivedV2GenerationCandidates(
 			} else {
 				for name, remoteOID := range remoteRefs {
 					if candidate, ok := candidatesByName[name]; ok && candidate.RefOID == remoteOID {
+						candidate.RemoteOID = remoteOID
+						candidatesByName[name] = candidate
 						continue
 					}
 					tempRef, fetchErr := fetchArchivedV2Generation(ctx, fetchTarget, name)
@@ -469,9 +472,10 @@ func listArchivedV2GenerationCandidates(
 					}
 					tempRefs = append(tempRefs, tempRef)
 					candidatesByName[name] = archivedV2GenerationCandidate{
-						Name:    name,
-						RefName: tempRef,
-						RefOID:  remoteOID,
+						Name:      name,
+						RefName:   tempRef,
+						RefOID:    remoteOID,
+						RemoteOID: remoteOID,
 					}
 				}
 			}

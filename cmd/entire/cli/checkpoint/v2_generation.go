@@ -203,6 +203,44 @@ func (s *V2GitStore) ComputeGenerationCheckpointTimestamps(rootTreeHash plumbing
 	return gen, found, nil
 }
 
+// ComputeGenerationRawTranscriptTimestamps derives timestamps from raw
+// transcripts in the checkpoints present in a /full/* tree.
+func (s *V2GitStore) ComputeGenerationRawTranscriptTimestamps(rootTreeHash plumbing.Hash) (GenerationMetadata, bool, error) {
+	if rootTreeHash == plumbing.ZeroHash {
+		return GenerationMetadata{}, false, nil
+	}
+
+	rootTree, err := s.repo.TreeObject(rootTreeHash)
+	if err != nil {
+		return GenerationMetadata{}, false, fmt.Errorf("failed to read generation tree: %w", err)
+	}
+
+	var gen GenerationMetadata
+	found := false
+	missingCheckpointTimestamp := false
+	err = WalkCheckpointShards(s.repo, rootTree, func(_ id.CheckpointID, cpTreeHash plumbing.Hash) error {
+		cpTree, treeErr := s.repo.TreeObject(cpTreeHash)
+		if treeErr != nil {
+			missingCheckpointTimestamp = true
+			return nil //nolint:nilerr // Skip unreadable checkpoint trees and fall back to generation.json.
+		}
+		if cpGen, ok := checkpointTimestampRangeFromFullTree(cpTree); ok {
+			mergeGenerationRange(&gen, &found, cpGen)
+			return nil
+		}
+		missingCheckpointTimestamp = true
+		return nil
+	})
+	if err != nil {
+		return GenerationMetadata{}, false, err
+	}
+	if missingCheckpointTimestamp {
+		return GenerationMetadata{}, false, nil
+	}
+
+	return gen, found, nil
+}
+
 // computeGenerationTimestamps derives timestamps for a generation being archived.
 // It uses checkpoint metadata/transcript timestamps rather than git commit times
 // so migration and ref-repair commits don't reset retention age.
