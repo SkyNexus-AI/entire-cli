@@ -1344,41 +1344,6 @@ func TestLatestMigratedV2SessionIndex_Empty(t *testing.T) {
 	assert.False(t, ok)
 }
 
-func TestSpliceTasksTreeToV2_MergesTaskDirectories(t *testing.T) {
-	t.Parallel()
-
-	repo := initMigrateTestRepo(t)
-	_, v2Store := newMigrateStores(repo)
-	cpID := id.MustCheckpointID("123abc456def")
-
-	err := v2Store.WriteCommitted(context.Background(), checkpoint.WriteCommittedOptions{
-		CheckpointID: cpID,
-		SessionID:    "session-001",
-		Strategy:     "manual-commit",
-		Agent:        "Cursor",
-		Transcript:   redact.AlreadyRedacted([]byte(`{"type":"assistant","message":"seed"}`)),
-		AuthorName:   "Test",
-		AuthorEmail:  "test@test.com",
-	})
-	require.NoError(t, err)
-
-	rootTasksHash := buildTasksTreeHash(t, repo, "toolu_root")
-	sessionTasksHash := buildTasksTreeHash(t, repo, "toolu_session")
-
-	require.NoError(t, spliceTasksTreeToV2(context.Background(), repo, v2Store, cpID, 0, rootTasksHash))
-	require.NoError(t, spliceTasksTreeToV2(context.Background(), repo, v2Store, cpID, 0, sessionTasksHash))
-
-	_, rootTreeHash, refErr := v2Store.GetRefState(plumbing.ReferenceName(paths.V2FullCurrentRefName))
-	require.NoError(t, refErr)
-	rootTree, treeErr := repo.TreeObject(rootTreeHash)
-	require.NoError(t, treeErr)
-
-	_, err = rootTree.File(cpID.Path() + "/0/tasks/toolu_root/checkpoint.json")
-	require.NoError(t, err, "root task metadata should be preserved")
-	_, err = rootTree.File(cpID.Path() + "/0/tasks/toolu_session/checkpoint.json")
-	require.NoError(t, err, "session task metadata should be preserved")
-}
-
 func TestMigrateCheckpointsV2_PreservesPromptAttributions(t *testing.T) {
 	t.Parallel()
 	repo := initMigrateTestRepo(t)
