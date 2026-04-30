@@ -35,7 +35,7 @@ func newAutoUpdateFixture(t *testing.T) *autoUpdateFixture {
 		return f.installErr
 	}
 	origChoose := chooseUpdate
-	chooseUpdate = func(_, _, cmdStr string) (AutoUpdateAction, error) {
+	chooseUpdate = func(_ context.Context, _, _, cmdStr string) (AutoUpdateAction, error) {
 		f.lastCmdStr = cmdStr
 		return f.chooseValue, f.chooseErr
 	}

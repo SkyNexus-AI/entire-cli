@@ -587,7 +587,7 @@ func TestCheckAndNotify_InstallerFailureKeepsCacheFresh(t *testing.T) {
 	useBrewExecutable(t)
 
 	origChoose := chooseUpdate
-	chooseUpdate = func(_, _, _ string) (AutoUpdateAction, error) {
+	chooseUpdate = func(_ context.Context, _, _, _ string) (AutoUpdateAction, error) {
 		return autoUpdateActionUpdate, nil
 	}
 	t.Cleanup(func() { chooseUpdate = origChoose })

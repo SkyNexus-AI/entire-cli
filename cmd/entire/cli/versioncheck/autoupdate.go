@@ -30,7 +30,7 @@ const (
 // chooseUpdateFn is the signature for the update-prompt seam. The
 // concrete implementation renders a huh.Select with the installer
 // command interpolated into option 1.
-type chooseUpdateFn func(currentVersion, latestVersion, cmdStr string) (AutoUpdateAction, error)
+type chooseUpdateFn func(ctx context.Context, currentVersion, latestVersion, cmdStr string) (AutoUpdateAction, error)
 
 // Test seams.
 var (
@@ -75,7 +75,7 @@ func MaybeAutoUpdate(ctx context.Context, w io.Writer, currentVersion, latestVer
 		return autoUpdateActionSkip
 	}
 
-	action, err := chooseUpdate(currentVersion, latestVersion, cmdStr)
+	action, err := chooseUpdate(ctx, currentVersion, latestVersion, cmdStr)
 	if err != nil {
 		logging.Debug(ctx, "auto-update: prompt failed", "error", err.Error())
 		return autoUpdateActionSkip
@@ -102,7 +102,7 @@ func MaybeAutoUpdate(ctx context.Context, w io.Writer, currentVersion, latestVer
 // realChooseUpdate renders a huh.Select with the three update actions.
 // In normal mode this is an arrow-key TUI; when ACCESSIBLE is set huh
 // falls back to a plain numbered prompt readable by screen readers.
-func realChooseUpdate(currentVersion, latestVersion, cmdStr string) (AutoUpdateAction, error) {
+func realChooseUpdate(ctx context.Context, currentVersion, latestVersion, cmdStr string) (AutoUpdateAction, error) {
 	action := autoUpdateActionUpdate
 	sel := huh.NewSelect[AutoUpdateAction]().
 		Title(fmt.Sprintf("Update available! %s -> %s",
@@ -118,7 +118,7 @@ func realChooseUpdate(currentVersion, latestVersion, cmdStr string) (AutoUpdateA
 	if os.Getenv("ACCESSIBLE") != "" {
 		form = form.WithAccessible(true)
 	}
-	if err := form.Run(); err != nil {
+	if err := form.RunWithContext(ctx); err != nil {
 		if errors.Is(err, huh.ErrUserAborted) || errors.Is(err, huh.ErrTimeout) {
 			return autoUpdateActionSkip, nil
 		}
