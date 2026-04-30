@@ -37,12 +37,12 @@ func TestExplain_NoCurrentSession(t *testing.T) {
 		return
 	}
 
-	// Should show branch information and checkpoint count
-	if !strings.Contains(output, "Branch:") {
-		t.Errorf("expected 'Branch:' header in output, got: %s", output)
+	// Should show branch information and checkpoint count (new metadata-row shape)
+	if !strings.Contains(output, "branch  ") {
+		t.Errorf("expected 'branch' row in output, got: %s", output)
 	}
-	if !strings.Contains(output, "Checkpoints:") {
-		t.Errorf("expected 'Checkpoints:' in output, got: %s", output)
+	if !strings.Contains(output, "checkpoints") {
+		t.Errorf("expected 'checkpoints' row in output, got: %s", output)
 	}
 }
 
@@ -58,19 +58,19 @@ func TestExplain_SessionFilter(t *testing.T) {
 		return
 	}
 
-	// Should show branch header
-	if !strings.Contains(output, "Branch:") {
-		t.Errorf("expected 'Branch:' header in output, got: %s", output)
+	// Should show branch header (new metadata-row shape)
+	if !strings.Contains(output, "branch  ") {
+		t.Errorf("expected 'branch' row in output, got: %s", output)
 	}
 
 	// Should show 0 checkpoints (filter found no matches)
-	if !strings.Contains(output, "Checkpoints: 0") {
-		t.Errorf("expected 'Checkpoints: 0' for nonexistent session filter, got: %s", output)
+	if !strings.Contains(output, "checkpoints  0") {
+		t.Errorf("expected 'checkpoints  0' for nonexistent session filter, got: %s", output)
 	}
 
-	// Should show filter info
-	if !strings.Contains(output, "Filtered by session:") {
-		t.Errorf("expected 'Filtered by session:' in output, got: %s", output)
+	// Should show filter info as a metadata row (label aligned to widest "checkpoints")
+	if !strings.Contains(output, "session      nonexistent-session-id") {
+		t.Errorf("expected 'session ... nonexistent-session-id' row in output, got: %s", output)
 	}
 }
 
@@ -139,9 +139,12 @@ func TestExplain_CommitWithoutCheckpoint(t *testing.T) {
 		t.Fatalf("unexpected error: %v, output: %s", err, output)
 	}
 
-	// Should show "No associated Entire checkpoint" message
-	if !strings.Contains(output, "No associated Entire checkpoint") {
-		t.Errorf("expected 'No associated Entire checkpoint' message, got: %s", output)
+	// Should show "No associated Entire checkpoint" failure block
+	if !strings.Contains(output, "✗ No associated Entire checkpoint") {
+		t.Errorf("expected styled failure block, got: %s", output)
+	}
+	if !strings.Contains(output, "  reason") {
+		t.Errorf("expected reason row, got: %s", output)
 	}
 }
 
@@ -163,7 +166,7 @@ func TestExplain_CommitWithCheckpointTrailer(t *testing.T) {
 	// We expect an error because the checkpoint abc123def456 doesn't exist
 	if err == nil {
 		// If it succeeded, check if it found the checkpoint (it shouldn't)
-		if strings.Contains(output, "Checkpoint:") {
+		if strings.Contains(output, "● Checkpoint") {
 			t.Logf("checkpoint was found (unexpected but ok if test created one)")
 		}
 	} else {
@@ -204,10 +207,10 @@ func TestExplain_CheckpointV2EnabledFallsBackToV1(t *testing.T) {
 	output, err := env.RunCLIWithError("checkpoint", "explain", "--checkpoint", checkpointID[:6])
 	require.NoError(t, err, "expected explain checkpoint fallback to v1 to succeed: %s", output)
 
-	if !strings.Contains(output, "Checkpoint: "+checkpointID) {
+	if !strings.Contains(output, "● Checkpoint "+checkpointID) {
 		t.Errorf("expected checkpoint ID in output, got: %s", output)
 	}
-	if !strings.Contains(output, "Intent: Create v1 fallback file") {
+	if !strings.Contains(output, "Create v1 fallback file") {
 		t.Errorf("expected intent from v1 transcript in output, got: %s", output)
 	}
 }
@@ -264,7 +267,7 @@ func TestExplain_CheckpointV2EnabledPrefersV2WhenDualWriteExists(t *testing.T) {
 	output, err := env.RunCLIWithError("checkpoint", "explain", "--checkpoint", checkpointID[:6])
 	require.NoError(t, err, "expected explain to prefer v2 checkpoint data: %s", output)
 
-	if !strings.Contains(output, "Intent: Create v2 preferred file") {
+	if !strings.Contains(output, "Create v2 preferred file") {
 		t.Errorf("expected intent from v2 compact transcript, got: %s", output)
 	}
 	if strings.Contains(output, "v1 overridden prompt") {
@@ -324,9 +327,9 @@ func TestExplain_CheckpointV2NoFullTranscriptUsesCompact(t *testing.T) {
 	output, err := env.RunCLIWithError("checkpoint", "explain", "--checkpoint", checkpointID[:6])
 	require.NoError(t, err, "expected explain to succeed with compact transcript when /full/* is missing: %s", output)
 
-	require.Contains(t, output, "Checkpoint: "+checkpointID)
+	require.Contains(t, output, "● Checkpoint "+checkpointID)
 	// Intent should come from the v2 compact transcript, not the v1 marker.
-	require.Contains(t, output, "Intent: Create compact-only file")
+	require.Contains(t, output, "Create compact-only file")
 	require.NotContains(t, output, "v1 marker prompt",
 		"explain should use v2 compact transcript, not fall back to v1")
 }
@@ -369,8 +372,8 @@ func TestExplain_CheckpointV2MalformedFallsBackToV1(t *testing.T) {
 	output, err := env.RunCLIWithError("checkpoint", "explain", "--checkpoint", checkpointID[:6])
 	require.NoError(t, err, "expected explain to fall back to v1 when v2 is malformed: %s", output)
 
-	require.Contains(t, output, "Checkpoint: "+checkpointID)
-	require.Contains(t, output, "Intent: Create v1 resilience file")
+	require.Contains(t, output, "● Checkpoint "+checkpointID)
+	require.Contains(t, output, "Create v1 resilience file")
 }
 
 // corruptV2MainRef replaces the v2 /main ref's tree with one where the given
@@ -469,8 +472,8 @@ func TestExplain_BranchListingShowsCheckpointsAndPrompts(t *testing.T) {
 			output, err := env.RunCLIWithError("checkpoint", "explain")
 			require.NoError(t, err, "explain should succeed: %s", output)
 
-			require.Contains(t, output, "Branch:")
-			require.Contains(t, output, "Checkpoints: 1")
+			require.Contains(t, output, "branch  ")
+			require.Contains(t, output, "checkpoints  1")
 			require.Contains(t, output, "Implement user authentication",
 				"branch listing should show the commit message or prompt")
 		})
@@ -790,7 +793,7 @@ func TestExplain_BranchListingV2OnlyAfterV1Deleted(t *testing.T) {
 	output, err := env.RunCLIWithError("checkpoint", "explain")
 	require.NoError(t, err, "explain should succeed with v2 only: %s", output)
 
-	require.Contains(t, output, "Checkpoints: 1",
+	require.Contains(t, output, "checkpoints  1",
 		"checkpoint should be visible from v2 after v1 deletion")
 	require.Contains(t, output, "Create v2 resilience file",
 		"prompt/intent should be readable from v2 after v1 deletion")
