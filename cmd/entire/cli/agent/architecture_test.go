@@ -54,6 +54,7 @@ func TestAgentPackages_NoForbiddenImports(t *testing.T) {
 		repoPrefix + "telemetry",  // telemetry
 		repoPrefix + "validation", // validation utilities
 		repoPrefix + "settings",   // settings (read-only access)
+		repoPrefix + "review",     // review env contract + AgentReviewer types (used by per-agent reviewer.go files)
 	}
 
 	agentDir := findAgentDir(t)
