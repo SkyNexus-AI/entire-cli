@@ -34,21 +34,29 @@ import (
 // determined from the /main ref and passed to the /full/current write to
 // keep both refs consistent.
 func (s *V2GitStore) WriteCommitted(ctx context.Context, opts WriteCommittedOptions) error {
+	_, err := s.WriteCommittedWithSessionIndex(ctx, opts)
+	return err
+}
+
+// WriteCommittedWithSessionIndex writes a committed checkpoint and returns the
+// v2 session index used for the write. The index may point at an existing
+// session when the checkpoint already contains the same session ID.
+func (s *V2GitStore) WriteCommittedWithSessionIndex(ctx context.Context, opts WriteCommittedOptions) (int, error) {
 	// Validate upfront before any writes to avoid partial ref updates
 	if err := validateWriteOpts(opts); err != nil {
-		return err
+		return 0, err
 	}
 
 	sessionIndex, err := s.writeCommittedMain(ctx, opts)
 	if err != nil {
-		return fmt.Errorf("v2 /main write failed: %w", err)
+		return 0, fmt.Errorf("v2 /main write failed: %w", err)
 	}
 
 	if err := s.writeCommittedFullTranscript(ctx, opts, sessionIndex); err != nil {
-		return fmt.Errorf("v2 /full/current write failed: %w", err)
+		return 0, fmt.Errorf("v2 /full/current write failed: %w", err)
 	}
 
-	return nil
+	return sessionIndex, nil
 }
 
 // UpdateCommitted replaces the prompts and/or transcript for an existing v2
