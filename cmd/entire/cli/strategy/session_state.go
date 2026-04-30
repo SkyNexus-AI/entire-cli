@@ -318,38 +318,44 @@ func AcquireSessionLock(ctx context.Context, sessionID string) (*filelock.Lock, 
 // file is written, the hint is unused but remains until ClearSessionState
 // removes it alongside the state file.
 //
-// Returns nil for empty agentType or AgentTypeUnknown (don't pollute the hint
-// with non-identifying values).
-func StoreAgentTypeHint(ctx context.Context, sessionID string, agentType types.AgentType) error {
-	if err := validation.ValidateSessionID(sessionID); err != nil {
-		return fmt.Errorf("invalid session ID: %w", err)
+// Returns (created=true) when this call wrote the hint, (created=false) when
+// the hint already existed (no-op) or agentType was empty/Unknown.
+//
+// Callers can use the created bool to gate one-time-per-session side effects
+// — e.g., the SessionStart banner: if Gemini fires SessionStart twice (once
+// for source=startup, once for source=resume) we don't want to print the
+// banner twice. The first call creates the hint and returns created=true;
+// the second sees the hint and returns created=false.
+func StoreAgentTypeHint(ctx context.Context, sessionID string, agentType types.AgentType) (created bool, err error) {
+	if vErr := validation.ValidateSessionID(sessionID); vErr != nil {
+		return false, fmt.Errorf("invalid session ID: %w", vErr)
 	}
 	if agentType == "" || agentType == agent.AgentTypeUnknown {
-		return nil
+		return false, nil
 	}
 
-	stateDir, err := getSessionStateDir(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to get session state directory: %w", err)
+	stateDir, sErr := getSessionStateDir(ctx)
+	if sErr != nil {
+		return false, fmt.Errorf("failed to get session state directory: %w", sErr)
 	}
-	if err := os.MkdirAll(stateDir, 0o750); err != nil {
-		return fmt.Errorf("failed to create session state directory: %w", err)
+	if mErr := os.MkdirAll(stateDir, 0o750); mErr != nil {
+		return false, fmt.Errorf("failed to create session state directory: %w", mErr)
 	}
 
 	hintFile := filepath.Join(stateDir, sessionID+".agent")
-	f, err := os.OpenFile(hintFile, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600) //nolint:gosec // hintFile path is built from validated sessionID
-	if err != nil {
-		if errors.Is(err, os.ErrExist) {
-			// First-writer-wins: another agent already claimed this session.
-			return nil
+	f, oErr := os.OpenFile(hintFile, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600) //nolint:gosec // hintFile path is built from validated sessionID
+	if oErr != nil {
+		if errors.Is(oErr, os.ErrExist) {
+			// First-writer-wins: another caller already claimed this session.
+			return false, nil
 		}
-		return fmt.Errorf("failed to create agent hint file: %w", err)
+		return false, fmt.Errorf("failed to create agent hint file: %w", oErr)
 	}
 	defer f.Close()
-	if _, err := f.WriteString(string(agentType)); err != nil {
-		return fmt.Errorf("failed to write agent hint file: %w", err)
+	if _, wErr := f.WriteString(string(agentType)); wErr != nil {
+		return false, fmt.Errorf("failed to write agent hint file: %w", wErr)
 	}
-	return nil
+	return true, nil
 }
 
 // LoadAgentTypeHint reads the agent type hint written by SessionStart.

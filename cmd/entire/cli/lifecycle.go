@@ -78,6 +78,21 @@ func handleLifecycleSessionStart(ctx context.Context, ag agent.Agent, event *age
 		return fmt.Errorf("invalid %s event: %w", event.Type, err)
 	}
 
+	// Claim the session for this agent. First-writer-wins: if another caller
+	// already claimed this session ID, claimedFirst=false. We use this both
+	// for cross-agent disambiguation (Cursor IDE forwarding hooks to both
+	// .cursor/hooks.json and .claude/settings.json) and to dedupe the banner
+	// when one agent fires SessionStart multiple times for the same session
+	// (Gemini fires SessionStart for source=startup AND for source=resume).
+	claimedFirst, hintErr := strategy.StoreAgentTypeHint(ctx, event.SessionID, ag.Type())
+	if hintErr != nil {
+		// If we couldn't write the hint, fall back to "show the banner" —
+		// better to duplicate than to suppress the only banner the user sees.
+		logging.Warn(logCtx, "failed to store agent hint on session start",
+			slog.String("error", hintErr.Error()))
+		claimedFirst = true
+	}
+
 	// Build informational message — warn early if repo has no commits yet,
 	// since checkpoints require at least one commit to work.
 	message := sessionStartMessage(ag.Name(), false)
@@ -97,18 +112,21 @@ func handleLifecycleSessionStart(ctx context.Context, ag agent.Agent, event *age
 	}
 	countSessionsSpan.End()
 
-	// Output informational message if the agent supports hook responses.
-	// Claude Code reads JSON from stdout; agents that don't implement
-	// HookResponseWriter silently skip (avoids raw JSON in their terminal).
+	// Output informational message if the agent supports hook responses, but
+	// only on the first SessionStart for this session ID. Claude Code reads
+	// JSON from stdout; agents that don't implement HookResponseWriter
+	// silently skip (avoids raw JSON in their terminal).
 	_, hookResponseSpan := perf.Start(ctx, "write_hook_response")
 	if event.ResponseMessage != "" {
 		message = event.ResponseMessage
 	}
-	if writer, ok := agent.AsHookResponseWriter(ag); ok {
-		if err := writer.WriteHookResponse(message); err != nil {
-			hookResponseSpan.RecordError(err)
-			hookResponseSpan.End()
-			return fmt.Errorf("failed to write hook response: %w", err)
+	if claimedFirst {
+		if writer, ok := agent.AsHookResponseWriter(ag); ok {
+			if err := writer.WriteHookResponse(message); err != nil {
+				hookResponseSpan.RecordError(err)
+				hookResponseSpan.End()
+				return fmt.Errorf("failed to write hook response: %w", err)
+			}
 		}
 	}
 	hookResponseSpan.End()
@@ -119,16 +137,6 @@ func handleLifecycleSessionStart(ctx context.Context, ag agent.Agent, event *age
 			logging.Warn(logCtx, "failed to store model hint on session start",
 				slog.String("error", err.Error()))
 		}
-	}
-
-	// Claim the session for this agent. First-writer-wins: if another agent
-	// (e.g., Cursor IDE forwarding hooks to both .cursor/hooks.json and
-	// .claude/settings.json) already claimed this session ID, this is a no-op.
-	// InitializeSession reads the hint at TurnStart to override the firing
-	// hook's agent when a different agent owns the session.
-	if err := strategy.StoreAgentTypeHint(ctx, event.SessionID, ag.Type()); err != nil {
-		logging.Warn(logCtx, "failed to store agent hint on session start",
-			slog.String("error", err.Error()))
 	}
 
 	// Fire EventSessionStart for the current session (if state exists).

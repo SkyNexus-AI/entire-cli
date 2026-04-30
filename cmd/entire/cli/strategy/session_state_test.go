@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/entireio/cli/cmd/entire/cli/agent"
+	"github.com/entireio/cli/cmd/entire/cli/agent/types"
 	"github.com/entireio/cli/cmd/entire/cli/paths"
 	"github.com/entireio/cli/cmd/entire/cli/session"
 	"github.com/go-git/go-git/v6"
@@ -593,7 +594,9 @@ func TestStoreAgentTypeHint_RoundTrip(t *testing.T) {
 	ctx := context.Background()
 	sessionID := "2026-01-01-agent-roundtrip"
 
-	require.NoError(t, StoreAgentTypeHint(ctx, sessionID, agent.AgentTypeCursor))
+	created, err := StoreAgentTypeHint(ctx, sessionID, agent.AgentTypeCursor)
+	require.NoError(t, err)
+	require.True(t, created, "first call must report it created the hint")
 
 	got := LoadAgentTypeHint(ctx, sessionID)
 	require.Equal(t, agent.AgentTypeCursor, got)
@@ -609,11 +612,15 @@ func TestStoreAgentTypeHint_FirstWriterWins(t *testing.T) {
 	sessionID := "2026-01-01-agent-firstwriter"
 
 	// Cursor claims the session first.
-	require.NoError(t, StoreAgentTypeHint(ctx, sessionID, agent.AgentTypeCursor))
+	created, err := StoreAgentTypeHint(ctx, sessionID, agent.AgentTypeCursor)
+	require.NoError(t, err)
+	require.True(t, created)
 
 	// Claude Code's hook fires next (concurrent forwarded-hook scenario).
 	// Should be a no-op — does not overwrite the existing hint.
-	require.NoError(t, StoreAgentTypeHint(ctx, sessionID, agent.AgentTypeClaudeCode))
+	created, err = StoreAgentTypeHint(ctx, sessionID, agent.AgentTypeClaudeCode)
+	require.NoError(t, err)
+	require.False(t, created, "second call must report it did not create the hint")
 
 	got := LoadAgentTypeHint(ctx, sessionID)
 	require.Equal(t, agent.AgentTypeCursor, got, "first writer's hint must persist")
@@ -627,8 +634,17 @@ func TestStoreAgentTypeHint_EmptyOrUnknown_NoOp(t *testing.T) {
 
 	ctx := context.Background()
 
-	require.NoError(t, StoreAgentTypeHint(ctx, "2026-01-01-empty", ""))
-	require.NoError(t, StoreAgentTypeHint(ctx, "2026-01-01-unknown", agent.AgentTypeUnknown))
+	for _, tc := range []struct {
+		sid string
+		at  types.AgentType
+	}{
+		{"2026-01-01-empty", ""},
+		{"2026-01-01-unknown", agent.AgentTypeUnknown},
+	} {
+		created, hErr := StoreAgentTypeHint(ctx, tc.sid, tc.at)
+		require.NoError(t, hErr)
+		require.False(t, created, "empty/Unknown must report created=false")
+	}
 
 	stateDir, sdErr := getSessionStateDir(ctx)
 	require.NoError(t, sdErr)
@@ -656,7 +672,7 @@ func TestStoreAgentTypeHint_InvalidSessionID_ReturnsError(t *testing.T) {
 	require.NoError(t, err)
 	t.Chdir(dir)
 
-	err = StoreAgentTypeHint(context.Background(), "../../../etc/passwd", agent.AgentTypeCursor)
+	_, err = StoreAgentTypeHint(context.Background(), "../../../etc/passwd", agent.AgentTypeCursor)
 	require.Error(t, err)
 }
 
@@ -669,7 +685,8 @@ func TestClearSessionState_RemovesAgentHint(t *testing.T) {
 	ctx := context.Background()
 	sessionID := "2026-01-01-clear-agent-hint"
 
-	require.NoError(t, StoreAgentTypeHint(ctx, sessionID, agent.AgentTypeCursor))
+	_, err = StoreAgentTypeHint(ctx, sessionID, agent.AgentTypeCursor)
+	require.NoError(t, err)
 	require.NoError(t, ClearSessionState(ctx, sessionID))
 
 	got := LoadAgentTypeHint(ctx, sessionID)

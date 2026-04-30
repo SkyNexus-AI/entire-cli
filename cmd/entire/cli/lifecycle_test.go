@@ -207,7 +207,9 @@ func TestHandleLifecycleSessionStart_StoresAgentTypeHint(t *testing.T) {
 
 // TestHandleLifecycleSessionStart_AgentTypeHintFirstWriterWins verifies that
 // when multiple agents fire SessionStart for the same session ID, only the
-// first agent's claim is recorded.
+// first agent's claim is recorded AND only the first emits the banner. This
+// matches both the Cursor cross-agent and the Gemini repeat-source
+// (startup → resume) cases — the user must see the banner only once.
 func TestHandleLifecycleSessionStart_AgentTypeHintFirstWriterWins(t *testing.T) {
 	tmpDir := t.TempDir()
 	testutil.InitRepo(t, tmpDir)
@@ -225,15 +227,49 @@ func TestHandleLifecycleSessionStart_AgentTypeHintFirstWriterWins(t *testing.T) 
 	require.NoError(t, handleLifecycleSessionStart(ctx, first, &agent.Event{
 		Type: agent.SessionStart, SessionID: sessionID, Timestamp: time.Now(),
 	}))
+	require.NotEmpty(t, first.lastMessage, "first SessionStart must emit the banner")
 
 	second := newMockHookResponseAgent()
 	second.agentType = testAgentClaude
 	require.NoError(t, handleLifecycleSessionStart(ctx, second, &agent.Event{
 		Type: agent.SessionStart, SessionID: sessionID, Timestamp: time.Now(),
 	}))
+	require.Empty(t, second.lastMessage, "subsequent SessionStarts for the same session must not emit the banner again")
 
 	got := strategy.LoadAgentTypeHint(ctx, sessionID)
 	require.Equal(t, types.AgentType("Cursor"), got, "first SessionStart caller must own the session")
+}
+
+// TestHandleLifecycleSessionStart_GeminiRepeatSourceDoesNotDuplicate covers
+// the specific case the user reported: Gemini fires SessionStart twice for
+// the same session (e.g., source=startup followed by source=resume) and we
+// were emitting the banner both times.
+func TestHandleLifecycleSessionStart_GeminiRepeatSourceDoesNotDuplicate(t *testing.T) {
+	tmpDir := t.TempDir()
+	testutil.InitRepo(t, tmpDir)
+	testutil.WriteFile(t, tmpDir, "init.txt", "init")
+	testutil.GitAdd(t, tmpDir, "init.txt")
+	testutil.GitCommit(t, tmpDir, "init")
+	t.Chdir(tmpDir)
+	paths.ClearWorktreeRootCache()
+
+	ctx := context.Background()
+	sessionID := "test-gemini-repeat"
+
+	ag := newMockHookResponseAgent()
+	ag.agentType = "Gemini CLI"
+
+	require.NoError(t, handleLifecycleSessionStart(ctx, ag, &agent.Event{
+		Type: agent.SessionStart, SessionID: sessionID, Timestamp: time.Now(),
+	}))
+	first := ag.lastMessage
+	require.NotEmpty(t, first)
+
+	ag.lastMessage = ""
+	require.NoError(t, handleLifecycleSessionStart(ctx, ag, &agent.Event{
+		Type: agent.SessionStart, SessionID: sessionID, Timestamp: time.Now(),
+	}))
+	require.Empty(t, ag.lastMessage, "second SessionStart from the same agent must not re-emit the banner")
 }
 
 func TestHandleLifecycleSessionStart_EmptyRepoWarning(t *testing.T) {

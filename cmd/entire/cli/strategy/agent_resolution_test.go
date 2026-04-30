@@ -48,7 +48,8 @@ func TestResolveSessionAgentType_HintBeatsHookWhenNoTranscript(t *testing.T) {
 	t.Chdir(dir)
 
 	ctx := context.Background()
-	require.NoError(t, StoreAgentTypeHint(ctx, "test-session-2", agent.AgentTypeCursor))
+	_, err := StoreAgentTypeHint(ctx, "test-session-2", agent.AgentTypeCursor)
+	require.NoError(t, err)
 
 	got := resolveSessionAgentType(ctx, "test-session-2", agent.AgentTypeClaudeCode, "")
 	assert.Equal(t, agent.AgentTypeCursor, got,
@@ -71,7 +72,8 @@ func TestResolveSessionAgentType_TranscriptOverridesEvenWithHint(t *testing.T) {
 
 	ctx := context.Background()
 	// Wrong-first-writer scenario: Claude Code's SessionStart fired first by accident.
-	require.NoError(t, StoreAgentTypeHint(ctx, "test-session-4", agent.AgentTypeClaudeCode))
+	_, err := StoreAgentTypeHint(ctx, "test-session-4", agent.AgentTypeClaudeCode)
+	require.NoError(t, err)
 
 	got := resolveSessionAgentType(ctx, "test-session-4", agent.AgentTypeClaudeCode, cursorTranscript)
 	assert.Equal(t, agent.AgentTypeCursor, got,
@@ -118,12 +120,16 @@ func TestInitializeSession_HintWinsRaceAtTurnStart(t *testing.T) {
 	sessionID := "test-session-hint-race"
 
 	// SessionStart phase: Cursor fires first, then Claude Code (no-op).
-	require.NoError(t, StoreAgentTypeHint(ctx, sessionID, agent.AgentTypeCursor))
-	require.NoError(t, StoreAgentTypeHint(ctx, sessionID, agent.AgentTypeClaudeCode)) // no-op
+	created, err := StoreAgentTypeHint(ctx, sessionID, agent.AgentTypeCursor)
+	require.NoError(t, err)
+	require.True(t, created)
+	created, err = StoreAgentTypeHint(ctx, sessionID, agent.AgentTypeClaudeCode)
+	require.NoError(t, err)
+	require.False(t, created)
 
 	// TurnStart phase: Claude Code fires first with no transcript path (the bug condition).
 	s := &ManualCommitStrategy{}
-	err := s.InitializeSession(ctx, sessionID, agent.AgentTypeClaudeCode, "", "first prompt", "")
+	err = s.InitializeSession(ctx, sessionID, agent.AgentTypeClaudeCode, "", "first prompt", "")
 	require.NoError(t, err)
 
 	state, err := s.loadSessionState(ctx, sessionID)
@@ -181,7 +187,8 @@ func TestInitializeSession_ConcurrentCallsConvergeToTranscriptOwner(t *testing.T
 	sessionID := "test-session-concurrent"
 
 	// Reproduce the SessionStart hint race where Claude Code happened to win.
-	require.NoError(t, StoreAgentTypeHint(ctx, sessionID, agent.AgentTypeClaudeCode))
+	_, err := StoreAgentTypeHint(ctx, sessionID, agent.AgentTypeClaudeCode)
+	require.NoError(t, err)
 
 	// Two parallel hook processes: claude-code (no transcript) and cursor
 	// (with transcript). Whichever grabs the lock first creates the state;
@@ -202,8 +209,8 @@ func TestInitializeSession_ConcurrentCallsConvergeToTranscriptOwner(t *testing.T
 	}()
 	wg.Wait()
 
-	state, err := s.loadSessionState(ctx, sessionID)
-	require.NoError(t, err)
+	state, lErr := s.loadSessionState(ctx, sessionID)
+	require.NoError(t, lErr)
 	require.NotNil(t, state)
 	assert.Equal(t, agent.AgentTypeCursor, state.AgentType,
 		"the transcript-bearing call must determine the final AgentType regardless of goroutine ordering")
