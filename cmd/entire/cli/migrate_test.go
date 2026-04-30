@@ -439,6 +439,67 @@ func TestMigrateCheckpointsV2_ForceMultipleCheckpoints(t *testing.T) {
 	assert.Equal(t, 0, result2.skipped)
 }
 
+func TestPruneV2CheckpointForForce_RecomputesPartialArchivedGeneration(t *testing.T) {
+	t.Parallel()
+	repo := initMigrateTestRepo(t)
+	v1Store, v2Store := newMigrateStores(repo)
+	ctx := context.Background()
+
+	cpID1 := id.MustCheckpointID("101010101010")
+	cpID2 := id.MustCheckpointID("202020202020")
+	cp1CreatedAt := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	cp2CreatedAt := time.Date(2026, 3, 2, 0, 0, 0, 0, time.UTC)
+	for _, cp := range []struct {
+		id        id.CheckpointID
+		sessionID string
+		createdAt time.Time
+	}{
+		{cpID1, "session-force-prune-1", cp1CreatedAt},
+		{cpID2, "session-force-prune-2", cp2CreatedAt},
+	} {
+		err := v1Store.WriteCommitted(ctx, checkpoint.WriteCommittedOptions{
+			CheckpointID: cp.id,
+			SessionID:    cp.sessionID,
+			CreatedAt:    cp.createdAt,
+			Strategy:     "manual-commit",
+			Transcript:   redact.AlreadyRedacted([]byte("{\"type\":\"assistant\",\"message\":\"force prune\"}\n")),
+			AuthorName:   "Test",
+			AuthorEmail:  "test@test.com",
+		})
+		require.NoError(t, err)
+	}
+
+	var stdout bytes.Buffer
+	result, err := migrateCheckpointsV2(ctx, repo, v1Store, v2Store, &stdout, false)
+	require.NoError(t, err)
+	assert.Equal(t, 2, result.migrated)
+
+	require.NoError(t, pruneV2CheckpointForForce(ctx, repo, v2Store, cpID1))
+
+	archived, err := v2Store.ListArchivedGenerations()
+	require.NoError(t, err)
+	require.Equal(t, []string{"0000000000001"}, archived)
+
+	refName := plumbing.ReferenceName(paths.V2FullRefPrefix + archived[0])
+	_, treeHash, err := v2Store.GetRefState(refName)
+	require.NoError(t, err)
+	count, err := v2Store.CountCheckpointsInTree(treeHash)
+	require.NoError(t, err)
+	assert.Equal(t, 1, count)
+
+	rootTree, err := repo.TreeObject(treeHash)
+	require.NoError(t, err)
+	_, err = rootTree.Tree(cpID1.Path())
+	require.Error(t, err, "force prune should remove the target checkpoint from archived generations")
+	_, err = rootTree.Tree(cpID2.Path())
+	require.NoError(t, err, "force prune should preserve other checkpoints in the archived generation")
+
+	gen, err := v2Store.ReadGenerationFromRef(refName)
+	require.NoError(t, err)
+	assert.True(t, gen.OldestCheckpointAt.Equal(cp2CreatedAt))
+	assert.True(t, gen.NewestCheckpointAt.Equal(cp2CreatedAt))
+}
+
 func TestMigrateCmd_ForceFlag(t *testing.T) {
 	t.Parallel()
 	cmd := newMigrateCmd()
