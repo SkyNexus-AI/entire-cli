@@ -91,6 +91,17 @@ func useUnknownExecutable(t *testing.T) {
 	t.Cleanup(func() { executablePath = orig })
 }
 
+// pinNonWindowsGOOS pins the goos seam to a non-Windows value so the
+// table-driven tests below pass on Windows hosts. canAutoInstall() blocks
+// brew and the curl-bash fallback on Windows; without this pin those
+// installer cases would short-circuit to the downloads-page path.
+func pinNonWindowsGOOS(t *testing.T) {
+	t.Helper()
+	orig := goos
+	goos = "darwin"
+	t.Cleanup(func() { goos = orig })
+}
+
 // assertManualHint checks that the "To update, run:\n  <cmd>" hint
 // was printed when the prompt couldn't be shown, and that the wantCmd
 // installer command is included.
@@ -303,6 +314,7 @@ func nonWindowsAutoInstallers() []installerCase {
 // smoke script (test-auto.sh); here we only check that the cmd we build
 // from updateCommand() is what reaches the prompt.
 func TestMaybeAutoUpdate_AllInstallers_PromptReceivesCorrectCommand(t *testing.T) {
+	pinNonWindowsGOOS(t)
 	for _, tt := range nonWindowsAutoInstallers() {
 		t.Run(tt.name, func(t *testing.T) {
 			f := newAutoUpdateFixture(t)
@@ -326,6 +338,7 @@ func TestMaybeAutoUpdate_AllInstallers_PromptReceivesCorrectCommand(t *testing.T
 }
 
 func TestMaybeAutoUpdate_AllInstallers_HappyPathRunsInstaller(t *testing.T) {
+	pinNonWindowsGOOS(t)
 	for _, tt := range nonWindowsAutoInstallers() {
 		t.Run(tt.name, func(t *testing.T) {
 			f := newAutoUpdateFixture(t)
@@ -351,6 +364,7 @@ func TestMaybeAutoUpdate_AllInstallers_HappyPathRunsInstaller(t *testing.T) {
 }
 
 func TestMaybeAutoUpdate_AllInstallers_KillSwitchPrintsManualHint(t *testing.T) {
+	pinNonWindowsGOOS(t)
 	for _, tt := range nonWindowsAutoInstallers() {
 		t.Run(tt.name, func(t *testing.T) {
 			f := newAutoUpdateFixture(t)
@@ -369,6 +383,7 @@ func TestMaybeAutoUpdate_AllInstallers_KillSwitchPrintsManualHint(t *testing.T) 
 }
 
 func TestMaybeAutoUpdate_AllInstallers_UserSkips(t *testing.T) {
+	pinNonWindowsGOOS(t)
 	for _, tt := range nonWindowsAutoInstallers() {
 		t.Run(tt.name, func(t *testing.T) {
 			f := newAutoUpdateFixture(t)
