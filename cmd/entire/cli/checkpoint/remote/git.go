@@ -102,15 +102,40 @@ type PushResult struct {
 	Output string
 }
 
+// PushOptions configures a git push operation.
+type PushOptions struct {
+	Remote    string
+	RefSpecs  []string
+	ExtraArgs []string // additional flags before remote
+	Dir       string
+}
+
 // Push runs git push --no-verify --porcelain with token injection.
 // GIT_TERMINAL_PROMPT=0 is always set.
 func Push(ctx context.Context, remote, refSpec string) (PushResult, error) {
-	pushTarget, err := resolvePushCommandTarget(ctx, remote)
+	return PushWithOptions(ctx, PushOptions{
+		Remote:   remote,
+		RefSpecs: []string{refSpec},
+	})
+}
+
+// PushWithOptions runs git push --no-verify --porcelain with token injection.
+// GIT_TERMINAL_PROMPT=0 is always set.
+func PushWithOptions(ctx context.Context, opts PushOptions) (PushResult, error) {
+	pushTarget, err := resolvePushCommandTarget(ctx, opts.Remote)
 	if err != nil {
 		return PushResult{}, fmt.Errorf("resolve push target: %w", err)
 	}
 
-	cmd := newCommand(ctx, "push", "--no-verify", "--porcelain", pushTarget, refSpec)
+	args := []string{"push", "--no-verify", "--porcelain"}
+	args = append(args, opts.ExtraArgs...)
+	args = append(args, pushTarget)
+	args = append(args, opts.RefSpecs...)
+
+	cmd := newCommand(ctx, args...)
+	if opts.Dir != "" {
+		cmd.Dir = opts.Dir
+	}
 	disableTerminalPrompt(cmd)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
