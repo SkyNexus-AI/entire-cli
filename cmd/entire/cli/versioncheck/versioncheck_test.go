@@ -514,6 +514,33 @@ func TestCheckAndNotify_BrewSkipUntilNextVersionCachesLatest(t *testing.T) {
 	}
 }
 
+// TestCheckAndNotify_MiseSkipUntilNextVersionCachesLatest verifies the
+// skip-until-next-version persistence works for non-brew installers too.
+// The cache flow is installer-agnostic; this locks that contract in.
+func TestCheckAndNotify_MiseSkipUntilNextVersionCachesLatest(t *testing.T) {
+	server := newVersionServer(t, "v2.0.0")
+	cmd, buf := setupCheckAndNotifyTest(t, server.URL)
+	f := newAutoUpdateFixture(t)
+	useMiseExecutable(t)
+	f.chooseValue = autoUpdateActionSkipUntilNextVersion
+
+	CheckAndNotify(context.Background(), cmd.OutOrStdout(), "1.0.0")
+
+	if f.installCalls != 0 {
+		t.Fatalf("installer called %d times, want 0", f.installCalls)
+	}
+	cache, err := loadCache()
+	if err != nil {
+		t.Fatalf("loadCache() error = %v", err)
+	}
+	if cache.SkippedVersion != "v2.0.0" {
+		t.Errorf("SkippedVersion = %q, want v2.0.0", cache.SkippedVersion)
+	}
+	if !strings.Contains(buf.String(), "1. Update now (runs `mise upgrade entire`)") {
+		t.Errorf("expected mise update prompt, got %q", buf.String())
+	}
+}
+
 func TestCheckAndNotify_SkipsVersionMarkedSkipped(t *testing.T) {
 	server := newVersionServer(t, "v2.0.0")
 	cmd, buf := setupCheckAndNotifyTest(t, server.URL)
@@ -554,15 +581,11 @@ func TestCheckAndNotify_InstallerFailureKeepsCacheFresh(t *testing.T) {
 	t.Setenv("ENTIRE_TEST_TTY", "1")
 	useBrewExecutable(t)
 
-	origConfirm := confirmUpdate
-	confirmUpdate = func() (bool, error) { return true, nil }
-	t.Cleanup(func() { confirmUpdate = origConfirm })
-
-	origChoose := chooseBrewUpdate
-	chooseBrewUpdate = func(io.Writer) (AutoUpdateAction, error) {
+	origChoose := chooseUpdate
+	chooseUpdate = func(io.Writer) (AutoUpdateAction, error) {
 		return autoUpdateActionUpdate, nil
 	}
-	t.Cleanup(func() { chooseBrewUpdate = origChoose })
+	t.Cleanup(func() { chooseUpdate = origChoose })
 
 	origRun := runInstaller
 	runInstaller = func(_ context.Context, _ string) error { return errors.New("boom") }
