@@ -1,0 +1,25 @@
+─────── codex ───────
+version 0.1.0 (linux)
+
+[hooks] firing user-prompt-submit for session abc123
+exec node /usr/local/lib/codex/hooks.js in /repo
+
+[hooks] firing stop for session abc123
+
+I've reviewed the changes on this branch.
+
+The `AgentReviewer` interface provides a clean abstraction for per-agent review implementations. Each agent's quirks (argv shape, stdin vs argv prompt delivery, output chrome) are fully encapsulated.
+
+**Key observations:**
+
+1. The `Event` sealed sum type (via unexported `isEvent()`) prevents external extension — this is the right trade-off for a stable shared contract.
+
+2. `Process.Events()` returns a channel that is closed after `Finished` or `RunError`, which enables clean `range` loops in consumers.
+
+3. `RunConfig.StartingSHA` ensures the lifecycle hook records exactly which commit was reviewed, without requiring history walking later.
+
+exec git diff HEAD in /repo
+
+**Conclusion:** The implementation is sound. No blocking issues.
+[?25lThe agent should still see this clean line[?25h
+[32mImportant finding:[0m all error paths are covered.

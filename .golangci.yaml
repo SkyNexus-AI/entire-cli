@@ -107,6 +107,7 @@ linters:
         - stdlib
         - grpc.DialOption
         - github.com/entireio/cli/cmd/entire/cli/agent\..+
+        - github.com/entireio/cli/cmd/entire/cli/review/types.Process
         - github.com/entireio/cli/cmd/entire/cli/checkpoint.CommittedReader
         - github.com/entireio/cli/cmd/entire/cli/strategy.Strategy
         - github.com/entireio/cli/cmd/entire/cli/summarize.Generator
