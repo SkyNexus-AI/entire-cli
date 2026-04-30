@@ -420,7 +420,7 @@ type archivedV2GenerationCandidate struct {
 	Name      string
 	RefName   plumbing.ReferenceName
 	RefOID    string
-	RemoteOID string
+	HasRemote bool
 }
 
 func listArchivedV2GenerationCandidates(
@@ -461,7 +461,7 @@ func listArchivedV2GenerationCandidates(
 			} else {
 				for name, remoteOID := range remoteRefs {
 					if candidate, ok := candidatesByName[name]; ok && candidate.RefOID == remoteOID {
-						candidate.RemoteOID = remoteOID
+						candidate.HasRemote = true
 						candidatesByName[name] = candidate
 						continue
 					}
@@ -475,7 +475,7 @@ func listArchivedV2GenerationCandidates(
 						Name:      name,
 						RefName:   tempRef,
 						RefOID:    remoteOID,
-						RemoteOID: remoteOID,
+						HasRemote: true,
 					}
 				}
 			}

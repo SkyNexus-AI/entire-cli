@@ -332,7 +332,7 @@ func (s *V2GitStore) checkpointTimestampRangeFromMain(mainTree *object.Tree, cpI
 		if err := json.Unmarshal([]byte(metadataContent), &metadata); err != nil || metadata.CreatedAt.IsZero() {
 			continue
 		}
-		mergeGenerationTime(&gen, &found, metadata.CreatedAt.UTC())
+		MergeGenerationTime(&gen, &found, metadata.CreatedAt.UTC())
 	}
 	return gen, found
 }
@@ -375,7 +375,7 @@ func timestampRangeFromTranscript(transcript []byte) (GenerationMetadata, bool) 
 			}
 			if jsonErr := json.Unmarshal(trimmed, &event); jsonErr == nil && event.Timestamp != "" {
 				if ts, parseErr := time.Parse(time.RFC3339Nano, event.Timestamp); parseErr == nil {
-					mergeGenerationTime(&gen, &found, ts.UTC())
+					MergeGenerationTime(&gen, &found, ts.UTC())
 				}
 			}
 		}
@@ -391,11 +391,13 @@ func timestampRangeFromTranscript(transcript []byte) (GenerationMetadata, bool) 
 }
 
 func mergeGenerationRange(dst *GenerationMetadata, found *bool, src GenerationMetadata) {
-	mergeGenerationTime(dst, found, src.OldestCheckpointAt)
-	mergeGenerationTime(dst, found, src.NewestCheckpointAt)
+	MergeGenerationTime(dst, found, src.OldestCheckpointAt)
+	MergeGenerationTime(dst, found, src.NewestCheckpointAt)
 }
 
-func mergeGenerationTime(gen *GenerationMetadata, found *bool, ts time.Time) {
+// MergeGenerationTime expands the generation timestamp envelope to include ts.
+// The found flag is set the first time a non-zero timestamp is observed.
+func MergeGenerationTime(gen *GenerationMetadata, found *bool, ts time.Time) {
 	if ts.IsZero() {
 		return
 	}
@@ -449,9 +451,9 @@ func (s *V2GitStore) ListArchivedGenerations() ([]string, error) {
 	return archived, nil
 }
 
-// nextGenerationNumber returns the next sequential generation number for archiving.
+// NextGenerationNumber returns the next sequential generation number for archiving.
 // Scans existing archived refs and returns max+1. Returns 1 if no archives exist.
-func (s *V2GitStore) nextGenerationNumber() (int, error) {
+func (s *V2GitStore) NextGenerationNumber() (int, error) {
 	archived, err := s.ListArchivedGenerations()
 	if err != nil {
 		return 0, err
@@ -499,7 +501,7 @@ func (s *V2GitStore) rotateGeneration(ctx context.Context) error {
 		return fmt.Errorf("rotation: failed to read /full/current ref: %w", err)
 	}
 
-	archiveNumber, err := s.nextGenerationNumber()
+	archiveNumber, err := s.NextGenerationNumber()
 	if err != nil {
 		return fmt.Errorf("rotation: failed to determine next generation number: %w", err)
 	}

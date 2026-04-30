@@ -13,6 +13,11 @@ import (
 	"github.com/go-git/go-git/v6/plumbing"
 )
 
+const (
+	repairAuthorName  = "Entire Migration"
+	repairAuthorEmail = "migration@entire.dev"
+)
+
 // RepairV2GenerationMetadataResult describes archived v2 generation metadata
 // repair work performed by RepairV2GenerationMetadata.
 type RepairV2GenerationMetadataResult struct {
@@ -47,13 +52,10 @@ func repairV2GenerationMetadata(ctx context.Context, repo *git.Repository, store
 		Warnings: warnings,
 	}
 
-	pushTarget, pushTargetErr := repairPushTarget(ctx, candidates)
-	if pushTargetErr != nil {
-		result.Warnings = append(result.Warnings, pushTargetErr.Error())
-	}
+	pushTarget := &repairPushTarget{}
 
 	for _, candidate := range candidates {
-		repaired, repairErr := repairOneV2GenerationMetadata(ctx, repo, store, candidate, pushTarget, pushTargetErr)
+		repaired, repairErr := repairOneV2GenerationMetadata(ctx, repo, store, candidate, pushTarget)
 		if repairErr != nil {
 			result.Failed = append(result.Failed, candidate.Name)
 			result.Warnings = append(result.Warnings, fmt.Sprintf("generation %s: %v", candidate.Name, repairErr))
@@ -74,8 +76,7 @@ func repairOneV2GenerationMetadata(
 	repo *git.Repository,
 	store *checkpoint.V2GitStore,
 	candidate archivedV2GenerationCandidate,
-	pushTarget string,
-	pushTargetErr error,
+	pushTarget *repairPushTarget,
 ) (bool, error) {
 	oldCommitHash, treeHash, refErr := store.GetRefState(candidate.RefName)
 	if refErr != nil {
@@ -108,7 +109,7 @@ func repairOneV2GenerationMetadata(
 
 	newCommitHash, commitErr := checkpoint.CreateCommit(ctx, repo, newTreeHash, oldCommitHash,
 		fmt.Sprintf("Repair generation metadata: %s\n", candidate.Name),
-		"Entire Migration", "migration@entire.dev")
+		repairAuthorName, repairAuthorEmail)
 	if commitErr != nil {
 		return false, fmt.Errorf("failed to create repair commit: %w", commitErr)
 	}
@@ -117,34 +118,45 @@ func repairOneV2GenerationMetadata(
 		return false, fmt.Errorf("failed to update ref %s: %w", candidate.RefName, err)
 	}
 
-	if candidate.RemoteOID == "" {
+	if !candidate.HasRemote {
 		return true, nil
 	}
-	if pushTargetErr != nil {
-		return false, fmt.Errorf("failed to resolve remote for generation metadata repair push: %w", pushTargetErr)
+
+	target, err := pushTarget.resolve(ctx)
+	if err != nil {
+		return false, fmt.Errorf("failed to resolve remote for generation metadata repair push: %w", err)
 	}
-	if pushTarget == "" {
+	if target == "" {
 		return false, errors.New("no push target available for remote generation metadata repair")
 	}
 
 	remoteRefName := paths.V2FullRefPrefix + candidate.Name
-	if err := pushRepairedV2Generation(ctx, pushTarget, candidate.RefName.String(), remoteRefName, candidate.RemoteOID); err != nil {
+	if err := pushRepairedV2Generation(ctx, target, candidate.RefName.String(), remoteRefName, candidate.RefOID); err != nil {
 		return false, err
 	}
 	return true, nil
 }
 
-func repairPushTarget(ctx context.Context, candidates []archivedV2GenerationCandidate) (string, error) {
-	for _, candidate := range candidates {
-		if candidate.RemoteOID != "" {
-			target, _, err := remote.PushURL(ctx, "origin")
-			if err != nil {
-				return "", fmt.Errorf("push URL: %w", err)
-			}
-			return target, nil
-		}
+// repairPushTarget memoizes the push URL lookup so the remote is resolved at
+// most once, only when a candidate actually needs to push.
+type repairPushTarget struct {
+	resolved bool
+	target   string
+	err      error
+}
+
+func (r *repairPushTarget) resolve(ctx context.Context) (string, error) {
+	if r.resolved {
+		return r.target, r.err
 	}
-	return "", nil
+	r.resolved = true
+	target, _, err := remote.PushURL(ctx, "origin")
+	if err != nil {
+		r.err = fmt.Errorf("push URL: %w", err)
+		return "", r.err
+	}
+	r.target = target
+	return target, nil
 }
 
 func pushRepairedV2Generation(ctx context.Context, target, sourceRef, remoteRef, expectedOID string) error {

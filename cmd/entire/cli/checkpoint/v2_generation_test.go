@@ -349,7 +349,7 @@ func TestNextGenerationNumber_NoArchives(t *testing.T) {
 	repo := initTestRepo(t)
 	store := NewV2GitStore(repo, "origin")
 
-	next, err := store.nextGenerationNumber()
+	next, err := store.NextGenerationNumber()
 	require.NoError(t, err)
 	assert.Equal(t, 1, next)
 }
@@ -362,7 +362,7 @@ func TestNextGenerationNumber_WithExisting(t *testing.T) {
 	createArchivedRef(t, repo, 1)
 	createArchivedRef(t, repo, 2)
 
-	next, err := store.nextGenerationNumber()
+	next, err := store.NextGenerationNumber()
 	require.NoError(t, err)
 	assert.Equal(t, 3, next)
 }

@@ -140,7 +140,11 @@ var (
 	errNoMigratableSessions     = errors.New("no migratable v1 sessions")
 )
 
-const migrateRemoteName = "origin"
+const (
+	migrateRemoteName  = "origin"
+	migrateAuthorName  = "Entire Migration"
+	migrateAuthorEmail = "migration@entire.dev"
+)
 
 var migrateMaxCheckpointsPerGeneration = checkpoint.DefaultMaxCheckpointsPerGeneration
 
@@ -174,7 +178,8 @@ func migrateCheckpointsV2(ctx context.Context, repo *git.Repository, v1Store *ch
 	sortMigratableCheckpoints(v1List)
 	total := len(v1List)
 	result := &migrateResult{}
-	fullCurrentExistsBefore := v2RefExists(repo, plumbing.ReferenceName(paths.V2FullCurrentRefName))
+	_, fullCurrentRefErr := repo.Reference(plumbing.ReferenceName(paths.V2FullCurrentRefName), true)
+	fullCurrentExistsBefore := fullCurrentRefErr == nil
 	var migratedFullCheckpoints []migratedFullCheckpoint
 
 	for i, info := range v1List {
@@ -238,18 +243,12 @@ func sortMigratableCheckpoints(checkpoints []checkpoint.CommittedInfo) {
 	})
 }
 
-func v2RefExists(repo *git.Repository, refName plumbing.ReferenceName) bool {
-	_, err := repo.Reference(refName, true)
-	return err == nil
-}
-
 func migrateOneCheckpoint(ctx context.Context, repo *git.Repository, v1Store *checkpoint.GitStore, v2Store *checkpoint.V2GitStore, info checkpoint.CommittedInfo, out io.Writer, prefix string, force bool) (*migratedFullCheckpoint, error) {
 	existing, err := v2Store.ReadCommitted(ctx, info.CheckpointID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to check v2 for checkpoint %s: %w", info.CheckpointID, err)
 	}
 
-	// Already in v2 — when not forcing, check if any aspect of sessions are missing and backfill
 	if existing != nil && !force {
 		fullCheckpoint, queuedFullRepair, repairErr := collectMissingFullCheckpointForPacking(ctx, repo, v1Store, v2Store, info, existing)
 		if repairErr != nil {
@@ -269,22 +268,23 @@ func migrateOneCheckpoint(ctx context.Context, repo *git.Repository, v1Store *ch
 		cleanupV1TranscriptFiles(ctx, repo, v2Store, info.CheckpointID, len(currentV2.Sessions))
 
 		backfillErr := backfillCompactTranscripts(ctx, v1Store, v2Store, info, currentV2, out, prefix)
-		if errors.Is(backfillErr, errAlreadyMigrated) && queuedFullRepair {
-			fmt.Fprintf(out, "%s queued missing raw transcript artifacts for generation packing\n", prefix)
-			return fullCheckpoint, nil
+		if !queuedFullRepair {
+			if backfillErr != nil {
+				return nil, backfillErr
+			}
+			return &migratedFullCheckpoint{}, nil
 		}
-		if errors.Is(backfillErr, errTranscriptNotGeneratable) && queuedFullRepair {
-			fmt.Fprintf(out, "%s queued missing raw transcript artifacts for generation packing (compact transcript not generated)\n", prefix)
-			return fullCheckpoint, nil
-		}
-		if backfillErr != nil {
+		if backfillErr != nil &&
+			!errors.Is(backfillErr, errAlreadyMigrated) &&
+			!errors.Is(backfillErr, errTranscriptNotGeneratable) {
 			return nil, backfillErr
 		}
-		if queuedFullRepair {
-			fmt.Fprintf(out, "%s queued missing raw transcript artifacts for generation packing\n", prefix)
-			return fullCheckpoint, nil
+		suffix := ""
+		if errors.Is(backfillErr, errTranscriptNotGeneratable) {
+			suffix = " (compact transcript not generated)"
 		}
-		return &migratedFullCheckpoint{}, nil
+		fmt.Fprintf(out, "%s queued missing raw transcript artifacts for generation packing%s\n", prefix, suffix)
+		return fullCheckpoint, nil
 	}
 
 	if existing != nil && force {
@@ -390,9 +390,9 @@ func packMigratedFullGenerations(ctx context.Context, repo *git.Repository, v2St
 		batchSize = checkpoint.DefaultMaxCheckpointsPerGeneration
 	}
 
-	nextGeneration, err := nextMigratedGenerationNumber(v2Store)
+	nextGeneration, err := v2Store.NextGenerationNumber()
 	if err != nil {
-		return err
+		return fmt.Errorf("list archived v2 generations: %w", err)
 	}
 
 	for start := 0; start < len(checkpoints); start += batchSize {
@@ -411,24 +411,6 @@ func packMigratedFullGenerations(ctx context.Context, repo *git.Repository, v2St
 	return nil
 }
 
-func nextMigratedGenerationNumber(v2Store *checkpoint.V2GitStore) (int, error) {
-	archived, err := v2Store.ListArchivedGenerations()
-	if err != nil {
-		return 0, fmt.Errorf("list archived v2 generations: %w", err)
-	}
-	next := 1
-	for _, name := range archived {
-		n, parseErr := strconv.Atoi(name)
-		if parseErr != nil {
-			continue
-		}
-		if n >= next {
-			next = n + 1
-		}
-	}
-	return next, nil
-}
-
 func writeMigratedFullGeneration(ctx context.Context, repo *git.Repository, refName plumbing.ReferenceName, checkpoints []migratedFullCheckpoint) error {
 	entries := make(map[string]object.TreeEntry)
 	var gen checkpoint.GenerationMetadata
@@ -439,7 +421,7 @@ func writeMigratedFullGeneration(ctx context.Context, repo *git.Repository, refN
 			if err := writeMigratedFullSessionEntries(ctx, repo, cp, session, entries); err != nil {
 				return fmt.Errorf("write full session entries for checkpoint %s session %d: %w", cp.checkpointID, session.sessionIndex, err)
 			}
-			mergeMigratedGenerationTime(&gen, &foundTime, session.content.Metadata.CreatedAt)
+			checkpoint.MergeGenerationTime(&gen, &foundTime, session.content.Metadata.CreatedAt)
 		}
 	}
 
@@ -464,7 +446,7 @@ func writeMigratedFullGeneration(ctx context.Context, repo *git.Repository, refN
 
 	commitHash, err := checkpoint.CreateCommit(ctx, repo, treeHash, plumbing.ZeroHash,
 		fmt.Sprintf("Archive migrated generation: %s\n", refName),
-		"Entire Migration", "migration@entire.dev")
+		migrateAuthorName, migrateAuthorEmail)
 	if err != nil {
 		return fmt.Errorf("create migrated generation commit: %w", err)
 	}
@@ -521,25 +503,6 @@ func writeMigratedFullSessionEntries(ctx context.Context, repo *git.Repository, 
 	return nil
 }
 
-func mergeMigratedGenerationTime(gen *checkpoint.GenerationMetadata, found *bool, ts time.Time) {
-	if ts.IsZero() {
-		return
-	}
-	ts = ts.UTC()
-	if !*found {
-		gen.OldestCheckpointAt = ts
-		gen.NewestCheckpointAt = ts
-		*found = true
-		return
-	}
-	if ts.Before(gen.OldestCheckpointAt) {
-		gen.OldestCheckpointAt = ts
-	}
-	if ts.After(gen.NewestCheckpointAt) {
-		gen.NewestCheckpointAt = ts
-	}
-}
-
 func ensureEmptyV2FullCurrent(ctx context.Context, repo *git.Repository) error {
 	refName := plumbing.ReferenceName(paths.V2FullCurrentRefName)
 	if _, err := repo.Reference(refName, true); err == nil {
@@ -553,7 +516,7 @@ func ensureEmptyV2FullCurrent(ctx context.Context, repo *git.Repository) error {
 
 	commitHash, err := checkpoint.CreateCommit(ctx, repo, emptyTreeHash, plumbing.ZeroHash,
 		"Start generation\n",
-		"Entire Migration", "migration@entire.dev")
+		migrateAuthorName, migrateAuthorEmail)
 	if err != nil {
 		return fmt.Errorf("create empty v2 full/current commit: %w", err)
 	}
@@ -638,7 +601,7 @@ func pruneV2CheckpointRef(ctx context.Context, repo *git.Repository, v2Store *ch
 
 	commitHash, err := checkpoint.CreateCommit(ctx, repo, newRoot, parentHash,
 		fmt.Sprintf("Reset checkpoint before force migration: %s\n", cpID),
-		"Entire Migration", "migration@entire.dev")
+		migrateAuthorName, migrateAuthorEmail)
 	if err != nil {
 		return fmt.Errorf("failed to create v2 prune commit for %s: %w", refName, err)
 	}
@@ -694,7 +657,7 @@ func pruneV2ArchivedCheckpointRef(ctx context.Context, repo *git.Repository, v2S
 
 	commitHash, err := checkpoint.CreateCommit(ctx, repo, newRoot, parentHash,
 		fmt.Sprintf("Reset checkpoint before force migration: %s\n", cpID),
-		"Entire Migration", "migration@entire.dev")
+		migrateAuthorName, migrateAuthorEmail)
 	if err != nil {
 		return fmt.Errorf("failed to create v2 prune commit for %s: %w", refName, err)
 	}
@@ -987,8 +950,8 @@ func buildMigrateWriteOpts(content *checkpoint.SessionContent, info checkpoint.C
 		TranscriptIdentifierAtStart: m.TranscriptIdentifierAtStart,
 		IsTask:                      m.IsTask,
 		ToolUseID:                   m.ToolUseID,
-		AuthorName:                  "Entire Migration",
-		AuthorEmail:                 "migration@entire.dev",
+		AuthorName:                  migrateAuthorName,
+		AuthorEmail:                 migrateAuthorEmail,
 	}
 }
 
@@ -1198,7 +1161,7 @@ func spliceTasksTreeToV2(ctx context.Context, repo *git.Repository, v2Store *che
 
 	commitHash, err := checkpoint.CreateCommit(ctx, repo, newRoot, parentHash,
 		fmt.Sprintf("Add task metadata for %s\n", cpID),
-		"Entire Migration", "migration@entire.dev")
+		migrateAuthorName, migrateAuthorEmail)
 	if err != nil {
 		return fmt.Errorf("failed to create commit: %w", err)
 	}
