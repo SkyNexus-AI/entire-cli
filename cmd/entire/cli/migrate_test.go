@@ -155,6 +155,94 @@ func TestMigrateCheckpointsV2_PreservesCreatedAt(t *testing.T) {
 	assert.True(t, content.Metadata.CreatedAt.Equal(createdAt))
 }
 
+func TestMigrateCheckpointsV2_PacksFullGenerationsOldestFirst(t *testing.T) {
+	oldMax := migrateMaxCheckpointsPerGeneration
+	migrateMaxCheckpointsPerGeneration = 2
+	t.Cleanup(func() {
+		migrateMaxCheckpointsPerGeneration = oldMax
+	})
+
+	repo := initMigrateTestRepo(t)
+	v1Store, v2Store := newMigrateStores(repo)
+	ctx := context.Background()
+
+	checkpointIDs := []id.CheckpointID{
+		id.MustCheckpointID("000000000001"),
+		id.MustCheckpointID("000000000002"),
+		id.MustCheckpointID("000000000003"),
+		id.MustCheckpointID("000000000004"),
+		id.MustCheckpointID("000000000005"),
+	}
+	createdAt := []time.Time{
+		time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
+		time.Date(2026, 1, 3, 0, 0, 0, 0, time.UTC),
+		time.Date(2026, 1, 4, 0, 0, 0, 0, time.UTC),
+		time.Date(2026, 1, 5, 0, 0, 0, 0, time.UTC),
+	}
+
+	// Write in non-chronological order to prove migration repacks by checkpoint time,
+	// not v1 tree traversal or v1 ListCommitted's newest-first order.
+	for _, idx := range []int{3, 1, 4, 0, 2} {
+		err := v1Store.WriteCommitted(ctx, checkpoint.WriteCommittedOptions{
+			CheckpointID: checkpointIDs[idx],
+			SessionID:    "session-pack-" + strconv.Itoa(idx),
+			CreatedAt:    createdAt[idx],
+			Strategy:     "manual-commit",
+			Transcript: redact.AlreadyRedacted([]byte(
+				`{"type":"assistant","message":"checkpoint ` + strconv.Itoa(idx) + `"}` + "\n",
+			)),
+			Prompts:     []string{"prompt " + strconv.Itoa(idx)},
+			AuthorName:  "Test",
+			AuthorEmail: "test@test.com",
+		})
+		require.NoError(t, err)
+	}
+
+	var stdout bytes.Buffer
+	result, err := migrateCheckpointsV2(ctx, repo, v1Store, v2Store, &stdout, false)
+	require.NoError(t, err)
+	assert.Equal(t, 5, result.migrated)
+	assert.Equal(t, 0, result.skipped)
+	assert.Equal(t, 0, result.failed)
+
+	archived, err := v2Store.ListArchivedGenerations()
+	require.NoError(t, err)
+	require.Equal(t, []string{"0000000000001", "0000000000002", "0000000000003"}, archived)
+
+	expectedBatches := [][]int{
+		{0, 1},
+		{2, 3},
+		{4},
+	}
+	for genIdx, batch := range expectedBatches {
+		refName := plumbing.ReferenceName(paths.V2FullRefPrefix + archived[genIdx])
+		gen, genErr := v2Store.ReadGenerationFromRef(refName)
+		require.NoError(t, genErr)
+		assert.True(t, gen.OldestCheckpointAt.Equal(createdAt[batch[0]]), "generation %s oldest", archived[genIdx])
+		assert.True(t, gen.NewestCheckpointAt.Equal(createdAt[batch[len(batch)-1]]), "generation %s newest", archived[genIdx])
+
+		_, treeHash, refErr := v2Store.GetRefState(refName)
+		require.NoError(t, refErr)
+		count, countErr := v2Store.CountCheckpointsInTree(treeHash)
+		require.NoError(t, countErr)
+		assert.Equal(t, len(batch), count)
+
+		tree, treeErr := repo.TreeObject(treeHash)
+		require.NoError(t, treeErr)
+		for _, idx := range batch {
+			_, treeErr = tree.Tree(checkpointIDs[idx].Path())
+			require.NoError(t, treeErr, "generation %s should contain checkpoint %s", archived[genIdx], checkpointIDs[idx])
+		}
+	}
+
+	_, currentTreeHash, err := v2Store.GetRefState(plumbing.ReferenceName(paths.V2FullCurrentRefName))
+	require.NoError(t, err)
+	currentCount, err := v2Store.CountCheckpointsInTree(currentTreeHash)
+	require.NoError(t, err)
+	assert.Equal(t, 0, currentCount, "fresh migration should leave /full/current empty for post-migration writes")
+}
+
 func TestMigrateCheckpointsV2_Idempotent(t *testing.T) {
 	t.Parallel()
 	repo := initMigrateTestRepo(t)
@@ -414,10 +502,7 @@ func TestMigrateCheckpointsV2_TaskMetadataUsesMigratedSessionIndexAfterSkip(t *t
 	require.Len(t, summary.Sessions, 2)
 	assert.Equal(t, "/"+cpID.Path()+"/1/metadata.json", summary.Sessions[1].Metadata)
 
-	_, rootTreeHash, refErr := v2Store.GetRefState(plumbing.ReferenceName(paths.V2FullCurrentRefName))
-	require.NoError(t, refErr)
-	rootTree, treeErr := repo.TreeObject(rootTreeHash)
-	require.NoError(t, treeErr)
+	rootTree := v2FullTreeForCheckpoint(t, repo, v2Store, cpID)
 
 	_, err = rootTree.File(cpID.Path() + "/1/tasks/toolu_root_shifted/checkpoint.json")
 	require.NoError(t, err, "root task metadata should follow the shifted v2 session index")
@@ -699,13 +784,10 @@ func TestMigrateCheckpointsV2_TaskCheckpoint(t *testing.T) {
 	require.NoError(t, readErr)
 	require.NotNil(t, summary)
 
-	// Verify task metadata tree was copied into v2 /full/current.
-	_, rootTreeHash, refErr := v2Store.GetRefState(plumbing.ReferenceName(paths.V2FullCurrentRefName))
-	require.NoError(t, refErr)
-	rootTree, treeErr := repo.TreeObject(rootTreeHash)
-	require.NoError(t, treeErr)
+	// Verify task metadata tree was copied into the migrated v2 /full/* generation.
+	rootTree := v2FullTreeForCheckpoint(t, repo, v2Store, cpID)
 	_, taskFileErr := rootTree.File(cpID.Path() + "/0/tasks/toolu_01ABC/checkpoint.json")
-	require.NoError(t, taskFileErr, "expected migrated task checkpoint metadata in /full/current")
+	require.NoError(t, taskFileErr, "expected migrated task checkpoint metadata in /full/*")
 }
 
 func TestMigrateCheckpointsV2_AllSkippedOnRerun(t *testing.T) {
@@ -878,7 +960,7 @@ func TestMigrateCheckpointsV2_RepairsMissingFullTranscriptBeforeBackfill(t *test
 	require.NoError(t, err)
 	assert.Equal(t, 1, result1.migrated)
 
-	// Simulate interrupted migration by removing raw transcript files from /full/current.
+	// Simulate interrupted migration by removing raw transcript files from every /full/* ref.
 	removeV2SessionTranscriptFiles(t, repo, v2Store, cpID, 0)
 
 	// Re-run migration: should repair /full/current and count as migrated (not skipped).
@@ -911,16 +993,8 @@ func TestMigrateCheckpointsV2_SkipsRepairWhenArchivedFullExists(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 1, result1.migrated)
 
-	// Preserve current generation as an archived ref to simulate fallback availability.
-	currentCommitHash, _, refErr := v2Store.GetRefState(plumbing.ReferenceName(paths.V2FullCurrentRefName))
-	require.NoError(t, refErr)
-	archiveRef := plumbing.ReferenceName(paths.V2FullRefPrefix + "0000000000001")
-	require.NoError(t, repo.Storer.SetReference(plumbing.NewHashReference(archiveRef, currentCommitHash)))
-
-	// Remove current /full/current transcript artifacts.
-	removeV2SessionTranscriptFiles(t, repo, v2Store, cpID, 0)
-
-	// Sanity-check fallback exists: ReadSessionContent can still read from archive.
+	// Fresh migration packs raw transcripts into an archived generation and
+	// leaves /full/current empty.
 	archivedRead, archivedReadErr := v2Store.ReadSessionContent(context.Background(), cpID, 0)
 	require.NoError(t, archivedReadErr)
 	assert.NotEmpty(t, archivedRead.Transcript)
@@ -944,9 +1018,18 @@ func TestMigrateCheckpointsV2_SkipsRepairWhenArchivedFullExists(t *testing.T) {
 func removeV2SessionTranscriptFiles(t *testing.T, repo *git.Repository, v2Store *checkpoint.V2GitStore, cpID id.CheckpointID, sessionIdx int) {
 	t.Helper()
 
-	refName := plumbing.ReferenceName(paths.V2FullCurrentRefName)
+	for _, refName := range v2FullRefSearchOrderForTest(t, v2Store) {
+		removeV2SessionTranscriptFilesFromRef(t, repo, v2Store, refName, cpID, sessionIdx)
+	}
+}
+
+func removeV2SessionTranscriptFilesFromRef(t *testing.T, repo *git.Repository, v2Store *checkpoint.V2GitStore, refName plumbing.ReferenceName, cpID id.CheckpointID, sessionIdx int) {
+	t.Helper()
+
 	parentHash, rootTreeHash, err := v2Store.GetRefState(refName)
-	require.NoError(t, err)
+	if err != nil {
+		return
+	}
 
 	newRootHash, updateErr := checkpoint.UpdateSubtree(
 		repo,
@@ -964,10 +1047,44 @@ func removeV2SessionTranscriptFiles(t *testing.T, repo *git.Repository, v2Store 
 		},
 	)
 	require.NoError(t, updateErr)
+	if newRootHash == rootTreeHash {
+		return
+	}
 
 	commitHash, commitErr := checkpoint.CreateCommit(context.Background(), repo, newRootHash, parentHash, "test: remove full transcript\n", "Test", "test@test.com")
 	require.NoError(t, commitErr)
 	require.NoError(t, repo.Storer.SetReference(plumbing.NewHashReference(refName, commitHash)))
+}
+
+func v2FullTreeForCheckpoint(t *testing.T, repo *git.Repository, v2Store *checkpoint.V2GitStore, cpID id.CheckpointID) *object.Tree {
+	t.Helper()
+
+	for _, refName := range v2FullRefSearchOrderForTest(t, v2Store) {
+		_, rootTreeHash, err := v2Store.GetRefState(refName)
+		if err != nil {
+			continue
+		}
+		rootTree, err := repo.TreeObject(rootTreeHash)
+		require.NoError(t, err)
+		if _, treeErr := rootTree.Tree(cpID.Path()); treeErr == nil {
+			return rootTree
+		}
+	}
+
+	t.Fatalf("checkpoint %s not found in any v2 /full/* ref", cpID)
+	return nil
+}
+
+func v2FullRefSearchOrderForTest(t *testing.T, v2Store *checkpoint.V2GitStore) []plumbing.ReferenceName {
+	t.Helper()
+
+	refNames := []plumbing.ReferenceName{plumbing.ReferenceName(paths.V2FullCurrentRefName)}
+	archived, err := v2Store.ListArchivedGenerations()
+	require.NoError(t, err)
+	for i := len(archived) - 1; i >= 0; i-- {
+		refNames = append(refNames, plumbing.ReferenceName(paths.V2FullRefPrefix+archived[i]))
+	}
+	return refNames
 }
 
 func hasCurrentFullSessionArtifactsForTest(t *testing.T, repo *git.Repository, v2Store *checkpoint.V2GitStore, cpID id.CheckpointID, sessionIdx int) bool {
