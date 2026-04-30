@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint"
+	"github.com/entireio/cli/cmd/entire/cli/checkpoint/id"
 	"github.com/entireio/cli/cmd/entire/cli/paths"
 	"github.com/entireio/cli/cmd/entire/cli/strategy"
 	"github.com/go-git/go-git/v6"
@@ -229,6 +230,67 @@ func createArchivedGenerationRef(t *testing.T, repo *git.Repository, generation 
 	ref := plumbing.NewHashReference(refName, commitHash)
 	if err := repo.Storer.SetReference(ref); err != nil {
 		t.Fatalf("failed to create archived generation ref %s: %v", refName, err)
+	}
+}
+
+func createV2MainMetadataRef(t *testing.T, repo *git.Repository, cpID id.CheckpointID, createdAt time.Time) {
+	t.Helper()
+
+	sessionMetadata := checkpoint.CommittedMetadata{
+		CheckpointID: cpID,
+		SessionID:    "session-" + cpID.String(),
+		Strategy:     "manual-commit",
+		CreatedAt:    createdAt.UTC(),
+	}
+	sessionMetadataJSON, err := json.Marshal(sessionMetadata)
+	if err != nil {
+		t.Fatalf("failed to marshal session metadata: %v", err)
+	}
+	sessionMetadataHash, err := checkpoint.CreateBlobFromContent(repo, sessionMetadataJSON)
+	if err != nil {
+		t.Fatalf("failed to create session metadata blob: %v", err)
+	}
+
+	summary := checkpoint.CheckpointSummary{
+		CheckpointID: cpID,
+		Strategy:     "manual-commit",
+		Sessions: []checkpoint.SessionFilePaths{
+			{Metadata: "/" + cpID.Path() + "/0/" + paths.MetadataFileName},
+		},
+	}
+	summaryJSON, err := json.Marshal(summary)
+	if err != nil {
+		t.Fatalf("failed to marshal checkpoint summary: %v", err)
+	}
+	summaryHash, err := checkpoint.CreateBlobFromContent(repo, summaryJSON)
+	if err != nil {
+		t.Fatalf("failed to create checkpoint summary blob: %v", err)
+	}
+
+	entries := map[string]object.TreeEntry{
+		cpID.Path() + "/" + paths.MetadataFileName: {
+			Name: paths.MetadataFileName,
+			Mode: filemode.Regular,
+			Hash: summaryHash,
+		},
+		cpID.Path() + "/0/" + paths.MetadataFileName: {
+			Name: paths.MetadataFileName,
+			Mode: filemode.Regular,
+			Hash: sessionMetadataHash,
+		},
+	}
+
+	treeHash, err := checkpoint.BuildTreeFromEntries(context.Background(), repo, entries)
+	if err != nil {
+		t.Fatalf("failed to build v2 main tree: %v", err)
+	}
+	commitHash, err := checkpoint.CreateCommit(context.Background(), repo, treeHash, plumbing.ZeroHash, "v2 main", "test", "test@test.com")
+	if err != nil {
+		t.Fatalf("failed to create v2 main commit: %v", err)
+	}
+	ref := plumbing.NewHashReference(plumbing.ReferenceName(paths.V2MainRefName), commitHash)
+	if err := repo.Storer.SetReference(ref); err != nil {
+		t.Fatalf("failed to create v2 main ref: %v", err)
 	}
 }
 
@@ -852,6 +914,41 @@ func TestCleanCmd_All_DryRunListsEligibleV2Generations(t *testing.T) {
 	}
 	if !strings.Contains(output, "0000000000001") {
 		t.Fatalf("expected archived generation ref in output, got: %s", output)
+	}
+}
+
+func TestCleanCmd_All_UsesCheckpointTimeForV2GenerationRetention(t *testing.T) {
+	repo, _ := setupCleanTestRepo(t)
+
+	wt, err := repo.Worktree()
+	if err != nil {
+		t.Fatalf("failed to get worktree: %v", err)
+	}
+	repoRoot := wt.Filesystem.Root()
+
+	writeCleanSettingsFile(t, repoRoot, `{"enabled": true, "strategy_options": {"checkpoints_v2": true, "full_transcript_generation_retention_days": 14}}`)
+
+	cpID := id.MustCheckpointID("aabbccddeeff")
+	checkpointCreatedAt := time.Now().AddDate(0, 0, -20)
+	createV2MainMetadataRef(t, repo, cpID, checkpointCreatedAt)
+	createArchivedGenerationRef(t, repo, "0000000000005", time.Now(), time.Now())
+
+	cmd := newCleanCmd()
+	var stdout, stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{"--all", "--dry-run"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("clean --all --dry-run error = %v", err)
+	}
+
+	output := stdout.String()
+	if !strings.Contains(output, "Archived v2 generations (1):") {
+		t.Fatalf("expected archived v2 generation section, got: %s", output)
+	}
+	if !strings.Contains(output, "0000000000005") {
+		t.Fatalf("expected generation to be eligible by checkpoint created_at, got: %s", output)
 	}
 }
 

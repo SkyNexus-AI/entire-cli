@@ -425,7 +425,7 @@ func (s *GitStore) writeSessionToSubdirectory(ctx context.Context, opts WriteCom
 		CheckpointID:                opts.CheckpointID,
 		SessionID:                   opts.SessionID,
 		Strategy:                    opts.Strategy,
-		CreatedAt:                   time.Now().UTC(),
+		CreatedAt:                   checkpointCreatedAt(opts),
 		Branch:                      opts.Branch,
 		CheckpointsCount:            opts.CheckpointsCount,
 		FilesTouched:                opts.FilesTouched,
@@ -629,6 +629,13 @@ func (s *GitStore) reaggregateFromEntries(basePath string, sessionCount int, ent
 	}
 
 	return totalCount, allFiles, totalTokens, nil
+}
+
+func checkpointCreatedAt(opts WriteCommittedOptions) time.Time {
+	if opts.CreatedAt.IsZero() {
+		return time.Now().UTC()
+	}
+	return opts.CreatedAt.UTC()
 }
 
 // readJSONFromBlob reads JSON from a blob hash and decodes it to the given type.

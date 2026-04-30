@@ -367,10 +367,18 @@ func ListEligibleV2Generations(ctx context.Context, s *settings.EntireSettings) 
 			continue
 		}
 
-		gen, genErr := store.ReadGeneration(treeHash)
-		if genErr != nil {
-			warnings = append(warnings, fmt.Sprintf("generation %s: failed to read generation.json: %v", name, genErr))
+		gen, foundCheckpointTimes, timestampErr := store.ComputeGenerationCheckpointTimestamps(treeHash)
+		if timestampErr != nil {
+			warnings = append(warnings, fmt.Sprintf("generation %s: failed to compute checkpoint timestamps: %v", name, timestampErr))
 			continue
+		}
+		if !foundCheckpointTimes {
+			var genErr error
+			gen, genErr = store.ReadGeneration(treeHash)
+			if genErr != nil {
+				warnings = append(warnings, fmt.Sprintf("generation %s: failed to read generation.json: %v", name, genErr))
+				continue
+			}
 		}
 
 		hasOldest := !gen.OldestCheckpointAt.IsZero()
