@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -17,6 +16,7 @@ type autoUpdateFixture struct {
 	lastCommand  string
 	chooseValue  AutoUpdateAction
 	chooseErr    error
+	lastCmdStr   string
 }
 
 func newAutoUpdateFixture(t *testing.T) *autoUpdateFixture {
@@ -35,7 +35,10 @@ func newAutoUpdateFixture(t *testing.T) *autoUpdateFixture {
 		return f.installErr
 	}
 	origChoose := chooseUpdate
-	chooseUpdate = func(io.Writer) (AutoUpdateAction, error) { return f.chooseValue, f.chooseErr }
+	chooseUpdate = func(_, _, cmdStr string) (AutoUpdateAction, error) {
+		f.lastCmdStr = cmdStr
+		return f.chooseValue, f.chooseErr
+	}
 	origIsTerminalOut := isTerminalOut
 	isTerminalOut = func(_ io.Writer) bool { return true }
 
@@ -98,12 +101,6 @@ func assertManualHint(t *testing.T, out, wantCmd string) {
 	}
 	if !strings.Contains(out, wantCmd) {
 		t.Errorf("manual hint missing installer command %q: %q", wantCmd, out)
-	}
-	if strings.Contains(out, "1. Update now") ||
-		strings.Contains(out, "2. Skip") ||
-		strings.Contains(out, "3. Skip until next version") ||
-		strings.Contains(out, "Press enter to continue") {
-		t.Errorf("non-interactive output included interactive menu: %q", out)
 	}
 }
 
@@ -198,9 +195,6 @@ func TestMaybeAutoUpdate_WindowsUnknownInstallerNoAutoRun(t *testing.T) {
 	if strings.Contains(out, "curl -fsSL") {
 		t.Errorf("Windows fallback must not show POSIX curl command: %q", out)
 	}
-	if strings.Contains(out, "1. Update now") {
-		t.Errorf("Windows + unknown installer must not show interactive prompt: %q", out)
-	}
 }
 
 // TestMaybeAutoUpdate_WindowsScoopStillAutoRuns verifies that a Windows
@@ -287,9 +281,7 @@ func TestMaybeAutoUpdate_InstallerFailurePrintedToUser(t *testing.T) {
 }
 
 // installerCase covers the same prompt contract for every install manager
-// that supports auto-installation. Brew is included even though it has its
-// own dedicated tests above — repeating it here proves the unified path
-// preserves brew's existing wording byte-for-byte.
+// that supports auto-installation.
 type installerCase struct {
 	name    string
 	setup   func(*testing.T)
@@ -305,7 +297,12 @@ func nonWindowsAutoInstallers() []installerCase {
 	}
 }
 
-func TestMaybeAutoUpdate_AllInstallers_PromptShowsCorrectCommand(t *testing.T) {
+// TestMaybeAutoUpdate_AllInstallers_PromptReceivesCorrectCommand verifies
+// that the prompt seam is invoked with the right shell command for every
+// install manager. The huh.Select itself is exercised by the manual
+// smoke script (test-auto.sh); here we only check that the cmd we build
+// from updateCommand() is what reaches the prompt.
+func TestMaybeAutoUpdate_AllInstallers_PromptReceivesCorrectCommand(t *testing.T) {
 	for _, tt := range nonWindowsAutoInstallers() {
 		t.Run(tt.name, func(t *testing.T) {
 			f := newAutoUpdateFixture(t)
@@ -321,18 +318,8 @@ func TestMaybeAutoUpdate_AllInstallers_PromptShowsCorrectCommand(t *testing.T) {
 			if action != autoUpdateActionSkipUntilNextVersion {
 				t.Errorf("action = %q, want %q", action, autoUpdateActionSkipUntilNextVersion)
 			}
-			out := buf.String()
-			for _, want := range []string{
-				"Update available! 1.0.0 -> 2.0.0",
-				"Release notes: https://github.com/entireio/cli/releases/tag/v2.0.0",
-				fmt.Sprintf("1. Update now (runs `%s`)", tt.wantCmd),
-				"2. Skip",
-				"3. Skip until next version",
-				"Press enter to continue",
-			} {
-				if !strings.Contains(out, want) {
-					t.Errorf("missing %q in output: %q", want, out)
-				}
+			if f.lastCmdStr != tt.wantCmd {
+				t.Errorf("prompt got cmd %q, want %q", f.lastCmdStr, tt.wantCmd)
 			}
 		})
 	}
@@ -398,52 +385,5 @@ func TestMaybeAutoUpdate_AllInstallers_UserSkips(t *testing.T) {
 				t.Errorf("action = %q, want %q", action, autoUpdateActionSkip)
 			}
 		})
-	}
-}
-
-func TestParseUpdateChoice(t *testing.T) {
-	tests := []struct {
-		input string
-		want  AutoUpdateAction
-		ok    bool
-	}{
-		{input: "", want: autoUpdateActionUpdate, ok: true},
-		{input: "\n", want: autoUpdateActionUpdate, ok: true},
-		{input: "1", want: autoUpdateActionUpdate, ok: true},
-		{input: "2", want: autoUpdateActionSkip, ok: true},
-		{input: "3", want: autoUpdateActionSkipUntilNextVersion, ok: true},
-		{input: "nope", want: autoUpdateActionSkip, ok: false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.input, func(t *testing.T) {
-			got, ok := parseUpdateChoice(tt.input)
-			if got != tt.want || ok != tt.ok {
-				t.Errorf("parseUpdateChoice(%q) = (%q, %v), want (%q, %v)",
-					tt.input, got, ok, tt.want, tt.ok)
-			}
-		})
-	}
-}
-
-func TestChooseUpdateFromReader_EmptyEOFSkips(t *testing.T) {
-	var buf bytes.Buffer
-	action, err := chooseUpdateFromReader(&buf, strings.NewReader(""))
-	if err != nil {
-		t.Fatalf("chooseUpdateFromReader() error = %v", err)
-	}
-	if action != autoUpdateActionSkip {
-		t.Errorf("action = %q, want %q", action, autoUpdateActionSkip)
-	}
-}
-
-func TestChooseUpdateFromReader_EnterUpdates(t *testing.T) {
-	var buf bytes.Buffer
-	action, err := chooseUpdateFromReader(&buf, strings.NewReader("\n"))
-	if err != nil {
-		t.Fatalf("chooseUpdateFromReader() error = %v", err)
-	}
-	if action != autoUpdateActionUpdate {
-		t.Errorf("action = %q, want %q", action, autoUpdateActionUpdate)
 	}
 }

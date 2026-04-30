@@ -310,6 +310,11 @@ func TestParseGitHubRelease(t *testing.T) {
 	}
 }
 
+// brewUpgradeCmd is the install command produced for any brew-installed
+// binary on a stable channel. Hoisted to a const so tests can reference
+// it without tripping goconst on repeated string literals.
+const brewUpgradeCmd = "brew upgrade entire"
+
 func TestUpdateCommand(t *testing.T) {
 	const plainBinPath = "/usr/local/bin/entire"
 	tests := []struct {
@@ -322,13 +327,13 @@ func TestUpdateCommand(t *testing.T) {
 			name:           "homebrew stable cellar path uses brew command",
 			currentVersion: "1.0.0",
 			execPath:       func() (string, error) { return "/opt/homebrew/Cellar/entire/1.0.0/bin/entire", nil },
-			want:           "brew upgrade entire",
+			want:           brewUpgradeCmd,
 		},
 		{
 			name:           "homebrew stable cask path uses brew command",
 			currentVersion: "1.0.0",
 			execPath:       func() (string, error) { return "/opt/homebrew/bin/entire", nil },
-			want:           "brew upgrade entire",
+			want:           brewUpgradeCmd,
 		},
 		{
 			name:           "homebrew nightly path uses brew command",
@@ -340,7 +345,7 @@ func TestUpdateCommand(t *testing.T) {
 			name:           "linuxbrew path",
 			currentVersion: "1.0.0",
 			execPath:       func() (string, error) { return "/home/linuxbrew/.linuxbrew/bin/entire", nil },
-			want:           "brew upgrade entire",
+			want:           brewUpgradeCmd,
 		},
 		{
 			name:           "mise path",
@@ -492,7 +497,7 @@ func TestCheckAndNotify_PrintsNotificationWhenOutdated(t *testing.T) {
 
 func TestCheckAndNotify_BrewSkipUntilNextVersionCachesLatest(t *testing.T) {
 	server := newVersionServer(t, "v2.0.0")
-	cmd, buf := setupCheckAndNotifyTest(t, server.URL)
+	cmd, _ := setupCheckAndNotifyTest(t, server.URL)
 	f := newAutoUpdateFixture(t)
 	useBrewExecutable(t)
 	f.chooseValue = autoUpdateActionSkipUntilNextVersion
@@ -509,8 +514,8 @@ func TestCheckAndNotify_BrewSkipUntilNextVersionCachesLatest(t *testing.T) {
 	if cache.SkippedVersion != "v2.0.0" {
 		t.Errorf("SkippedVersion = %q, want v2.0.0", cache.SkippedVersion)
 	}
-	if !strings.Contains(buf.String(), "3. Skip until next version") {
-		t.Errorf("expected brew update options, got %q", buf.String())
+	if f.lastCmdStr != brewUpgradeCmd {
+		t.Errorf("prompt got cmd %q, want brew upgrade entire", f.lastCmdStr)
 	}
 }
 
@@ -519,7 +524,7 @@ func TestCheckAndNotify_BrewSkipUntilNextVersionCachesLatest(t *testing.T) {
 // The cache flow is installer-agnostic; this locks that contract in.
 func TestCheckAndNotify_MiseSkipUntilNextVersionCachesLatest(t *testing.T) {
 	server := newVersionServer(t, "v2.0.0")
-	cmd, buf := setupCheckAndNotifyTest(t, server.URL)
+	cmd, _ := setupCheckAndNotifyTest(t, server.URL)
 	f := newAutoUpdateFixture(t)
 	useMiseExecutable(t)
 	f.chooseValue = autoUpdateActionSkipUntilNextVersion
@@ -536,8 +541,8 @@ func TestCheckAndNotify_MiseSkipUntilNextVersionCachesLatest(t *testing.T) {
 	if cache.SkippedVersion != "v2.0.0" {
 		t.Errorf("SkippedVersion = %q, want v2.0.0", cache.SkippedVersion)
 	}
-	if !strings.Contains(buf.String(), "1. Update now (runs `mise upgrade entire`)") {
-		t.Errorf("expected mise update prompt, got %q", buf.String())
+	if f.lastCmdStr != "mise upgrade entire" {
+		t.Errorf("prompt got cmd %q, want mise upgrade entire", f.lastCmdStr)
 	}
 }
 
@@ -582,7 +587,7 @@ func TestCheckAndNotify_InstallerFailureKeepsCacheFresh(t *testing.T) {
 	useBrewExecutable(t)
 
 	origChoose := chooseUpdate
-	chooseUpdate = func(io.Writer) (AutoUpdateAction, error) {
+	chooseUpdate = func(_, _, _ string) (AutoUpdateAction, error) {
 		return autoUpdateActionUpdate, nil
 	}
 	t.Cleanup(func() { chooseUpdate = origChoose })

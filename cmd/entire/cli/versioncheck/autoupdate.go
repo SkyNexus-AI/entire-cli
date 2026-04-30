@@ -1,7 +1,6 @@
 package versioncheck
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -9,7 +8,8 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
-	"strings"
+
+	"github.com/charmbracelet/huh"
 
 	"github.com/entireio/cli/cmd/entire/cli/interactive"
 	"github.com/entireio/cli/cmd/entire/cli/logging"
@@ -27,11 +27,16 @@ const (
 	autoUpdateActionSkipUntilNextVersion AutoUpdateAction = "skip_until_next_version"
 )
 
+// chooseUpdateFn is the signature for the update-prompt seam. The
+// concrete implementation renders a huh.Select with the installer
+// command interpolated into option 1.
+type chooseUpdateFn func(currentVersion, latestVersion, cmdStr string) (AutoUpdateAction, error)
+
 // Test seams.
 var (
-	runInstaller  = realRunInstaller
-	chooseUpdate  = realChooseUpdate
-	isTerminalOut = interactive.IsTerminalWriter
+	runInstaller                 = realRunInstaller
+	chooseUpdate  chooseUpdateFn = realChooseUpdate
+	isTerminalOut                = interactive.IsTerminalWriter
 )
 
 // MaybeAutoUpdate prints an update notification and offers an interactive
@@ -70,9 +75,7 @@ func MaybeAutoUpdate(ctx context.Context, w io.Writer, currentVersion, latestVer
 		return autoUpdateActionSkip
 	}
 
-	printUpdateMessage(w, currentVersion, latestVersion, cmdStr)
-
-	action, err := chooseUpdate(w)
+	action, err := chooseUpdate(currentVersion, latestVersion, cmdStr)
 	if err != nil {
 		logging.Debug(ctx, "auto-update: prompt failed", "error", err.Error())
 		return autoUpdateActionSkip
@@ -96,49 +99,32 @@ func MaybeAutoUpdate(ctx context.Context, w io.Writer, currentVersion, latestVer
 	}
 }
 
-func printUpdateMessage(w io.Writer, currentVersion, latestVersion, cmdStr string) {
-	fmt.Fprintf(w, "\nUpdate available! %s -> %s\nRelease notes: %s\n1. Update now (runs `%s`)\n2. Skip\n3. Skip until next version\n\nPress enter to continue\n",
-		displayVersion(currentVersion), displayVersion(latestVersion), releaseNotesURL(latestVersion), cmdStr)
-}
-
-func realChooseUpdate(w io.Writer) (AutoUpdateAction, error) {
-	return chooseUpdateFromReader(w, os.Stdin)
-}
-
-func chooseUpdateFromReader(w io.Writer, input io.Reader) (AutoUpdateAction, error) {
-	reader := bufio.NewReader(input)
-	for {
-		fmt.Fprint(w, "Choose an option [1]: ")
-		line, err := reader.ReadString('\n')
-		if err != nil && !errors.Is(err, io.EOF) {
-			return autoUpdateActionSkip, fmt.Errorf("read update choice: %w", err)
-		}
-		if errors.Is(err, io.EOF) && strings.TrimSpace(line) == "" {
+// realChooseUpdate renders a huh.Select with the three update actions.
+// In normal mode this is an arrow-key TUI; when ACCESSIBLE is set huh
+// falls back to a plain numbered prompt readable by screen readers.
+func realChooseUpdate(currentVersion, latestVersion, cmdStr string) (AutoUpdateAction, error) {
+	action := autoUpdateActionUpdate
+	sel := huh.NewSelect[AutoUpdateAction]().
+		Title(fmt.Sprintf("Update available! %s -> %s",
+			displayVersion(currentVersion), displayVersion(latestVersion))).
+		Description("Release notes: "+releaseNotesURL(latestVersion)).
+		Options(
+			huh.NewOption(fmt.Sprintf("Update now (runs `%s`)", cmdStr), autoUpdateActionUpdate),
+			huh.NewOption("Skip", autoUpdateActionSkip),
+			huh.NewOption("Skip until next version", autoUpdateActionSkipUntilNextVersion),
+		).
+		Value(&action)
+	form := huh.NewForm(huh.NewGroup(sel)).WithTheme(huh.ThemeDracula())
+	if os.Getenv("ACCESSIBLE") != "" {
+		form = form.WithAccessible(true)
+	}
+	if err := form.Run(); err != nil {
+		if errors.Is(err, huh.ErrUserAborted) || errors.Is(err, huh.ErrTimeout) {
 			return autoUpdateActionSkip, nil
 		}
-
-		action, ok := parseUpdateChoice(line)
-		if ok {
-			return action, nil
-		}
-		if errors.Is(err, io.EOF) {
-			return autoUpdateActionSkip, nil
-		}
-		fmt.Fprintln(w, "Please choose 1, 2, or 3.")
+		return autoUpdateActionSkip, fmt.Errorf("update prompt: %w", err)
 	}
-}
-
-func parseUpdateChoice(input string) (AutoUpdateAction, bool) {
-	switch strings.TrimSpace(input) {
-	case "", "1":
-		return autoUpdateActionUpdate, true
-	case "2":
-		return autoUpdateActionSkip, true
-	case "3":
-		return autoUpdateActionSkipUntilNextVersion, true
-	default:
-		return autoUpdateActionSkip, false
-	}
+	return action, nil
 }
 
 // realRunInstaller shells out to the installer command, streaming stdin/stdout/stderr
