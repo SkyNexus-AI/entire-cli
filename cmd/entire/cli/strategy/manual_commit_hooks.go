@@ -2210,14 +2210,8 @@ func correctSessionAgentType(ctx context.Context, currentType types.AgentType, t
 // userPrompt is the user's prompt text (stored truncated as LastPrompt for display).
 // model is the LLM model identifier (e.g., "claude-sonnet-4-20250514"); empty if unknown.
 func (s *ManualCommitStrategy) InitializeSession(ctx context.Context, sessionID string, agentType types.AgentType, transcriptPath string, userPrompt string, model string) error {
-	// Concurrent InitializeSession calls for the same session ID are possible
-	// — Cursor IDE forwards one prompt to both .cursor/hooks.json and
-	// .claude/settings.json, so two `entire` processes race here. We do not
-	// serialize them: the SessionStart hint plus correctSessionAgentType
-	// converge on the right AgentType across turns. The cost of the race is
-	// at most one redundant full setup (idempotent shadow-branch creation)
-	// and a possibly-wrong AgentType for one turn, which the next turn's
-	// transcript-path repair fixes.
+	// Concurrent calls for the same session_id are accepted; convergence on
+	// AgentType is via correctSessionAgentType on the next turn.
 	repo, err := OpenRepository(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to open git repository: %w", err)

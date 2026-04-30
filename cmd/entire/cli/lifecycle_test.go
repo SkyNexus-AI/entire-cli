@@ -124,27 +124,19 @@ func TestDispatchLifecycleEvent_NilEvent(t *testing.T) {
 // covers the Cursor IDE → .claude/settings.json forwarding scenario for Stop,
 // SubagentStart/End, Compaction, SessionEnd, and ModelUpdate events.
 func TestDispatchLifecycleEvent_SkipsForwardedHookFromNonOwningAgent(t *testing.T) {
-	tmpDir := t.TempDir()
-	testutil.InitRepo(t, tmpDir)
-	testutil.WriteFile(t, tmpDir, "init.txt", "init")
-	testutil.GitAdd(t, tmpDir, "init.txt")
-	testutil.GitCommit(t, tmpDir, "init")
-	t.Chdir(tmpDir)
-	paths.ClearWorktreeRootCache()
+	setupStopTestRepo(t)
 
 	sessionID := "test-skip-nonowning"
-
-	// Bootstrap: state owned by Cursor.
 	require.NoError(t, strategy.SaveSessionState(context.Background(), &strategy.SessionState{
 		SessionID:  sessionID,
-		AgentType:  testAgentCursor,
+		AgentType:  agent.AgentTypeCursor,
 		BaseCommit: "abc123",
 		StartedAt:  time.Now(),
 	}))
 
 	// Claude Code fires SessionEnd for Cursor's session (Cursor IDE forwarded hook).
 	claudeAgent := newMockAgent()
-	claudeAgent.agentType = testAgentClaude
+	claudeAgent.agentType = agent.AgentTypeClaudeCode
 
 	require.NoError(t, DispatchLifecycleEvent(context.Background(), claudeAgent, &agent.Event{
 		Type:      agent.SessionEnd,
@@ -152,9 +144,8 @@ func TestDispatchLifecycleEvent_SkipsForwardedHookFromNonOwningAgent(t *testing.
 		Timestamp: time.Now(),
 	}))
 
-	// SessionEnd handler must NOT have run — EndedAt stays nil and the phase
-	// stays unset. If the dispatcher had let the event through,
-	// markSessionEnded would have transitioned to ENDED and set EndedAt.
+	// If the dispatcher had let the event through, markSessionEnded would have
+	// transitioned to ENDED and set EndedAt.
 	state, err := strategy.LoadSessionState(context.Background(), sessionID)
 	require.NoError(t, err)
 	require.NotNil(t, state)
@@ -162,45 +153,40 @@ func TestDispatchLifecycleEvent_SkipsForwardedHookFromNonOwningAgent(t *testing.
 }
 
 // TestDispatchLifecycleEvent_AllowsTurnStartFromMismatchedAgent verifies that
-// TurnStart bypasses the dispatcher-level skip so InitializeSession's
-// transcript-path resolution can repair a wrongly-set AgentType.
+// TurnStart bypasses the dispatcher-level skip so InitializeSession runs (and
+// can repair a wrongly-set AgentType via transcript-path resolution).
 func TestDispatchLifecycleEvent_AllowsTurnStartFromMismatchedAgent(t *testing.T) {
-	tmpDir := t.TempDir()
-	testutil.InitRepo(t, tmpDir)
-	testutil.WriteFile(t, tmpDir, "init.txt", "init")
-	testutil.GitAdd(t, tmpDir, "init.txt")
-	testutil.GitCommit(t, tmpDir, "init")
-	t.Chdir(tmpDir)
-	paths.ClearWorktreeRootCache()
+	setupStopTestRepo(t)
+
+	ctx := context.Background()
+	repo, err := strategy.OpenRepository(ctx)
+	require.NoError(t, err)
+	head, err := repo.Head()
+	require.NoError(t, err)
 
 	sessionID := "test-turnstart-mismatch"
-
-	// Bootstrap: state has the wrong AgentType (e.g., a forwarded SessionStart
-	// won the hint race).
-	require.NoError(t, strategy.SaveSessionState(context.Background(), &strategy.SessionState{
+	require.NoError(t, strategy.SaveSessionState(ctx, &strategy.SessionState{
 		SessionID:  sessionID,
-		AgentType:  testAgentClaude,
-		BaseCommit: "abc123",
+		AgentType:  agent.AgentTypeClaudeCode,
+		BaseCommit: head.Hash().String(),
 		StartedAt:  time.Now(),
 	}))
 
-	// Cursor's TurnStart fires for the same session — the dispatcher must not
-	// skip; InitializeSession needs to run to invoke correctSessionAgentType.
 	cursorAgent := newMockAgent()
-	cursorAgent.agentType = testAgentCursor
+	cursorAgent.agentType = agent.AgentTypeCursor
 
-	err := DispatchLifecycleEvent(context.Background(), cursorAgent, &agent.Event{
+	require.NoError(t, DispatchLifecycleEvent(ctx, cursorAgent, &agent.Event{
 		Type:      agent.TurnStart,
 		SessionID: sessionID,
 		Timestamp: time.Now(),
-	})
-	// The handler may itself fail (no shadow branch infra in this minimal
-	// test), but the call must not have been short-circuited at the
-	// dispatcher. We only assert the dispatcher didn't filter the event —
-	// verified by the absence of the "skipping forwarded hook" no-op path,
-	// which would have returned nil immediately. A real or non-nil error
-	// from downstream both prove the dispatcher dispatched.
-	_ = err
+	}))
+
+	// InitializeSession generates a fresh TurnID on every dispatch. If the
+	// dispatcher had skipped, TurnID would still be empty.
+	state, err := strategy.LoadSessionState(ctx, sessionID)
+	require.NoError(t, err)
+	require.NotNil(t, state)
+	require.NotEmpty(t, state.TurnID, "TurnStart must dispatch (and generate a TurnID) even when the firing agent disagrees with the recorded owner")
 }
 
 func TestDispatchLifecycleEvent_UnknownEventType(t *testing.T) {
@@ -269,16 +255,10 @@ func newMockHookResponseAgent() *mockHookResponseAgent {
 // later TurnStart hook (e.g., Cursor IDE forwarding to Claude Code's hook
 // system) cannot re-label the session.
 func TestHandleLifecycleSessionStart_StoresAgentTypeHint(t *testing.T) {
-	tmpDir := t.TempDir()
-	testutil.InitRepo(t, tmpDir)
-	testutil.WriteFile(t, tmpDir, "init.txt", "init")
-	testutil.GitAdd(t, tmpDir, "init.txt")
-	testutil.GitCommit(t, tmpDir, "init")
-	t.Chdir(tmpDir)
-	paths.ClearWorktreeRootCache()
+	setupStopTestRepo(t)
 
 	ag := newMockHookResponseAgent()
-	ag.agentType = testAgentCursor
+	ag.agentType = agent.AgentTypeCursor
 	event := &agent.Event{
 		Type:      agent.SessionStart,
 		SessionID: "test-agent-hint",
@@ -287,7 +267,7 @@ func TestHandleLifecycleSessionStart_StoresAgentTypeHint(t *testing.T) {
 	require.NoError(t, handleLifecycleSessionStart(context.Background(), ag, event))
 
 	got := strategy.LoadAgentTypeHint(context.Background(), "test-agent-hint")
-	require.Equal(t, types.AgentType(testAgentCursor), got)
+	require.Equal(t, agent.AgentTypeCursor, got)
 }
 
 // TestHandleLifecycleSessionStart_AgentTypeHintFirstWriterWins verifies that
@@ -296,33 +276,27 @@ func TestHandleLifecycleSessionStart_StoresAgentTypeHint(t *testing.T) {
 // matches both the Cursor cross-agent and the Gemini repeat-source
 // (startup → resume) cases — the user must see the banner only once.
 func TestHandleLifecycleSessionStart_AgentTypeHintFirstWriterWins(t *testing.T) {
-	tmpDir := t.TempDir()
-	testutil.InitRepo(t, tmpDir)
-	testutil.WriteFile(t, tmpDir, "init.txt", "init")
-	testutil.GitAdd(t, tmpDir, "init.txt")
-	testutil.GitCommit(t, tmpDir, "init")
-	t.Chdir(tmpDir)
-	paths.ClearWorktreeRootCache()
+	setupStopTestRepo(t)
 
 	ctx := context.Background()
 	sessionID := "test-agent-hint-race"
 
 	first := newMockHookResponseAgent()
-	first.agentType = testAgentCursor
+	first.agentType = agent.AgentTypeCursor
 	require.NoError(t, handleLifecycleSessionStart(ctx, first, &agent.Event{
 		Type: agent.SessionStart, SessionID: sessionID, Timestamp: time.Now(),
 	}))
 	require.NotEmpty(t, first.lastMessage, "first SessionStart must emit the banner")
 
 	second := newMockHookResponseAgent()
-	second.agentType = testAgentClaude
+	second.agentType = agent.AgentTypeClaudeCode
 	require.NoError(t, handleLifecycleSessionStart(ctx, second, &agent.Event{
 		Type: agent.SessionStart, SessionID: sessionID, Timestamp: time.Now(),
 	}))
 	require.Empty(t, second.lastMessage, "subsequent SessionStarts for the same session must not emit the banner again")
 
 	got := strategy.LoadAgentTypeHint(ctx, sessionID)
-	require.Equal(t, types.AgentType(testAgentCursor), got, "first SessionStart caller must own the session")
+	require.Equal(t, agent.AgentTypeCursor, got, "first SessionStart caller must own the session")
 }
 
 // TestHandleLifecycleSessionStart_GeminiRepeatSourceDoesNotDuplicate covers
@@ -330,19 +304,13 @@ func TestHandleLifecycleSessionStart_AgentTypeHintFirstWriterWins(t *testing.T) 
 // the same session (e.g., source=startup followed by source=resume) and we
 // were emitting the banner both times.
 func TestHandleLifecycleSessionStart_GeminiRepeatSourceDoesNotDuplicate(t *testing.T) {
-	tmpDir := t.TempDir()
-	testutil.InitRepo(t, tmpDir)
-	testutil.WriteFile(t, tmpDir, "init.txt", "init")
-	testutil.GitAdd(t, tmpDir, "init.txt")
-	testutil.GitCommit(t, tmpDir, "init")
-	t.Chdir(tmpDir)
-	paths.ClearWorktreeRootCache()
+	setupStopTestRepo(t)
 
 	ctx := context.Background()
 	sessionID := "test-gemini-repeat"
 
 	ag := newMockHookResponseAgent()
-	ag.agentType = "Gemini CLI"
+	ag.agentType = agent.AgentTypeGemini
 
 	require.NoError(t, handleLifecycleSessionStart(ctx, ag, &agent.Event{
 		Type: agent.SessionStart, SessionID: sessionID, Timestamp: time.Now(),

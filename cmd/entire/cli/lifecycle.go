@@ -28,6 +28,17 @@ import (
 	"github.com/entireio/cli/perf"
 )
 
+// eventBypassesAgentOwnershipCheck reports whether an event must run
+// regardless of the recorded session-owning agent:
+//   - SessionStart fires before SessionState exists; the hint file dedup
+//     in handleLifecycleSessionStart already prevents a duplicate banner.
+//   - TurnStart needs to reach InitializeSession so transcript-path
+//     resolution can repair a wrongly-set AgentType. Skipping here would
+//     lock in a bad state.
+func eventBypassesAgentOwnershipCheck(t agent.EventType) bool {
+	return t == agent.SessionStart || t == agent.TurnStart
+}
+
 // DispatchLifecycleEvent routes a normalized lifecycle event to the appropriate handler.
 // Returns nil if the event was handled successfully.
 func DispatchLifecycleEvent(ctx context.Context, ag agent.Agent, event *agent.Event) error {
@@ -38,21 +49,12 @@ func DispatchLifecycleEvent(ctx context.Context, ag agent.Agent, event *agent.Ev
 		return errors.New("event cannot be nil")
 	}
 
-	// Skip events from non-owning agents. Cursor IDE forwards hooks to both
-	// .cursor/hooks.json and .claude/settings.json, so the non-owning agent's
-	// process otherwise duplicates work — extra checkpoints, torn writes on
-	// shared metadata files, doubled step counts. Once SessionState records
-	// the owning agent (set by InitializeSession's transcript-path resolution
-	// at TurnStart), any other agent's events for that session no-op here.
-	//
-	// Bypassed events:
-	//   - SessionStart: runs before SessionState exists; the hint file dedup
-	//     in handleLifecycleSessionStart protects the banner.
-	//   - TurnStart: InitializeSession's transcript-path resolution can repair
-	//     a wrongly-set AgentType. Skipping at the dispatcher would lock in
-	//     a bad state forever.
-	if event.Type != agent.SessionStart && event.Type != agent.TurnStart && event.SessionID != "" {
-		if state, _ := strategy.LoadSessionState(ctx, event.SessionID); state != nil && state.AgentType != "" && state.AgentType != ag.Type() { //nolint:errcheck // load failures fall through to normal dispatch
+	// Filter forwarded hooks: when Cursor IDE forwards events to both
+	// .cursor/hooks.json and .claude/settings.json, only the agent that owns
+	// the session should process them — otherwise checkpoints, metadata
+	// writes, and step counts double.
+	if event.SessionID != "" && !eventBypassesAgentOwnershipCheck(event.Type) {
+		if state, _ := strategy.LoadSessionState(ctx, event.SessionID); state != nil && state.AgentType != "" && state.AgentType != ag.Type() { //nolint:errcheck // a load failure means we can't filter; let the event reach its handler, which surfaces its own load error
 			logging.Info(logging.WithAgent(logging.WithComponent(ctx, "lifecycle"), ag.Name()),
 				"skipping forwarded hook for non-owning agent",
 				slog.String("event", event.Type.String()),
