@@ -10,7 +10,6 @@ import (
 	"os"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint"
@@ -62,33 +61,152 @@ func tryPushRef(ctx context.Context, target string, refName plumbing.ReferenceNa
 }
 
 type v2RefPushResult struct {
-	result pushResult
-	err    error
+	refName plumbing.ReferenceName
+	result  pushResult
+	err     error
 }
 
-// pushV2RefWithRecovery pushes a v2 ref with fetch+merge recovery on conflict.
-// Callers own user-facing output so multiple refs can be pushed concurrently
-// without interleaving progress lines.
-func pushV2RefWithRecovery(ctx context.Context, target string, refName plumbing.ReferenceName) v2RefPushResult {
-	if result, err := tryPushRef(ctx, target, refName); err == nil {
-		return v2RefPushResult{result: result}
+func tryPushV2Refs(ctx context.Context, target string, refs []plumbing.ReferenceName) []v2RefPushResult {
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+
+	result, err := remote.PushWithOptions(ctx, remote.PushOptions{
+		Remote:   target,
+		RefSpecs: refSpecsForRefs(refs),
+	})
+	return parsePushRefResults(result.Output, refs, err)
+}
+
+func pushV2RefsWithRecovery(ctx context.Context, target string, refs []plumbing.ReferenceName) []v2RefPushResult {
+	resultsByRef := make(map[plumbing.ReferenceName]v2RefPushResult, len(refs))
+	var retryRefs []plumbing.ReferenceName
+
+	for _, result := range tryPushV2Refs(ctx, target, refs) {
+		if result.err == nil {
+			resultsByRef[result.refName] = result
+			continue
+		}
+
+		shortRef := shortRefName(result.refName)
+		if err := fetchAndMergeRef(ctx, target, result.refName); err != nil {
+			resultsByRef[result.refName] = v2RefPushResult{
+				refName: result.refName,
+				err:     fmt.Errorf("couldn't sync %s: %w", shortRef, err),
+			}
+			continue
+		}
+		retryRefs = append(retryRefs, result.refName)
 	}
 
-	shortRef := shortRefName(refName)
-	if err := fetchAndMergeRef(ctx, target, refName); err != nil {
-		return v2RefPushResult{
-			err: fmt.Errorf("couldn't sync %s: %w", shortRef, err),
+	if len(retryRefs) > 0 {
+		for _, result := range tryPushV2Refs(ctx, target, retryRefs) {
+			if result.err != nil {
+				result.err = fmt.Errorf("failed to push %s after sync: %w", shortRefName(result.refName), result.err)
+			}
+			resultsByRef[result.refName] = result
 		}
 	}
 
-	result, err := tryPushRef(ctx, target, refName)
-	if err != nil {
-		return v2RefPushResult{
-			err: fmt.Errorf("failed to push %s after sync: %w", shortRef, err),
+	results := make([]v2RefPushResult, 0, len(refs))
+	for _, refName := range refs {
+		result, ok := resultsByRef[refName]
+		if !ok {
+			result = v2RefPushResult{
+				refName: refName,
+				err:     errors.New("push result missing"),
+			}
+		}
+		results = append(results, result)
+	}
+	return results
+}
+
+func refSpecsForRefs(refs []plumbing.ReferenceName) []string {
+	refSpecs := make([]string, 0, len(refs))
+	for _, refName := range refs {
+		refSpecs = append(refSpecs, fmt.Sprintf("%s:%s", refName, refName))
+	}
+	return refSpecs
+}
+
+func parsePushRefResults(output string, refs []plumbing.ReferenceName, pushErr error) []v2RefPushResult {
+	parsed := make(map[plumbing.ReferenceName]v2RefPushResult, len(refs))
+	for _, line := range strings.Split(output, "\n") {
+		result, ok := parsePushRefStatusLine(line)
+		if ok {
+			parsed[result.refName] = result
 		}
 	}
 
-	return v2RefPushResult{result: result}
+	var fallbackErr error
+	if pushErr != nil {
+		fallbackErr = pushErrorFromOutput(output)
+	}
+
+	results := make([]v2RefPushResult, 0, len(refs))
+	for _, refName := range refs {
+		if result, ok := parsed[refName]; ok {
+			results = append(results, result)
+			continue
+		}
+		results = append(results, v2RefPushResult{
+			refName: refName,
+			err:     fallbackErr,
+		})
+	}
+	return results
+}
+
+func parsePushRefStatusLine(line string) (v2RefPushResult, bool) {
+	fields := strings.Split(line, "\t")
+	if len(fields) < 2 || fields[0] == "" {
+		return v2RefPushResult{}, false
+	}
+
+	refName, ok := pushStatusRef(fields[1])
+	if !ok {
+		return v2RefPushResult{}, false
+	}
+
+	switch fields[0][0] {
+	case '!':
+		return v2RefPushResult{
+			refName: refName,
+			err:     pushStatusError(strings.Join(fields[2:], "\t")),
+		}, true
+	case '=':
+		return v2RefPushResult{
+			refName: refName,
+			result:  pushResult{upToDate: true},
+		}, true
+	default:
+		return v2RefPushResult{refName: refName}, true
+	}
+}
+
+func pushStatusRef(statusRef string) (plumbing.ReferenceName, bool) {
+	_, dst, ok := strings.Cut(statusRef, ":")
+	if !ok || dst == "" {
+		return "", false
+	}
+	return plumbing.ReferenceName(dst), true
+}
+
+func pushStatusError(summary string) error {
+	if strings.Contains(summary, "non-fast-forward") || strings.Contains(summary, "rejected") {
+		return errors.New("non-fast-forward")
+	}
+	if strings.TrimSpace(summary) == "" {
+		return errors.New("push failed")
+	}
+	return fmt.Errorf("push failed: %s", summary)
+}
+
+func pushErrorFromOutput(output string) error {
+	if strings.Contains(output, "non-fast-forward") || strings.Contains(output, "rejected") {
+		return errors.New("non-fast-forward")
+	}
+	return fmt.Errorf("push failed: %s", output)
 }
 
 // doPushRef pushes a custom ref with fetch+merge recovery on conflict.
@@ -427,8 +545,8 @@ func updateGenerationTimestamps(repo *git.Repository, genBlobHash plumbing.Hash,
 }
 
 // pushV2Refs pushes v2 checkpoint refs to the target.
-// Pushes /main, /full/current, and the latest archived generation (if any)
-// concurrently. Older archived generations are immutable and were pushed when created.
+// Pushes /main, /full/current, and the latest archived generation (if any) in
+// one git push. Older archived generations are immutable and were pushed when created.
 func pushV2Refs(ctx context.Context, target string) {
 	refs := v2RefsToPush(ctx)
 	if len(refs) == 0 {
@@ -438,28 +556,23 @@ func pushV2Refs(ctx context.Context, target string) {
 	fmt.Fprintln(os.Stderr, "[entire] Syncing and pushing v2 checkpoints...")
 	fmt.Fprintf(os.Stderr, "[entire] Pushing %s...\n", strings.Join(shortRefNames(refs), ", "))
 
-	results := pushV2RefsParallel(ctx, target, refs)
+	results := pushV2RefsWithRecovery(ctx, target, refs)
 	var failures []error
 	var successfulRefs []plumbing.ReferenceName
 	pushedContent := false
-	for i, result := range results {
+	for _, result := range results {
 		if result.err != nil {
 			failures = append(failures, result.err)
 			continue
 		}
-		successfulRefs = append(successfulRefs, refs[i])
+		successfulRefs = append(successfulRefs, result.refName)
 		if !result.result.upToDate {
 			pushedContent = true
 		}
 	}
 
 	if len(failures) > 0 {
-		if len(successfulRefs) > 0 {
-			fmt.Fprintf(os.Stderr, "[entire] Successfully pushed %s\n", strings.Join(shortRefNames(successfulRefs), ", "))
-		}
-		for _, err := range failures {
-			fmt.Fprintf(os.Stderr, "[entire] Warning: %v\n", err)
-		}
+		printV2PartialPushResult(os.Stderr, successfulRefs, failures)
 		printCheckpointRemoteHint(target)
 		if pushedContent {
 			printSettingsCommitHint(ctx, target)
@@ -473,6 +586,15 @@ func pushV2Refs(ctx context.Context, target string) {
 		printSettingsCommitHint(ctx, target)
 	}
 	printCheckpointsV2MigrationHint(ctx)
+}
+
+func printV2PartialPushResult(w io.Writer, successfulRefs []plumbing.ReferenceName, failures []error) {
+	if len(successfulRefs) > 0 {
+		fmt.Fprintf(w, "[entire] Successfully pushed %s\n", strings.Join(shortRefNames(successfulRefs), ", "))
+	}
+	for _, err := range failures {
+		fmt.Fprintf(w, "[entire] Warning: %v\n", err)
+	}
 }
 
 func v2RefsToPush(ctx context.Context) []plumbing.ReferenceName {
@@ -501,20 +623,6 @@ func v2RefsToPush(ctx context.Context) []plumbing.ReferenceName {
 	refs = append(refs, plumbing.ReferenceName(paths.V2FullRefPrefix+latest))
 
 	return refs
-}
-
-func pushV2RefsParallel(ctx context.Context, target string, refs []plumbing.ReferenceName) []v2RefPushResult {
-	results := make([]v2RefPushResult, len(refs))
-	var wg sync.WaitGroup
-	for i, refName := range refs {
-		wg.Add(1)
-		go func(i int, refName plumbing.ReferenceName) {
-			defer wg.Done()
-			results[i] = pushV2RefWithRecovery(ctx, target, refName)
-		}(i, refName)
-	}
-	wg.Wait()
-	return results
 }
 
 func shortRefNames(refs []plumbing.ReferenceName) []string {
