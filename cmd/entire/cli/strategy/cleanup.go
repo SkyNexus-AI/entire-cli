@@ -580,13 +580,21 @@ func DeleteV2Generations(ctx context.Context, generations []V2GenerationRef) (de
 }
 
 func deleteRemoteRef(ctx context.Context, target, refName, expectedOID string) error {
+	return pushWithLease(ctx, target, ":"+refName, refName, expectedOID,
+		"delete remote ref "+refName)
+}
+
+// pushWithLease runs `git push <target> <refSpec>` with an optional
+// `--force-with-lease=<leaseRef>:<expectedOID>` guard. errCtx prefixes the
+// error message when no stderr output is available from the push.
+func pushWithLease(ctx context.Context, target, refSpec, leaseRef, expectedOID, errCtx string) error {
 	extraArgs := []string{}
 	if expectedOID != "" {
-		extraArgs = append(extraArgs, fmt.Sprintf("--force-with-lease=%s:%s", refName, expectedOID))
+		extraArgs = append(extraArgs, fmt.Sprintf("--force-with-lease=%s:%s", leaseRef, expectedOID))
 	}
 	result, err := remote.PushWithOptions(ctx, remote.PushOptions{
 		Remote:    target,
-		RefSpecs:  []string{":" + refName},
+		RefSpecs:  []string{refSpec},
 		ExtraArgs: extraArgs,
 	})
 	if err != nil {
@@ -594,7 +602,7 @@ func deleteRemoteRef(ctx context.Context, target, refName, expectedOID string) e
 		if output != "" {
 			return fmt.Errorf("%s: %w", output, err)
 		}
-		return fmt.Errorf("delete remote ref %s: %w", refName, err)
+		return fmt.Errorf("%s: %w", errCtx, err)
 	}
 	return nil
 }

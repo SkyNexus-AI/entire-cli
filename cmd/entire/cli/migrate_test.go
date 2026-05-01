@@ -1457,3 +1457,86 @@ func TestMigrateCheckpointsV2_PreservesCombinedAttribution(t *testing.T) {
 	assert.InDelta(t, combined.AgentPercentage, v2Summary.CombinedAttribution.AgentPercentage, 0.001)
 	assert.Equal(t, combined.MetricVersion, v2Summary.CombinedAttribution.MetricVersion)
 }
+
+func TestSortMigratableCheckpoints(t *testing.T) {
+	t.Parallel()
+
+	t1 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	t2 := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+	t3 := time.Date(2026, 1, 3, 0, 0, 0, 0, time.UTC)
+
+	tests := []struct {
+		name  string
+		input []checkpoint.CommittedInfo
+		want  []id.CheckpointID
+	}{
+		{
+			name: "chronological order",
+			input: []checkpoint.CommittedInfo{
+				{CheckpointID: id.MustCheckpointID("000000000003"), CreatedAt: t3},
+				{CheckpointID: id.MustCheckpointID("000000000001"), CreatedAt: t1},
+				{CheckpointID: id.MustCheckpointID("000000000002"), CreatedAt: t2},
+			},
+			want: []id.CheckpointID{
+				id.MustCheckpointID("000000000001"),
+				id.MustCheckpointID("000000000002"),
+				id.MustCheckpointID("000000000003"),
+			},
+		},
+		{
+			name: "ties on CreatedAt break by checkpoint ID",
+			input: []checkpoint.CommittedInfo{
+				{CheckpointID: id.MustCheckpointID("0000000000bb"), CreatedAt: t1},
+				{CheckpointID: id.MustCheckpointID("0000000000aa"), CreatedAt: t1},
+				{CheckpointID: id.MustCheckpointID("0000000000cc"), CreatedAt: t1},
+			},
+			want: []id.CheckpointID{
+				id.MustCheckpointID("0000000000aa"),
+				id.MustCheckpointID("0000000000bb"),
+				id.MustCheckpointID("0000000000cc"),
+			},
+		},
+		{
+			name: "zero CreatedAt sorts after non-zero, ties by ID",
+			input: []checkpoint.CommittedInfo{
+				{CheckpointID: id.MustCheckpointID("0000000000aa")},
+				{CheckpointID: id.MustCheckpointID("000000000002"), CreatedAt: t2},
+				{CheckpointID: id.MustCheckpointID("0000000000bb")},
+				{CheckpointID: id.MustCheckpointID("000000000001"), CreatedAt: t1},
+			},
+			want: []id.CheckpointID{
+				id.MustCheckpointID("000000000001"),
+				id.MustCheckpointID("000000000002"),
+				id.MustCheckpointID("0000000000aa"),
+				id.MustCheckpointID("0000000000bb"),
+			},
+		},
+		{
+			name: "all-zero CreatedAt sorts by ID",
+			input: []checkpoint.CommittedInfo{
+				{CheckpointID: id.MustCheckpointID("0000000000cc")},
+				{CheckpointID: id.MustCheckpointID("0000000000aa")},
+				{CheckpointID: id.MustCheckpointID("0000000000bb")},
+			},
+			want: []id.CheckpointID{
+				id.MustCheckpointID("0000000000aa"),
+				id.MustCheckpointID("0000000000bb"),
+				id.MustCheckpointID("0000000000cc"),
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			input := make([]checkpoint.CommittedInfo, len(tt.input))
+			copy(input, tt.input)
+			sortMigratableCheckpoints(input)
+			got := make([]id.CheckpointID, len(input))
+			for i, c := range input {
+				got[i] = c.CheckpointID
+			}
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}

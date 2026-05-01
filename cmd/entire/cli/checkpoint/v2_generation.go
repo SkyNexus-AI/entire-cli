@@ -156,6 +156,25 @@ func (s *V2GitStore) AddGenerationJSONToTree(rootTreeHash plumbing.Hash, gen Gen
 // present in a /full/* tree. It prefers created_at from v2 /main metadata and
 // falls back to top-level transcript event timestamps for older or partial v2 data.
 func (s *V2GitStore) ComputeGenerationCheckpointTimestamps(rootTreeHash plumbing.Hash) (GenerationMetadata, bool, error) {
+	mainTree, mainTreeErr := s.v2MainTree()
+	if mainTreeErr != nil {
+		mainTree = nil
+	}
+	return s.computeGenerationTimestampsFromTrees(rootTreeHash, mainTree)
+}
+
+// ComputeGenerationRawTranscriptTimestamps derives timestamps from raw
+// transcripts in the checkpoints present in a /full/* tree.
+func (s *V2GitStore) ComputeGenerationRawTranscriptTimestamps(rootTreeHash plumbing.Hash) (GenerationMetadata, bool, error) {
+	return s.computeGenerationTimestampsFromTrees(rootTreeHash, nil)
+}
+
+// computeGenerationTimestampsFromTrees walks every checkpoint in rootTreeHash
+// and aggregates per-checkpoint timestamps. When mainTree is non-nil, /main
+// metadata.json is consulted before falling back to the raw transcript inside
+// the checkpoint's full-tree. Returns found=false when any checkpoint cannot
+// produce a timestamp, signaling callers to fall back to generation.json.
+func (s *V2GitStore) computeGenerationTimestampsFromTrees(rootTreeHash plumbing.Hash, mainTree *object.Tree) (GenerationMetadata, bool, error) {
 	if rootTreeHash == plumbing.ZeroHash {
 		return GenerationMetadata{}, false, nil
 	}
@@ -163,11 +182,6 @@ func (s *V2GitStore) ComputeGenerationCheckpointTimestamps(rootTreeHash plumbing
 	rootTree, err := s.repo.TreeObject(rootTreeHash)
 	if err != nil {
 		return GenerationMetadata{}, false, fmt.Errorf("failed to read generation tree: %w", err)
-	}
-
-	mainTree, mainTreeErr := s.v2MainTree()
-	if mainTreeErr != nil {
-		mainTree = nil
 	}
 
 	var gen GenerationMetadata
@@ -181,44 +195,6 @@ func (s *V2GitStore) ComputeGenerationCheckpointTimestamps(rootTreeHash plumbing
 			}
 		}
 
-		cpTree, treeErr := s.repo.TreeObject(cpTreeHash)
-		if treeErr != nil {
-			missingCheckpointTimestamp = true
-			return nil //nolint:nilerr // Skip unreadable checkpoint trees and fall back to generation.json.
-		}
-		if cpGen, ok := checkpointTimestampRangeFromFullTree(cpTree); ok {
-			mergeGenerationRange(&gen, &found, cpGen)
-			return nil
-		}
-		missingCheckpointTimestamp = true
-		return nil
-	})
-	if err != nil {
-		return GenerationMetadata{}, false, err
-	}
-	if missingCheckpointTimestamp {
-		return GenerationMetadata{}, false, nil
-	}
-
-	return gen, found, nil
-}
-
-// ComputeGenerationRawTranscriptTimestamps derives timestamps from raw
-// transcripts in the checkpoints present in a /full/* tree.
-func (s *V2GitStore) ComputeGenerationRawTranscriptTimestamps(rootTreeHash plumbing.Hash) (GenerationMetadata, bool, error) {
-	if rootTreeHash == plumbing.ZeroHash {
-		return GenerationMetadata{}, false, nil
-	}
-
-	rootTree, err := s.repo.TreeObject(rootTreeHash)
-	if err != nil {
-		return GenerationMetadata{}, false, fmt.Errorf("failed to read generation tree: %w", err)
-	}
-
-	var gen GenerationMetadata
-	found := false
-	missingCheckpointTimestamp := false
-	err = WalkCheckpointShards(s.repo, rootTree, func(_ id.CheckpointID, cpTreeHash plumbing.Hash) error {
 		cpTree, treeErr := s.repo.TreeObject(cpTreeHash)
 		if treeErr != nil {
 			missingCheckpointTimestamp = true

@@ -138,6 +138,7 @@ var (
 	errAlreadyMigrated          = errors.New("already migrated")
 	errTranscriptNotGeneratable = errors.New("transcript.jsonl could not be generated")
 	errNoMigratableSessions     = errors.New("no migratable v1 sessions")
+	errNoFullArtifactsToPack    = errors.New("no missing full artifacts to pack")
 )
 
 const (
@@ -180,7 +181,8 @@ func migrateCheckpointsV2(ctx context.Context, repo *git.Repository, v1Store *ch
 	result := &migrateResult{}
 	_, fullCurrentRefErr := repo.Reference(plumbing.ReferenceName(paths.V2FullCurrentRefName), true)
 	fullCurrentExistsBefore := fullCurrentRefErr == nil
-	var migratedFullCheckpoints []migratedFullCheckpoint
+
+	packer := newGenerationPacker(repo, v2Store, out)
 
 	for i, info := range v1List {
 		prefix := fmt.Sprintf("  [%d/%d] Migrating checkpoint %s...", i+1, total, info.CheckpointID)
@@ -197,6 +199,8 @@ func migrateCheckpointsV2(ctx context.Context, repo *git.Repository, v1Store *ch
 			case errors.Is(migrateErr, errNoMigratableSessions):
 				fmt.Fprintf(out, "%s skipped (%s)\n", prefix, migrateErr.Error())
 				result.skipped++
+			case errors.Is(migrateErr, errNoFullArtifactsToPack):
+				result.migrated++
 			default:
 				fmt.Fprintf(out, "%s failed\n", prefix)
 				logging.Error(ctx, "checkpoint migration failed",
@@ -208,17 +212,14 @@ func migrateCheckpointsV2(ctx context.Context, repo *git.Repository, v1Store *ch
 			continue
 		}
 
-		if fullCheckpoint != nil && len(fullCheckpoint.sessions) > 0 {
-			migratedFullCheckpoints = append(migratedFullCheckpoints, *fullCheckpoint)
+		if packErr := packer.add(ctx, *fullCheckpoint); packErr != nil {
+			return result, fmt.Errorf("failed to pack migrated raw transcripts: %w", packErr)
 		}
 		result.migrated++
 	}
 
-	if len(migratedFullCheckpoints) > 0 {
-		fmt.Fprintf(out, "Packing raw transcripts into v2 archived generations...\n")
-		if packErr := packMigratedFullGenerations(ctx, repo, v2Store, migratedFullCheckpoints, !fullCurrentExistsBefore); packErr != nil {
-			return result, fmt.Errorf("failed to pack migrated raw transcripts: %w", packErr)
-		}
+	if err := packer.finalize(ctx, !fullCurrentExistsBefore); err != nil {
+		return result, fmt.Errorf("failed to pack migrated raw transcripts: %w", err)
 	}
 
 	return result, nil
@@ -272,7 +273,7 @@ func migrateOneCheckpoint(ctx context.Context, repo *git.Repository, v1Store *ch
 			if backfillErr != nil {
 				return nil, backfillErr
 			}
-			return &migratedFullCheckpoint{}, nil
+			return nil, errNoFullArtifactsToPack
 		}
 		if backfillErr != nil &&
 			!errors.Is(backfillErr, errAlreadyMigrated) &&
@@ -377,36 +378,75 @@ func migrateOneCheckpoint(ctx context.Context, repo *git.Repository, v1Store *ch
 	return fullCheckpoint, nil
 }
 
-func packMigratedFullGenerations(ctx context.Context, repo *git.Repository, v2Store *checkpoint.V2GitStore, checkpoints []migratedFullCheckpoint, ensureEmptyCurrent bool) error {
-	if len(checkpoints) == 0 {
-		if ensureEmptyCurrent {
-			return ensureEmptyV2FullCurrent(ctx, repo)
-		}
-		return nil
-	}
+// generationPacker buffers up to batchSize migrated checkpoints and flushes
+// them into a single archived /full/<n> ref each time the buffer fills, so
+// peak heap stays bounded by one batch worth of transcripts instead of
+// growing with the total v1 list. The next generation number is resolved
+// lazily on first flush so force-migration prune steps that remove existing
+// archived refs are visible before we pick the next slot.
+type generationPacker struct {
+	repo           *git.Repository
+	v2Store        *checkpoint.V2GitStore
+	out            io.Writer
+	batchSize      int
+	nextGeneration int
+	numbered       bool
+	pending        []migratedFullCheckpoint
+	flushed        bool
+}
 
+func newGenerationPacker(repo *git.Repository, v2Store *checkpoint.V2GitStore, out io.Writer) *generationPacker {
 	batchSize := migrateMaxCheckpointsPerGeneration
 	if batchSize <= 0 {
 		batchSize = checkpoint.DefaultMaxCheckpointsPerGeneration
 	}
-
-	nextGeneration, err := v2Store.NextGenerationNumber()
-	if err != nil {
-		return fmt.Errorf("list archived v2 generations: %w", err)
+	return &generationPacker{
+		repo:      repo,
+		v2Store:   v2Store,
+		out:       out,
+		batchSize: batchSize,
 	}
+}
 
-	for start := 0; start < len(checkpoints); start += batchSize {
-		end := min(start+batchSize, len(checkpoints))
+func (p *generationPacker) add(ctx context.Context, cp migratedFullCheckpoint) error {
+	p.pending = append(p.pending, cp)
+	if len(p.pending) >= p.batchSize {
+		return p.flush(ctx)
+	}
+	return nil
+}
 
-		refName := plumbing.ReferenceName(fmt.Sprintf("%s%013d", paths.V2FullRefPrefix, nextGeneration))
-		if err := writeMigratedFullGeneration(ctx, repo, refName, checkpoints[start:end]); err != nil {
-			return err
+func (p *generationPacker) flush(ctx context.Context) error {
+	if len(p.pending) == 0 {
+		return nil
+	}
+	if !p.numbered {
+		next, err := p.v2Store.NextGenerationNumber()
+		if err != nil {
+			return fmt.Errorf("list archived v2 generations: %w", err)
 		}
-		nextGeneration++
+		p.nextGeneration = next
+		p.numbered = true
 	}
+	if !p.flushed {
+		fmt.Fprintf(p.out, "Packing raw transcripts into v2 archived generations...\n")
+	}
+	refName := plumbing.ReferenceName(fmt.Sprintf("%s%013d", paths.V2FullRefPrefix, p.nextGeneration))
+	if err := writeMigratedFullGeneration(ctx, p.repo, refName, p.pending); err != nil {
+		return err
+	}
+	p.nextGeneration++
+	p.pending = nil
+	p.flushed = true
+	return nil
+}
 
-	if ensureEmptyCurrent {
-		return ensureEmptyV2FullCurrent(ctx, repo)
+func (p *generationPacker) finalize(ctx context.Context, ensureEmptyCurrent bool) error {
+	if err := p.flush(ctx); err != nil {
+		return err
+	}
+	if p.flushed && ensureEmptyCurrent {
+		return ensureEmptyV2FullCurrent(ctx, p.repo)
 	}
 	return nil
 }
@@ -745,7 +785,7 @@ func collectMissingFullCheckpointForPacking(
 		return nil, false, err
 	}
 	if len(missingSessions) == 0 {
-		return &migratedFullCheckpoint{}, false, nil
+		return nil, false, nil
 	}
 
 	v1Summary, err := v1Store.ReadCommitted(ctx, info.CheckpointID)

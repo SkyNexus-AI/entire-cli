@@ -103,6 +103,40 @@ func TestRepairV2GenerationMetadata_RepairsRemoteOnlyGenerationWithLease(t *test
 	assert.True(t, gen.NewestCheckpointAt.Equal(rawNewest))
 }
 
+func TestRepairV2GenerationMetadata_NoCandidatesIsNoOp(t *testing.T) {
+	initGenerationRepairTestRepo(t)
+
+	result, err := RepairV2GenerationMetadata(context.Background())
+	require.NoError(t, err)
+	assert.Empty(t, result.Repaired)
+	assert.Empty(t, result.Skipped)
+	assert.Empty(t, result.Failed)
+	assert.Empty(t, result.Warnings)
+}
+
+func TestRepairV2GenerationMetadata_AlreadyCorrectIsSkipped(t *testing.T) {
+	repo, _ := initGenerationRepairTestRepo(t)
+
+	cpID := id.MustCheckpointID("ccddeeff0011")
+	rawOldest := time.Date(2025, 10, 1, 8, 0, 0, 0, time.UTC)
+	rawNewest := time.Date(2025, 10, 1, 8, 30, 0, 0, time.UTC)
+	refName := plumbing.ReferenceName(paths.V2FullRefPrefix + "0000000000003")
+	oldCommitHash := createRepairArchivedGenerationRef(t, repo, refName, cpID, checkpoint.GenerationMetadata{
+		OldestCheckpointAt: rawOldest,
+		NewestCheckpointAt: rawNewest,
+	}, rawOldest, rawNewest)
+
+	result, err := RepairV2GenerationMetadata(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, []string{"0000000000003"}, result.Skipped)
+	assert.Empty(t, result.Repaired)
+	assert.Empty(t, result.Failed)
+
+	ref, err := repo.Reference(refName, true)
+	require.NoError(t, err)
+	assert.Equal(t, oldCommitHash, ref.Hash(), "ref must not advance when generation.json already matches")
+}
+
 func initGenerationRepairTestRepo(t *testing.T) (*git.Repository, string) {
 	t.Helper()
 

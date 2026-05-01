@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint"
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint/remote"
@@ -88,7 +87,13 @@ func repairOneV2GenerationMetadata(
 		return false, fmt.Errorf("failed to compute raw transcript timestamps: %w", timestampErr)
 	}
 	if !found {
-		return false, nil
+		gen, found, timestampErr = store.ComputeGenerationCheckpointTimestamps(treeHash)
+		if timestampErr != nil {
+			return false, fmt.Errorf("failed to compute checkpoint timestamps: %w", timestampErr)
+		}
+		if !found {
+			return false, nil
+		}
 	}
 
 	current, genErr := store.ReadGeneration(treeHash)
@@ -124,17 +129,26 @@ func repairOneV2GenerationMetadata(
 
 	target, err := pushTarget.resolve(ctx)
 	if err != nil {
+		rollbackRepairLocalRef(repo, candidate.RefName, oldCommitHash)
 		return false, fmt.Errorf("failed to resolve remote for generation metadata repair push: %w", err)
 	}
 	if target == "" {
+		rollbackRepairLocalRef(repo, candidate.RefName, oldCommitHash)
 		return false, errors.New("no push target available for remote generation metadata repair")
 	}
 
 	remoteRefName := paths.V2FullRefPrefix + candidate.Name
 	if err := pushRepairedV2Generation(ctx, target, candidate.RefName.String(), remoteRefName, candidate.RefOID); err != nil {
+		rollbackRepairLocalRef(repo, candidate.RefName, oldCommitHash)
 		return false, err
 	}
 	return true, nil
+}
+
+// rollbackRepairLocalRef restores the local ref to its pre-repair commit when
+// the remote push fails, so local does not silently diverge from origin.
+func rollbackRepairLocalRef(repo *git.Repository, refName plumbing.ReferenceName, oldCommitHash plumbing.Hash) {
+	_ = repo.Storer.SetReference(plumbing.NewHashReference(refName, oldCommitHash)) //nolint:errcheck // best-effort rollback; the original push error is what we report
 }
 
 // repairPushTarget memoizes the push URL lookup so the remote is resolved at
@@ -160,23 +174,8 @@ func (r *repairPushTarget) resolve(ctx context.Context) (string, error) {
 }
 
 func pushRepairedV2Generation(ctx context.Context, target, sourceRef, remoteRef, expectedOID string) error {
-	extraArgs := []string{}
-	if expectedOID != "" {
-		extraArgs = append(extraArgs, fmt.Sprintf("--force-with-lease=%s:%s", remoteRef, expectedOID))
-	}
-	result, err := remote.PushWithOptions(ctx, remote.PushOptions{
-		Remote:    target,
-		RefSpecs:  []string{sourceRef + ":" + remoteRef},
-		ExtraArgs: extraArgs,
-	})
-	if err != nil {
-		output := strings.TrimSpace(result.Output)
-		if output != "" {
-			return fmt.Errorf("%s: %w", output, err)
-		}
-		return fmt.Errorf("push repaired generation ref %s: %w", remoteRef, err)
-	}
-	return nil
+	return pushWithLease(ctx, target, sourceRef+":"+remoteRef, remoteRef, expectedOID,
+		"push repaired generation ref "+remoteRef)
 }
 
 func generationMetadataEqual(left, right checkpoint.GenerationMetadata) bool {
