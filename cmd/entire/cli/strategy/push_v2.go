@@ -440,22 +440,31 @@ func pushV2Refs(ctx context.Context, target string) {
 
 	results := pushV2RefsParallel(ctx, target, refs)
 	var failures []error
+	var successfulRefs []plumbing.ReferenceName
 	pushedContent := false
-	for _, result := range results {
+	for i, result := range results {
 		if result.err != nil {
 			failures = append(failures, result.err)
 			continue
 		}
+		successfulRefs = append(successfulRefs, refs[i])
 		if !result.result.upToDate {
 			pushedContent = true
 		}
 	}
 
 	if len(failures) > 0 {
+		if len(successfulRefs) > 0 {
+			fmt.Fprintf(os.Stderr, "[entire] Successfully pushed %s\n", strings.Join(shortRefNames(successfulRefs), ", "))
+		}
 		for _, err := range failures {
 			fmt.Fprintf(os.Stderr, "[entire] Warning: %v\n", err)
 		}
 		printCheckpointRemoteHint(target)
+		if pushedContent {
+			printSettingsCommitHint(ctx, target)
+		}
+		printCheckpointsV2MigrationHint(ctx)
 		return
 	}
 

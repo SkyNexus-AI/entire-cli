@@ -265,8 +265,48 @@ func TestPushV2Refs_PushesAllRefs(t *testing.T) {
 	assert.Contains(t, output, "[entire] Syncing and pushing v2 checkpoints...")
 	assert.Contains(t, output, "[entire] Pushing v2/main, v2/full/current, v2/full/0000000000002...")
 	assert.Contains(t, output, "[entire] All v2 checkpoints pushed")
+	assert.NotContains(t, output, "[entire] Successfully pushed", "successful refs should only be listed on partial failure")
 	assert.NotContains(t, output, "Pushing v2/main to", "per-ref progress should stay quiet")
 	assert.NotContains(t, output, "Syncing v2/main with remote", "per-ref sync progress should stay quiet")
+}
+
+// TestPushV2Refs_PartialFailurePrintsSuccessfulRefs verifies that when one
+// v2 ref succeeds and another fails, the failure output names the successful refs.
+//
+// Not parallel: uses t.Chdir() and os.Stderr redirection.
+func TestPushV2Refs_PartialFailurePrintsSuccessfulRefs(t *testing.T) {
+	ctx := context.Background()
+
+	tmpDir := setupRepoWithV2Ref(t)
+	repo, err := git.PlainOpen(tmpDir)
+	require.NoError(t, err)
+	require.NoError(t, repo.Storer.SetReference(plumbing.NewHashReference(
+		plumbing.ReferenceName(paths.V2FullCurrentRefName),
+		plumbing.NewHash("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+	)))
+
+	t.Chdir(tmpDir)
+
+	bareDir := t.TempDir()
+	initCmd := exec.CommandContext(ctx, "git", "init", "--bare")
+	initCmd.Dir = bareDir
+	initCmd.Env = testutil.GitIsolatedEnv()
+	require.NoError(t, initCmd.Run())
+
+	restore := captureStderr(t)
+	pushV2Refs(ctx, bareDir)
+	output := restore()
+
+	bareRepo, err := git.PlainOpen(bareDir)
+	require.NoError(t, err)
+	_, err = bareRepo.Reference(plumbing.ReferenceName(paths.V2MainRefName), true)
+	require.NoError(t, err, "/main ref should exist in bare repo")
+	_, err = bareRepo.Reference(plumbing.ReferenceName(paths.V2FullCurrentRefName), true)
+	require.Error(t, err, "/full/current ref should not exist after failed push")
+
+	assert.Contains(t, output, "[entire] Successfully pushed v2/main")
+	assert.Contains(t, output, "[entire] Warning: couldn't sync v2/full/current:")
+	assert.NotContains(t, output, "[entire] All v2 checkpoints pushed")
 }
 
 // TestPushV2Refs_UnreachableTarget_NamesFailedRef verifies that aggregated v2
