@@ -284,9 +284,8 @@ func TestMigrateCheckpointsV2_RerunPacksCheckpointsMissingFullArtifacts(t *testi
 	v1List, err := v1Store.ListCommitted(ctx)
 	require.NoError(t, err)
 	sortMigratableCheckpoints(v1List)
-	var interruptedRun bytes.Buffer
-	for i, info := range v1List {
-		fullCheckpoint, migrateErr := migrateOneCheckpoint(ctx, repo, v1Store, v2Store, info, &interruptedRun, "interrupted "+strconv.Itoa(i), false)
+	for _, info := range v1List {
+		fullCheckpoint, _, migrateErr := migrateOneCheckpoint(ctx, repo, v1Store, v2Store, info, false)
 		require.NoError(t, migrateErr)
 		require.NotNil(t, fullCheckpoint)
 		require.NotEmpty(t, fullCheckpoint.sessions)
@@ -301,7 +300,7 @@ func TestMigrateCheckpointsV2_RerunPacksCheckpointsMissingFullArtifacts(t *testi
 	assert.Equal(t, 3, result.migrated)
 	assert.Equal(t, 0, result.skipped)
 	assert.Equal(t, 0, result.failed)
-	assert.Contains(t, rerun.String(), "Packing raw transcripts into v2 archived generations")
+	assert.Empty(t, rerun.String())
 
 	archived, err := v2Store.ListArchivedGenerations()
 	require.NoError(t, err)
@@ -390,7 +389,7 @@ func TestMigrateCheckpointsV2_ForceOverwritesExisting(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 1, result3.migrated)
 	assert.Equal(t, 0, result3.skipped)
-	assert.Contains(t, stdout.String(), "Force-migrating")
+	assert.Empty(t, stdout.String())
 
 	// Verify checkpoint still readable in v2
 	summary, readErr := v2Store.ReadCommitted(context.Background(), cpID)
@@ -603,11 +602,11 @@ func TestMigrateCheckpointsV2_SkipsV1SessionWithoutTranscript(t *testing.T) {
 	assert.Equal(t, 1, result.migrated)
 	assert.Equal(t, 0, result.skipped)
 	assert.Equal(t, 0, result.failed)
+	assert.Equal(t, 1, result.missingSessions)
 
 	output := stdout.String()
-	assert.Contains(t, output, "warning: skipping v1 session 1")
-	assert.Contains(t, output, "no transcript/session content exists for that session")
-	assert.Contains(t, output, "done (compact transcript not generated; skipped 1 session(s) with missing transcript/session content)")
+	assert.NotContains(t, output, "warning: skipping v1 session 1")
+	assert.NotContains(t, output, "skipped 1 session(s) with missing transcript/session content")
 
 	summary, readErr := v2Store.ReadCommitted(context.Background(), cpID)
 	require.NoError(t, readErr)
@@ -634,10 +633,11 @@ func TestMigrateCheckpointsV2_SkipsV1SessionWithMissingDirectory(t *testing.T) {
 	assert.Equal(t, 1, result.migrated)
 	assert.Equal(t, 0, result.skipped)
 	assert.Equal(t, 0, result.failed)
+	assert.Equal(t, 1, result.missingSessions)
 
 	output := stdout.String()
-	assert.Contains(t, output, "warning: skipping v1 session 1")
-	assert.Contains(t, output, "skipped 1 session(s) with missing transcript/session content")
+	assert.NotContains(t, output, "warning: skipping v1 session 1")
+	assert.NotContains(t, output, "skipped 1 session(s) with missing transcript/session content")
 
 	summary, readErr := v2Store.ReadCommitted(context.Background(), cpID)
 	require.NoError(t, readErr)
@@ -727,10 +727,11 @@ func TestMigrateCheckpointsV2_SkipsCheckpointWhenAllV1SessionsMissingTranscript(
 	assert.Equal(t, 0, result.migrated)
 	assert.Equal(t, 1, result.skipped)
 	assert.Equal(t, 0, result.failed)
+	assert.Equal(t, 1, result.missingSessions)
 
 	output := stdout.String()
-	assert.Contains(t, output, "warning: skipping v1 session 0")
-	assert.Contains(t, output, "skipped (no migratable v1 sessions")
+	assert.NotContains(t, output, "warning: skipping v1 session 0")
+	assert.NotContains(t, output, "skipped (no migratable v1 sessions")
 
 	summary, readErr := v2Store.ReadCommitted(context.Background(), cpID)
 	require.NoError(t, readErr)
@@ -778,7 +779,8 @@ func TestMigrateCheckpointsV2_ForcePrunesSkippedV2Sessions(t *testing.T) {
 	require.NoError(t, rerunErr)
 	assert.Equal(t, 1, result2.migrated)
 	assert.Equal(t, 0, result2.skipped)
-	assert.Contains(t, stdout.String(), "warning: skipping v1 session 1")
+	assert.Equal(t, 1, result2.missingSessions)
+	assert.NotContains(t, stdout.String(), "warning: skipping v1 session 1")
 
 	summary, readErr := v2Store.ReadCommitted(context.Background(), cpID)
 	require.NoError(t, readErr)
@@ -826,7 +828,8 @@ func TestMigrateCheckpointsV2_ForcePruneRemovesEmptyShardWhenAllSessionsSkipped(
 	require.NoError(t, rerunErr)
 	assert.Equal(t, 0, result2.migrated)
 	assert.Equal(t, 1, result2.skipped)
-	assert.Contains(t, stdout.String(), "no migratable v1 sessions")
+	assert.Equal(t, 1, result2.missingSessions)
+	assert.NotContains(t, stdout.String(), "no migratable v1 sessions")
 
 	summary, readErr := v2Store.ReadCommitted(context.Background(), cpID)
 	require.NoError(t, readErr)
@@ -907,7 +910,7 @@ func TestMigrateCheckpointsV2_NoV1Branch(t *testing.T) {
 	result, err := migrateCheckpointsV2(context.Background(), repo, v1Store, v2Store, &stdout, false)
 	require.NoError(t, err)
 	assert.Equal(t, 0, result.migrated)
-	assert.Contains(t, stdout.String(), "Nothing to migrate")
+	assert.Empty(t, stdout.String())
 }
 
 func TestMigrateCmd_InvalidFlag(t *testing.T) {
@@ -943,7 +946,8 @@ func TestMigrateCheckpointsV2_CompactionSkipped(t *testing.T) {
 	result, migrateErr := migrateCheckpointsV2(context.Background(), repo, v1Store, v2Store, &stdout, false)
 	require.NoError(t, migrateErr)
 	assert.Equal(t, 1, result.migrated)
-	assert.Contains(t, stdout.String(), "compact transcript not generated")
+	assert.Equal(t, 1, result.compactTranscriptSkipped)
+	assert.Empty(t, stdout.String())
 }
 
 func TestMigrateCheckpointsV2_TaskCheckpoint(t *testing.T) {
@@ -1059,7 +1063,8 @@ func TestMigrateCheckpointsV2_BackfillCompactTranscript(t *testing.T) {
 	require.NoError(t, migrateErr)
 	assert.Equal(t, 1, result.migrated, "backfill should count as migrated")
 	assert.Equal(t, 0, result.skipped)
-	assert.Contains(t, stdout.String(), "added transcript.jsonl")
+	assert.Equal(t, 1, result.backfilledCompactTranscripts)
+	assert.Empty(t, stdout.String())
 
 	// Verify transcript.jsonl now exists
 	summary2, err := v2Store.ReadCommitted(context.Background(), cpID)
@@ -1162,7 +1167,8 @@ func TestMigrateCheckpointsV2_RepairsMissingFullTranscriptBeforeBackfill(t *test
 	require.NoError(t, rerunErr)
 	assert.Equal(t, 1, result2.migrated)
 	assert.Equal(t, 0, result2.failed)
-	assert.Contains(t, rerun.String(), "queued missing raw transcript artifacts for generation packing")
+	assert.Equal(t, 1, result2.repaired)
+	assert.Empty(t, rerun.String())
 
 	content, readErr := v2Store.ReadSessionContent(context.Background(), cpID, 0)
 	require.NoError(t, readErr)
