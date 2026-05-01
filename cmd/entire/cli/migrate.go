@@ -163,7 +163,7 @@ var (
 	errAlreadyMigrated          = errors.New("already migrated")
 	errTranscriptNotGeneratable = errors.New("transcript.jsonl could not be generated")
 	errNoMigratableSessions     = errors.New("no migratable v1 sessions")
-	errNoFullArtifactsToPack    = errors.New("no missing full artifacts to pack")
+	errNoFullPackingNeeded      = errors.New("no full packing needed")
 )
 
 const (
@@ -228,7 +228,7 @@ func migrateCheckpointsV2(ctx context.Context, repo *git.Repository, v1Store *ch
 			case errors.Is(migrateErr, errNoMigratableSessions):
 				logCheckpointMigrationSkip(ctx, info.CheckpointID, "no migratable v1 sessions", migrateErr)
 				result.skipped++
-			case errors.Is(migrateErr, errNoFullArtifactsToPack):
+			case errors.Is(migrateErr, errNoFullPackingNeeded):
 				result.migrated++
 			default:
 				logging.Error(ctx, "checkpoint migration failed",
@@ -324,7 +324,7 @@ func migrateOneCheckpoint(ctx context.Context, repo *git.Repository, v1Store *ch
 			if backfillErr != nil {
 				return nil, outcome, backfillErr
 			}
-			return nil, outcome, errNoFullArtifactsToPack
+			return nil, outcome, errNoFullPackingNeeded
 		}
 		if errors.Is(backfillErr, errTranscriptNotGeneratable) {
 			outcome.compactTranscriptSkipped = true
@@ -893,7 +893,15 @@ func collectMissingFullCheckpointForPacking(
 		v1ToV2SessionIdx[v1Session.sessionIndex] = missingSession.sessionIndex
 	}
 
-	taskTrees, taskErr := collectTaskMetadataForMigratedFullGeneration(repo, info.CheckpointID, v1Summary, v1ToV2SessionIdx)
+	latestV2SessionIdx := len(v2Summary.Sessions) - 1
+	taskTrees, taskErr := collectTaskMetadataForMigratedFullGenerationWithRootSession(
+		repo,
+		info.CheckpointID,
+		v1Summary,
+		v1ToV2SessionIdx,
+		latestV2SessionIdx,
+		latestV2SessionIdx >= 0,
+	)
 	if taskErr != nil {
 		return nil, false, fmt.Errorf("failed to collect task metadata while checking raw artifacts: %w", taskErr)
 	}
@@ -1231,6 +1239,18 @@ func computeCompactOffset(ctx context.Context, fullTranscript, fullCompact []byt
 }
 
 func collectTaskMetadataForMigratedFullGeneration(repo *git.Repository, cpID id.CheckpointID, summary *checkpoint.CheckpointSummary, v1ToV2SessionIdx map[int]int) (map[int][]plumbing.Hash, error) {
+	rootTaskV2SessionIdx, attachRootTasks := latestMigratedV2SessionIndex(v1ToV2SessionIdx)
+	return collectTaskMetadataForMigratedFullGenerationWithRootSession(repo, cpID, summary, v1ToV2SessionIdx, rootTaskV2SessionIdx, attachRootTasks)
+}
+
+func collectTaskMetadataForMigratedFullGenerationWithRootSession(
+	repo *git.Repository,
+	cpID id.CheckpointID,
+	summary *checkpoint.CheckpointSummary,
+	v1ToV2SessionIdx map[int]int,
+	rootTaskV2SessionIdx int,
+	attachRootTasks bool,
+) (map[int][]plumbing.Hash, error) {
 	v1Tree, err := resolveV1CheckpointTree(repo, cpID)
 	if err != nil {
 		return nil, err
@@ -1241,8 +1261,8 @@ func collectTaskMetadataForMigratedFullGeneration(repo *git.Repository, cpID id.
 	// Legacy v1 layout stores task metadata at checkpoint root: <cp>/tasks/<tool-use-id>/...
 	// Prefer attaching this tree to the latest session in v2.
 	if rootTasksTree, rootTasksErr := v1Tree.Tree("tasks"); rootTasksErr == nil {
-		if latestSessionIdx, ok := latestMigratedV2SessionIndex(v1ToV2SessionIdx); ok {
-			taskTrees[latestSessionIdx] = append(taskTrees[latestSessionIdx], rootTasksTree.Hash)
+		if attachRootTasks {
+			taskTrees[rootTaskV2SessionIdx] = append(taskTrees[rootTaskV2SessionIdx], rootTasksTree.Hash)
 		}
 	}
 

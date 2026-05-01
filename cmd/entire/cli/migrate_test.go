@@ -814,6 +814,56 @@ func TestMigrateCheckpointsV2_TaskMetadataKeepsFirstConflictingTaskTree(t *testi
 	assert.JSONEq(t, `{"source":"root"}`, content)
 }
 
+func TestMigrateCheckpointsV2_PartialRepairDoesNotMoveRootTaskMetadataToMissingSession(t *testing.T) {
+	t.Parallel()
+	repo := initMigrateTestRepo(t)
+	v1Store, v2Store := newMigrateStores(repo)
+
+	cpID := id.MustCheckpointID("99aabbccddee")
+	rootToolUseID := "toolu_root_partial"
+	err := v1Store.WriteCommitted(context.Background(), checkpoint.WriteCommittedOptions{
+		CheckpointID: cpID,
+		SessionID:    "session-old",
+		Strategy:     "manual-commit",
+		Transcript:   redact.AlreadyRedacted([]byte("{\"type\":\"assistant\",\"message\":\"old\"}\n")),
+		Prompts:      []string{"old prompt"},
+		AuthorName:   "Test",
+		AuthorEmail:  "test@test.com",
+	})
+	require.NoError(t, err)
+	err = v1Store.WriteCommitted(context.Background(), checkpoint.WriteCommittedOptions{
+		CheckpointID: cpID,
+		SessionID:    "session-latest",
+		Strategy:     "manual-commit",
+		Transcript:   redact.AlreadyRedacted([]byte("{\"type\":\"assistant\",\"message\":\"latest\"}\n")),
+		Prompts:      []string{"latest prompt"},
+		IsTask:       true,
+		ToolUseID:    rootToolUseID,
+		AuthorName:   "Test",
+		AuthorEmail:  "test@test.com",
+	})
+	require.NoError(t, err)
+	addV1RootTasksTreeWithContent(t, repo, cpID, rootToolUseID, `{"source":"root"}`)
+
+	var initialRun bytes.Buffer
+	result1, err := migrateCheckpointsV2(context.Background(), repo, v1Store, v2Store, &initialRun, false)
+	require.NoError(t, err)
+	assert.Equal(t, 1, result1.migrated)
+	assert.True(t, v2FullFileExistsForCheckpoint(t, repo, v2Store, cpID, "1/tasks/"+rootToolUseID+"/checkpoint.json"))
+
+	removeV2SessionTranscriptFiles(t, repo, v2Store, cpID, 0)
+
+	var rerun bytes.Buffer
+	result2, err := migrateCheckpointsV2(context.Background(), repo, v1Store, v2Store, &rerun, false)
+	require.NoError(t, err)
+	assert.Equal(t, 1, result2.migrated)
+	assert.Equal(t, 1, result2.repaired)
+	assert.False(t, v2FullFileExistsForCheckpoint(t, repo, v2Store, cpID, "0/tasks/"+rootToolUseID+"/checkpoint.json"),
+		"partial repair must not attach root task metadata to the older missing session")
+	assert.True(t, v2FullFileExistsForCheckpoint(t, repo, v2Store, cpID, "1/tasks/"+rootToolUseID+"/checkpoint.json"),
+		"root task metadata should stay attached to the latest v2 session")
+}
+
 func TestMigrateCheckpointsV2_SkipsCheckpointWhenAllV1SessionsMissingTranscript(t *testing.T) {
 	t.Parallel()
 	repo := initMigrateTestRepo(t)
@@ -1384,6 +1434,24 @@ func v2FullTreeForCheckpoint(t *testing.T, repo *git.Repository, v2Store *checkp
 
 	t.Fatalf("checkpoint %s not found in any v2 /full/* ref", cpID)
 	return nil
+}
+
+func v2FullFileExistsForCheckpoint(t *testing.T, repo *git.Repository, v2Store *checkpoint.V2GitStore, cpID id.CheckpointID, relPath string) bool {
+	t.Helper()
+
+	for _, refName := range v2FullRefSearchOrderForTest(t, v2Store) {
+		_, rootTreeHash, err := v2Store.GetRefState(refName)
+		if err != nil {
+			continue
+		}
+		rootTree, err := repo.TreeObject(rootTreeHash)
+		require.NoError(t, err)
+		if _, err := rootTree.File(cpID.Path() + "/" + relPath); err == nil {
+			return true
+		}
+	}
+
+	return false
 }
 
 func v2FullRefSearchOrderForTest(t *testing.T, v2Store *checkpoint.V2GitStore) []plumbing.ReferenceName {

@@ -460,9 +460,14 @@ func listArchivedV2GenerationCandidates(
 				warnings = append(warnings, fmt.Sprintf("failed to resolve remote for v2 generation fetch: %v", fetchTargetErr))
 			} else {
 				for name, remoteOID := range remoteRefs {
-					if candidate, ok := candidatesByName[name]; ok && candidate.RefOID == remoteOID {
-						candidate.HasRemote = true
-						candidatesByName[name] = candidate
+					if candidate, ok := candidatesByName[name]; ok {
+						if candidate.RefOID == remoteOID {
+							candidate.HasRemote = true
+							candidatesByName[name] = candidate
+							continue
+						}
+						warnings = append(warnings, fmt.Sprintf("generation %s: local archived ref OID %s differs from remote OID %s; skipping cleanup", name, candidate.RefOID, remoteOID))
+						delete(candidatesByName, name)
 						continue
 					}
 					tempRef, fetchErr := fetchArchivedV2Generation(ctx, fetchTarget, name)
