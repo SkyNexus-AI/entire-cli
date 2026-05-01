@@ -48,45 +48,14 @@ func (r *Reviewer) Start(ctx context.Context, cfg reviewtypes.RunConfig) (review
 // buildGeminiReviewCmd builds the exec.Cmd for a gemini review run.
 // Exported at package level for test inspection of argv, stdin, and env.
 func buildGeminiReviewCmd(ctx context.Context, cfg reviewtypes.RunConfig) *exec.Cmd {
-	prompt := composeGeminiReviewPrompt(cfg)
+	prompt := review.ComposeReviewPrompt(cfg)
 	// Per the existing GenerateText implementation: pass "-p " " " as the
 	// argv placeholder to trigger headless (non-interactive) mode, and pipe
 	// the actual prompt via stdin to avoid argv size limits.
 	cmd := exec.CommandContext(ctx, "gemini", "-p", " ")
 	cmd.Stdin = strings.NewReader(prompt)
-	cmd.Env = appendGeminiReviewEnv(os.Environ(), cfg, prompt)
+	cmd.Env = review.AppendReviewEnv(os.Environ(), "gemini-cli", cfg, prompt)
 	return cmd
-}
-
-// appendGeminiReviewEnv appends ENTIRE_REVIEW_* vars to the given base environment.
-func appendGeminiReviewEnv(base []string, cfg reviewtypes.RunConfig, prompt string) []string {
-	skillsJSON, _ := review.EncodeSkills(cfg.Skills) //nolint:errcheck // EncodeSkills only fails on json.Marshal([]string), which is infallible
-	return append(base,
-		review.EnvSession+"=1",
-		review.EnvAgent+"=gemini-cli",
-		review.EnvSkills+"="+skillsJSON,
-		review.EnvPrompt+"="+prompt,
-		review.EnvStartingSHA+"="+cfg.StartingSHA,
-	)
-}
-
-// composeGeminiReviewPrompt concatenates Skills, AlwaysPrompt, and PerRunPrompt
-// (skipping empty strings) with double-newline separators.
-func composeGeminiReviewPrompt(cfg reviewtypes.RunConfig) string {
-	parts := make([]string, 0, len(cfg.Skills)+2)
-	parts = append(parts, cfg.Skills...)
-	parts = append(parts, cfg.AlwaysPrompt, cfg.PerRunPrompt)
-	var out strings.Builder
-	for _, p := range parts {
-		if p == "" {
-			continue
-		}
-		if out.Len() > 0 {
-			out.WriteString("\n\n")
-		}
-		out.WriteString(p)
-	}
-	return out.String()
 }
 
 // parseGeminiOutput converts gemini's -p mode stdout into a stream of Events.

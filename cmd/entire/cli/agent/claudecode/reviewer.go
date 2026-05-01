@@ -7,7 +7,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"strings"
 
 	"github.com/entireio/cli/cmd/entire/cli/review"
 	reviewtypes "github.com/entireio/cli/cmd/entire/cli/review/types"
@@ -50,47 +49,10 @@ func (r *Reviewer) Start(ctx context.Context, cfg reviewtypes.RunConfig) (review
 // buildReviewCmd builds the exec.Cmd for a claude review run.
 // Exported at package level for test inspection of argv and env.
 func buildReviewCmd(ctx context.Context, cfg reviewtypes.RunConfig) *exec.Cmd {
-	prompt := composeReviewPrompt(cfg)
+	prompt := review.ComposeReviewPrompt(cfg)
 	cmd := exec.CommandContext(ctx, "claude", "-p", prompt)
-	cmd.Env = appendReviewEnv(os.Environ(), "claude-code", cfg, prompt)
+	cmd.Env = review.AppendReviewEnv(os.Environ(), "claude-code", cfg, prompt)
 	return cmd
-}
-
-// appendReviewEnv appends ENTIRE_REVIEW_* vars to the given base environment.
-func appendReviewEnv(base []string, agentName string, cfg reviewtypes.RunConfig, prompt string) []string {
-	skillsJSON, _ := review.EncodeSkills(cfg.Skills) //nolint:errcheck // EncodeSkills only fails on json.Marshal([]string), which is infallible
-	return append(base,
-		review.EnvSession+"=1",
-		review.EnvAgent+"="+agentName,
-		review.EnvSkills+"="+skillsJSON,
-		review.EnvPrompt+"="+prompt,
-		review.EnvStartingSHA+"="+cfg.StartingSHA,
-	)
-}
-
-// composeReviewPrompt concatenates Skills, AlwaysPrompt, and PerRunPrompt
-// (skipping empty strings) with double-newline separators.
-// Full composition with a scope clause lands in CU5.
-func composeReviewPrompt(cfg reviewtypes.RunConfig) string {
-	parts := make([]string, 0, len(cfg.Skills)+2)
-	parts = append(parts, cfg.Skills...)
-	parts = append(parts, cfg.AlwaysPrompt, cfg.PerRunPrompt)
-	return joinNonEmpty(parts, "\n\n")
-}
-
-// joinNonEmpty joins non-empty strings with the given separator.
-func joinNonEmpty(parts []string, sep string) string {
-	var out strings.Builder
-	for _, p := range parts {
-		if p == "" {
-			continue
-		}
-		if out.Len() > 0 {
-			out.WriteString(sep)
-		}
-		out.WriteString(p)
-	}
-	return out.String()
 }
 
 // parseClaudeOutput converts claude's -p mode stdout into a stream of Events.
