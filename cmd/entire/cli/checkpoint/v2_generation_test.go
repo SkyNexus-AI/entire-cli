@@ -504,7 +504,7 @@ func TestComputeGenerationCheckpointTimestamps_FallsBackToRawTranscript(t *testi
 	assert.True(t, gen.NewestCheckpointAt.Equal(newest))
 }
 
-func TestComputeGenerationRawTranscriptTimestamps_IgnoresMainMetadata(t *testing.T) {
+func TestComputeGenerationTimestampsFromTrees_IgnoresMainMetadataWhenNil(t *testing.T) {
 	t.Parallel()
 	repo := initTestRepo(t)
 	store := NewV2GitStore(repo, "origin")
@@ -542,7 +542,7 @@ func TestComputeGenerationRawTranscriptTimestamps_IgnoresMainMetadata(t *testing
 	})
 	require.NoError(t, err)
 
-	gen, ok, err := store.ComputeGenerationRawTranscriptTimestamps(rootTreeHash)
+	gen, ok, err := store.ComputeGenerationTimestampsFromTrees(rootTreeHash, nil)
 	require.NoError(t, err)
 	require.True(t, ok)
 	assert.True(t, gen.OldestCheckpointAt.Equal(rawOldest))

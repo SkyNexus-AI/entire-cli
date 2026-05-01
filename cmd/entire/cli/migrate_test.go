@@ -59,10 +59,10 @@ func newMigrateStores(repo *git.Repository) (*checkpoint.GitStore, *checkpoint.V
 	return checkpoint.NewGitStore(repo), checkpoint.NewV2GitStore(repo, migrateRemoteName)
 }
 
-func buildTasksTreeHash(t *testing.T, repo *git.Repository, toolUseID string) plumbing.Hash {
+func buildTasksTreeHashWithContent(t *testing.T, repo *git.Repository, toolUseID string, content string) plumbing.Hash {
 	t.Helper()
 
-	blobHash, err := checkpoint.CreateBlobFromContent(repo, []byte(`{"tool_use_id":"`+toolUseID+`"}`))
+	blobHash, err := checkpoint.CreateBlobFromContent(repo, []byte(content))
 	require.NoError(t, err)
 
 	treeHash, err := checkpoint.BuildTreeFromEntries(context.Background(), repo, map[string]object.TreeEntry{
@@ -75,8 +75,13 @@ func buildTasksTreeHash(t *testing.T, repo *git.Repository, toolUseID string) pl
 
 func addV1SessionTasksTree(t *testing.T, repo *git.Repository, cpID id.CheckpointID, sessionIdx int, toolUseID string) {
 	t.Helper()
+	addV1SessionTasksTreeWithContent(t, repo, cpID, sessionIdx, toolUseID, `{"tool_use_id":"`+toolUseID+`"}`)
+}
 
-	tasksTreeHash := buildTasksTreeHash(t, repo, toolUseID)
+func addV1SessionTasksTreeWithContent(t *testing.T, repo *git.Repository, cpID id.CheckpointID, sessionIdx int, toolUseID string, content string) {
+	t.Helper()
+
+	tasksTreeHash := buildTasksTreeHashWithContent(t, repo, toolUseID, content)
 	tasksTree, err := repo.TreeObject(tasksTreeHash)
 	require.NoError(t, err)
 
@@ -96,6 +101,34 @@ func addV1SessionTasksTree(t *testing.T, repo *git.Repository, cpID id.Checkpoin
 
 	commitHash, err := checkpoint.CreateCommit(context.Background(), repo, newRoot, ref.Hash(),
 		"Add test session task metadata\n",
+		"Test", "test@test.com")
+	require.NoError(t, err)
+	require.NoError(t, repo.Storer.SetReference(plumbing.NewHashReference(refName, commitHash)))
+}
+
+func addV1RootTasksTreeWithContent(t *testing.T, repo *git.Repository, cpID id.CheckpointID, toolUseID string, content string) {
+	t.Helper()
+
+	tasksTreeHash := buildTasksTreeHashWithContent(t, repo, toolUseID, content)
+	tasksTree, err := repo.TreeObject(tasksTreeHash)
+	require.NoError(t, err)
+
+	refName := plumbing.NewBranchReferenceName(paths.MetadataBranchName)
+	ref, err := repo.Reference(refName, true)
+	require.NoError(t, err)
+
+	commit, err := repo.CommitObject(ref.Hash())
+	require.NoError(t, err)
+
+	newRoot, err := checkpoint.UpdateSubtree(repo, commit.TreeHash,
+		[]string{string(cpID[:2]), string(cpID[2:]), "tasks"},
+		tasksTree.Entries,
+		checkpoint.UpdateSubtreeOptions{MergeMode: checkpoint.MergeKeepExisting},
+	)
+	require.NoError(t, err)
+
+	commitHash, err := checkpoint.CreateCommit(context.Background(), repo, newRoot, ref.Hash(),
+		"Add test root task metadata\n",
 		"Test", "test@test.com")
 	require.NoError(t, err)
 	require.NoError(t, repo.Storer.SetReference(plumbing.NewHashReference(refName, commitHash)))
@@ -241,6 +274,48 @@ func TestMigrateCheckpointsV2_PacksFullGenerationsOldestFirst(t *testing.T) {
 	currentCount, err := v2Store.CountCheckpointsInTree(currentTreeHash)
 	require.NoError(t, err)
 	assert.Equal(t, 0, currentCount, "fresh migration should leave /full/current empty for post-migration writes")
+}
+
+func TestMigrateCheckpointsV2_PacksFullGenerationMetadataFromRawTranscriptTimestamps(t *testing.T) {
+	t.Parallel()
+	repo := initMigrateTestRepo(t)
+	v1Store, v2Store := newMigrateStores(repo)
+
+	cpID := id.MustCheckpointID("101112131415")
+	createdAt := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	rawOldest := time.Date(2026, 3, 10, 9, 0, 0, 0, time.UTC)
+	rawNewest := time.Date(2026, 3, 10, 9, 5, 0, 0, time.UTC)
+	transcript := []byte(
+		`{"type":"user","timestamp":"` + rawOldest.Format(time.RFC3339Nano) + `"}` + "\n" +
+			`{"type":"assistant","timestamp":"` + rawNewest.Format(time.RFC3339Nano) + `"}` + "\n",
+	)
+
+	err := v1Store.WriteCommitted(context.Background(), checkpoint.WriteCommittedOptions{
+		CheckpointID: cpID,
+		SessionID:    "session-raw-timestamps",
+		CreatedAt:    createdAt,
+		Strategy:     "manual-commit",
+		Transcript:   redact.AlreadyRedacted(transcript),
+		Prompts:      []string{"raw timestamp prompt"},
+		AuthorName:   "Test",
+		AuthorEmail:  "test@test.com",
+	})
+	require.NoError(t, err)
+
+	var stdout bytes.Buffer
+	result, err := migrateCheckpointsV2(context.Background(), repo, v1Store, v2Store, &stdout, false)
+	require.NoError(t, err)
+	assert.Equal(t, 1, result.migrated)
+
+	archived, err := v2Store.ListArchivedGenerations()
+	require.NoError(t, err)
+	require.Equal(t, []string{"0000000000001"}, archived)
+
+	gen, err := v2Store.ReadGenerationFromRef(plumbing.ReferenceName(paths.V2FullRefPrefix + archived[0]))
+	require.NoError(t, err)
+	assert.True(t, gen.OldestCheckpointAt.Equal(rawOldest))
+	assert.True(t, gen.NewestCheckpointAt.Equal(rawNewest))
+	assert.False(t, gen.OldestCheckpointAt.Equal(createdAt), "raw transcript timestamps should take precedence over checkpoint metadata")
 }
 
 func TestMigrateCheckpointsV2_RerunPacksCheckpointsMissingFullArtifacts(t *testing.T) {
@@ -702,6 +777,41 @@ func TestMigrateCheckpointsV2_TaskMetadataUsesMigratedSessionIndexAfterSkip(t *t
 	require.NoError(t, err, "session task metadata should follow the shifted v2 session index")
 	_, err = rootTree.File(cpID.Path() + "/2/tasks/toolu_root_shifted/checkpoint.json")
 	require.Error(t, err, "task metadata must not be written under a non-existent v2 session")
+}
+
+func TestMigrateCheckpointsV2_TaskMetadataKeepsFirstConflictingTaskTree(t *testing.T) {
+	t.Parallel()
+	repo := initMigrateTestRepo(t)
+	v1Store, v2Store := newMigrateStores(repo)
+
+	cpID := id.MustCheckpointID("8899aabbccdd")
+	toolUseID := "toolu_conflict"
+	err := v1Store.WriteCommitted(context.Background(), checkpoint.WriteCommittedOptions{
+		CheckpointID: cpID,
+		SessionID:    "session-conflict",
+		Strategy:     "manual-commit",
+		Transcript:   redact.AlreadyRedacted([]byte("{\"type\":\"assistant\",\"message\":\"conflict\"}\n")),
+		Prompts:      []string{"conflict prompt"},
+		IsTask:       true,
+		ToolUseID:    toolUseID,
+		AuthorName:   "Test",
+		AuthorEmail:  "test@test.com",
+	})
+	require.NoError(t, err)
+	addV1RootTasksTreeWithContent(t, repo, cpID, toolUseID, `{"source":"root"}`)
+	addV1SessionTasksTreeWithContent(t, repo, cpID, 0, toolUseID, `{"source":"session"}`)
+
+	var stdout bytes.Buffer
+	result, migrateErr := migrateCheckpointsV2(context.Background(), repo, v1Store, v2Store, &stdout, false)
+	require.NoError(t, migrateErr)
+	assert.Equal(t, 1, result.migrated)
+
+	rootTree := v2FullTreeForCheckpoint(t, repo, v2Store, cpID)
+	file, err := rootTree.File(cpID.Path() + "/0/tasks/" + toolUseID + "/checkpoint.json")
+	require.NoError(t, err)
+	content, err := file.Contents()
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"source":"root"}`, content)
 }
 
 func TestMigrateCheckpointsV2_SkipsCheckpointWhenAllV1SessionsMissingTranscript(t *testing.T) {

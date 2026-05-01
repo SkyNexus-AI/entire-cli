@@ -370,7 +370,7 @@ func ListEligibleV2Generations(ctx context.Context, s *settings.EntireSettings) 
 			continue
 		}
 
-		gen, foundCheckpointTimes, timestampErr := store.ComputeGenerationRawTranscriptTimestamps(treeHash)
+		gen, foundCheckpointTimes, timestampErr := store.ComputeGenerationTimestampsFromTrees(treeHash, nil)
 		if timestampErr != nil {
 			warnings = append(warnings, fmt.Sprintf("generation %s: failed to compute raw transcript timestamps: %v", candidate.Name, timestampErr))
 			continue

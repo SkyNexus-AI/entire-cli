@@ -82,7 +82,7 @@ func repairOneV2GenerationMetadata(
 		return false, fmt.Errorf("cannot read ref: %w", refErr)
 	}
 
-	gen, found, timestampErr := store.ComputeGenerationRawTranscriptTimestamps(treeHash)
+	gen, found, timestampErr := store.ComputeGenerationTimestampsFromTrees(treeHash, nil)
 	if timestampErr != nil {
 		return false, fmt.Errorf("failed to compute raw transcript timestamps: %w", timestampErr)
 	}

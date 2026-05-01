@@ -10,7 +10,6 @@ import (
 	"log/slog"
 	"sort"
 	"strconv"
-	"time"
 
 	"github.com/entireio/cli/cmd/entire/cli/agent"
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint"
@@ -502,23 +501,12 @@ func (p *generationPacker) finalize(ctx context.Context, ensureEmptyCurrent bool
 
 func writeMigratedFullGeneration(ctx context.Context, repo *git.Repository, refName plumbing.ReferenceName, checkpoints []migratedFullCheckpoint) error {
 	entries := make(map[string]object.TreeEntry)
-	var gen checkpoint.GenerationMetadata
-	foundTime := false
 
 	for _, cp := range checkpoints {
 		for _, session := range cp.sessions {
 			if err := writeMigratedFullSessionEntries(ctx, repo, cp, session, entries); err != nil {
 				return fmt.Errorf("write full session entries for checkpoint %s session %d: %w", cp.checkpointID, session.sessionIndex, err)
 			}
-			checkpoint.MergeGenerationTime(&gen, &foundTime, session.content.Metadata.CreatedAt)
-		}
-	}
-
-	if !foundTime {
-		now := time.Now().UTC()
-		gen = checkpoint.GenerationMetadata{
-			OldestCheckpointAt: now,
-			NewestCheckpointAt: now,
 		}
 	}
 
@@ -528,6 +516,23 @@ func writeMigratedFullGeneration(ctx context.Context, repo *git.Repository, refN
 	}
 
 	v2Store := checkpoint.NewV2GitStore(repo, migrateRemoteName)
+	gen, found, err := v2Store.ComputeGenerationTimestampsFromTrees(treeHash, nil)
+	if err != nil {
+		return fmt.Errorf("compute raw transcript timestamps: %w", err)
+	}
+	if !found {
+		gen, found, err = v2Store.ComputeGenerationCheckpointTimestamps(treeHash)
+		if err != nil {
+			return fmt.Errorf("compute checkpoint timestamps: %w", err)
+		}
+	}
+	if !found {
+		gen, found = generationMetadataFromMigratedSessions(checkpoints)
+	}
+	if !found {
+		return fmt.Errorf("no timestamps found for migrated generation %s", refName)
+	}
+
 	treeHash, err = v2Store.AddGenerationJSONToTree(treeHash, gen)
 	if err != nil {
 		return fmt.Errorf("add generation metadata: %w", err)
@@ -544,6 +549,17 @@ func writeMigratedFullGeneration(ctx context.Context, repo *git.Repository, refN
 		return fmt.Errorf("update migrated generation ref %s: %w", refName, err)
 	}
 	return nil
+}
+
+func generationMetadataFromMigratedSessions(checkpoints []migratedFullCheckpoint) (checkpoint.GenerationMetadata, bool) {
+	var gen checkpoint.GenerationMetadata
+	found := false
+	for _, cp := range checkpoints {
+		for _, session := range cp.sessions {
+			checkpoint.MergeGenerationTime(&gen, &found, session.content.Metadata.CreatedAt)
+		}
+	}
+	return gen, found
 }
 
 func writeMigratedFullSessionEntries(ctx context.Context, repo *git.Repository, cp migratedFullCheckpoint, session migratedFullSession, entries map[string]object.TreeEntry) error {
@@ -584,8 +600,15 @@ func writeMigratedFullSessionEntries(ctx context.Context, repo *git.Repository, 
 		if treeErr != nil {
 			return fmt.Errorf("read task metadata tree: %w", treeErr)
 		}
-		if flattenErr := checkpoint.FlattenTree(repo, taskTree, sessionPath+"tasks", entries); flattenErr != nil {
+		taskEntries := make(map[string]object.TreeEntry)
+		if flattenErr := checkpoint.FlattenTree(repo, taskTree, sessionPath+"tasks", taskEntries); flattenErr != nil {
 			return fmt.Errorf("flatten task metadata tree: %w", flattenErr)
+		}
+		for path, entry := range taskEntries {
+			if _, exists := entries[path]; exists {
+				continue
+			}
+			entries[path] = entry
 		}
 	}
 
@@ -757,7 +780,7 @@ func pruneV2ArchivedCheckpointRef(ctx context.Context, repo *git.Repository, v2S
 }
 
 func addRecomputedGenerationJSON(v2Store *checkpoint.V2GitStore, treeHash plumbing.Hash) (plumbing.Hash, error) {
-	gen, found, err := v2Store.ComputeGenerationRawTranscriptTimestamps(treeHash)
+	gen, found, err := v2Store.ComputeGenerationTimestampsFromTrees(treeHash, nil)
 	if err != nil {
 		return plumbing.ZeroHash, fmt.Errorf("compute raw transcript timestamps: %w", err)
 	}
