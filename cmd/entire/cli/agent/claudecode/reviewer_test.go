@@ -13,9 +13,8 @@ import (
 	reviewtypes "github.com/entireio/cli/cmd/entire/cli/review/types"
 )
 
-// Compile-time interface check lives in reviewer.go via var _ AgentReviewer = (*Reviewer)(nil).
-// Keep a second check here to surface errors in the test binary.
-var _ reviewtypes.AgentReviewer = (*Reviewer)(nil)
+// Compile-time interface check: ReviewerTemplate implements AgentReviewer.
+var _ reviewtypes.AgentReviewer = (*reviewtypes.ReviewerTemplate)(nil)
 
 const wantAgentName = "claude-code"
 

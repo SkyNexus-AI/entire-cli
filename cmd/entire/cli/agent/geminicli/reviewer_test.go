@@ -13,8 +13,8 @@ import (
 	reviewtypes "github.com/entireio/cli/cmd/entire/cli/review/types"
 )
 
-// Compile-time interface check (mirrors the one in reviewer.go).
-var _ reviewtypes.AgentReviewer = (*Reviewer)(nil)
+// Compile-time interface check: ReviewerTemplate implements AgentReviewer.
+var _ reviewtypes.AgentReviewer = (*reviewtypes.ReviewerTemplate)(nil)
 
 const wantGeminiAgentName = "gemini-cli"
 
