@@ -167,7 +167,8 @@ func (s *V2GitStore) ComputeGenerationCheckpointTimestamps(rootTreeHash plumbing
 // and aggregates per-checkpoint timestamps. When mainTree is non-nil, /main
 // metadata.json is consulted before falling back to the raw transcript inside
 // the checkpoint's full-tree. Returns found=false when any checkpoint cannot
-// produce a timestamp, signaling callers to fall back to generation.json.
+// produce a timestamp; callers decide their own fallback (e.g. read existing
+// generation.json, recompute from in-memory data, or surface an error).
 func (s *V2GitStore) ComputeGenerationTimestampsFromTrees(rootTreeHash plumbing.Hash, mainTree *object.Tree) (GenerationMetadata, bool, error) {
 	if rootTreeHash == plumbing.ZeroHash {
 		return GenerationMetadata{}, false, nil
