@@ -242,7 +242,9 @@ func TestPushV2Refs_PushesAllRefs(t *testing.T) {
 	initCmd.Env = testutil.GitIsolatedEnv()
 	require.NoError(t, initCmd.Run())
 
+	restore := captureStderr(t)
 	pushV2Refs(ctx, bareDir)
+	output := restore()
 
 	// Verify all three refs exist in bare repo
 	bareRepo, err := git.PlainOpen(bareDir)
@@ -258,7 +260,33 @@ func TestPushV2Refs_PushesAllRefs(t *testing.T) {
 	require.NoError(t, err, "latest archived generation should exist in bare repo")
 
 	_, err = bareRepo.Reference(plumbing.ReferenceName(paths.V2FullRefPrefix+"0000000000001"), true)
-	assert.Error(t, err, "older archived generation should NOT be pushed")
+	require.Error(t, err, "older archived generation should NOT be pushed")
+
+	assert.Contains(t, output, "[entire] Syncing and pushing v2 checkpoints...")
+	assert.Contains(t, output, "[entire] Pushing v2/main, v2/full/current, v2/full/0000000000002...")
+	assert.Contains(t, output, "[entire] All v2 checkpoints pushed")
+	assert.NotContains(t, output, "Pushing v2/main to", "per-ref progress should stay quiet")
+	assert.NotContains(t, output, "Syncing v2/main with remote", "per-ref sync progress should stay quiet")
+}
+
+// TestPushV2Refs_UnreachableTarget_NamesFailedRef verifies that aggregated v2
+// push output still identifies the ref that could not be pushed.
+//
+// Not parallel: uses t.Chdir() and os.Stderr redirection.
+func TestPushV2Refs_UnreachableTarget_NamesFailedRef(t *testing.T) {
+	tmpDir := setupRepoWithV2Ref(t)
+	t.Chdir(tmpDir)
+
+	nonExistentPath := filepath.Join(t.TempDir(), "does-not-exist")
+	restore := captureStderr(t)
+	pushV2Refs(context.Background(), nonExistentPath)
+	output := restore()
+
+	assert.Contains(t, output, "[entire] Syncing and pushing v2 checkpoints...")
+	assert.Contains(t, output, "[entire] Pushing v2/main...")
+	assert.Contains(t, output, "[entire] Warning: couldn't sync v2/main:")
+	assert.NotContains(t, output, "[entire] All v2 checkpoints pushed")
+	assert.NotContains(t, output, "Pushing v2/main to", "failed aggregated pushes should avoid per-ref progress")
 }
 
 // TestFetchAndMergeRef_RotationConflict verifies that when /full/current push

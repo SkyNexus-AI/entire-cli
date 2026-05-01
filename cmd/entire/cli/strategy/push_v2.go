@@ -10,6 +10,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint"
@@ -58,6 +59,36 @@ func tryPushRef(ctx context.Context, target string, refName plumbing.ReferenceNa
 	}
 
 	return parsePushResult(outputStr), nil
+}
+
+type v2RefPushResult struct {
+	result pushResult
+	err    error
+}
+
+// pushV2RefWithRecovery pushes a v2 ref with fetch+merge recovery on conflict.
+// Callers own user-facing output so multiple refs can be pushed concurrently
+// without interleaving progress lines.
+func pushV2RefWithRecovery(ctx context.Context, target string, refName plumbing.ReferenceName) v2RefPushResult {
+	if result, err := tryPushRef(ctx, target, refName); err == nil {
+		return v2RefPushResult{result: result}
+	}
+
+	shortRef := shortRefName(refName)
+	if err := fetchAndMergeRef(ctx, target, refName); err != nil {
+		return v2RefPushResult{
+			err: fmt.Errorf("couldn't sync %s: %w", shortRef, err),
+		}
+	}
+
+	result, err := tryPushRef(ctx, target, refName)
+	if err != nil {
+		return v2RefPushResult{
+			err: fmt.Errorf("failed to push %s after sync: %w", shortRef, err),
+		}
+	}
+
+	return v2RefPushResult{result: result}
 }
 
 // doPushRef pushes a custom ref with fetch+merge recovery on conflict.
@@ -123,9 +154,10 @@ func fetchAndMergeRef(ctx context.Context, target string, refName plumbing.Refer
 	refSpec := fmt.Sprintf("+%s:%s", refName, tmpRefName)
 
 	if output, err := remote.Fetch(ctx, remote.FetchOptions{
-		Remote:   fetchTarget,
-		RefSpecs: []string{refSpec},
-		NoTags:   true,
+		Remote:    fetchTarget,
+		RefSpecs:  []string{refSpec},
+		NoTags:    true,
+		ExtraArgs: []string{"--no-write-fetch-head"},
 	}); err != nil {
 		return fmt.Errorf("fetch failed: %s", output)
 	}
@@ -250,9 +282,10 @@ func handleRotationConflict(ctx context.Context, target, fetchTarget string, rep
 	archiveTmpRef := plumbing.ReferenceName("refs/entire-fetch-tmp/archive-" + latestArchive)
 	archiveRefSpec := fmt.Sprintf("+%s:%s", archiveRefName, archiveTmpRef)
 	if output, fetchErr := remote.Fetch(ctx, remote.FetchOptions{
-		Remote:   fetchTarget,
-		RefSpecs: []string{archiveRefSpec},
-		NoTags:   true,
+		Remote:    fetchTarget,
+		RefSpecs:  []string{archiveRefSpec},
+		NoTags:    true,
+		ExtraArgs: []string{"--no-write-fetch-head"},
 	}); fetchErr != nil {
 		return fmt.Errorf("fetch archived generation failed: %s", output)
 	}
@@ -394,30 +427,93 @@ func updateGenerationTimestamps(repo *git.Repository, genBlobHash plumbing.Hash,
 }
 
 // pushV2Refs pushes v2 checkpoint refs to the target.
-// Pushes /main, /full/current, and the latest archived generation (if any).
-// Older archived generations are immutable and were pushed when created.
+// Pushes /main, /full/current, and the latest archived generation (if any)
+// concurrently. Older archived generations are immutable and were pushed when created.
 func pushV2Refs(ctx context.Context, target string) {
-	_ = pushRefIfNeeded(ctx, target, plumbing.ReferenceName(paths.V2MainRefName))        //nolint:errcheck // pushRefIfNeeded handles errors internally
-	_ = pushRefIfNeeded(ctx, target, plumbing.ReferenceName(paths.V2FullCurrentRefName)) //nolint:errcheck // pushRefIfNeeded handles errors internally
+	refs := v2RefsToPush(ctx)
+	if len(refs) == 0 {
+		return
+	}
 
-	// Push only the latest archived generation (most likely to be newly created)
+	fmt.Fprintln(os.Stderr, "[entire] Syncing and pushing v2 checkpoints...")
+	fmt.Fprintf(os.Stderr, "[entire] Pushing %s...\n", strings.Join(shortRefNames(refs), ", "))
+
+	results := pushV2RefsParallel(ctx, target, refs)
+	var failures []error
+	pushedContent := false
+	for _, result := range results {
+		if result.err != nil {
+			failures = append(failures, result.err)
+			continue
+		}
+		if !result.result.upToDate {
+			pushedContent = true
+		}
+	}
+
+	if len(failures) > 0 {
+		for _, err := range failures {
+			fmt.Fprintf(os.Stderr, "[entire] Warning: %v\n", err)
+		}
+		printCheckpointRemoteHint(target)
+		return
+	}
+
+	fmt.Fprintln(os.Stderr, "[entire] All v2 checkpoints pushed")
+	if pushedContent {
+		printSettingsCommitHint(ctx, target)
+	}
+	printCheckpointsV2MigrationHint(ctx)
+}
+
+func v2RefsToPush(ctx context.Context) []plumbing.ReferenceName {
 	repo, err := OpenRepository(ctx)
 	if err != nil {
-		return
+		return nil
 	}
-	v2URL, err := remote.FetchURL(ctx)
-	if err != nil {
-		logging.Debug(ctx, "push-v2: using origin for archived generation fetch remote",
-			slog.String("error", err.Error()),
-		)
+
+	var refs []plumbing.ReferenceName
+	for _, refName := range []plumbing.ReferenceName{
+		plumbing.ReferenceName(paths.V2MainRefName),
+		plumbing.ReferenceName(paths.V2FullCurrentRefName),
+	} {
+		if _, err := repo.Reference(refName, true); err == nil {
+			refs = append(refs, refName)
+		}
 	}
-	store := checkpoint.NewV2GitStore(repo, v2URL)
+
+	// Push only the latest archived generation (most likely to be newly created).
+	store := checkpoint.NewV2GitStore(repo, "")
 	archived, err := store.ListArchivedGenerations()
 	if err != nil || len(archived) == 0 {
-		return
+		return refs
 	}
 	latest := archived[len(archived)-1]
-	_ = pushRefIfNeeded(ctx, target, plumbing.ReferenceName(paths.V2FullRefPrefix+latest)) //nolint:errcheck // pushRefIfNeeded handles errors internally
+	refs = append(refs, plumbing.ReferenceName(paths.V2FullRefPrefix+latest))
+
+	return refs
+}
+
+func pushV2RefsParallel(ctx context.Context, target string, refs []plumbing.ReferenceName) []v2RefPushResult {
+	results := make([]v2RefPushResult, len(refs))
+	var wg sync.WaitGroup
+	for i, refName := range refs {
+		wg.Add(1)
+		go func(i int, refName plumbing.ReferenceName) {
+			defer wg.Done()
+			results[i] = pushV2RefWithRecovery(ctx, target, refName)
+		}(i, refName)
+	}
+	wg.Wait()
+	return results
+}
+
+func shortRefNames(refs []plumbing.ReferenceName) []string {
+	names := make([]string, 0, len(refs))
+	for _, refName := range refs {
+		names = append(names, shortRefName(refName))
+	}
+	return names
 }
 
 // shortRefName returns a human-readable short form of a ref name for log output.
