@@ -13,6 +13,9 @@ package review
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
+
+	reviewtypes "github.com/entireio/cli/cmd/entire/cli/review/types"
 )
 
 const (
@@ -72,4 +75,53 @@ func DecodeSkills(encoded string) ([]string, error) {
 		return nil, fmt.Errorf("decode skills: %w", err)
 	}
 	return skills, nil
+}
+
+// AppendReviewEnv adds the ENTIRE_REVIEW_* env vars to base, returning
+// the new slice. Used by per-agent reviewers in their AgentReviewer.Start
+// implementations to propagate the review-session contract to spawned
+// agent processes.
+//
+// agentName must be the agent's stable registry key (e.g. "claude-code").
+// cfg carries skills and the starting SHA. prompt is the full composed
+// prompt text (result of ComposeReviewPrompt).
+//
+// Any pre-existing ENTIRE_REVIEW_* entries in base are stripped before the
+// new values are appended. This handles nested invocations (an `entire
+// review` run spawning another agent that calls `entire review`) and stale
+// inheritance from a parent shell — the most-recent values must win, with
+// no chance of duplicate keys whose precedence is implementation-defined.
+func AppendReviewEnv(base []string, agentName string, cfg reviewtypes.RunConfig, prompt string) []string {
+	skillsJSON, _ := EncodeSkills(cfg.Skills) //nolint:errcheck // EncodeSkills only fails on json.Marshal([]string), which is infallible
+	out := make([]string, 0, len(base)+5)
+	for _, kv := range base {
+		if isReviewEnvEntry(kv) {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return append(out,
+		EnvSession+"=1",
+		EnvAgent+"="+agentName,
+		EnvSkills+"="+skillsJSON,
+		EnvPrompt+"="+prompt,
+		EnvStartingSHA+"="+cfg.StartingSHA,
+	)
+}
+
+// isReviewEnvEntry reports whether kv is a "KEY=VALUE" entry whose key is
+// one of the ENTIRE_REVIEW_* contract variables.
+func isReviewEnvEntry(kv string) bool {
+	for _, prefix := range []string{
+		EnvSession + "=",
+		EnvAgent + "=",
+		EnvSkills + "=",
+		EnvPrompt + "=",
+		EnvStartingSHA + "=",
+	} {
+		if strings.HasPrefix(kv, prefix) {
+			return true
+		}
+	}
+	return false
 }
