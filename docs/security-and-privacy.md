@@ -8,7 +8,7 @@ Entire stores AI session transcripts and metadata in your git repository. This d
 
 When you use Entire with an AI agent (Claude Code, Codex, Gemini CLI, OpenCode, Cursor, Factory AI Droid, Copilot CLI), session transcripts, user prompts, and checkpoint metadata are committed to a dedicated branch in your git repository (`entire/checkpoints/v1`). This branch is separate from your working branches, your code commits stay clean, but it lives in the same repository.
 
-Entire also creates temporary local branches (e.g., `entire/<short-hash>`) as working storage during a session. These shadow branches store file snapshots and transcripts **without redaction**. They are cleaned up when session data is condensed (with redaction) into `entire/checkpoints/v1` at commit time. Shadow branches are **not** pushed by Entire — do not push them manually, as unredacted content would be visible on the remote.
+Entire also creates temporary local branches (e.g., `entire/<short-hash>`) as working storage during a session. Writes to these shadow branches go through the same redaction pipeline as `entire/checkpoints/v1` — defense-in-depth, since the branches are local-only and **not** pushed by Entire. Don't push them manually anyway. They are cleaned up when session data is condensed into `entire/checkpoints/v1` at commit time.
 
 Anyone with access to your repository can view the transcript data on the `entire/checkpoints/v1` branch. This includes the full prompt/response history and session metadata. Note that transcripts capture all tool interactions — including file contents, MCP server calls, and other data exchanged during the session.
 
