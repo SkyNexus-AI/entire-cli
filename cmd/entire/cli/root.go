@@ -5,6 +5,7 @@ import (
 	"runtime"
 
 	"github.com/entireio/cli/cmd/entire/cli/paths"
+	cliReview "github.com/entireio/cli/cmd/entire/cli/review"
 	"github.com/entireio/cli/cmd/entire/cli/settings"
 	"github.com/entireio/cli/cmd/entire/cli/telemetry"
 	"github.com/entireio/cli/cmd/entire/cli/versioncheck"
@@ -79,7 +80,7 @@ func NewRootCmd() *cobra.Command {
 	}
 
 	// Add subcommands here
-	cmd.AddCommand(newReviewCmd())
+	cmd.AddCommand(cliReview.NewCommand(buildReviewDeps(newReviewAttachCmd())))
 	cmd.AddCommand(newRewindCmd())
 	cmd.AddCommand(newResumeCmd())
 	cmd.AddCommand(newCleanCmd())
