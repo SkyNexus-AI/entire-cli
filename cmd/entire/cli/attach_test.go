@@ -21,6 +21,7 @@ import (
 	cpkg "github.com/entireio/cli/cmd/entire/cli/checkpoint"
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint/id"
 	"github.com/entireio/cli/cmd/entire/cli/paths"
+	cliReview "github.com/entireio/cli/cmd/entire/cli/review"
 	"github.com/entireio/cli/cmd/entire/cli/session"
 	"github.com/entireio/cli/cmd/entire/cli/settings"
 	"github.com/entireio/cli/cmd/entire/cli/testutil"
@@ -1369,7 +1370,7 @@ func TestAttachCmd_ReviewDoesNotInferSkillsFromConfig(t *testing.T) {
 `)
 
 	// Seed review config — the spawn-path default. Attach must ignore this.
-	if err := saveReviewConfig(context.Background(), map[string]settings.ReviewConfig{
+	if err := cliReview.SaveReviewConfig(context.Background(), map[string]settings.ReviewConfig{
 		"claude-code": {Skills: []string{"/pr-review-toolkit:review-pr"}},
 	}); err != nil {
 		t.Fatal(err)

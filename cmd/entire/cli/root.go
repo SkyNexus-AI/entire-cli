@@ -5,6 +5,7 @@ import (
 	"runtime"
 
 	"github.com/entireio/cli/cmd/entire/cli/paths"
+	cliReview "github.com/entireio/cli/cmd/entire/cli/review"
 	"github.com/entireio/cli/cmd/entire/cli/settings"
 	"github.com/entireio/cli/cmd/entire/cli/telemetry"
 	"github.com/entireio/cli/cmd/entire/cli/versioncheck"
@@ -87,7 +88,7 @@ func NewRootCmd() *cobra.Command {
 	cmd.AddCommand(newDoctorCmd())          // 'doctor' (group: trace/logs/bundle)
 
 	// Top-level lifecycle and standalone commands.
-	cmd.AddCommand(newReviewCmd()) // hidden during maturation; runs configured review skills
+	cmd.AddCommand(cliReview.NewCommand(buildReviewDeps(newReviewAttachCmd()))) // hidden during maturation; runs configured review skills
 	cmd.AddCommand(newCleanCmd())
 	cmd.AddCommand(newSetupCmd()) // 'configure' — non-agent settings; agent CRUD lives under 'agent'
 	cmd.AddCommand(newEnableCmd())
