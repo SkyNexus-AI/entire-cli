@@ -172,14 +172,21 @@ func (s *V2GitStore) inspectFullSessionArtifacts(refName plumbing.ReferenceName,
 		return fullSessionArtifacts{}, fmt.Errorf("failed to read %s session tree %s: %w", refName, sessionPath, err)
 	}
 
+	// Both the current (raw_transcript / raw_transcript_hash.txt) and the
+	// pre-rename (full.jsonl / content_hash.txt, see commit a3cd77122)
+	// filenames are accepted as valid full-session artifacts. Without this,
+	// an /full/<n> generation written by an older CLI version would look
+	// "missing" on rerun and trigger a duplicate repack.
 	artifacts := fullSessionArtifacts{RefName: refName, Found: true}
 	for _, entry := range sessionTree.Entries {
 		switch {
-		case entry.Name == paths.V2RawTranscriptFileName:
+		case entry.Name == paths.V2RawTranscriptFileName,
+			strings.HasPrefix(entry.Name, paths.V2RawTranscriptFileName+"."),
+			entry.Name == paths.TranscriptFileName,
+			strings.HasPrefix(entry.Name, paths.TranscriptFileName+"."):
 			artifacts.HasTranscript = true
-		case strings.HasPrefix(entry.Name, paths.V2RawTranscriptFileName+"."):
-			artifacts.HasTranscript = true
-		case entry.Name == paths.V2RawTranscriptHashFileName:
+		case entry.Name == paths.V2RawTranscriptHashFileName,
+			entry.Name == paths.ContentHashFileName:
 			artifacts.HasHash = true
 		}
 	}
@@ -860,58 +867,4 @@ func (s *V2GitStore) UpdateSummary(ctx context.Context, checkpointID id.Checkpoi
 	authorName, authorEmail := GetGitAuthorFromRepo(s.repo)
 	commitMsg := fmt.Sprintf("Update summary for checkpoint %s (session: %s)", checkpointID, metadata.SessionID)
 	return s.updateRef(ctx, refName, newTreeHash, parentHash, commitMsg, authorName, authorEmail)
-}
-
-// CleanupV1TranscriptFiles removes legacy v1-named transcript files (full.jsonl,
-// full.jsonl.*, content_hash.txt) from /full/current for a given checkpoint.
-// Older CLI versions wrote these before the rename to raw_transcript.
-// Returns nil if /full/current doesn't exist or no v1 files were found.
-func (s *V2GitStore) CleanupV1TranscriptFiles(ctx context.Context, checkpointID id.CheckpointID, sessionCount int) error {
-	refName := plumbing.ReferenceName(paths.V2FullCurrentRefName)
-	parentHash, rootTreeHash, err := s.GetRefState(refName)
-	if err != nil {
-		if errors.Is(err, plumbing.ErrReferenceNotFound) {
-			return nil // /full/current doesn't exist yet — nothing to clean
-		}
-		return err
-	}
-
-	checkpointPath := checkpointID.Path()
-	basePath := checkpointPath + "/"
-
-	entries, err := s.gs.flattenCheckpointEntries(rootTreeHash, checkpointPath)
-	if err != nil {
-		return err
-	}
-
-	changed := false
-	for sessionIdx := range sessionCount {
-		sessionPath := fmt.Sprintf("%s%d/", basePath, sessionIdx)
-		v1TranscriptPath := sessionPath + paths.TranscriptFileName
-		v1HashPath := sessionPath + paths.ContentHashFileName
-
-		for key := range entries {
-			switch {
-			case key == v1TranscriptPath,
-				strings.HasPrefix(key, v1TranscriptPath+"."),
-				key == v1HashPath:
-				delete(entries, key)
-				changed = true
-			}
-		}
-	}
-
-	if !changed {
-		return nil
-	}
-
-	newTreeHash, err := s.gs.spliceCheckpointSubtree(ctx, rootTreeHash, checkpointID, basePath, entries)
-	if err != nil {
-		return fmt.Errorf("tree surgery failed: %w", err)
-	}
-
-	authorName, authorEmail := GetGitAuthorFromRepo(s.repo)
-	return s.updateRef(ctx, refName, newTreeHash, parentHash,
-		fmt.Sprintf("Clean up v1 transcript files for %s\n", checkpointID),
-		authorName, authorEmail)
 }
