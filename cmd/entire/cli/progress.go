@@ -115,6 +115,14 @@ func (p *progressBar) Finish() {
 	if !p.enabled {
 		return
 	}
+	// On completion, leave the rendered 100% bar in place and just terminate
+	// the line so any post-loop work renders below it. On early exit
+	// (current < total), erase the bar so a stale partial line doesn't stick
+	// around above the error message.
+	if p.current >= p.total {
+		fmt.Fprintln(p.w)
+		return
+	}
 	fmt.Fprint(p.w, "\r\033[K")
 }
 

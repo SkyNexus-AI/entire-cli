@@ -97,7 +97,9 @@ func runMigrateCheckpointsV2(ctx context.Context, cmd *cobra.Command, force bool
 		return err
 	}
 
+	stopRepair := startSpinner(cmd.ErrOrStderr(), "Repairing archived generation metadata")
 	repairResult, repairErr := strategy.RepairV2GenerationMetadata(ctx)
+	stopRepair("")
 	if repairErr != nil {
 		return fmt.Errorf("failed to repair archived v2 generation metadata: %w", repairErr)
 	}
@@ -250,9 +252,12 @@ func migrateCheckpointsV2(ctx context.Context, repo *git.Repository, v1Store *ch
 		progress.Increment()
 	}
 
+	stopFinalize := startSpinner(progressOut, "Packing migrated raw transcripts")
 	if err := packer.finalize(ctx, !fullCurrentExistsBefore); err != nil {
+		stopFinalize("")
 		return result, fmt.Errorf("failed to pack migrated raw transcripts: %w", err)
 	}
+	stopFinalize("")
 
 	return result, nil
 }
