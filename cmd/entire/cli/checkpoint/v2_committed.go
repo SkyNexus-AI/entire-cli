@@ -172,21 +172,14 @@ func (s *V2GitStore) inspectFullSessionArtifacts(refName plumbing.ReferenceName,
 		return fullSessionArtifacts{}, fmt.Errorf("failed to read %s session tree %s: %w", refName, sessionPath, err)
 	}
 
-	// Both the current (raw_transcript / raw_transcript_hash.txt) and the
-	// pre-rename (full.jsonl / content_hash.txt, see commit a3cd77122)
-	// filenames are accepted as valid full-session artifacts. Without this,
-	// an /full/<n> generation written by an older CLI version would look
-	// "missing" on rerun and trigger a duplicate repack.
 	artifacts := fullSessionArtifacts{RefName: refName, Found: true}
 	for _, entry := range sessionTree.Entries {
 		switch {
-		case entry.Name == paths.V2RawTranscriptFileName,
-			strings.HasPrefix(entry.Name, paths.V2RawTranscriptFileName+"."),
-			entry.Name == paths.TranscriptFileName,
-			strings.HasPrefix(entry.Name, paths.TranscriptFileName+"."):
+		case entry.Name == paths.V2RawTranscriptFileName:
 			artifacts.HasTranscript = true
-		case entry.Name == paths.V2RawTranscriptHashFileName,
-			entry.Name == paths.ContentHashFileName:
+		case strings.HasPrefix(entry.Name, paths.V2RawTranscriptFileName+"."):
+			artifacts.HasTranscript = true
+		case entry.Name == paths.V2RawTranscriptHashFileName:
 			artifacts.HasHash = true
 		}
 	}

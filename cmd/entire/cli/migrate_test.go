@@ -369,52 +369,6 @@ func TestMigrateCheckpointsV2_RerunResumesInterruptedMigration(t *testing.T) {
 	assert.Equal(t, 1, result2.skipped)
 }
 
-// TestMigrateCheckpointsV2_RerunSkipsLegacyArchivedFullJsonl pins the
-// regression for the 46→86 generation duplication: archived /full/<n> refs
-// written under the pre-rename names (full.jsonl, content_hash.txt) must
-// count as valid full artifacts so a rerun does not repack them into new
-// generations.
-func TestMigrateCheckpointsV2_RerunSkipsLegacyArchivedFullJsonl(t *testing.T) {
-	t.Parallel()
-	repo := initMigrateTestRepo(t)
-	v1Store, v2Store := newMigrateStores(repo)
-	ctx := context.Background()
-
-	cpID := id.MustCheckpointID("ddee11223344")
-	writeV1Checkpoint(t, v1Store, cpID, "session-legacy-archive",
-		[]byte(`{"type":"assistant","message":"legacy"}`+"\n"),
-		[]string{"legacy prompt"},
-	)
-
-	// Initial migration produces an archived /full/<n> with current naming.
-	var initial bytes.Buffer
-	r1, err := migrateCheckpointsV2(ctx, repo, v1Store, v2Store, &initial, false)
-	require.NoError(t, err)
-	require.Equal(t, 1, r1.migrated)
-
-	// Rewrite the archived generation so its raw transcript files are
-	// stored under the pre-rename names (full.jsonl / content_hash.txt) —
-	// the state on disk for any repo migrated before commit a3cd77122.
-	archived, err := v2Store.ListArchivedGenerations()
-	require.NoError(t, err)
-	require.Len(t, archived, 1)
-	renameRawTranscriptArtifactsToLegacyNames(t, repo, v2Store, plumbing.ReferenceName(paths.V2FullRefPrefix+archived[0]), cpID, 0)
-
-	archivedBefore, err := v2Store.ListArchivedGenerations()
-	require.NoError(t, err)
-
-	// Rerun must recognize the legacy names and skip.
-	var rerun bytes.Buffer
-	r2, err := migrateCheckpointsV2(ctx, repo, v1Store, v2Store, &rerun, false)
-	require.NoError(t, err)
-	assert.Equal(t, 0, r2.migrated)
-	assert.Equal(t, 1, r2.skipped)
-
-	archivedAfter, err := v2Store.ListArchivedGenerations()
-	require.NoError(t, err)
-	assert.Equal(t, archivedBefore, archivedAfter, "rerun must not create new archived generations for legacy-named artifacts")
-}
-
 func TestMigrateCheckpointsV2_Idempotent(t *testing.T) {
 	t.Parallel()
 	repo := initMigrateTestRepo(t)
@@ -1312,71 +1266,6 @@ func v2FullRefSearchOrderForTest(t *testing.T, v2Store *checkpoint.V2GitStore) [
 		refNames = append(refNames, plumbing.ReferenceName(paths.V2FullRefPrefix+archived[i]))
 	}
 	return refNames
-}
-
-// renameRawTranscriptArtifactsToLegacyNames rewrites a single session inside
-// a /full/* ref so its raw_transcript[/.NNN] and raw_transcript_hash.txt
-// entries are renamed to the pre-rename filenames (full.jsonl[/.NNN] /
-// content_hash.txt). Used to simulate archived generations written before
-// commit a3cd77122.
-func renameRawTranscriptArtifactsToLegacyNames(t *testing.T, repo *git.Repository, v2Store *checkpoint.V2GitStore, refName plumbing.ReferenceName, cpID id.CheckpointID, sessionIdx int) {
-	t.Helper()
-
-	parentHash, rootTreeHash, err := v2Store.GetRefState(refName)
-	require.NoError(t, err)
-
-	rootTree, err := repo.TreeObject(rootTreeHash)
-	require.NoError(t, err)
-
-	sessionPath := cpID.Path() + "/" + strconv.Itoa(sessionIdx)
-	sessionTree, err := rootTree.Tree(sessionPath)
-	require.NoError(t, err)
-
-	var renamedEntries []object.TreeEntry
-	var deleteNames []string
-	for _, entry := range sessionTree.Entries {
-		switch {
-		case entry.Name == paths.V2RawTranscriptFileName:
-			renamedEntries = append(renamedEntries, object.TreeEntry{
-				Name: paths.TranscriptFileName,
-				Mode: entry.Mode,
-				Hash: entry.Hash,
-			})
-			deleteNames = append(deleteNames, entry.Name)
-		case strings.HasPrefix(entry.Name, paths.V2RawTranscriptFileName+"."):
-			suffix := strings.TrimPrefix(entry.Name, paths.V2RawTranscriptFileName)
-			renamedEntries = append(renamedEntries, object.TreeEntry{
-				Name: paths.TranscriptFileName + suffix,
-				Mode: entry.Mode,
-				Hash: entry.Hash,
-			})
-			deleteNames = append(deleteNames, entry.Name)
-		case entry.Name == paths.V2RawTranscriptHashFileName:
-			renamedEntries = append(renamedEntries, object.TreeEntry{
-				Name: paths.ContentHashFileName,
-				Mode: entry.Mode,
-				Hash: entry.Hash,
-			})
-			deleteNames = append(deleteNames, entry.Name)
-		}
-	}
-	require.NotEmpty(t, renamedEntries, "session must have raw_transcript artifacts to rename")
-
-	newRootHash, err := checkpoint.UpdateSubtree(
-		repo,
-		rootTreeHash,
-		[]string{string(cpID[:2]), string(cpID[2:]), strconv.Itoa(sessionIdx)},
-		renamedEntries,
-		checkpoint.UpdateSubtreeOptions{
-			MergeMode:   checkpoint.MergeKeepExisting,
-			DeleteNames: deleteNames,
-		},
-	)
-	require.NoError(t, err)
-
-	commitHash, err := checkpoint.CreateCommit(context.Background(), repo, newRootHash, parentHash, "test: rename to legacy names\n", "Test", "test@test.com")
-	require.NoError(t, err)
-	require.NoError(t, repo.Storer.SetReference(plumbing.NewHashReference(refName, commitHash)))
 }
 
 func hasCurrentFullSessionArtifactsForTest(t *testing.T, repo *git.Repository, v2Store *checkpoint.V2GitStore, cpID id.CheckpointID, sessionIdx int) bool {
