@@ -22,6 +22,7 @@ import (
 	"github.com/entireio/cli/cmd/entire/cli/agent"
 	"github.com/entireio/cli/cmd/entire/cli/agent/external"
 	"github.com/entireio/cli/cmd/entire/cli/agent/types"
+	"github.com/entireio/cli/cmd/entire/cli/interactive"
 	"github.com/entireio/cli/cmd/entire/cli/logging"
 	"github.com/entireio/cli/cmd/entire/cli/paths"
 	reviewtypes "github.com/entireio/cli/cmd/entire/cli/review/types"
@@ -423,8 +424,41 @@ func runMultiAgentPath(
 		})
 	}
 
-	_, waitErr := RunMulti(ctx, reviewers, reviewtypes.RunConfig{}, []reviewtypes.Sink{DumpSink{W: out}})
-	if waitErr != nil && ctx.Err() == nil {
+	// Compose sinks based on TTY detection.
+	// TTY mode: [TUISink, DumpSink] — TUI owns the live dashboard; DumpSink
+	// renders the post-run narrative after TUI dismisses (RunFinished is called
+	// on each sink in order, and TUISink.RunFinished blocks until user dismisses).
+	// Non-TTY mode: [DumpSink] alone.
+	//
+	// A derived context is used so the TUI's Ctrl+C handler can cancel the run
+	// via the same cancelRun function that the orchestrator's context is built on.
+	runCtx, cancelRun := context.WithCancel(ctx)
+	defer cancelRun()
+
+	agentNames := make([]string, len(reviewers))
+	for i, r := range reviewers {
+		agentNames[i] = r.Name()
+	}
+
+	// TUI requires both:
+	//   - terminal stdout (otherwise ANSI codes corrupt redirected output)
+	//   - a promptable stdin (otherwise the post-run dismissal loop blocks
+	//     forever — happens when entire review is invoked from inside an
+	//     agent like Claude Code or Gemini CLI, where stdout is a TTY but
+	//     keypresses are never delivered)
+	var sinks []reviewtypes.Sink
+	if interactive.IsTerminalWriter(out) && interactive.CanPromptInteractively() {
+		tuiSink := NewTUISink(agentNames, cancelRun, out)
+		tuiSink.Start()
+		defer tuiSink.Wait()
+		sinks = append(sinks, tuiSink)
+		sinks = append(sinks, DumpSink{W: out})
+	} else {
+		sinks = append(sinks, DumpSink{W: out})
+	}
+
+	_, waitErr := RunMulti(runCtx, reviewers, reviewtypes.RunConfig{}, sinks)
+	if waitErr != nil && runCtx.Err() == nil && ctx.Err() == nil {
 		return fmt.Errorf("review run: %w", waitErr)
 	}
 	return nil
