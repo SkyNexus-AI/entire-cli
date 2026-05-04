@@ -333,6 +333,25 @@ func checkpointTimestampRangeFromFullTree(cpTree *object.Tree) (GenerationMetada
 	return gen, found
 }
 
+// AggregateTranscriptTimestamps walks pre-loaded transcript bytes to derive a
+// generation timestamp envelope using the same first-event/last-event semantics
+// as ComputeGenerationTimestampsFromTrees. Use this when the caller already has
+// transcripts in memory (e.g. during migration packing) to avoid the git blob
+// reads + tree walks that would otherwise re-fetch them.
+func AggregateTranscriptTimestamps(transcripts [][]byte) (GenerationMetadata, bool) {
+	var gen GenerationMetadata
+	found := false
+	for _, transcript := range transcripts {
+		if len(transcript) == 0 {
+			continue
+		}
+		if r, ok := timestampRangeFromTranscript(transcript); ok {
+			mergeGenerationRange(&gen, &found, r)
+		}
+	}
+	return gen, found
+}
+
 func timestampRangeFromTranscript(transcript []byte) (GenerationMetadata, bool) {
 	reader := bufio.NewReader(bytes.NewReader(transcript))
 	var gen GenerationMetadata
