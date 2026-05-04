@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -142,7 +143,17 @@ func AgentForTranscriptPath(transcriptPath, repoPath string) (Agent, bool) {
 
 // pathHasDirPrefix reports whether path is contained within dir (or equals it).
 // Adds a trailing separator before prefix-matching so /a/bc doesn't match /a/b.
+//
+// On Windows, comparison is case-insensitive: NTFS/ReFS treat paths as
+// case-insensitive, and filepath.Abs preserves whatever casing the input had,
+// so a transcript path like `C:\Users\Bob\.cursor\...` and a session dir like
+// `c:\users\bob\.cursor\...` refer to the same location but would not match
+// under a byte-wise comparison.
 func pathHasDirPrefix(path, dir string) bool {
+	if runtime.GOOS == "windows" {
+		path = strings.ToLower(path)
+		dir = strings.ToLower(dir)
+	}
 	if path == dir {
 		return true
 	}

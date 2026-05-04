@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -230,6 +231,35 @@ func TestAgentForTranscriptPath(t *testing.T) {
 				t.Errorf("agent = %q, want %q", ag.Type(), tc.wantAgent)
 			}
 		})
+	}
+}
+
+// TestPathHasDirPrefix_CaseSensitivity verifies the platform-dependent
+// case-handling of pathHasDirPrefix. On Windows, NTFS/ReFS are case-
+// insensitive and filepath.Abs preserves whatever casing the input had, so
+// the transcript-path override must match across casing differences. On Unix
+// the comparison stays case-sensitive (different cases are different files).
+func TestPathHasDirPrefix_CaseSensitivity(t *testing.T) {
+	t.Parallel()
+
+	if runtime.GOOS == "windows" {
+		// Mixed-case paths that refer to the same NTFS location must match.
+		if !pathHasDirPrefix(`C:\Users\Bob\.cursor\projects\repo\agent-transcripts\abc.jsonl`,
+			`c:\users\bob\.cursor\projects\repo\agent-transcripts`) {
+			t.Errorf("expected case-insensitive match on Windows for mixed-case prefix")
+		}
+		// Equality with different casing should also match.
+		if !pathHasDirPrefix(`C:\Users\Bob\.cursor\projects\repo`,
+			`c:\users\bob\.cursor\projects\repo`) {
+			t.Errorf("expected case-insensitive equality match on Windows")
+		}
+		return
+	}
+
+	// Unix: case-sensitive — different casing means different files.
+	if pathHasDirPrefix("/Home/u/.cursor/projects/repo/x.jsonl",
+		"/home/u/.cursor/projects/repo") {
+		t.Errorf("expected case-sensitive comparison on %s", runtime.GOOS)
 	}
 }
 
