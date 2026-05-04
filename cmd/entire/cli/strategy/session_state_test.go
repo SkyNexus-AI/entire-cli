@@ -676,6 +676,53 @@ func TestStoreAgentTypeHint_InvalidSessionID_ReturnsError(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestClaimSessionStartBanner_FirstWriterWins(t *testing.T) {
+	dir := t.TempDir()
+	_, err := git.PlainInit(dir, false)
+	require.NoError(t, err)
+	t.Chdir(dir)
+
+	ctx := context.Background()
+	sessionID := "2026-01-01-banner-claim"
+
+	claimed, err := ClaimSessionStartBanner(ctx, sessionID)
+	require.NoError(t, err)
+	require.True(t, claimed, "first call must win the banner claim")
+
+	claimed, err = ClaimSessionStartBanner(ctx, sessionID)
+	require.NoError(t, err)
+	require.False(t, claimed, "subsequent calls must report the banner already claimed")
+}
+
+func TestClaimSessionStartBanner_InvalidSessionID_ReturnsError(t *testing.T) {
+	dir := t.TempDir()
+	_, err := git.PlainInit(dir, false)
+	require.NoError(t, err)
+	t.Chdir(dir)
+
+	_, err = ClaimSessionStartBanner(context.Background(), "../../../etc/passwd")
+	require.Error(t, err)
+}
+
+func TestClearSessionState_RemovesBannerMarker(t *testing.T) {
+	dir := t.TempDir()
+	_, err := git.PlainInit(dir, false)
+	require.NoError(t, err)
+	t.Chdir(dir)
+
+	ctx := context.Background()
+	sessionID := "2026-01-01-clear-banner"
+
+	_, err = ClaimSessionStartBanner(ctx, sessionID)
+	require.NoError(t, err)
+	require.NoError(t, ClearSessionState(ctx, sessionID))
+
+	// After clear, the marker is gone — the next claim wins again.
+	claimed, err := ClaimSessionStartBanner(ctx, sessionID)
+	require.NoError(t, err)
+	require.True(t, claimed, "ClearSessionState should remove the banner marker")
+}
+
 func TestClearSessionState_RemovesAgentHint(t *testing.T) {
 	dir := t.TempDir()
 	_, err := git.PlainInit(dir, false)

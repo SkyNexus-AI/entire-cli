@@ -436,6 +436,64 @@ func TestHandleLifecycleSessionStart_AgentTypeHintFirstWriterWins(t *testing.T) 
 	require.Equal(t, agent.AgentTypeCursor, got, "first SessionStart caller must own the session")
 }
 
+// TestHandleLifecycleSessionStart_NonWriterClaimDoesNotSuppressBanner covers
+// the Cursor + Claude Code forwarding race: Cursor IDE forwards SessionStart
+// to both .cursor/hooks.json (Cursor agent — no HookResponseWriter) and
+// .claude/settings.json (Claude Code — has HookResponseWriter). When Cursor
+// wins the ownership claim, Claude Code must still emit the banner; otherwise
+// the user sees nothing ~50% of the time (the original Bugbot finding).
+func TestHandleLifecycleSessionStart_NonWriterClaimDoesNotSuppressBanner(t *testing.T) {
+	setupStopTestRepo(t)
+
+	ctx := context.Background()
+	sessionID := "test-non-writer-claim"
+
+	// Non-writer agent (Cursor) wins the ownership race.
+	nonWriter := newMockAgent()
+	nonWriter.agentType = agent.AgentTypeCursor
+	require.NoError(t, handleLifecycleSessionStart(ctx, nonWriter, &agent.Event{
+		Type: agent.SessionStart, SessionID: sessionID, Timestamp: time.Now(),
+	}))
+
+	// Writer-capable agent (Claude Code) fires SessionStart for the same session.
+	writer := newMockHookResponseAgent()
+	writer.agentType = agent.AgentTypeClaudeCode
+	require.NoError(t, handleLifecycleSessionStart(ctx, writer, &agent.Event{
+		Type: agent.SessionStart, SessionID: sessionID, Timestamp: time.Now(),
+	}))
+	require.NotEmpty(t, writer.lastMessage,
+		"banner-capable agent must emit the banner even after a non-writer claimed ownership")
+
+	// Ownership still belongs to whoever called StoreAgentTypeHint first.
+	require.Equal(t, agent.AgentTypeCursor, strategy.LoadAgentTypeHint(ctx, sessionID),
+		"first SessionStart caller still owns the session")
+}
+
+// TestHandleLifecycleSessionStart_BannerClaimedOnce verifies that once a
+// banner-capable agent has shown the banner, a subsequent banner-capable
+// agent firing SessionStart for the same session ID does not duplicate it.
+func TestHandleLifecycleSessionStart_BannerClaimedOnce(t *testing.T) {
+	setupStopTestRepo(t)
+
+	ctx := context.Background()
+	sessionID := "test-banner-claimed-once"
+
+	first := newMockHookResponseAgent()
+	first.agentType = agent.AgentTypeClaudeCode
+	require.NoError(t, handleLifecycleSessionStart(ctx, first, &agent.Event{
+		Type: agent.SessionStart, SessionID: sessionID, Timestamp: time.Now(),
+	}))
+	require.NotEmpty(t, first.lastMessage)
+
+	second := newMockHookResponseAgent()
+	second.agentType = agent.AgentTypeGemini
+	require.NoError(t, handleLifecycleSessionStart(ctx, second, &agent.Event{
+		Type: agent.SessionStart, SessionID: sessionID, Timestamp: time.Now(),
+	}))
+	require.Empty(t, second.lastMessage,
+		"banner must not be re-emitted once a writer agent has shown it")
+}
+
 // TestHandleLifecycleSessionStart_GeminiRepeatSourceDoesNotDuplicate covers
 // the specific case the user reported: Gemini fires SessionStart twice for
 // the same session (e.g., source=startup followed by source=resume) and we

@@ -288,11 +288,9 @@ func LoadModelHint(ctx context.Context, sessionID string) string {
 // Returns (created=true) when this call wrote the hint, (created=false) when
 // the hint already existed (no-op) or agentType was empty/Unknown.
 //
-// Callers can use the created bool to gate one-time-per-session side effects
-// — e.g., the SessionStart banner: if Gemini fires SessionStart twice (once
-// for source=startup, once for source=resume) we don't want to print the
-// banner twice. The first call creates the hint and returns created=true;
-// the second sees the hint and returns created=false.
+// Banner display is gated separately via ClaimSessionStartBanner — winning
+// the ownership claim does NOT mean this agent should also print the banner,
+// because the winner may not implement HookResponseWriter (e.g., Cursor).
 func StoreAgentTypeHint(ctx context.Context, sessionID string, agentType types.AgentType) (created bool, err error) {
 	if vErr := validation.ValidateSessionID(sessionID); vErr != nil {
 		return false, fmt.Errorf("invalid session ID: %w", vErr)
@@ -322,6 +320,43 @@ func StoreAgentTypeHint(ctx context.Context, sessionID string, agentType types.A
 	if _, wErr := f.WriteString(string(agentType)); wErr != nil {
 		return false, fmt.Errorf("failed to write agent hint file: %w", wErr)
 	}
+	return true, nil
+}
+
+// ClaimSessionStartBanner records that the SessionStart banner has been emitted
+// for a session. First-writer-wins semantics, separate from StoreAgentTypeHint
+// so a non-banner-capable agent winning the ownership race (e.g. Cursor, which
+// doesn't implement HookResponseWriter) doesn't suppress the banner from a
+// banner-capable agent that fires SessionStart for the same session.
+//
+// Callers MUST only invoke this from within the HookResponseWriter branch — the
+// claim represents "a banner was actually shown", not just "an agent considered
+// showing one". Otherwise a non-writer claimant would re-introduce the bug.
+//
+// Returns (claimed=true) when this call won the race and the caller should
+// emit the banner; (claimed=false) when an earlier call already claimed it.
+func ClaimSessionStartBanner(ctx context.Context, sessionID string) (claimed bool, err error) {
+	if vErr := validation.ValidateSessionID(sessionID); vErr != nil {
+		return false, fmt.Errorf("invalid session ID: %w", vErr)
+	}
+
+	stateDir, sErr := getSessionStateDir(ctx)
+	if sErr != nil {
+		return false, fmt.Errorf("failed to get session state directory: %w", sErr)
+	}
+	if mErr := os.MkdirAll(stateDir, 0o750); mErr != nil {
+		return false, fmt.Errorf("failed to create session state directory: %w", mErr)
+	}
+
+	markerFile := filepath.Join(stateDir, sessionID+".banner")
+	f, oErr := os.OpenFile(markerFile, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600) //nolint:gosec // markerFile path is built from validated sessionID
+	if oErr != nil {
+		if errors.Is(oErr, os.ErrExist) {
+			return false, nil
+		}
+		return false, fmt.Errorf("failed to create banner marker file: %w", oErr)
+	}
+	_ = f.Close()
 	return true, nil
 }
 
