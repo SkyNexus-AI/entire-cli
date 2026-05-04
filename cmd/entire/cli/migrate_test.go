@@ -369,63 +369,6 @@ func TestMigrateCheckpointsV2_RerunResumesInterruptedMigration(t *testing.T) {
 	assert.Equal(t, 1, result2.skipped)
 }
 
-// TestMigrateCheckpointsV2_RenamesLegacyArchivedTranscriptFiles verifies
-// that an archived /full/<n> ref written under pre-rename filenames
-// (full.jsonl / content_hash.txt) is rewritten in place so each session
-// subtree carries the current names (raw_transcript /
-// raw_transcript_hash.txt). The blob hashes — and therefore the file
-// contents — must be unchanged.
-func TestMigrateCheckpointsV2_RenamesLegacyArchivedTranscriptFiles(t *testing.T) {
-	t.Parallel()
-	repo := initMigrateTestRepo(t)
-	v1Store, v2Store := newMigrateStores(repo)
-	ctx := context.Background()
-
-	cpID := id.MustCheckpointID("eeff22334455")
-	writeV1Checkpoint(t, v1Store, cpID, "session-rename",
-		[]byte(`{"type":"assistant","message":"keep the bytes"}`+"\n"),
-		[]string{"rename prompt"},
-	)
-
-	var initial bytes.Buffer
-	r1, err := migrateCheckpointsV2(ctx, repo, v1Store, v2Store, &initial, false)
-	require.NoError(t, err)
-	require.Equal(t, 1, r1.migrated)
-
-	archived, err := v2Store.ListArchivedGenerations()
-	require.NoError(t, err)
-	require.Len(t, archived, 1)
-	archivedRef := plumbing.ReferenceName(paths.V2FullRefPrefix + archived[0])
-
-	// Capture the raw_transcript / raw_transcript_hash blob hashes BEFORE
-	// rewriting to legacy names — the rename must preserve them.
-	rawHashBefore, hashHashBefore := readRawTranscriptBlobHashesForTest(t, repo, v2Store, archivedRef, cpID, 0)
-
-	// Mutate the archived gen to use legacy names.
-	renameRawTranscriptArtifactsToLegacyNames(t, repo, v2Store, archivedRef, cpID, 0)
-	require.False(t, sessionHasNewNamingForTest(t, repo, v2Store, archivedRef, cpID, 0),
-		"precondition: legacy naming should be in place before rerun")
-
-	// Rerun. Migration must rename the legacy entries back to current
-	// names without changing the blob hashes.
-	var rerun bytes.Buffer
-	_, err = migrateCheckpointsV2(ctx, repo, v1Store, v2Store, &rerun, false)
-	require.NoError(t, err)
-
-	rawHashAfter, hashHashAfter := readRawTranscriptBlobHashesForTest(t, repo, v2Store, archivedRef, cpID, 0)
-	assert.Equal(t, rawHashBefore, rawHashAfter, "raw transcript blob hash must survive the rename unchanged")
-	assert.Equal(t, hashHashBefore, hashHashAfter, "raw transcript hash blob must survive the rename unchanged")
-	assert.True(t, sessionHasNewNamingForTest(t, repo, v2Store, archivedRef, cpID, 0),
-		"session should be on current naming after rerun")
-
-	// One more rerun should be a clean no-op — nothing left to rename.
-	var second bytes.Buffer
-	_, err = migrateCheckpointsV2(ctx, repo, v1Store, v2Store, &second, false)
-	require.NoError(t, err)
-	assert.NotContains(t, second.String(), "Renamed legacy transcript filenames",
-		"second rerun should produce no rename output")
-}
-
 // TestMigrateCheckpointsV2_RerunSkipsLegacyArchivedFullJsonl pins the
 // regression for the 46→86 generation duplication: archived /full/<n> refs
 // written under the pre-rename names (full.jsonl, content_hash.txt) must
@@ -1376,66 +1319,6 @@ func v2FullRefSearchOrderForTest(t *testing.T, v2Store *checkpoint.V2GitStore) [
 // entries are renamed to the pre-rename filenames (full.jsonl[/.NNN] /
 // content_hash.txt). Used to simulate archived generations written before
 // commit a3cd77122.
-// readRawTranscriptBlobHashesForTest returns the blob hashes of the
-// raw_transcript and raw_transcript_hash.txt files for one session in one
-// /full/* ref. Fails the test if either file is missing.
-func readRawTranscriptBlobHashesForTest(t *testing.T, repo *git.Repository, v2Store *checkpoint.V2GitStore, refName plumbing.ReferenceName, cpID id.CheckpointID, sessionIdx int) (transcript, hash plumbing.Hash) {
-	t.Helper()
-
-	_, rootTreeHash, err := v2Store.GetRefState(refName)
-	require.NoError(t, err)
-	rootTree, err := repo.TreeObject(rootTreeHash)
-	require.NoError(t, err)
-	sessionTree, err := rootTree.Tree(cpID.Path() + "/" + strconv.Itoa(sessionIdx))
-	require.NoError(t, err)
-
-	for _, entry := range sessionTree.Entries {
-		switch entry.Name {
-		case paths.V2RawTranscriptFileName:
-			transcript = entry.Hash
-		case paths.V2RawTranscriptHashFileName:
-			hash = entry.Hash
-		}
-	}
-	require.NotEqual(t, plumbing.ZeroHash, transcript, "raw_transcript should exist for session %d in %s", sessionIdx, refName)
-	require.NotEqual(t, plumbing.ZeroHash, hash, "raw_transcript_hash.txt should exist for session %d in %s", sessionIdx, refName)
-	return transcript, hash
-}
-
-// sessionHasNewNamingForTest reports whether one session subtree carries
-// the current naming convention (raw_transcript + raw_transcript_hash.txt)
-// and not the pre-rename names (full.jsonl / content_hash.txt).
-func sessionHasNewNamingForTest(t *testing.T, repo *git.Repository, v2Store *checkpoint.V2GitStore, refName plumbing.ReferenceName, cpID id.CheckpointID, sessionIdx int) bool {
-	t.Helper()
-
-	_, rootTreeHash, err := v2Store.GetRefState(refName)
-	require.NoError(t, err)
-	rootTree, err := repo.TreeObject(rootTreeHash)
-	require.NoError(t, err)
-	sessionTree, err := rootTree.Tree(cpID.Path() + "/" + strconv.Itoa(sessionIdx))
-	require.NoError(t, err)
-
-	hasNewTranscript := false
-	hasNewHash := false
-	hasLegacyTranscript := false
-	hasLegacyHash := false
-	for _, entry := range sessionTree.Entries {
-		switch {
-		case entry.Name == paths.V2RawTranscriptFileName,
-			strings.HasPrefix(entry.Name, paths.V2RawTranscriptFileName+"."):
-			hasNewTranscript = true
-		case entry.Name == paths.V2RawTranscriptHashFileName:
-			hasNewHash = true
-		case entry.Name == paths.TranscriptFileName,
-			strings.HasPrefix(entry.Name, paths.TranscriptFileName+"."):
-			hasLegacyTranscript = true
-		case entry.Name == paths.ContentHashFileName:
-			hasLegacyHash = true
-		}
-	}
-	return hasNewTranscript && hasNewHash && !hasLegacyTranscript && !hasLegacyHash
-}
-
 func renameRawTranscriptArtifactsToLegacyNames(t *testing.T, repo *git.Repository, v2Store *checkpoint.V2GitStore, refName plumbing.ReferenceName, cpID id.CheckpointID, sessionIdx int) {
 	t.Helper()
 

@@ -187,18 +187,6 @@ func migrateCheckpointsV2(ctx context.Context, repo *git.Repository, v1Store *ch
 		return nil, fmt.Errorf("failed to list v1 checkpoints: %w", err)
 	}
 
-	// Sweep any pre-rename transcript filenames (full.jsonl /
-	// content_hash.txt) out of every /full/* ref before doing any other
-	// work. The blobs are preserved — only tree entry names change — so
-	// reads, the artifact-presence check, and downstream logic all see a
-	// single naming convention regardless of which CLI version originally
-	// populated this repo. No-op on a repo that's already on current names.
-	if renamed, renameErr := v2Store.RenameLegacyArtifactsInAllFullRefs(ctx, migrateAuthorName, migrateAuthorEmail); renameErr != nil {
-		return nil, fmt.Errorf("rename legacy transcript filenames: %w", renameErr)
-	} else if renamed > 0 {
-		fmt.Fprintf(progressOut, "Renamed legacy transcript filenames in %d session(s).\n", renamed)
-	}
-
 	if len(v1List) == 0 {
 		return &migrateResult{}, nil
 	}
