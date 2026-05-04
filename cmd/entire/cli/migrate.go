@@ -95,18 +95,27 @@ func runMigrateCheckpointsV2(ctx context.Context, cmd *cobra.Command, force bool
 		return err
 	}
 
-	// The packer wrote each fresh /full/<n> with generation.json computed
-	// in-memory from the just-packed transcripts (via
-	// AggregateTranscriptTimestamps), so re-deriving timestamps from the
-	// archived blobs in the repair pass is pure waste — and on a partial-
-	// state repo that work dominates wall time.
-	repairResult, repairErr := strategy.RepairV2GenerationMetadata(ctx, strategy.RepairV2GenerationMetadataOptions{
-		ExcludeRefs: freshlyPackedRefs,
-	})
-	if repairErr != nil {
-		return fmt.Errorf("failed to repair archived v2 generation metadata: %w", repairErr)
+	// Only run the generation-metadata repair pass when the migration
+	// actually wrote something. RepairV2GenerationMetadata does a
+	// `git ls-remote` plus a transcript-blob walk for every archived
+	// /full/<n>, both of which are expensive — multi-second on a healthy
+	// network and minutes on a repo with many large archives. On a no-op
+	// rerun (everything skipped) there's no new state for repair to
+	// reconcile, so paying that cost on every invocation is wrong. When
+	// the migration does write archives, freshly-packed refs are excluded
+	// since their generation.json is already correct from the packer's
+	// in-memory AggregateTranscriptTimestamps.
+	var repairResult *strategy.RepairV2GenerationMetadataResult
+	if len(freshlyPackedRefs) > 0 {
+		var repairErr error
+		repairResult, repairErr = strategy.RepairV2GenerationMetadata(ctx, strategy.RepairV2GenerationMetadataOptions{
+			ExcludeRefs: freshlyPackedRefs,
+		})
+		if repairErr != nil {
+			return fmt.Errorf("failed to repair archived v2 generation metadata: %w", repairErr)
+		}
+		printV2GenerationRepairResult(out, cmd.ErrOrStderr(), repairResult)
 	}
-	printV2GenerationRepairResult(out, cmd.ErrOrStderr(), repairResult)
 
 	printMigrateCompletion(out, result)
 	fmt.Fprintln(out, "Note: V2 checkpoints are stored as custom refs under refs/entire/checkpoints/v2/*, not as a branch visible in the GitHub UI.")

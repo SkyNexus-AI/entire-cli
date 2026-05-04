@@ -554,13 +554,25 @@ func TestMigrateCmd_RepairsArchivedGenerationMetadata(t *testing.T) {
 	t.Chdir(wt.Filesystem.Root())
 	paths.ClearWorktreeRootCache()
 
-	cpID := id.MustCheckpointID("123456789abc")
+	// A pre-existing archived generation with wrong generation.json
+	// timestamps. The repair pass should rewrite this when triggered.
+	malformedCpID := id.MustCheckpointID("123456789abc")
 	rawOldest := time.Date(2025, 12, 20, 8, 0, 0, 0, time.UTC)
 	rawNewest := time.Date(2025, 12, 20, 8, 5, 0, 0, time.UTC)
-	createArchivedGenerationRefWithRawTranscript(t, repo, "0000000000007", cpID,
+	createArchivedGenerationRefWithRawTranscript(t, repo, "0000000000007", malformedCpID,
 		time.Date(2026, 1, 7, 0, 0, 0, 0, time.UTC),
 		time.Date(2026, 1, 7, 1, 0, 0, 0, time.UTC),
 		rawOldest, rawNewest)
+
+	// A real v1 checkpoint that the migration will pack — without this,
+	// migration is a no-op and (correctly) skips the repair pass to avoid
+	// gigabytes of unconditional transcript-blob reads on every rerun.
+	v1Store, _ := newMigrateStores(repo)
+	v1cpID := id.MustCheckpointID("aabbccdd0011")
+	writeV1Checkpoint(t, v1Store, v1cpID, "session-trigger-repair",
+		[]byte(`{"type":"assistant","message":"trigger repair"}`+"\n"),
+		[]string{"prompt"},
+	)
 
 	cmd := newMigrateCmd()
 	var stdout, stderr bytes.Buffer
@@ -577,6 +589,51 @@ func TestMigrateCmd_RepairsArchivedGenerationMetadata(t *testing.T) {
 	require.NoError(t, genErr)
 	assert.True(t, gen.OldestCheckpointAt.Equal(rawOldest))
 	assert.True(t, gen.NewestCheckpointAt.Equal(rawNewest))
+}
+
+// TestMigrateCmd_NoOpRerunSkipsGenerationMetadataRepair pins the gating
+// rule that prevents `entire migrate --checkpoints v2` from running the
+// expensive repair pass when the migration loop did nothing. Without this
+// gate, every rerun against a fully-migrated repo paid for one git
+// ls-remote plus a full transcript-blob walk of every archived /full/<n>
+// — minutes-to-hours on big repos.
+func TestMigrateCmd_NoOpRerunSkipsGenerationMetadataRepair(t *testing.T) {
+	repo := initMigrateTestRepo(t)
+	wt, err := repo.Worktree()
+	require.NoError(t, err)
+	t.Chdir(wt.Filesystem.Root())
+	paths.ClearWorktreeRootCache()
+
+	v1Store, v2Store := newMigrateStores(repo)
+	cpID := id.MustCheckpointID("ffeeddccbbaa")
+	writeV1Checkpoint(t, v1Store, cpID, "session-noop-rerun",
+		[]byte(`{"type":"assistant","message":"first"}`+"\n"),
+		[]string{"prompt"},
+	)
+
+	// First run: migrates the checkpoint. Repair output is allowed but not asserted.
+	first := newMigrateCmd()
+	var firstOut, firstErr bytes.Buffer
+	first.SetOut(&firstOut)
+	first.SetErr(&firstErr)
+	first.SetArgs([]string{"--checkpoints", "v2"})
+	require.NoError(t, first.Execute())
+
+	summary, err := v2Store.ReadCommitted(context.Background(), cpID)
+	require.NoError(t, err)
+	require.NotNil(t, summary, "first run should leave the checkpoint in /main")
+
+	// Second run: nothing to do. Repair pass must not run.
+	second := newMigrateCmd()
+	var secondOut, secondErr bytes.Buffer
+	second.SetOut(&secondOut)
+	second.SetErr(&secondErr)
+	second.SetArgs([]string{"--checkpoints", "v2"})
+	require.NoError(t, second.Execute())
+
+	assert.Contains(t, secondOut.String(), "Migration complete: 0 migrated, 1 skipped")
+	assert.NotContains(t, secondOut.String(), "Archived generation metadata repair",
+		"no-op rerun must not invoke RepairV2GenerationMetadata")
 }
 
 func TestMigrateCheckpointsV2_MultiSession(t *testing.T) {
