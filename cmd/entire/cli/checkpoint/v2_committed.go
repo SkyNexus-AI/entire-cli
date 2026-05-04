@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/entireio/cli/cmd/entire/cli/agent"
@@ -133,6 +134,120 @@ func (s *V2GitStore) findFullSessionArtifacts(checkpointID id.CheckpointID, sess
 	}
 
 	return fullSessionArtifacts{}, nil
+}
+
+// FullSessionArtifactsIndex maps "<checkpointID>/<sessionIndex>" to the ref
+// where both raw_transcript[/.NNN] and raw_transcript_hash.txt are present.
+// Built once via BuildFullSessionArtifactsIndex so the migration loop can
+// answer presence queries with O(1) map lookups instead of repeated
+// HasFullSessionArtifacts calls (each of which lists every git ref and
+// re-walks every /full/* tree).
+type FullSessionArtifactsIndex map[string]plumbing.ReferenceName
+
+// Has reports whether the given session has a complete pair of
+// raw_transcript and raw_transcript_hash.txt entries in some /full/* ref.
+func (idx FullSessionArtifactsIndex) Has(checkpointID id.CheckpointID, sessionIndex int) bool {
+	if idx == nil {
+		return false
+	}
+	_, ok := idx[fullArtifactsIndexKey(checkpointID, sessionIndex)]
+	return ok
+}
+
+func fullArtifactsIndexKey(checkpointID id.CheckpointID, sessionIndex int) string {
+	return string(checkpointID) + "/" + strconv.Itoa(sessionIndex)
+}
+
+// BuildFullSessionArtifactsIndex walks every /full/* ref's tree once and
+// records sessions whose subtree contains both raw_transcript[/.NNN] and
+// raw_transcript_hash.txt. Earlier-searched refs (current, then newest
+// archive first) win when a session appears in more than one ref.
+//
+// Cost is one ref-namespace listing plus one tree walk per /full/* ref.
+// Subsequent presence checks are map lookups — independent of repo ref
+// count and archive count.
+func (s *V2GitStore) BuildFullSessionArtifactsIndex() (FullSessionArtifactsIndex, error) {
+	refNames, err := s.fullRefSearchOrder()
+	if err != nil {
+		return nil, err
+	}
+
+	index := make(FullSessionArtifactsIndex)
+	for _, refName := range refNames {
+		_, rootTreeHash, refErr := s.GetRefState(refName)
+		if refErr != nil {
+			if errors.Is(refErr, plumbing.ErrReferenceNotFound) {
+				continue
+			}
+			return nil, fmt.Errorf("read %s: %w", refName, refErr)
+		}
+		rootTree, treeErr := s.repo.TreeObject(rootTreeHash)
+		if treeErr != nil {
+			return nil, fmt.Errorf("read %s root tree: %w", refName, treeErr)
+		}
+		if err := s.indexFullSessionsInTree(rootTree, refName, index); err != nil {
+			return nil, fmt.Errorf("walk %s: %w", refName, err)
+		}
+	}
+	return index, nil
+}
+
+func (s *V2GitStore) indexFullSessionsInTree(rootTree *object.Tree, refName plumbing.ReferenceName, index FullSessionArtifactsIndex) error {
+	for _, shardEntry := range rootTree.Entries {
+		if shardEntry.Mode != filemode.Dir || len(shardEntry.Name) != 2 {
+			continue
+		}
+		shardTree, err := s.repo.TreeObject(shardEntry.Hash)
+		if err != nil {
+			return fmt.Errorf("read shard %s: %w", shardEntry.Name, err)
+		}
+		for _, cpEntry := range shardTree.Entries {
+			if cpEntry.Mode != filemode.Dir {
+				continue
+			}
+			cpTree, err := s.repo.TreeObject(cpEntry.Hash)
+			if err != nil {
+				return fmt.Errorf("read checkpoint tree %s/%s: %w", shardEntry.Name, cpEntry.Name, err)
+			}
+			cpid := id.CheckpointID(shardEntry.Name + cpEntry.Name)
+			for _, sessionEntry := range cpTree.Entries {
+				if sessionEntry.Mode != filemode.Dir {
+					continue
+				}
+				sessionIdx, atoiErr := strconv.Atoi(sessionEntry.Name)
+				if atoiErr != nil {
+					continue
+				}
+				sessionTree, err := s.repo.TreeObject(sessionEntry.Hash)
+				if err != nil {
+					return fmt.Errorf("read session tree %s/%s/%d: %w", shardEntry.Name, cpEntry.Name, sessionIdx, err)
+				}
+				if !sessionHasCompleteFullArtifacts(sessionTree.Entries) {
+					continue
+				}
+				key := fullArtifactsIndexKey(cpid, sessionIdx)
+				if _, exists := index[key]; !exists {
+					index[key] = refName
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func sessionHasCompleteFullArtifacts(entries []object.TreeEntry) bool {
+	hasTranscript := false
+	hasHash := false
+	for _, entry := range entries {
+		switch {
+		case entry.Name == paths.V2RawTranscriptFileName,
+			strings.HasPrefix(entry.Name, paths.V2RawTranscriptFileName+"."):
+			hasTranscript = true
+		case entry.Name == paths.V2RawTranscriptHashFileName:
+			hasHash = true
+		}
+	}
+	return hasTranscript && hasHash
 }
 
 func (s *V2GitStore) fullRefSearchOrder() ([]plumbing.ReferenceName, error) {

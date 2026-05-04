@@ -340,7 +340,7 @@ func TestMigrateCheckpointsV2_RerunResumesInterruptedMigration(t *testing.T) {
 	v1List, err := v1Store.ListCommitted(ctx)
 	require.NoError(t, err)
 	require.Len(t, v1List, 1)
-	fullCheckpoint, _, migrateErr := migrateOneCheckpoint(ctx, repo, v1Store, v2Store, v1List[0], false)
+	fullCheckpoint, _, migrateErr := migrateOneCheckpoint(ctx, repo, v1Store, v2Store, v1List[0], false, nil)
 	require.NoError(t, migrateErr)
 	require.NotNil(t, fullCheckpoint)
 

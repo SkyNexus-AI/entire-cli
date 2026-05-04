@@ -1023,3 +1023,61 @@ func TestWriteCommitted_NoRotationBelowThreshold(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 3, noRotCount)
 }
+
+// TestV2GitStore_BuildFullSessionArtifactsIndex_AgreesWithHasFullSessionArtifacts
+// pins the contract that the index returns identical answers to the per-call
+// HasFullSessionArtifacts predicate. The index exists purely to amortize the
+// cost across many lookups; if the two ever diverged, the migration loop's
+// missing-session detection would produce different results depending on
+// which path it took.
+func TestV2GitStore_BuildFullSessionArtifactsIndex_AgreesWithHasFullSessionArtifacts(t *testing.T) {
+	t.Parallel()
+	repo := initTestRepo(t)
+	store := NewV2GitStore(repo, "origin")
+	ctx := context.Background()
+
+	cpIDs := []id.CheckpointID{
+		id.MustCheckpointID("aa11bb22cc33"),
+		id.MustCheckpointID("dd44ee55ff66"),
+		id.MustCheckpointID("11223344aabb"),
+	}
+	for i, cpID := range cpIDs {
+		require.NoError(t, store.WriteCommitted(ctx, WriteCommittedOptions{
+			CheckpointID: cpID,
+			SessionID:    fmt.Sprintf("session-index-%d", i),
+			Strategy:     "manual-commit",
+			Agent:        agent.AgentTypeClaudeCode,
+			Transcript:   redact.AlreadyRedacted([]byte(fmt.Sprintf(`{"cp":%d}`, i))),
+			AuthorName:   "Test",
+			AuthorEmail:  "test@test.com",
+		}))
+	}
+
+	index, err := store.BuildFullSessionArtifactsIndex()
+	require.NoError(t, err)
+
+	for _, cpID := range cpIDs {
+		// All three writes hit session 0; sessions ≥1 must be absent from
+		// both predicate and index.
+		for sessionIdx := 0; sessionIdx < 3; sessionIdx++ {
+			fromCall, err := store.HasFullSessionArtifacts(cpID, sessionIdx)
+			require.NoError(t, err)
+			fromIndex := index.Has(cpID, sessionIdx)
+			assert.Equal(t, fromCall, fromIndex,
+				"index disagreement for %s/%d (call=%v, index=%v)", cpID, sessionIdx, fromCall, fromIndex)
+		}
+	}
+
+	// Unknown checkpoints must not be in the index.
+	missing := id.MustCheckpointID("999999999999")
+	assert.False(t, index.Has(missing, 0))
+}
+
+// TestV2GitStore_BuildFullSessionArtifactsIndex_NilSafe ensures a nil index
+// (the value handed back when no /full/* refs exist yet, or that callers
+// might pass for tests) doesn't panic on lookups.
+func TestV2GitStore_BuildFullSessionArtifactsIndex_NilSafe(t *testing.T) {
+	t.Parallel()
+	var index FullSessionArtifactsIndex
+	assert.False(t, index.Has(id.MustCheckpointID("abc123def456"), 0))
+}

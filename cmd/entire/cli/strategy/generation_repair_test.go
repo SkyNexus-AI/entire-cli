@@ -103,6 +103,32 @@ func TestRepairV2GenerationMetadata_RepairsRemoteOnlyGenerationWithLease(t *test
 	assert.True(t, gen.NewestCheckpointAt.Equal(rawNewest))
 }
 
+func TestRepairV2GenerationMetadata_ExcludeRefsSkipsListedRefs(t *testing.T) {
+	repo, _ := initGenerationRepairTestRepo(t)
+
+	cpID := id.MustCheckpointID("aabb22334455")
+	rawOldest := time.Date(2025, 10, 1, 8, 0, 0, 0, time.UTC)
+	rawNewest := time.Date(2025, 10, 1, 8, 30, 0, 0, time.UTC)
+
+	excludedRef := plumbing.ReferenceName(paths.V2FullRefPrefix + "0000000000007")
+	wrongGen := checkpoint.GenerationMetadata{
+		OldestCheckpointAt: time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC),
+		NewestCheckpointAt: time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC),
+	}
+	beforeCommit := createRepairArchivedGenerationRef(t, repo, excludedRef, cpID, wrongGen, rawOldest, rawNewest)
+
+	result, err := RepairV2GenerationMetadata(context.Background(), RepairV2GenerationMetadataOptions{
+		ExcludeRefs: []plumbing.ReferenceName{excludedRef},
+	})
+	require.NoError(t, err)
+	assert.Empty(t, result.Repaired, "excluded ref must not be repaired")
+	assert.Empty(t, result.Skipped, "excluded ref must not appear in skipped — it should never reach the per-candidate loop")
+
+	ref, err := repo.Reference(excludedRef, true)
+	require.NoError(t, err)
+	assert.Equal(t, beforeCommit, ref.Hash(), "excluded ref must not advance even when its generation.json is wrong")
+}
+
 func TestRepairV2GenerationMetadata_NoCandidatesIsNoOp(t *testing.T) {
 	initGenerationRepairTestRepo(t)
 
