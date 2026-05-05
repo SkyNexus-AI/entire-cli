@@ -137,6 +137,11 @@ func isPluginCandidate(name string) bool {
 	if strings.ContainsAny(name, `/\`) {
 		return false
 	}
+	// "." and ".." would collapse out of any joined path (e.g. for
+	// ENTIRE_PLUGIN_DATA_DIR), breaking the per-plugin isolation contract.
+	if name == "." || name == ".." {
+		return false
+	}
 	return true
 }
 
