@@ -509,27 +509,20 @@ func (p *generationPacker) writePendingToCurrent(ctx context.Context) error {
 
 	refName := plumbing.ReferenceName(paths.V2FullCurrentRefName)
 	parentHash, rootTreeHash, err := p.v2Store.GetRefState(refName)
+	if err != nil && !errors.Is(err, plumbing.ErrReferenceNotFound) {
+		return fmt.Errorf("read v2 full/current ref: %w", err)
+	}
+
 	entries := make(map[string]object.TreeEntry)
-	if err != nil {
-		if !errors.Is(err, plumbing.ErrReferenceNotFound) {
-			return fmt.Errorf("read v2 full/current ref: %w", err)
-		}
-		parentHash = plumbing.ZeroHash
-	} else if rootTreeHash != plumbing.ZeroHash {
-		rootTree, treeErr := p.repo.TreeObject(rootTreeHash)
-		if treeErr != nil {
-			return fmt.Errorf("read v2 full/current tree: %w", treeErr)
-		}
-		existingEntries, err := flattenMigratedFullEntries(p.repo, rootTree)
+	if rootTreeHash != plumbing.ZeroHash {
+		rootTree, err := p.repo.TreeObject(rootTreeHash)
 		if err != nil {
+			return fmt.Errorf("read v2 full/current tree: %w", err)
+		}
+		if err := checkpoint.FlattenTree(p.repo, rootTree, "", entries); err != nil {
 			return fmt.Errorf("flatten v2 full/current tree: %w", err)
 		}
-		for _, entry := range existingEntries {
-			if entry.Name == paths.GenerationFileName {
-				continue
-			}
-			entries[entry.Name] = entry
-		}
+		delete(entries, paths.GenerationFileName)
 	}
 
 	pendingEntries, err := buildMigratedFullEntrySet(ctx, p.repo, p.pending)
@@ -744,19 +737,6 @@ func buildMigratedFullSessionEntrySet(ctx context.Context, repo *git.Repository,
 	}
 
 	return entries, nil
-}
-
-func flattenMigratedFullEntries(repo *git.Repository, rootTree *object.Tree) ([]object.TreeEntry, error) {
-	entries := make(map[string]object.TreeEntry)
-	if err := checkpoint.FlattenTree(repo, rootTree, "", entries); err != nil {
-		return nil, fmt.Errorf("flatten tree: %w", err)
-	}
-
-	flat := make([]object.TreeEntry, 0, len(entries))
-	for _, entry := range entries {
-		flat = append(flat, entry)
-	}
-	return flat, nil
 }
 
 func ensureEmptyV2FullCurrent(ctx context.Context, repo *git.Repository) error {
