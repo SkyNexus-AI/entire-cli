@@ -520,18 +520,37 @@ func (p *generationPacker) writePendingToCurrent(ctx context.Context) error {
 		if treeErr != nil {
 			return fmt.Errorf("read v2 full/current tree: %w", treeErr)
 		}
-		if flatErr := checkpoint.FlattenTree(p.repo, rootTree, "", entries); flatErr != nil {
-			return fmt.Errorf("flatten v2 full/current tree: %w", flatErr)
+		existingEntries, err := flattenMigratedFullEntries(p.repo, rootTree)
+		if err != nil {
+			return fmt.Errorf("flatten v2 full/current tree: %w", err)
 		}
-		delete(entries, paths.GenerationFileName)
+		for _, entry := range existingEntries {
+			if entry.Name == paths.GenerationFileName {
+				continue
+			}
+			entries[entry.Name] = entry
+		}
 	}
 
-	for _, cp := range p.pending {
-		for _, session := range cp.sessions {
-			if err := writeMigratedFullSessionEntries(ctx, p.repo, cp, session, entries); err != nil {
-				return fmt.Errorf("write full/current session entries for checkpoint %s session %d: %w", cp.checkpointID, session.sessionIndex, err)
+	pendingEntries, err := buildMigratedFullEntrySet(ctx, p.repo, p.pending)
+	if err != nil {
+		return fmt.Errorf("write migrated full/current entries: %w", err)
+	}
+	for _, rawPaths := range pendingEntries.rawArtifactPaths {
+		for key := range entries {
+			if rawPaths.matches(key) {
+				delete(entries, key)
 			}
 		}
+	}
+	for _, entry := range pendingEntries.rawEntries {
+		entries[entry.Name] = entry
+	}
+	for _, entry := range pendingEntries.taskEntries {
+		if _, exists := entries[entry.Name]; exists {
+			continue
+		}
+		entries[entry.Name] = entry
 	}
 
 	treeHash, err := checkpoint.BuildTreeFromEntries(ctx, p.repo, entries)
@@ -555,17 +574,12 @@ func (p *generationPacker) writePendingToCurrent(ctx context.Context) error {
 }
 
 func writeMigratedFullGeneration(ctx context.Context, repo *git.Repository, refName plumbing.ReferenceName, checkpoints []migratedFullCheckpoint) error {
-	entries := make(map[string]object.TreeEntry)
-
-	for _, cp := range checkpoints {
-		for _, session := range cp.sessions {
-			if err := writeMigratedFullSessionEntries(ctx, repo, cp, session, entries); err != nil {
-				return fmt.Errorf("write full session entries for checkpoint %s session %d: %w", cp.checkpointID, session.sessionIndex, err)
-			}
-		}
+	fullEntries, err := buildMigratedFullEntrySet(ctx, repo, checkpoints)
+	if err != nil {
+		return fmt.Errorf("write migrated generation entries: %w", err)
 	}
 
-	treeHash, err := checkpoint.BuildTreeFromEntries(ctx, repo, entries)
+	treeHash, err := checkpoint.BuildTreeFromEntries(ctx, repo, fullEntries.toMap())
 	if err != nil {
 		return fmt.Errorf("build migrated generation tree: %w", err)
 	}
@@ -630,69 +644,119 @@ func generationMetadataFromMigratedSessions(checkpoints []migratedFullCheckpoint
 	return gen, found
 }
 
-func writeMigratedFullSessionEntries(ctx context.Context, repo *git.Repository, cp migratedFullCheckpoint, session migratedFullSession, entries map[string]object.TreeEntry) error {
+type migratedFullEntrySet struct {
+	rawEntries       []object.TreeEntry
+	taskEntries      []object.TreeEntry
+	rawArtifactPaths []migratedRawArtifactPaths
+}
+
+type migratedRawArtifactPaths struct {
+	transcriptPath string
+	hashPath       string
+}
+
+func (p migratedRawArtifactPaths) matches(path string) bool {
+	return path == p.transcriptPath || strings.HasPrefix(path, p.transcriptPath+".") || path == p.hashPath
+}
+
+func (s migratedFullEntrySet) toMap() map[string]object.TreeEntry {
+	entries := make(map[string]object.TreeEntry, len(s.rawEntries)+len(s.taskEntries))
+	for _, entry := range s.rawEntries {
+		entries[entry.Name] = entry
+	}
+	for _, entry := range s.taskEntries {
+		if _, exists := entries[entry.Name]; exists {
+			continue
+		}
+		entries[entry.Name] = entry
+	}
+	return entries
+}
+
+func buildMigratedFullEntrySet(ctx context.Context, repo *git.Repository, checkpoints []migratedFullCheckpoint) (migratedFullEntrySet, error) {
+	var entries migratedFullEntrySet
+	for _, cp := range checkpoints {
+		for _, session := range cp.sessions {
+			sessionEntries, err := buildMigratedFullSessionEntrySet(ctx, repo, cp, session)
+			if err != nil {
+				return migratedFullEntrySet{}, fmt.Errorf("checkpoint %s session %d: %w", cp.checkpointID, session.sessionIndex, err)
+			}
+			entries.rawEntries = append(entries.rawEntries, sessionEntries.rawEntries...)
+			entries.taskEntries = append(entries.taskEntries, sessionEntries.taskEntries...)
+			entries.rawArtifactPaths = append(entries.rawArtifactPaths, sessionEntries.rawArtifactPaths...)
+		}
+	}
+	return entries, nil
+}
+
+func buildMigratedFullSessionEntrySet(ctx context.Context, repo *git.Repository, cp migratedFullCheckpoint, session migratedFullSession) (migratedFullEntrySet, error) {
 	sessionPath := fmt.Sprintf("%s/%d/", cp.checkpointID.Path(), session.sessionIndex)
 	transcript := session.content.Transcript
 	rawTranscriptPath := sessionPath + paths.V2RawTranscriptFileName
 	rawHashPath := sessionPath + paths.V2RawTranscriptHashFileName
-
-	for key := range entries {
-		switch {
-		case key == rawTranscriptPath:
-			delete(entries, key)
-		case strings.HasPrefix(key, rawTranscriptPath+"."):
-			delete(entries, key)
-		case key == rawHashPath:
-			delete(entries, key)
-		}
+	entries := migratedFullEntrySet{
+		rawArtifactPaths: []migratedRawArtifactPaths{{
+			transcriptPath: rawTranscriptPath,
+			hashPath:       rawHashPath,
+		}},
 	}
 
 	chunks, err := agent.ChunkTranscript(ctx, transcript, session.content.Metadata.Agent)
 	if err != nil {
-		return fmt.Errorf("chunk transcript: %w", err)
+		return migratedFullEntrySet{}, fmt.Errorf("chunk transcript: %w", err)
 	}
 	for i, chunk := range chunks {
 		blobHash, blobErr := checkpoint.CreateBlobFromContent(repo, chunk)
 		if blobErr != nil {
-			return fmt.Errorf("create transcript blob: %w", blobErr)
+			return migratedFullEntrySet{}, fmt.Errorf("create transcript blob: %w", blobErr)
 		}
 		path := sessionPath + agent.ChunkFileName(paths.V2RawTranscriptFileName, i)
-		entries[path] = object.TreeEntry{
+		entries.rawEntries = append(entries.rawEntries, object.TreeEntry{
 			Name: path,
 			Mode: filemode.Regular,
 			Hash: blobHash,
-		}
+		})
 	}
 
 	contentHash := fmt.Sprintf("sha256:%x", sha256.Sum256(transcript))
 	hashBlob, err := checkpoint.CreateBlobFromContent(repo, []byte(contentHash))
 	if err != nil {
-		return fmt.Errorf("create transcript hash blob: %w", err)
+		return migratedFullEntrySet{}, fmt.Errorf("create transcript hash blob: %w", err)
 	}
-	entries[rawHashPath] = object.TreeEntry{
+	entries.rawEntries = append(entries.rawEntries, object.TreeEntry{
 		Name: rawHashPath,
 		Mode: filemode.Regular,
 		Hash: hashBlob,
-	}
+	})
 
 	for _, taskTreeHash := range cp.taskTrees[session.sessionIndex] {
 		taskTree, treeErr := repo.TreeObject(taskTreeHash)
 		if treeErr != nil {
-			return fmt.Errorf("read task metadata tree: %w", treeErr)
+			return migratedFullEntrySet{}, fmt.Errorf("read task metadata tree: %w", treeErr)
 		}
 		taskEntries := make(map[string]object.TreeEntry)
 		if flattenErr := checkpoint.FlattenTree(repo, taskTree, sessionPath+"tasks", taskEntries); flattenErr != nil {
-			return fmt.Errorf("flatten task metadata tree: %w", flattenErr)
+			return migratedFullEntrySet{}, fmt.Errorf("flatten task metadata tree: %w", flattenErr)
 		}
-		for path, entry := range taskEntries {
-			if _, exists := entries[path]; exists {
-				continue
-			}
-			entries[path] = entry
+		for _, entry := range taskEntries {
+			entries.taskEntries = append(entries.taskEntries, entry)
 		}
 	}
 
-	return nil
+	return entries, nil
+}
+
+func flattenMigratedFullEntries(repo *git.Repository, rootTree *object.Tree) ([]object.TreeEntry, error) {
+	entries := make(map[string]object.TreeEntry)
+	if err := checkpoint.FlattenTree(repo, rootTree, "", entries); err != nil {
+		return nil, fmt.Errorf("flatten tree: %w", err)
+	}
+
+	flat := make([]object.TreeEntry, 0, len(entries))
+	for _, entry := range entries {
+		flat = append(flat, entry)
+	}
+	return flat, nil
 }
 
 func ensureEmptyV2FullCurrent(ctx context.Context, repo *git.Repository) error {
