@@ -212,7 +212,7 @@ func TestMigrateCheckpointsV2_UnderThresholdKeepsFullGenerationInCurrent(t *test
 	}
 
 	var stdout bytes.Buffer
-	result, err := migrateCheckpointsV2(ctx, repo, v1Store, v2Store, &stdout, false)
+	result, _, err := migrateCheckpointsV2(ctx, repo, v1Store, v2Store, &stdout, false)
 	require.NoError(t, err)
 	assert.Equal(t, 3, result.migrated)
 	assert.Equal(t, 0, result.skipped)
