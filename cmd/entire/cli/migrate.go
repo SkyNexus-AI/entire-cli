@@ -95,22 +95,15 @@ func runMigrateCheckpointsV2(ctx context.Context, cmd *cobra.Command, force bool
 		return err
 	}
 
-	// Only run the generation-metadata repair pass when the migration
-	// actually wrote something. RepairV2GenerationMetadata does a
-	// `git ls-remote` plus a transcript-blob walk for every archived
-	// /full/<n>, both of which are expensive — multi-second on a healthy
-	// network and minutes on a repo with many large archives. On a no-op
-	// rerun (everything skipped) there's no new state for repair to
-	// reconcile, so paying that cost on every invocation is wrong. When
-	// the migration does write archives, freshly-packed refs are excluded
-	// since their generation.json is already correct from the packer's
-	// in-memory AggregateTranscriptTimestamps.
+	// Skip the generation-metadata repair pass on no-op reruns: it does a
+	// `git ls-remote` plus a transcript-blob walk per archived /full/<n>,
+	// minutes on big repos. When we did write archives, freshly-packed refs
+	// are excluded — their generation.json is already correct from
+	// AggregateTranscriptTimestamps in the packer.
 	var repairResult *strategy.RepairV2GenerationMetadataResult
 	if len(freshlyPackedRefs) > 0 {
 		var repairErr error
-		repairResult, repairErr = strategy.RepairV2GenerationMetadata(ctx, strategy.RepairV2GenerationMetadataOptions{
-			ExcludeRefs: freshlyPackedRefs,
-		})
+		repairResult, repairErr = strategy.RepairV2GenerationMetadata(ctx, freshlyPackedRefs)
 		if repairErr != nil {
 			return fmt.Errorf("failed to repair archived v2 generation metadata: %w", repairErr)
 		}
@@ -198,16 +191,16 @@ type migratedFullSession struct {
 	content      *checkpoint.SessionContent
 }
 
+// migrateCheckpointsV2 is the test entry point; it discards the
+// freshly-packed refs list that production code uses to gate the repair pass.
 func migrateCheckpointsV2(ctx context.Context, repo *git.Repository, v1Store *checkpoint.GitStore, v2Store *checkpoint.V2GitStore, progressOut io.Writer, force bool) (*migrateResult, error) {
 	result, _, err := migrateCheckpointsV2Internal(ctx, repo, v1Store, v2Store, progressOut, force)
 	return result, err
 }
 
-// migrateCheckpointsV2Internal is the implementation of migrateCheckpointsV2
-// that also returns the /full/<n> refs the packer just wrote. The caller
-// (runMigrateCheckpointsV2) uses that list to skip those refs in the
-// generation-metadata repair pass — they're already correct, and walking
-// their transcripts to confirm would dominate the post-progress-bar phase.
+// migrateCheckpointsV2Internal returns the /full/<n> refs the packer wrote so
+// the caller can pass them as exclusions to the generation-metadata repair
+// pass.
 func migrateCheckpointsV2Internal(ctx context.Context, repo *git.Repository, v1Store *checkpoint.GitStore, v2Store *checkpoint.V2GitStore, progressOut io.Writer, force bool) (*migrateResult, []plumbing.ReferenceName, error) {
 	v1List, err := v1Store.ListCommitted(ctx)
 	if err != nil {
@@ -227,11 +220,8 @@ func migrateCheckpointsV2Internal(ctx context.Context, repo *git.Repository, v1S
 	_, fullCurrentRefErr := repo.Reference(plumbing.ReferenceName(paths.V2FullCurrentRefName), true)
 	fullCurrentExistsBefore := fullCurrentRefErr == nil
 
-	// Build a /full/* presence index up front. The migration loop's hot path
-	// is per-session "do raw transcripts already exist anywhere?", and
-	// without this index each call would re-list every git ref and re-walk
-	// every /full/* tree. One pass at the start lets the loop answer with
-	// O(1) map lookups.
+	// One up-front tree walk to make per-session "are /full/* artifacts
+	// present?" checks O(1) inside the migration loop.
 	fullArtifactsIndex, err := v2Store.BuildFullSessionArtifactsIndex()
 	if err != nil {
 		return nil, nil, fmt.Errorf("build v2 /full/* presence index: %w", err)
@@ -322,16 +312,10 @@ func migrateOneCheckpoint(ctx context.Context, repo *git.Repository, v1Store *ch
 	}
 
 	if existing != nil && !force {
-		// Already in v2. Decide between four cases:
-		//   1. Every session has /full artifacts and compact transcripts → skip.
-		//   2. Every session has /full artifacts but some compact transcripts
-		//      are missing → backfill transcript.jsonl on /main.
-		//   3. Some sessions are missing /full artifacts → previous run was
-		//      interrupted between the /main write and the packer flush;
-		//      queue the missing sessions for packing so the next finalize
-		//      finishes the job. Don't touch sessions that already have
-		//      artifacts.
-		//   4. v1 metadata can't be recovered → propagate as a hard error.
+		// Already in v2. Pack sessions whose /full/* artifacts are missing
+		// (resume an interrupted run) and backfill transcript.jsonl on /main
+		// where it's missing. With nothing to do on either front, return
+		// errAlreadyMigrated so the caller counts it as skipped.
 		fullCheckpoint, err := collectMissingFullCheckpointForPacking(ctx, repo, v1Store, v2Store, info, existing, fullArtifacts)
 		if err != nil && !errors.Is(err, errAlreadyMigrated) {
 			return nil, outcome, err
@@ -459,9 +443,8 @@ type generationPacker struct {
 	numbered       bool
 	pending        []migratedFullCheckpoint
 	flushed        bool
-	// writtenRefs records every /full/<n> ref this packer creates, so the
-	// post-migration repair pass can skip them — their generation.json is
-	// already correct (computed in-memory from the just-packed transcripts).
+	// writtenRefs records every /full/<n> ref this packer creates so the
+	// caller can exclude them from the generation-metadata repair pass.
 	writtenRefs []plumbing.ReferenceName
 }
 
@@ -535,10 +518,8 @@ func writeMigratedFullGeneration(ctx context.Context, repo *git.Repository, refN
 	}
 
 	v2Store := checkpoint.NewV2GitStore(repo, migrateRemoteName)
-	// Prefer the in-memory transcripts we already loaded during migration —
-	// it produces the same first-event/last-event range as walking the just-
-	// written /full/<n> tree, but skips the redundant git blob reads that
-	// dominated runtime when this called ComputeGenerationTimestampsFromTrees.
+	// Reuse the transcripts already in memory rather than walking the tree
+	// we just built — same first/last-event range, no redundant blob reads.
 	gen, found := checkpoint.AggregateTranscriptTimestamps(migratedTranscripts(checkpoints))
 	if !found {
 		var err error
@@ -572,8 +553,6 @@ func writeMigratedFullGeneration(ctx context.Context, repo *git.Repository, refN
 	return nil
 }
 
-// migratedTranscripts returns the in-memory transcript bytes for every session
-// already loaded during this migration run, in iteration order.
 func migratedTranscripts(checkpoints []migratedFullCheckpoint) [][]byte {
 	var transcripts [][]byte
 	for _, cp := range checkpoints {
@@ -890,8 +869,8 @@ func buildMigrateWriteOpts(content *checkpoint.SessionContent, info checkpoint.C
 		CreatedAt:    m.CreatedAt,
 		Strategy:     m.Strategy,
 		Branch:       m.Branch,
-		// content.Transcript comes from persisted checkpoint storage and is
-		// already redacted.
+		// All transcripts read here come from persisted checkpoint storage,
+		// which is already redacted.
 		Transcript:                  redact.AlreadyRedacted(content.Transcript),
 		Prompts:                     prompts,
 		FilesTouched:                m.FilesTouched,
@@ -929,7 +908,6 @@ func compactTranscriptForStartLine(ctx context.Context, transcript []byte, m che
 		return nil
 	}
 
-	// transcript is read from persisted checkpoint storage and already redacted.
 	compacted, err := compact.Compact(redact.AlreadyRedacted(transcript), compact.MetadataFields{
 		Agent:      string(m.Agent),
 		CLIVersion: versioninfo.Version,
@@ -967,7 +945,6 @@ func computeCompactOffset(ctx context.Context, fullTranscript, fullCompact []byt
 		return 0
 	}
 
-	// fullTranscript is read from persisted checkpoint storage and already redacted.
 	scopedCompact, err := compact.Compact(redact.AlreadyRedacted(fullTranscript), compact.MetadataFields{
 		Agent:      string(m.Agent),
 		CLIVersion: versioninfo.Version,
@@ -1062,7 +1039,6 @@ func latestMigratedV2SessionIndex(v1ToV2SessionIdx map[int]int) (int, bool) {
 	return latest, true
 }
 
-// resolveV1CheckpointTree reads the checkpoint subtree from the v1 branch.
 func resolveV1CheckpointTree(repo *git.Repository, cpID id.CheckpointID) (*object.Tree, error) {
 	refName := plumbing.NewBranchReferenceName(paths.MetadataBranchName)
 	ref, err := repo.Reference(refName, true)
@@ -1093,15 +1069,11 @@ func resolveV1CheckpointTree(repo *git.Repository, cpID id.CheckpointID) (*objec
 	return cpTree, nil
 }
 
-// collectMissingFullCheckpointForPacking inspects an existing v2 checkpoint
-// and, for each session whose /full/* artifacts are absent, reads the
-// corresponding v1 session and returns a migratedFullCheckpoint scoped to
-// just those sessions. Returns errAlreadyMigrated when every session already
-// has artifacts (the "fully migrated" case).
-//
-// The caller is expected to feed the result into the same generationPacker
-// used by fresh migrations, so the missing raw transcripts get archived in
-// /full/<n> the same way new ones do.
+// collectMissingFullCheckpointForPacking returns a migratedFullCheckpoint
+// scoped to the sessions that lack /full/* artifacts on this v2 checkpoint,
+// reading their content from v1 so the caller can hand it to the same
+// generationPacker fresh migrations use. Returns errAlreadyMigrated when
+// every session is already packed.
 func collectMissingFullCheckpointForPacking(
 	ctx context.Context,
 	repo *git.Repository,
@@ -1189,9 +1161,8 @@ func collectMissingFullSessionsForPacking(
 ) ([]missingFullSessionForPacking, error) {
 	missingSessions := make([]missingFullSessionForPacking, 0)
 	for sessionIdx := range len(summary.Sessions) {
-		// Prefer the pre-built index when available. A nil index falls back
-		// to the per-call HasFullSessionArtifacts (used by tests that don't
-		// build an index up front).
+		// Production passes a pre-built index; nil falls back to the per-call
+		// predicate for tests that exercise this helper directly.
 		var ok bool
 		if fullArtifacts != nil {
 			ok = fullArtifacts.Has(checkpointID, sessionIdx)
@@ -1206,9 +1177,7 @@ func collectMissingFullSessionsForPacking(
 			continue
 		}
 
-		// Only the SessionID is needed downstream; reading prompts and the
-		// compact transcript here would burn one tree walk + one (failing)
-		// transcript.jsonl lookup per session for no payoff.
+		// Metadata-only read: only SessionID is needed downstream.
 		meta, readErr := v2Store.ReadSessionMetadata(ctx, checkpointID, sessionIdx)
 		if readErr != nil {
 			return nil, fmt.Errorf("failed to read v2 session %d metadata while resuming migration: %w", sessionIdx, readErr)
@@ -1223,11 +1192,9 @@ func collectMissingFullSessionsForPacking(
 	return missingSessions, nil
 }
 
-// collectV1SessionIndexesForPacking builds a session-id → v1 session-index
-// map for the missing sessions we need to read. v1 and v2 session indices
-// can drift (v1 sessions without a transcript are skipped during fresh
-// migration), so resolving by session_id is more reliable than reusing the
-// v2 index.
+// collectV1SessionIndexesForPacking maps each missing session's id to its v1
+// session index. Resolving by session_id is necessary because v1/v2 indices
+// can drift — v1 sessions without a transcript are skipped on fresh migration.
 func collectV1SessionIndexesForPacking(
 	ctx context.Context,
 	v1Store *checkpoint.GitStore,

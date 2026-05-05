@@ -1024,12 +1024,9 @@ func TestWriteCommitted_NoRotationBelowThreshold(t *testing.T) {
 	assert.Equal(t, 3, noRotCount)
 }
 
-// TestV2GitStore_BuildFullSessionArtifactsIndex_AgreesWithHasFullSessionArtifacts
-// pins the contract that the index returns identical answers to the per-call
-// HasFullSessionArtifacts predicate. The index exists purely to amortize the
-// cost across many lookups; if the two ever diverged, the migration loop's
-// missing-session detection would produce different results depending on
-// which path it took.
+// The index must agree with the per-call HasFullSessionArtifacts predicate
+// for every (checkpoint, session) pair — the migration loop relies on them
+// being interchangeable.
 func TestV2GitStore_BuildFullSessionArtifactsIndex_AgreesWithHasFullSessionArtifacts(t *testing.T) {
 	t.Parallel()
 	repo := initTestRepo(t)
@@ -1073,9 +1070,7 @@ func TestV2GitStore_BuildFullSessionArtifactsIndex_AgreesWithHasFullSessionArtif
 	assert.False(t, index.Has(missing, 0))
 }
 
-// TestV2GitStore_BuildFullSessionArtifactsIndex_NilSafe ensures a nil index
-// (the value handed back when no /full/* refs exist yet, or that callers
-// might pass for tests) doesn't panic on lookups.
+// A nil index — the documented test-only fallback — must not panic on Has.
 func TestV2GitStore_BuildFullSessionArtifactsIndex_NilSafe(t *testing.T) {
 	t.Parallel()
 	var index FullSessionArtifactsIndex

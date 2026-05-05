@@ -184,13 +184,9 @@ func (s *V2GitStore) ReadSessionCompactTranscript(ctx context.Context, checkpoin
 }
 
 // ReadSessionMetadata reads only the session's metadata.json from the v2
-// /main ref. Cheaper than ReadSessionMetadataAndPrompts when the caller only
-// needs metadata fields (e.g. SessionID) — skips the prompt and compact
-// transcript reads, which is significant for hot loops walking thousands of
-// sessions on partial-state repos.
-//
-// Returns ErrCheckpointNotFound if the checkpoint or session doesn't exist
-// on /main.
+// /main ref — cheaper than ReadSessionMetadataAndPrompts when the caller
+// only needs metadata fields (e.g. SessionID). Returns ErrCheckpointNotFound
+// if the checkpoint or session doesn't exist on /main.
 func (s *V2GitStore) ReadSessionMetadata(ctx context.Context, checkpointID id.CheckpointID, sessionIndex int) (CommittedMetadata, error) {
 	if err := ctx.Err(); err != nil {
 		return CommittedMetadata{}, err //nolint:wrapcheck // Propagating context cancellation

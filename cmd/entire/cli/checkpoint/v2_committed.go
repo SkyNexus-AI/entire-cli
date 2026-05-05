@@ -136,13 +136,10 @@ func (s *V2GitStore) findFullSessionArtifacts(checkpointID id.CheckpointID, sess
 	return fullSessionArtifacts{}, nil
 }
 
-// FullSessionArtifactsIndex maps "<checkpointID>/<sessionIndex>" to the ref
-// where both raw_transcript[/.NNN] and raw_transcript_hash.txt are present.
-// Built once via BuildFullSessionArtifactsIndex so the migration loop can
-// answer presence queries with O(1) map lookups instead of repeated
-// HasFullSessionArtifacts calls (each of which lists every git ref and
-// re-walks every /full/* tree).
-type FullSessionArtifactsIndex map[string]plumbing.ReferenceName
+// FullSessionArtifactsIndex answers "does this session have complete /full/*
+// artifacts?" with an O(1) map lookup. Build it once via
+// BuildFullSessionArtifactsIndex.
+type FullSessionArtifactsIndex map[string]struct{}
 
 // Has reports whether the given session has a complete pair of
 // raw_transcript and raw_transcript_hash.txt entries in some /full/* ref.
@@ -160,12 +157,9 @@ func fullArtifactsIndexKey(checkpointID id.CheckpointID, sessionIndex int) strin
 
 // BuildFullSessionArtifactsIndex walks every /full/* ref's tree once and
 // records sessions whose subtree contains both raw_transcript[/.NNN] and
-// raw_transcript_hash.txt. Earlier-searched refs (current, then newest
-// archive first) win when a session appears in more than one ref.
-//
-// Cost is one ref-namespace listing plus one tree walk per /full/* ref.
-// Subsequent presence checks are map lookups — independent of repo ref
-// count and archive count.
+// raw_transcript_hash.txt. Amortizes per-session HasFullSessionArtifacts
+// calls — each of which would otherwise list every git ref and re-walk every
+// /full/* tree — across the rest of the run.
 func (s *V2GitStore) BuildFullSessionArtifactsIndex() (FullSessionArtifactsIndex, error) {
 	refNames, err := s.fullRefSearchOrder()
 	if err != nil {
@@ -185,14 +179,14 @@ func (s *V2GitStore) BuildFullSessionArtifactsIndex() (FullSessionArtifactsIndex
 		if treeErr != nil {
 			return nil, fmt.Errorf("read %s root tree: %w", refName, treeErr)
 		}
-		if err := s.indexFullSessionsInTree(rootTree, refName, index); err != nil {
+		if err := s.indexFullSessionsInTree(rootTree, index); err != nil {
 			return nil, fmt.Errorf("walk %s: %w", refName, err)
 		}
 	}
 	return index, nil
 }
 
-func (s *V2GitStore) indexFullSessionsInTree(rootTree *object.Tree, refName plumbing.ReferenceName, index FullSessionArtifactsIndex) error {
+func (s *V2GitStore) indexFullSessionsInTree(rootTree *object.Tree, index FullSessionArtifactsIndex) error {
 	for _, shardEntry := range rootTree.Entries {
 		if shardEntry.Mode != filemode.Dir || len(shardEntry.Name) != 2 {
 			continue
@@ -225,10 +219,7 @@ func (s *V2GitStore) indexFullSessionsInTree(rootTree *object.Tree, refName plum
 				if !sessionHasCompleteFullArtifacts(sessionTree.Entries) {
 					continue
 				}
-				key := fullArtifactsIndexKey(cpid, sessionIdx)
-				if _, exists := index[key]; !exists {
-					index[key] = refName
-				}
+				index[fullArtifactsIndexKey(cpid, sessionIdx)] = struct{}{}
 			}
 		}
 	}

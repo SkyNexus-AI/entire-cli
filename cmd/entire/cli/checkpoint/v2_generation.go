@@ -333,11 +333,9 @@ func checkpointTimestampRangeFromFullTree(cpTree *object.Tree) (GenerationMetada
 	return gen, found
 }
 
-// AggregateTranscriptTimestamps walks pre-loaded transcript bytes to derive a
-// generation timestamp envelope using the same first-event/last-event semantics
-// as ComputeGenerationTimestampsFromTrees. Use this when the caller already has
-// transcripts in memory (e.g. during migration packing) to avoid the git blob
-// reads + tree walks that would otherwise re-fetch them.
+// AggregateTranscriptTimestamps derives a generation timestamp envelope from
+// transcripts already in memory, using the same first/last-event semantics
+// as ComputeGenerationTimestampsFromTrees but skipping the blob reads.
 func AggregateTranscriptTimestamps(transcripts [][]byte) (GenerationMetadata, bool) {
 	var gen GenerationMetadata
 	found := false
