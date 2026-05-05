@@ -69,14 +69,12 @@ func newMigrateCmd() *cobra.Command {
 }
 
 type migrateResult struct {
-	total                        int
-	migrated                     int
-	skipped                      int
-	failed                       int
-	missingSessions              int
-	compactTranscriptSkipped     int
-	backfilledCompactTranscripts int
-	repaired                     int
+	total                    int
+	migrated                 int
+	skipped                  int
+	failed                   int
+	missingSessions          int
+	compactTranscriptSkipped int
 }
 
 func runMigrateCheckpointsV2(ctx context.Context, cmd *cobra.Command, force bool) error {
@@ -92,18 +90,27 @@ func runMigrateCheckpointsV2(ctx context.Context, cmd *cobra.Command, force bool
 	out := cmd.OutOrStdout()
 	progressOut := cmd.ErrOrStderr()
 
-	result, err := migrateCheckpointsV2(ctx, repo, v1Store, v2Store, progressOut, force)
+	result, freshlyPackedRefs, err := migrateCheckpointsV2(ctx, repo, v1Store, v2Store, progressOut, force)
 	if err != nil {
 		return err
 	}
 
-	stopRepair := startSpinner(cmd.ErrOrStderr(), "Repairing archived generation metadata")
-	repairResult, repairErr := strategy.RepairV2GenerationMetadata(ctx)
-	stopRepair("")
-	if repairErr != nil {
-		return fmt.Errorf("failed to repair archived v2 generation metadata: %w", repairErr)
+	// Skip the generation-metadata repair pass on no-op reruns: it does a
+	// `git ls-remote` plus a transcript-blob walk per archived /full/<n>,
+	// minutes on big repos. When we did write archives, freshly-packed refs
+	// are excluded — their generation.json is already correct from
+	// AggregateTranscriptTimestamps in the packer.
+	var repairResult *strategy.RepairV2GenerationMetadataResult
+	if len(freshlyPackedRefs) > 0 {
+		stopRepair := startSpinner(cmd.ErrOrStderr(), "Repairing archived generation metadata")
+		var repairErr error
+		repairResult, repairErr = strategy.RepairV2GenerationMetadata(ctx, freshlyPackedRefs)
+		stopRepair("")
+		if repairErr != nil {
+			return fmt.Errorf("failed to repair archived v2 generation metadata: %w", repairErr)
+		}
+		printV2GenerationRepairResult(out, cmd.ErrOrStderr(), repairResult)
 	}
-	printV2GenerationRepairResult(out, cmd.ErrOrStderr(), repairResult)
 
 	printMigrateCompletion(out, result)
 	fmt.Fprintln(out, "Note: V2 checkpoints are stored as custom refs under refs/entire/checkpoints/v2/*, not as a branch visible in the GitHub UI.")
@@ -165,7 +172,6 @@ var (
 	errAlreadyMigrated          = errors.New("already migrated")
 	errTranscriptNotGeneratable = errors.New("transcript.jsonl could not be generated")
 	errNoMigratableSessions     = errors.New("no migratable v1 sessions")
-	errNoFullPackingNeeded      = errors.New("no full packing needed")
 )
 
 const (
@@ -187,14 +193,16 @@ type migratedFullSession struct {
 	content      *checkpoint.SessionContent
 }
 
-func migrateCheckpointsV2(ctx context.Context, repo *git.Repository, v1Store *checkpoint.GitStore, v2Store *checkpoint.V2GitStore, progressOut io.Writer, force bool) (*migrateResult, error) {
+// migrateCheckpointsV2 returns the /full/<n> refs the packer wrote so callers
+// can pass them as exclusions to the generation-metadata repair pass.
+func migrateCheckpointsV2(ctx context.Context, repo *git.Repository, v1Store *checkpoint.GitStore, v2Store *checkpoint.V2GitStore, progressOut io.Writer, force bool) (*migrateResult, []plumbing.ReferenceName, error) {
 	v1List, err := v1Store.ListCommitted(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to list v1 checkpoints: %w", err)
+		return nil, nil, fmt.Errorf("failed to list v1 checkpoints: %w", err)
 	}
 
 	if len(v1List) == 0 {
-		return &migrateResult{}, nil
+		return &migrateResult{}, nil, nil
 	}
 
 	sortMigratableCheckpoints(v1List)
@@ -206,17 +214,20 @@ func migrateCheckpointsV2(ctx context.Context, repo *git.Repository, v1Store *ch
 	_, fullCurrentRefErr := repo.Reference(plumbing.ReferenceName(paths.V2FullCurrentRefName), true)
 	fullCurrentExistsBefore := fullCurrentRefErr == nil
 
+	// One up-front tree walk to make per-session "are /full/* artifacts
+	// present?" checks O(1) inside the migration loop.
+	fullArtifactsIndex, err := v2Store.BuildFullSessionArtifactsIndex()
+	if err != nil {
+		return nil, nil, fmt.Errorf("build v2 /full/* presence index: %w", err)
+	}
+
 	packer := newGenerationPacker(repo, v2Store)
 
 	for _, info := range v1List {
-		fullCheckpoint, outcome, migrateErr := migrateOneCheckpoint(ctx, repo, v1Store, v2Store, info, force)
+		fullCheckpoint, outcome, migrateErr := migrateOneCheckpoint(ctx, repo, v1Store, v2Store, info, force, fullArtifactsIndex)
 		result.missingSessions += outcome.missingSessions
-		result.backfilledCompactTranscripts += outcome.backfilledCompactTranscripts
 		if outcome.compactTranscriptSkipped {
 			result.compactTranscriptSkipped++
-		}
-		if outcome.repaired {
-			result.repaired++
 		}
 
 		if migrateErr != nil {
@@ -224,14 +235,9 @@ func migrateCheckpointsV2(ctx context.Context, repo *git.Repository, v1Store *ch
 			case errors.Is(migrateErr, errAlreadyMigrated):
 				logCheckpointMigrationSkip(ctx, info.CheckpointID, "already in v2", migrateErr)
 				result.skipped++
-			case errors.Is(migrateErr, errTranscriptNotGeneratable):
-				logCheckpointMigrationSkip(ctx, info.CheckpointID, "transcript.jsonl could not be generated", migrateErr)
-				result.skipped++
 			case errors.Is(migrateErr, errNoMigratableSessions):
 				logCheckpointMigrationSkip(ctx, info.CheckpointID, "no migratable v1 sessions", migrateErr)
 				result.skipped++
-			case errors.Is(migrateErr, errNoFullPackingNeeded):
-				result.migrated++
 			default:
 				logging.Error(ctx, "checkpoint migration failed",
 					slog.String("checkpoint_id", string(info.CheckpointID)),
@@ -245,7 +251,7 @@ func migrateCheckpointsV2(ctx context.Context, repo *git.Repository, v1Store *ch
 
 		if fullCheckpoint != nil {
 			if packErr := packer.add(ctx, *fullCheckpoint); packErr != nil {
-				return result, fmt.Errorf("failed to pack migrated raw transcripts: %w", packErr)
+				return result, packer.writtenRefs, fmt.Errorf("failed to pack migrated raw transcripts: %w", packErr)
 			}
 		}
 		result.migrated++
@@ -255,11 +261,11 @@ func migrateCheckpointsV2(ctx context.Context, repo *git.Repository, v1Store *ch
 	stopFinalize := startSpinner(progressOut, "Packing migrated raw transcripts")
 	if err := packer.finalize(ctx, !fullCurrentExistsBefore); err != nil {
 		stopFinalize("")
-		return result, fmt.Errorf("failed to pack migrated raw transcripts: %w", err)
+		return result, packer.writtenRefs, fmt.Errorf("failed to pack migrated raw transcripts: %w", err)
 	}
 	stopFinalize("")
 
-	return result, nil
+	return result, packer.writtenRefs, nil
 }
 
 func logCheckpointMigrationSkip(ctx context.Context, checkpointID id.CheckpointID, reason string, err error) {
@@ -290,13 +296,11 @@ func sortMigratableCheckpoints(checkpoints []checkpoint.CommittedInfo) {
 }
 
 type migrateCheckpointOutcome struct {
-	missingSessions              int
-	compactTranscriptSkipped     bool
-	backfilledCompactTranscripts int
-	repaired                     bool
+	missingSessions          int
+	compactTranscriptSkipped bool
 }
 
-func migrateOneCheckpoint(ctx context.Context, repo *git.Repository, v1Store *checkpoint.GitStore, v2Store *checkpoint.V2GitStore, info checkpoint.CommittedInfo, force bool) (*migratedFullCheckpoint, migrateCheckpointOutcome, error) {
+func migrateOneCheckpoint(ctx context.Context, repo *git.Repository, v1Store *checkpoint.GitStore, v2Store *checkpoint.V2GitStore, info checkpoint.CommittedInfo, force bool, fullArtifacts checkpoint.FullSessionArtifactsIndex) (*migratedFullCheckpoint, migrateCheckpointOutcome, error) {
 	var outcome migrateCheckpointOutcome
 
 	existing, err := v2Store.ReadCommitted(ctx, info.CheckpointID)
@@ -305,45 +309,25 @@ func migrateOneCheckpoint(ctx context.Context, repo *git.Repository, v1Store *ch
 	}
 
 	if existing != nil && !force {
-		// Fast-path: when every session already has a compact transcript and
-		// /full/<n> artifacts, the repair branch below is a guaranteed no-op.
-		if v2CheckpointFullyMigrated(v2Store, info, existing) {
-			return nil, outcome, errAlreadyMigrated
+		// Already in v2. Pack sessions whose /full/* artifacts are missing
+		// (resume an interrupted run) and backfill transcript.jsonl on /main
+		// where it's missing. With nothing to do on either front, return
+		// errAlreadyMigrated so the caller counts it as skipped.
+		fullCheckpoint, err := collectMissingFullCheckpointForPacking(ctx, repo, v1Store, v2Store, info, existing, fullArtifacts)
+		if err != nil && !errors.Is(err, errAlreadyMigrated) {
+			return nil, outcome, err
 		}
-
-		fullCheckpoint, queuedFullRepair, repairErr := collectMissingFullCheckpointForPacking(ctx, repo, v1Store, v2Store, info, existing)
-		if repairErr != nil {
-			return nil, outcome, repairErr
-		}
-		outcome.repaired = queuedFullRepair
-
-		currentV2, readCurrentErr := v2Store.ReadCommitted(ctx, info.CheckpointID)
-		if readCurrentErr != nil {
-			return nil, outcome, fmt.Errorf("failed to re-read v2 checkpoint %s: %w", info.CheckpointID, readCurrentErr)
-		}
-		if currentV2 == nil {
-			return nil, outcome, fmt.Errorf("v2 checkpoint %s disappeared during migration", info.CheckpointID)
-		}
-
-		// Clean up v1-named transcript files (full.jsonl, content_hash.txt) that older
-		// CLI versions may have written to /full/current before the rename to raw_transcript.
-		cleanupV1TranscriptFiles(ctx, repo, v2Store, info.CheckpointID, len(currentV2.Sessions))
-
-		backfilled, backfillErr := backfillCompactTranscripts(ctx, v1Store, v2Store, info, currentV2)
-		outcome.backfilledCompactTranscripts = backfilled
-		if !queuedFullRepair {
-			if backfillErr != nil {
-				return nil, outcome, backfillErr
-			}
-			return nil, outcome, errNoFullPackingNeeded
-		}
+		backfilled, backfillErr := backfillCompactTranscripts(ctx, v1Store, v2Store, info, existing)
 		if errors.Is(backfillErr, errTranscriptNotGeneratable) {
 			outcome.compactTranscriptSkipped = true
-		}
-		if backfillErr != nil &&
-			!errors.Is(backfillErr, errAlreadyMigrated) &&
-			!errors.Is(backfillErr, errTranscriptNotGeneratable) {
+		} else if backfillErr != nil && !errors.Is(backfillErr, errAlreadyMigrated) {
 			return nil, outcome, backfillErr
+		}
+		if fullCheckpoint == nil {
+			if backfilled > 0 {
+				return nil, outcome, nil
+			}
+			return nil, outcome, errAlreadyMigrated
 		}
 		return fullCheckpoint, outcome, nil
 	}
@@ -456,6 +440,9 @@ type generationPacker struct {
 	numbered       bool
 	pending        []migratedFullCheckpoint
 	flushed        bool
+	// writtenRefs records every /full/<n> ref this packer creates so the
+	// caller can exclude them from the generation-metadata repair pass.
+	writtenRefs []plumbing.ReferenceName
 }
 
 func newGenerationPacker(repo *git.Repository, v2Store *checkpoint.V2GitStore) *generationPacker {
@@ -494,6 +481,7 @@ func (p *generationPacker) flush(ctx context.Context) error {
 	if err := writeMigratedFullGeneration(ctx, p.repo, refName, p.pending); err != nil {
 		return err
 	}
+	p.writtenRefs = append(p.writtenRefs, refName)
 	p.nextGeneration++
 	p.pending = nil
 	p.flushed = true
@@ -527,11 +515,11 @@ func writeMigratedFullGeneration(ctx context.Context, repo *git.Repository, refN
 	}
 
 	v2Store := checkpoint.NewV2GitStore(repo, migrateRemoteName)
-	gen, found, err := v2Store.ComputeGenerationTimestampsFromTrees(treeHash, nil)
-	if err != nil {
-		return fmt.Errorf("compute raw transcript timestamps: %w", err)
-	}
+	// Reuse the transcripts already in memory rather than walking the tree
+	// we just built — same first/last-event range, no redundant blob reads.
+	gen, found := checkpoint.AggregateTranscriptTimestamps(migratedTranscripts(checkpoints))
 	if !found {
+		var err error
 		gen, found, err = v2Store.ComputeGenerationCheckpointTimestamps(treeHash)
 		if err != nil {
 			return fmt.Errorf("compute checkpoint timestamps: %w", err)
@@ -560,6 +548,19 @@ func writeMigratedFullGeneration(ctx context.Context, repo *git.Repository, refN
 		return fmt.Errorf("update migrated generation ref %s: %w", refName, err)
 	}
 	return nil
+}
+
+func migratedTranscripts(checkpoints []migratedFullCheckpoint) [][]byte {
+	var transcripts [][]byte
+	for _, cp := range checkpoints {
+		for _, session := range cp.sessions {
+			if len(session.content.Transcript) == 0 {
+				continue
+			}
+			transcripts = append(transcripts, session.content.Transcript)
+		}
+	}
+	return transcripts
 }
 
 func generationMetadataFromMigratedSessions(checkpoints []migratedFullCheckpoint) (checkpoint.GenerationMetadata, bool) {
@@ -854,305 +855,6 @@ func pruneCheckpointFromRoot(repo *git.Repository, rootTreeHash plumbing.Hash, s
 	return prunedRoot, nil
 }
 
-func collectMissingFullCheckpointForPacking(
-	ctx context.Context,
-	repo *git.Repository,
-	v1Store *checkpoint.GitStore,
-	v2Store *checkpoint.V2GitStore,
-	info checkpoint.CommittedInfo,
-	v2Summary *checkpoint.CheckpointSummary,
-) (*migratedFullCheckpoint, bool, error) {
-	missingSessions, err := collectMissingFullSessionsForPacking(ctx, v2Store, info.CheckpointID, v2Summary)
-	if err != nil {
-		return nil, false, err
-	}
-	if len(missingSessions) == 0 {
-		return nil, false, nil
-	}
-
-	v1Summary, err := v1Store.ReadCommitted(ctx, info.CheckpointID)
-	if err != nil {
-		return nil, false, fmt.Errorf("failed to read v1 summary while checking v2 raw artifacts: %w", err)
-	}
-	if v1Summary == nil {
-		return nil, false, fmt.Errorf("v1 checkpoint %s has no summary", info.CheckpointID)
-	}
-
-	v1BySessionID, err := collectV1SessionIndexesForPacking(ctx, v1Store, info.CheckpointID, v1Summary, missingSessions)
-	if err != nil {
-		return nil, false, err
-	}
-
-	fullCheckpoint := &migratedFullCheckpoint{
-		checkpointID: info.CheckpointID,
-	}
-	v1ToV2SessionIdx := make(map[int]int)
-
-	for _, missingSession := range missingSessions {
-		v1Session, ok, readErr := readV1SessionForMissingFullArtifact(ctx, v1Store, info.CheckpointID, v1Summary, v1BySessionID, missingSession)
-		if readErr != nil {
-			return nil, false, readErr
-		}
-		if !ok {
-			return nil, false, fmt.Errorf("failed to find v1 session for v2 session %d while checking raw artifacts", missingSession.sessionIndex)
-		}
-
-		fullCheckpoint.sessions = append(fullCheckpoint.sessions, migratedFullSession{
-			sessionIndex: missingSession.sessionIndex,
-			content:      v1Session.content,
-		})
-		v1ToV2SessionIdx[v1Session.sessionIndex] = missingSession.sessionIndex
-	}
-
-	latestV2SessionIdx := len(v2Summary.Sessions) - 1
-	taskTrees, taskErr := collectTaskMetadataForMigratedFullGenerationWithRootSession(
-		repo,
-		info.CheckpointID,
-		v1Summary,
-		v1ToV2SessionIdx,
-		latestV2SessionIdx,
-		latestV2SessionIdx >= 0,
-	)
-	if taskErr != nil {
-		return nil, false, fmt.Errorf("failed to collect task metadata while checking raw artifacts: %w", taskErr)
-	}
-	fullCheckpoint.taskTrees = taskTrees
-
-	return fullCheckpoint, true, nil
-}
-
-type missingFullSessionForPacking struct {
-	sessionIndex int
-	sessionID    string
-}
-
-type v1SessionForPacking struct {
-	sessionIndex int
-	content      *checkpoint.SessionContent
-}
-
-func collectMissingFullSessionsForPacking(
-	ctx context.Context,
-	v2Store *checkpoint.V2GitStore,
-	checkpointID id.CheckpointID,
-	summary *checkpoint.CheckpointSummary,
-) ([]missingFullSessionForPacking, error) {
-	missingSessions := make([]missingFullSessionForPacking, 0)
-	for sessionIdx := range len(summary.Sessions) {
-		ok, checkErr := hasFullSessionArtifacts(v2Store, checkpointID, sessionIdx)
-		if checkErr != nil {
-			return nil, fmt.Errorf("failed to check v2 session %d artifacts: %w", sessionIdx, checkErr)
-		}
-		if ok {
-			continue
-		}
-
-		v2Content, readErr := v2Store.ReadSessionMetadataAndPrompts(ctx, checkpointID, sessionIdx)
-		if readErr != nil {
-			return nil, fmt.Errorf("failed to read v2 session %d metadata while checking raw artifacts: %w", sessionIdx, readErr)
-		}
-
-		missingSessions = append(missingSessions, missingFullSessionForPacking{
-			sessionIndex: sessionIdx,
-			sessionID:    v2Content.Metadata.SessionID,
-		})
-	}
-
-	return missingSessions, nil
-}
-
-func collectV1SessionIndexesForPacking(
-	ctx context.Context,
-	v1Store *checkpoint.GitStore,
-	checkpointID id.CheckpointID,
-	summary *checkpoint.CheckpointSummary,
-	missingSessions []missingFullSessionForPacking,
-) (map[string][]int, error) {
-	neededSessionIDs := make(map[string]struct{})
-	for _, session := range missingSessions {
-		if session.sessionID != "" {
-			neededSessionIDs[session.sessionID] = struct{}{}
-		}
-	}
-
-	bySessionID := make(map[string][]int)
-	if len(neededSessionIDs) == 0 {
-		return bySessionID, nil
-	}
-
-	for sessionIdx := range len(summary.Sessions) {
-		metadata, err := v1Store.ReadSessionMetadata(ctx, checkpointID, sessionIdx)
-		if err != nil {
-			if ctxErr := ctx.Err(); ctxErr != nil {
-				return nil, fmt.Errorf("context canceled while reading v1 session metadata: %w", ctxErr)
-			}
-			continue
-		}
-		if _, ok := neededSessionIDs[metadata.SessionID]; ok {
-			bySessionID[metadata.SessionID] = append(bySessionID[metadata.SessionID], sessionIdx)
-		}
-	}
-
-	return bySessionID, nil
-}
-
-func readV1SessionForMissingFullArtifact(
-	ctx context.Context,
-	v1Store *checkpoint.GitStore,
-	checkpointID id.CheckpointID,
-	summary *checkpoint.CheckpointSummary,
-	bySessionID map[string][]int,
-	missingSession missingFullSessionForPacking,
-) (v1SessionForPacking, bool, error) {
-	var triedSessionIndexes map[int]struct{}
-	if missingSession.sessionID != "" {
-		indexes := bySessionID[missingSession.sessionID]
-		triedSessionIndexes = make(map[int]struct{}, len(indexes))
-		for i := len(indexes) - 1; i >= 0; i-- {
-			sessionIdx := indexes[i]
-			triedSessionIndexes[sessionIdx] = struct{}{}
-			session, found, err := readV1SessionForPacking(ctx, v1Store, checkpointID, sessionIdx)
-			if err != nil || found {
-				return session, found, err
-			}
-		}
-	}
-
-	if missingSession.sessionIndex >= len(summary.Sessions) {
-		return v1SessionForPacking{}, false, nil
-	}
-	if _, tried := triedSessionIndexes[missingSession.sessionIndex]; tried {
-		return v1SessionForPacking{}, false, nil
-	}
-	return readV1SessionForPacking(ctx, v1Store, checkpointID, missingSession.sessionIndex)
-}
-
-func readV1SessionForPacking(
-	ctx context.Context,
-	v1Store *checkpoint.GitStore,
-	checkpointID id.CheckpointID,
-	sessionIdx int,
-) (v1SessionForPacking, bool, error) {
-	content, err := v1Store.ReadSessionContent(ctx, checkpointID, sessionIdx)
-	if err != nil {
-		if errors.Is(err, checkpoint.ErrNoTranscript) || errors.Is(err, checkpoint.ErrCheckpointNotFound) {
-			return v1SessionForPacking{}, false, nil
-		}
-		return v1SessionForPacking{}, false, fmt.Errorf("failed to read v1 session %d while checking raw artifacts: %w", sessionIdx, err)
-	}
-
-	return v1SessionForPacking{
-		sessionIndex: sessionIdx,
-		content:      content,
-	}, true, nil
-}
-
-func hasFullSessionArtifacts(v2Store *checkpoint.V2GitStore, cpID id.CheckpointID, sessionIdx int) (bool, error) {
-	ok, err := v2Store.HasFullSessionArtifacts(cpID, sessionIdx)
-	if err != nil {
-		return false, fmt.Errorf("failed to check v2 full artifacts for session %d: %w", sessionIdx, err)
-	}
-	return ok, nil
-}
-
-// v2CheckpointFullyMigrated reports whether every session already has a compact
-// transcript and /full/<n> artifacts. Returns false on any uncertainty.
-func v2CheckpointFullyMigrated(v2Store *checkpoint.V2GitStore, info checkpoint.CommittedInfo, existing *checkpoint.CheckpointSummary) bool {
-	if existing == nil || info.SessionCount == 0 || info.SessionCount != len(existing.Sessions) {
-		return false
-	}
-	for i, session := range existing.Sessions {
-		if session.Transcript == "" {
-			return false
-		}
-		ok, err := hasFullSessionArtifacts(v2Store, info.CheckpointID, i)
-		if err != nil || !ok {
-			return false
-		}
-	}
-	return true
-}
-
-// backfillCompactTranscripts checks sessions in an already-migrated v2 checkpoint
-// for missing transcript.jsonl and attempts to generate + write them from v1 data.
-// Returns errAlreadyMigrated if all sessions already have compact transcripts.
-func backfillCompactTranscripts(ctx context.Context, v1Store *checkpoint.GitStore, v2Store *checkpoint.V2GitStore, info checkpoint.CommittedInfo, v2Summary *checkpoint.CheckpointSummary) (int, error) {
-	// Find sessions missing transcript.jsonl
-	var needsBackfill []int
-	for i, session := range v2Summary.Sessions {
-		if session.Transcript == "" {
-			needsBackfill = append(needsBackfill, i)
-		}
-	}
-
-	if len(needsBackfill) == 0 {
-		return 0, errAlreadyMigrated
-	}
-
-	backfilled := 0
-	var lastAgent string
-
-	for _, sessionIdx := range needsBackfill {
-		// Sessions with no agent type recorded in v2 are permanently
-		// unrecoverable; skip without reading v1 to keep reruns cheap.
-		if v2Meta, metaErr := v2Store.ReadSessionMetadataAndPrompts(ctx, info.CheckpointID, sessionIdx); metaErr == nil && v2Meta != nil && v2Meta.Metadata.Agent == "" {
-			continue
-		}
-
-		content, readErr := v1Store.ReadSessionContent(ctx, info.CheckpointID, sessionIdx)
-		if readErr != nil {
-			logging.Warn(ctx, "transcript.jsonl backfill: could not read v1 session",
-				slog.String("checkpoint_id", string(info.CheckpointID)),
-				slog.Int("session_index", sessionIdx),
-				slog.String("error", readErr.Error()),
-			)
-			continue
-		}
-
-		if content.Metadata.Agent != "" {
-			lastAgent = string(content.Metadata.Agent)
-		}
-
-		compacted := tryCompactTranscript(ctx, content.Transcript, content.Metadata)
-		if compacted == nil {
-			// tryCompactTranscript already logs for no-agent and compact-error cases;
-			// log the empty-transcript case here.
-			if len(content.Transcript) == 0 {
-				logging.Warn(ctx, "transcript.jsonl backfill: empty transcript in v1",
-					slog.String("checkpoint_id", string(info.CheckpointID)),
-					slog.Int("session_index", sessionIdx),
-				)
-			}
-			continue
-		}
-
-		updateErr := v2Store.UpdateCommitted(ctx, checkpoint.UpdateCommittedOptions{
-			CheckpointID:      info.CheckpointID,
-			SessionID:         content.Metadata.SessionID,
-			CompactTranscript: compacted,
-		})
-		if updateErr != nil {
-			logging.Warn(ctx, "transcript.jsonl backfill: failed to write to v2",
-				slog.String("checkpoint_id", string(info.CheckpointID)),
-				slog.Int("session_index", sessionIdx),
-				slog.String("error", updateErr.Error()),
-			)
-			continue
-		}
-
-		backfilled++
-	}
-
-	if backfilled == 0 {
-		if lastAgent != "" {
-			return 0, fmt.Errorf("%w: agent %q", errTranscriptNotGeneratable, lastAgent)
-		}
-		return 0, fmt.Errorf("%w: no agent type in metadata", errTranscriptNotGeneratable)
-	}
-
-	return backfilled, nil
-}
-
 func buildMigrateWriteOpts(content *checkpoint.SessionContent, info checkpoint.CommittedInfo, combinedAttribution *checkpoint.InitialAttribution) checkpoint.WriteCommittedOptions {
 	m := content.Metadata
 
@@ -1164,8 +866,8 @@ func buildMigrateWriteOpts(content *checkpoint.SessionContent, info checkpoint.C
 		CreatedAt:    m.CreatedAt,
 		Strategy:     m.Strategy,
 		Branch:       m.Branch,
-		// content.Transcript comes from persisted checkpoint storage and is
-		// already redacted.
+		// All transcripts read here come from persisted checkpoint storage,
+		// which is already redacted.
 		Transcript:                  redact.AlreadyRedacted(content.Transcript),
 		Prompts:                     prompts,
 		FilesTouched:                m.FilesTouched,
@@ -1203,7 +905,6 @@ func compactTranscriptForStartLine(ctx context.Context, transcript []byte, m che
 		return nil
 	}
 
-	// transcript is read from persisted checkpoint storage and already redacted.
 	compacted, err := compact.Compact(redact.AlreadyRedacted(transcript), compact.MetadataFields{
 		Agent:      string(m.Agent),
 		CLIVersion: versioninfo.Version,
@@ -1241,7 +942,6 @@ func computeCompactOffset(ctx context.Context, fullTranscript, fullCompact []byt
 		return 0
 	}
 
-	// fullTranscript is read from persisted checkpoint storage and already redacted.
 	scopedCompact, err := compact.Compact(redact.AlreadyRedacted(fullTranscript), compact.MetadataFields{
 		Agent:      string(m.Agent),
 		CLIVersion: versioninfo.Version,
@@ -1336,7 +1036,6 @@ func latestMigratedV2SessionIndex(v1ToV2SessionIdx map[int]int) (int, bool) {
 	return latest, true
 }
 
-// resolveV1CheckpointTree reads the checkpoint subtree from the v1 branch.
 func resolveV1CheckpointTree(repo *git.Repository, cpID id.CheckpointID) (*object.Tree, error) {
 	refName := plumbing.NewBranchReferenceName(paths.MetadataBranchName)
 	ref, err := repo.Reference(refName, true)
@@ -1367,15 +1066,345 @@ func resolveV1CheckpointTree(repo *git.Repository, cpID id.CheckpointID) (*objec
 	return cpTree, nil
 }
 
-// cleanupV1TranscriptFiles removes legacy v1-named transcript files (full.jsonl,
-// full.jsonl.*, content_hash.txt) from /full/current. Older CLI versions wrote
-// these before the rename to raw_transcript; they are inert but waste space.
-// Best-effort: failures are logged and do not block migration.
-func cleanupV1TranscriptFiles(ctx context.Context, _ *git.Repository, v2Store *checkpoint.V2GitStore, cpID id.CheckpointID, sessionCount int) {
-	if err := v2Store.CleanupV1TranscriptFiles(ctx, cpID, sessionCount); err != nil {
-		logging.Warn(ctx, "v1 transcript cleanup failed",
-			slog.String("checkpoint_id", string(cpID)),
-			slog.String("error", err.Error()),
-		)
+// collectMissingFullCheckpointForPacking returns a migratedFullCheckpoint
+// scoped to the sessions that lack /full/* artifacts on this v2 checkpoint,
+// reading their content from v1 so the caller can hand it to the same
+// generationPacker fresh migrations use. Returns errAlreadyMigrated when
+// every session is already packed.
+func collectMissingFullCheckpointForPacking(
+	ctx context.Context,
+	repo *git.Repository,
+	v1Store *checkpoint.GitStore,
+	v2Store *checkpoint.V2GitStore,
+	info checkpoint.CommittedInfo,
+	v2Summary *checkpoint.CheckpointSummary,
+	fullArtifacts checkpoint.FullSessionArtifactsIndex,
+) (*migratedFullCheckpoint, error) {
+	missingSessions, err := collectMissingFullSessionsForPacking(ctx, v2Store, info.CheckpointID, v2Summary, fullArtifacts)
+	if err != nil {
+		return nil, err
 	}
+	if len(missingSessions) == 0 {
+		return nil, errAlreadyMigrated
+	}
+
+	v1Summary, err := v1Store.ReadCommitted(ctx, info.CheckpointID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read v1 summary while resuming v2 migration: %w", err)
+	}
+	if v1Summary == nil {
+		return nil, fmt.Errorf("v1 checkpoint %s has no summary", info.CheckpointID)
+	}
+
+	v1BySessionID, err := collectV1SessionIndexesForPacking(ctx, v1Store, info.CheckpointID, v1Summary, missingSessions)
+	if err != nil {
+		return nil, err
+	}
+
+	fullCheckpoint := &migratedFullCheckpoint{
+		checkpointID: info.CheckpointID,
+	}
+	v1ToV2SessionIdx := make(map[int]int)
+
+	for _, missingSession := range missingSessions {
+		v1Session, ok, readErr := readV1SessionForMissingFullArtifact(ctx, v1Store, info.CheckpointID, v1Summary, v1BySessionID, missingSession)
+		if readErr != nil {
+			return nil, readErr
+		}
+		if !ok {
+			return nil, fmt.Errorf("failed to find v1 session for v2 session %d while resuming migration", missingSession.sessionIndex)
+		}
+
+		fullCheckpoint.sessions = append(fullCheckpoint.sessions, migratedFullSession{
+			sessionIndex: missingSession.sessionIndex,
+			content:      v1Session.content,
+		})
+		v1ToV2SessionIdx[v1Session.sessionIndex] = missingSession.sessionIndex
+	}
+
+	latestV2SessionIdx := len(v2Summary.Sessions) - 1
+	taskTrees, taskErr := collectTaskMetadataForMigratedFullGenerationWithRootSession(
+		repo,
+		info.CheckpointID,
+		v1Summary,
+		v1ToV2SessionIdx,
+		latestV2SessionIdx,
+		latestV2SessionIdx >= 0,
+	)
+	if taskErr != nil {
+		return nil, fmt.Errorf("failed to collect task metadata while resuming migration: %w", taskErr)
+	}
+	fullCheckpoint.taskTrees = taskTrees
+
+	return fullCheckpoint, nil
+}
+
+type missingFullSessionForPacking struct {
+	sessionIndex int
+	sessionID    string
+}
+
+type v1SessionForPacking struct {
+	sessionIndex int
+	content      *checkpoint.SessionContent
+}
+
+func collectMissingFullSessionsForPacking(
+	ctx context.Context,
+	v2Store *checkpoint.V2GitStore,
+	checkpointID id.CheckpointID,
+	summary *checkpoint.CheckpointSummary,
+	fullArtifacts checkpoint.FullSessionArtifactsIndex,
+) ([]missingFullSessionForPacking, error) {
+	missingSessions := make([]missingFullSessionForPacking, 0)
+	for sessionIdx := range len(summary.Sessions) {
+		// Production passes a pre-built index; nil falls back to the per-call
+		// predicate for tests that exercise this helper directly.
+		var ok bool
+		if fullArtifacts != nil {
+			ok = fullArtifacts.Has(checkpointID, sessionIdx)
+		} else {
+			var checkErr error
+			ok, checkErr = v2Store.HasFullSessionArtifacts(checkpointID, sessionIdx)
+			if checkErr != nil {
+				return nil, fmt.Errorf("failed to check v2 session %d artifacts: %w", sessionIdx, checkErr)
+			}
+		}
+		if ok {
+			continue
+		}
+
+		// Metadata-only read: only SessionID is needed downstream.
+		meta, readErr := v2Store.ReadSessionMetadata(ctx, checkpointID, sessionIdx)
+		if readErr != nil {
+			return nil, fmt.Errorf("failed to read v2 session %d metadata while resuming migration: %w", sessionIdx, readErr)
+		}
+
+		missingSessions = append(missingSessions, missingFullSessionForPacking{
+			sessionIndex: sessionIdx,
+			sessionID:    meta.SessionID,
+		})
+	}
+
+	return missingSessions, nil
+}
+
+// collectV1SessionIndexesForPacking maps each missing session's id to its v1
+// session index. Resolving by session_id is necessary because v1/v2 indices
+// can drift — v1 sessions without a transcript are skipped on fresh migration.
+func collectV1SessionIndexesForPacking(
+	ctx context.Context,
+	v1Store *checkpoint.GitStore,
+	checkpointID id.CheckpointID,
+	summary *checkpoint.CheckpointSummary,
+	missingSessions []missingFullSessionForPacking,
+) (map[string][]int, error) {
+	neededSessionIDs := make(map[string]struct{})
+	for _, session := range missingSessions {
+		if session.sessionID != "" {
+			neededSessionIDs[session.sessionID] = struct{}{}
+		}
+	}
+
+	bySessionID := make(map[string][]int)
+	if len(neededSessionIDs) == 0 {
+		return bySessionID, nil
+	}
+
+	for sessionIdx := range len(summary.Sessions) {
+		metadata, err := v1Store.ReadSessionMetadata(ctx, checkpointID, sessionIdx)
+		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return nil, fmt.Errorf("context canceled while reading v1 session metadata: %w", ctxErr)
+			}
+			continue
+		}
+		if _, ok := neededSessionIDs[metadata.SessionID]; ok {
+			bySessionID[metadata.SessionID] = append(bySessionID[metadata.SessionID], sessionIdx)
+		}
+	}
+
+	return bySessionID, nil
+}
+
+func readV1SessionForMissingFullArtifact(
+	ctx context.Context,
+	v1Store *checkpoint.GitStore,
+	checkpointID id.CheckpointID,
+	summary *checkpoint.CheckpointSummary,
+	bySessionID map[string][]int,
+	missingSession missingFullSessionForPacking,
+) (v1SessionForPacking, bool, error) {
+	var triedSessionIndexes map[int]struct{}
+	if missingSession.sessionID != "" {
+		indexes := bySessionID[missingSession.sessionID]
+		triedSessionIndexes = make(map[int]struct{}, len(indexes))
+		for i := len(indexes) - 1; i >= 0; i-- {
+			sessionIdx := indexes[i]
+			triedSessionIndexes[sessionIdx] = struct{}{}
+			session, found, err := readV1SessionForPacking(ctx, v1Store, checkpointID, sessionIdx)
+			if err != nil || found {
+				return session, found, err
+			}
+		}
+	}
+
+	if missingSession.sessionIndex >= len(summary.Sessions) {
+		return v1SessionForPacking{}, false, nil
+	}
+	if _, tried := triedSessionIndexes[missingSession.sessionIndex]; tried {
+		return v1SessionForPacking{}, false, nil
+	}
+	return readV1SessionForPacking(ctx, v1Store, checkpointID, missingSession.sessionIndex)
+}
+
+func readV1SessionForPacking(
+	ctx context.Context,
+	v1Store *checkpoint.GitStore,
+	checkpointID id.CheckpointID,
+	sessionIdx int,
+) (v1SessionForPacking, bool, error) {
+	content, err := v1Store.ReadSessionContent(ctx, checkpointID, sessionIdx)
+	if err != nil {
+		if errors.Is(err, checkpoint.ErrNoTranscript) || errors.Is(err, checkpoint.ErrCheckpointNotFound) {
+			return v1SessionForPacking{}, false, nil
+		}
+		return v1SessionForPacking{}, false, fmt.Errorf("failed to read v1 session %d while resuming migration: %w", sessionIdx, err)
+	}
+
+	return v1SessionForPacking{
+		sessionIndex: sessionIdx,
+		content:      content,
+	}, true, nil
+}
+
+func backfillCompactTranscripts(ctx context.Context, v1Store *checkpoint.GitStore, v2Store *checkpoint.V2GitStore, info checkpoint.CommittedInfo, v2Summary *checkpoint.CheckpointSummary) (int, error) {
+	missingSessions, skippedNoAgent, err := collectMissingCompactSessionsForBackfill(ctx, v2Store, info.CheckpointID, v2Summary)
+	if err != nil {
+		return 0, err
+	}
+	if len(missingSessions) == 0 {
+		if skippedNoAgent {
+			return 0, fmt.Errorf("%w: no agent type in metadata", errTranscriptNotGeneratable)
+		}
+		return 0, errAlreadyMigrated
+	}
+
+	v1Summary, err := v1Store.ReadCommitted(ctx, info.CheckpointID)
+	if err != nil {
+		return 0, fmt.Errorf("failed to read v1 summary while backfilling compact transcripts: %w", err)
+	}
+	if v1Summary == nil {
+		return 0, fmt.Errorf("v1 checkpoint %s has no summary", info.CheckpointID)
+	}
+
+	v1BySessionID, err := collectV1SessionIndexesForPacking(ctx, v1Store, info.CheckpointID, v1Summary, missingSessions)
+	if err != nil {
+		return 0, err
+	}
+
+	backfilled := 0
+	skippedBackfill := false
+	var lastAgent string
+	for _, missingSession := range missingSessions {
+		v1Session, ok, readErr := readV1SessionForMissingFullArtifact(ctx, v1Store, info.CheckpointID, v1Summary, v1BySessionID, missingSession)
+		if readErr != nil {
+			logging.Warn(ctx, "transcript.jsonl backfill: could not read v1 session",
+				slog.String("checkpoint_id", string(info.CheckpointID)),
+				slog.Int("session_index", missingSession.sessionIndex),
+				slog.String("error", readErr.Error()),
+			)
+			skippedBackfill = true
+			continue
+		}
+		if !ok {
+			logging.Warn(ctx, "transcript.jsonl backfill: no matching v1 session",
+				slog.String("checkpoint_id", string(info.CheckpointID)),
+				slog.Int("session_index", missingSession.sessionIndex),
+			)
+			skippedBackfill = true
+			continue
+		}
+
+		content := v1Session.content
+		if content.Metadata.Agent != "" {
+			lastAgent = string(content.Metadata.Agent)
+		}
+
+		compacted := tryCompactTranscript(ctx, content.Transcript, content.Metadata)
+		if compacted == nil {
+			if len(content.Transcript) == 0 {
+				logging.Warn(ctx, "transcript.jsonl backfill: empty transcript in v1",
+					slog.String("checkpoint_id", string(info.CheckpointID)),
+					slog.Int("session_index", missingSession.sessionIndex),
+				)
+			}
+			skippedBackfill = true
+			continue
+		}
+
+		updateErr := v2Store.UpdateCommitted(ctx, checkpoint.UpdateCommittedOptions{
+			CheckpointID:      info.CheckpointID,
+			SessionID:         content.Metadata.SessionID,
+			CompactTranscript: compacted,
+		})
+		if updateErr != nil {
+			logging.Warn(ctx, "transcript.jsonl backfill: failed to write to v2",
+				slog.String("checkpoint_id", string(info.CheckpointID)),
+				slog.Int("session_index", missingSession.sessionIndex),
+				slog.String("error", updateErr.Error()),
+			)
+			skippedBackfill = true
+			continue
+		}
+
+		backfilled++
+	}
+
+	if backfilled == 0 {
+		if lastAgent != "" {
+			return 0, fmt.Errorf("%w: agent %q", errTranscriptNotGeneratable, lastAgent)
+		}
+		if skippedNoAgent {
+			return 0, fmt.Errorf("%w: no agent type in metadata", errTranscriptNotGeneratable)
+		}
+		return 0, errTranscriptNotGeneratable
+	}
+	if skippedBackfill {
+		if lastAgent != "" {
+			return backfilled, fmt.Errorf("%w: agent %q", errTranscriptNotGeneratable, lastAgent)
+		}
+		return backfilled, errTranscriptNotGeneratable
+	}
+
+	return backfilled, nil
+}
+
+func collectMissingCompactSessionsForBackfill(
+	ctx context.Context,
+	v2Store *checkpoint.V2GitStore,
+	checkpointID id.CheckpointID,
+	summary *checkpoint.CheckpointSummary,
+) ([]missingFullSessionForPacking, bool, error) {
+	var missingSessions []missingFullSessionForPacking
+	skippedNoAgent := false
+	for sessionIdx, session := range summary.Sessions {
+		if session.Transcript != "" {
+			continue
+		}
+
+		meta, err := v2Store.ReadSessionMetadata(ctx, checkpointID, sessionIdx)
+		if err != nil {
+			return nil, false, fmt.Errorf("failed to read v2 session %d metadata while backfilling compact transcript: %w", sessionIdx, err)
+		}
+		if meta.Agent == "" {
+			skippedNoAgent = true
+			continue
+		}
+		missingSessions = append(missingSessions, missingFullSessionForPacking{
+			sessionIndex: sessionIdx,
+			sessionID:    meta.SessionID,
+		})
+	}
+	return missingSessions, skippedNoAgent, nil
 }

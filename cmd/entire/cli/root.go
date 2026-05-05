@@ -97,6 +97,7 @@ func NewRootCmd() *cobra.Command {
 	cmd.AddCommand(newVersionCmd())
 	cmd.AddCommand(newDispatchCmd())
 	cmd.AddCommand(newActivityCmd())
+	cmd.AddCommand(newRecapCmd())
 
 	// Hidden top-level shortcuts. Functional but print a deprecation hint.
 	cmd.AddCommand(hideAsAlias(newRewindCmd(), "entire checkpoint rewind"))
