@@ -217,7 +217,8 @@ func (s *V2GitStore) ReadSessionMetadata(ctx context.Context, checkpointID id.Ch
 		return CommittedMetadata{}, ErrCheckpointNotFound
 	}
 
-	metadataFile, err := sessionTree.File(paths.MetadataFileName)
+	sessionFT := s.wrapWithFetcher(ctx, sessionTree)
+	metadataFile, err := sessionFT.File(paths.MetadataFileName)
 	if err != nil {
 		return CommittedMetadata{}, fmt.Errorf("read session metadata file: %w", err)
 	}

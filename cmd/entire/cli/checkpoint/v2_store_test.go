@@ -1059,7 +1059,7 @@ func TestV2GitStore_BuildFullSessionArtifactsIndex_AgreesWithHasFullSessionArtif
 	for _, cpID := range cpIDs {
 		// All three writes hit session 0; sessions ≥1 must be absent from
 		// both predicate and index.
-		for sessionIdx := 0; sessionIdx < 3; sessionIdx++ {
+		for sessionIdx := range 3 {
 			fromCall, err := store.HasFullSessionArtifacts(cpID, sessionIdx)
 			require.NoError(t, err)
 			fromIndex := index.Has(cpID, sessionIdx)
