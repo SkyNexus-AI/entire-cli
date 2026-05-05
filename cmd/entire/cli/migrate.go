@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"sort"
 	"strconv"
+	"strings"
 
 	"github.com/entireio/cli/cmd/entire/cli/agent"
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint"
@@ -492,12 +493,64 @@ func (p *generationPacker) flush(ctx context.Context) error {
 }
 
 func (p *generationPacker) finalize(ctx context.Context, ensureEmptyCurrent bool) error {
-	if err := p.flush(ctx); err != nil {
+	if err := p.writePendingToCurrent(ctx); err != nil {
 		return err
 	}
 	if p.flushed && ensureEmptyCurrent {
 		return ensureEmptyV2FullCurrent(ctx, p.repo)
 	}
+	return nil
+}
+
+func (p *generationPacker) writePendingToCurrent(ctx context.Context) error {
+	if len(p.pending) == 0 {
+		return nil
+	}
+
+	refName := plumbing.ReferenceName(paths.V2FullCurrentRefName)
+	parentHash, rootTreeHash, err := p.v2Store.GetRefState(refName)
+	entries := make(map[string]object.TreeEntry)
+	if err != nil {
+		if !errors.Is(err, plumbing.ErrReferenceNotFound) {
+			return fmt.Errorf("read v2 full/current ref: %w", err)
+		}
+		parentHash = plumbing.ZeroHash
+	} else if rootTreeHash != plumbing.ZeroHash {
+		rootTree, treeErr := p.repo.TreeObject(rootTreeHash)
+		if treeErr != nil {
+			return fmt.Errorf("read v2 full/current tree: %w", treeErr)
+		}
+		if flatErr := checkpoint.FlattenTree(p.repo, rootTree, "", entries); flatErr != nil {
+			return fmt.Errorf("flatten v2 full/current tree: %w", flatErr)
+		}
+		delete(entries, paths.GenerationFileName)
+	}
+
+	for _, cp := range p.pending {
+		for _, session := range cp.sessions {
+			if err := writeMigratedFullSessionEntries(ctx, p.repo, cp, session, entries); err != nil {
+				return fmt.Errorf("write full/current session entries for checkpoint %s session %d: %w", cp.checkpointID, session.sessionIndex, err)
+			}
+		}
+	}
+
+	treeHash, err := checkpoint.BuildTreeFromEntries(ctx, p.repo, entries)
+	if err != nil {
+		return fmt.Errorf("build migrated full/current tree: %w", err)
+	}
+
+	commitHash, err := checkpoint.CreateCommit(ctx, p.repo, treeHash, parentHash,
+		"Write migrated partial generation\n",
+		migrateAuthorName, migrateAuthorEmail)
+	if err != nil {
+		return fmt.Errorf("create migrated full/current commit: %w", err)
+	}
+
+	if err := p.repo.Storer.SetReference(plumbing.NewHashReference(refName, commitHash)); err != nil {
+		return fmt.Errorf("update %s: %w", refName, err)
+	}
+
+	p.pending = nil
 	return nil
 }
 
@@ -580,6 +633,19 @@ func generationMetadataFromMigratedSessions(checkpoints []migratedFullCheckpoint
 func writeMigratedFullSessionEntries(ctx context.Context, repo *git.Repository, cp migratedFullCheckpoint, session migratedFullSession, entries map[string]object.TreeEntry) error {
 	sessionPath := fmt.Sprintf("%s/%d/", cp.checkpointID.Path(), session.sessionIndex)
 	transcript := session.content.Transcript
+	rawTranscriptPath := sessionPath + paths.V2RawTranscriptFileName
+	rawHashPath := sessionPath + paths.V2RawTranscriptHashFileName
+
+	for key := range entries {
+		switch {
+		case key == rawTranscriptPath:
+			delete(entries, key)
+		case strings.HasPrefix(key, rawTranscriptPath+"."):
+			delete(entries, key)
+		case key == rawHashPath:
+			delete(entries, key)
+		}
+	}
 
 	chunks, err := agent.ChunkTranscript(ctx, transcript, session.content.Metadata.Agent)
 	if err != nil {
@@ -598,14 +664,13 @@ func writeMigratedFullSessionEntries(ctx context.Context, repo *git.Repository, 
 		}
 	}
 
-	hashPath := sessionPath + paths.V2RawTranscriptHashFileName
 	contentHash := fmt.Sprintf("sha256:%x", sha256.Sum256(transcript))
 	hashBlob, err := checkpoint.CreateBlobFromContent(repo, []byte(contentHash))
 	if err != nil {
 		return fmt.Errorf("create transcript hash blob: %w", err)
 	}
-	entries[hashPath] = object.TreeEntry{
-		Name: hashPath,
+	entries[rawHashPath] = object.TreeEntry{
+		Name: rawHashPath,
 		Mode: filemode.Regular,
 		Hash: hashBlob,
 	}
