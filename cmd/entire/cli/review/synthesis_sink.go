@@ -20,6 +20,7 @@ import (
 	"github.com/charmbracelet/huh"
 
 	"github.com/entireio/cli/cmd/entire/cli/logging"
+	"github.com/entireio/cli/cmd/entire/cli/mdrender"
 	reviewtypes "github.com/entireio/cli/cmd/entire/cli/review/types"
 )
 
@@ -98,7 +99,19 @@ func (s SynthesisSink) RunFinished(summary reviewtypes.RunSummary) {
 		fmt.Fprintf(s.Writer, "synthesis unavailable: %v\n", provErr)
 		return
 	}
-	fmt.Fprintln(s.Writer, result)
+	// The synthesis verdict is markdown — render it through the same palette
+	// dispatch / DumpSink use, so multi-agent reviews finish with a visually
+	// consistent block. Non-TTY writers receive raw markdown unchanged.
+	//
+	// Use Fprint (not Fprintln): mdrender.Render returns glamour output that
+	// already ends with a newline, and the raw-markdown fallback path has its
+	// own terminal newline from the LLM response. Adding Fprintln would double
+	// the trailing blank line.
+	rendered, err := mdrender.RenderForWriter(s.Writer, result)
+	if err != nil {
+		rendered = result
+	}
+	fmt.Fprint(s.Writer, rendered)
 }
 
 // usableAgentCount returns the number of agents that produced usable narrative

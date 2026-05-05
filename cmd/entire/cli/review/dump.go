@@ -4,6 +4,11 @@
 // per-agent narrative dump to an io.Writer after the run completes.
 // AgentEvent is a no-op; events are read from RunSummary.AgentRuns[].Buffer
 // in RunFinished.
+//
+// Output format: each agent's block is composed as markdown (`# claude-code
+// review`, with failure context in blockquotes/bold) and rendered through
+// mdrender for terminal writers. Non-TTY writers receive raw markdown so
+// pipelines can grep / pipe / save without ANSI escape codes.
 package review
 
 import (
@@ -11,6 +16,7 @@ import (
 	"io"
 	"strings"
 
+	"github.com/entireio/cli/cmd/entire/cli/mdrender"
 	reviewtypes "github.com/entireio/cli/cmd/entire/cli/review/types"
 )
 
@@ -34,38 +40,61 @@ func (s DumpSink) RunFinished(summary reviewtypes.RunSummary) {
 	s.dumpCounts(summary)
 }
 
+// dumpAgent composes one agent's section as markdown and writes it through
+// mdrender. The counts line at the end of the run is intentionally NOT
+// rendered through markdown — it's a terse status summary that benefits
+// from staying on a single uncolored line for grep-ability.
+//
+// Markdown structure per agent:
+//
+//	# <name> review
+//	(optional status line for cancelled / failed)
+//	(optional blockquote for RunError events on failure)
+//	(narrative — agent's AssistantText events joined)
 func (s DumpSink) dumpAgent(run reviewtypes.AgentRun) {
-	fmt.Fprintf(s.W, "─────── %s review ───────\n", run.Name)
-	if run.Status == reviewtypes.AgentStatusCancelled {
-		fmt.Fprintln(s.W, "(cancelled)")
-		return
-	}
-	if run.Status == reviewtypes.AgentStatusFailed {
+	var b strings.Builder
+	fmt.Fprintf(&b, "# %s review\n\n", run.Name)
+
+	switch run.Status {
+	case reviewtypes.AgentStatusCancelled:
+		b.WriteString("_cancelled_\n")
+	case reviewtypes.AgentStatusFailed:
 		// Surface the wait error if any (process exit failure), then any
 		// agent-level RunError events the parser emitted (typically a torn
 		// stdout stream — caught at the orchestrator level by classifyStatus
 		// even when the process itself exited 0).
 		if run.Err != nil {
-			fmt.Fprintf(s.W, "(failed: %v)\n", run.Err)
+			fmt.Fprintf(&b, "**Failed:** `%v`\n\n", run.Err)
 		} else {
-			fmt.Fprintln(s.W, "(failed)")
+			b.WriteString("**Failed**\n\n")
 		}
 		for _, ev := range run.Buffer {
 			if re, ok := ev.(reviewtypes.RunError); ok && re.Err != nil {
-				fmt.Fprintf(s.W, "  agent error: %v\n", re.Err)
+				fmt.Fprintf(&b, "> agent error: `%v`\n\n", re.Err)
 			}
 		}
 		// Render any narrative text the agent produced before the failure
 		// surfaced — useful when the parser tore mid-response so reviewers
 		// can see partial output instead of a bare "(failed)" line.
 		if narrative := joinAssistantText(run.Buffer); narrative != "" {
-			fmt.Fprintln(s.W, narrative)
+			b.WriteString(narrative)
+			b.WriteString("\n")
 		}
-		return
+	case reviewtypes.AgentStatusSucceeded, reviewtypes.AgentStatusUnknown:
+		if narrative := joinAssistantText(run.Buffer); narrative != "" {
+			b.WriteString(narrative)
+			b.WriteString("\n")
+		}
 	}
-	if narrative := joinAssistantText(run.Buffer); narrative != "" {
-		fmt.Fprintln(s.W, narrative)
+
+	// RenderForWriter is TTY-aware: returns raw markdown for non-TTY writers,
+	// glamour-styled output otherwise. Errors are best-effort — fall back to
+	// raw markdown so the user always gets the content.
+	rendered, err := mdrender.RenderForWriter(s.W, b.String())
+	if err != nil {
+		rendered = b.String()
 	}
+	fmt.Fprint(s.W, rendered)
 }
 
 // joinAssistantText extracts AssistantText events from a buffer and joins
