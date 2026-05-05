@@ -90,7 +90,7 @@ func runMigrateCheckpointsV2(ctx context.Context, cmd *cobra.Command, force bool
 	out := cmd.OutOrStdout()
 	progressOut := cmd.ErrOrStderr()
 
-	result, freshlyPackedRefs, err := migrateCheckpointsV2Internal(ctx, repo, v1Store, v2Store, progressOut, force)
+	result, freshlyPackedRefs, err := migrateCheckpointsV2(ctx, repo, v1Store, v2Store, progressOut, force)
 	if err != nil {
 		return err
 	}
@@ -191,17 +191,9 @@ type migratedFullSession struct {
 	content      *checkpoint.SessionContent
 }
 
-// migrateCheckpointsV2 is the test entry point; it discards the
-// freshly-packed refs list that production code uses to gate the repair pass.
-func migrateCheckpointsV2(ctx context.Context, repo *git.Repository, v1Store *checkpoint.GitStore, v2Store *checkpoint.V2GitStore, progressOut io.Writer, force bool) (*migrateResult, error) {
-	result, _, err := migrateCheckpointsV2Internal(ctx, repo, v1Store, v2Store, progressOut, force)
-	return result, err
-}
-
-// migrateCheckpointsV2Internal returns the /full/<n> refs the packer wrote so
-// the caller can pass them as exclusions to the generation-metadata repair
-// pass.
-func migrateCheckpointsV2Internal(ctx context.Context, repo *git.Repository, v1Store *checkpoint.GitStore, v2Store *checkpoint.V2GitStore, progressOut io.Writer, force bool) (*migrateResult, []plumbing.ReferenceName, error) {
+// migrateCheckpointsV2 returns the /full/<n> refs the packer wrote so callers
+// can pass them as exclusions to the generation-metadata repair pass.
+func migrateCheckpointsV2(ctx context.Context, repo *git.Repository, v1Store *checkpoint.GitStore, v2Store *checkpoint.V2GitStore, progressOut io.Writer, force bool) (*migrateResult, []plumbing.ReferenceName, error) {
 	v1List, err := v1Store.ListCommitted(ctx)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to list v1 checkpoints: %w", err)

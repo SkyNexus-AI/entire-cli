@@ -179,21 +179,26 @@ func (s *V2GitStore) BuildFullSessionArtifactsIndex() (FullSessionArtifactsIndex
 		if treeErr != nil {
 			return nil, fmt.Errorf("read %s root tree: %w", refName, treeErr)
 		}
-		if err := s.indexFullSessionsInTree(rootTree, index); err != nil {
+		keys, err := s.listFullSessionsInTree(rootTree)
+		if err != nil {
 			return nil, fmt.Errorf("walk %s: %w", refName, err)
+		}
+		for _, key := range keys {
+			index[key] = struct{}{}
 		}
 	}
 	return index, nil
 }
 
-func (s *V2GitStore) indexFullSessionsInTree(rootTree *object.Tree, index FullSessionArtifactsIndex) error {
+func (s *V2GitStore) listFullSessionsInTree(rootTree *object.Tree) ([]string, error) {
+	var keys []string
 	for _, shardEntry := range rootTree.Entries {
 		if shardEntry.Mode != filemode.Dir || len(shardEntry.Name) != 2 {
 			continue
 		}
 		shardTree, err := s.repo.TreeObject(shardEntry.Hash)
 		if err != nil {
-			return fmt.Errorf("read shard %s: %w", shardEntry.Name, err)
+			return nil, fmt.Errorf("read shard %s: %w", shardEntry.Name, err)
 		}
 		for _, cpEntry := range shardTree.Entries {
 			if cpEntry.Mode != filemode.Dir {
@@ -201,7 +206,7 @@ func (s *V2GitStore) indexFullSessionsInTree(rootTree *object.Tree, index FullSe
 			}
 			cpTree, err := s.repo.TreeObject(cpEntry.Hash)
 			if err != nil {
-				return fmt.Errorf("read checkpoint tree %s/%s: %w", shardEntry.Name, cpEntry.Name, err)
+				return nil, fmt.Errorf("read checkpoint tree %s/%s: %w", shardEntry.Name, cpEntry.Name, err)
 			}
 			cpid := id.CheckpointID(shardEntry.Name + cpEntry.Name)
 			for _, sessionEntry := range cpTree.Entries {
@@ -214,16 +219,16 @@ func (s *V2GitStore) indexFullSessionsInTree(rootTree *object.Tree, index FullSe
 				}
 				sessionTree, err := s.repo.TreeObject(sessionEntry.Hash)
 				if err != nil {
-					return fmt.Errorf("read session tree %s/%s/%d: %w", shardEntry.Name, cpEntry.Name, sessionIdx, err)
+					return nil, fmt.Errorf("read session tree %s/%s/%d: %w", shardEntry.Name, cpEntry.Name, sessionIdx, err)
 				}
 				if !sessionHasCompleteFullArtifacts(sessionTree.Entries) {
 					continue
 				}
-				index[fullArtifactsIndexKey(cpid, sessionIdx)] = struct{}{}
+				keys = append(keys, fullArtifactsIndexKey(cpid, sessionIdx))
 			}
 		}
 	}
-	return nil
+	return keys, nil
 }
 
 func sessionHasCompleteFullArtifacts(entries []object.TreeEntry) bool {
