@@ -1188,6 +1188,63 @@ func TestMigrateCheckpointsV2_AllSkippedOnRerun(t *testing.T) {
 	assert.Equal(t, 2, result2.skipped)
 }
 
+func TestMigrateCheckpointsV2_BackfillsCompactTranscriptWhenFullArtifactsExist(t *testing.T) {
+	t.Parallel()
+	repo := initMigrateTestRepo(t)
+	v1Store, v2Store := newMigrateStores(repo)
+	ctx := context.Background()
+
+	cpID := id.MustCheckpointID("aabb11223344")
+	transcript := []byte(
+		"{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"hello\"}}\n" +
+			"{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"hi\"}]}}\n",
+	)
+
+	err := v1Store.WriteCommitted(ctx, checkpoint.WriteCommittedOptions{
+		CheckpointID: cpID,
+		SessionID:    "session-backfill",
+		Strategy:     "manual-commit",
+		Transcript:   redact.AlreadyRedacted(transcript),
+		Prompts:      []string{"hello"},
+		Agent:        agent.AgentTypeClaudeCode,
+		AuthorName:   "Test",
+		AuthorEmail:  "test@test.com",
+	})
+	require.NoError(t, err)
+
+	err = v2Store.WriteCommitted(ctx, checkpoint.WriteCommittedOptions{
+		CheckpointID: cpID,
+		SessionID:    "session-backfill",
+		Strategy:     "manual-commit",
+		Transcript:   redact.AlreadyRedacted(transcript),
+		Prompts:      []string{"hello"},
+		Agent:        agent.AgentTypeClaudeCode,
+		AuthorName:   "Test",
+		AuthorEmail:  "test@test.com",
+	})
+	require.NoError(t, err)
+
+	summary, err := v2Store.ReadCommitted(ctx, cpID)
+	require.NoError(t, err)
+	require.NotNil(t, summary)
+	require.Empty(t, summary.Sessions[0].Transcript, "precondition: compact transcript should be missing on /main")
+	hasFull, err := v2Store.HasFullSessionArtifacts(cpID, 0)
+	require.NoError(t, err)
+	require.True(t, hasFull, "precondition: raw /full artifacts should already exist")
+
+	var stdout bytes.Buffer
+	result, migrateErr := migrateCheckpointsV2(ctx, repo, v1Store, v2Store, &stdout, false)
+	require.NoError(t, migrateErr)
+	assert.Equal(t, 1, result.migrated, "compact backfill should count as migration work")
+	assert.Equal(t, 0, result.skipped)
+	assert.Equal(t, 0, result.failed)
+
+	summary, err = v2Store.ReadCommitted(ctx, cpID)
+	require.NoError(t, err)
+	require.NotNil(t, summary)
+	assert.NotEmpty(t, summary.Sessions[0].Transcript, "compact transcript should be backfilled on /main")
+}
+
 func TestMigrateCheckpointsV2_UsesComputedCompactTranscriptStart(t *testing.T) {
 	t.Parallel()
 	repo := initMigrateTestRepo(t)
