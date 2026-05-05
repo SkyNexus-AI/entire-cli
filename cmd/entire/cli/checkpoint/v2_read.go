@@ -183,6 +183,53 @@ func (s *V2GitStore) ReadSessionCompactTranscript(ctx context.Context, checkpoin
 	return []byte(content), nil
 }
 
+// ReadSessionMetadata reads only the session's metadata.json from the v2
+// /main ref — cheaper than ReadSessionMetadataAndPrompts when the caller
+// only needs metadata fields (e.g. SessionID). Returns ErrCheckpointNotFound
+// if the checkpoint or session doesn't exist on /main.
+func (s *V2GitStore) ReadSessionMetadata(ctx context.Context, checkpointID id.CheckpointID, sessionIndex int) (CommittedMetadata, error) {
+	if err := ctx.Err(); err != nil {
+		return CommittedMetadata{}, err //nolint:wrapcheck // Propagating context cancellation
+	}
+
+	refName := plumbing.ReferenceName(paths.V2MainRefName)
+	_, rootTreeHash, err := s.GetRefState(refName)
+	if err != nil {
+		return CommittedMetadata{}, ErrCheckpointNotFound
+	}
+
+	rootTree, err := s.repo.TreeObject(rootTreeHash)
+	if err != nil {
+		return CommittedMetadata{}, ErrCheckpointNotFound
+	}
+
+	cpTree, err := rootTree.Tree(checkpointID.Path())
+	if err != nil {
+		return CommittedMetadata{}, ErrCheckpointNotFound
+	}
+
+	sessionTree, err := cpTree.Tree(strconv.Itoa(sessionIndex))
+	if err != nil {
+		return CommittedMetadata{}, ErrCheckpointNotFound
+	}
+
+	sessionFT := s.wrapWithFetcher(ctx, sessionTree)
+	metadataFile, err := sessionFT.File(paths.MetadataFileName)
+	if err != nil {
+		return CommittedMetadata{}, fmt.Errorf("read session metadata file: %w", err)
+	}
+	content, err := metadataFile.Contents()
+	if err != nil {
+		return CommittedMetadata{}, fmt.Errorf("read session metadata contents: %w", err)
+	}
+
+	var meta CommittedMetadata
+	if err := json.Unmarshal([]byte(content), &meta); err != nil {
+		return CommittedMetadata{}, fmt.Errorf("parse session metadata: %w", err)
+	}
+	return meta, nil
+}
+
 // ReadSessionMetadataAndPrompts reads a session's metadata and prompts from the
 // v2 /main ref without requiring the raw transcript from /full/* refs.
 // Used by explain when the raw transcript is unavailable but compact transcript
