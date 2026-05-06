@@ -26,7 +26,48 @@ Each external-command invocation receives:
 | `ENTIRE_CLI_VERSION` | The CLI's version string (e.g. `0.42.0`, `dev`) |
 | `ENTIRE_REPO_ROOT` | Absolute path to the git repository root, when the CLI is invoked inside one. Omitted otherwise. |
 
-Plus the parent's full environment. The working directory is **not** changed — external commands run in the user's current directory, the same as any other shell command.
+The working directory is **not** changed — external commands run in the user's current directory, the same as any other shell command.
+
+### Environment filtering
+
+Unlike `kubectl` and `gh`, which forward the parent's full environment to every plugin, Entire **filters** the parent environment through a small allowlist before invoking an external command. The motivation is defense in depth: a plugin you installed shouldn't see `AWS_ACCESS_KEY_ID`, `GITHUB_TOKEN`, or `OPENAI_API_KEY` unless it has a reason to. (A malicious plugin can still read files under `$HOME` — the boundary is "what's accidentally exposed", not "what an attacker can reach".)
+
+Variables forwarded by default fall into a few categories:
+
+- **POSIX basics** — `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `PWD`, `TMPDIR`, `TZ`
+- **Locale** — `LANG`, `LANGUAGE`, and the entire `LC_*` family
+- **Terminal / color** — `TERM`, `TERM_PROGRAM`, `COLORTERM`, `NO_COLOR`, `FORCE_COLOR`, `CLICOLOR`, `CLICOLOR_FORCE`
+- **CI detection** — `CI`, `GITHUB_ACTIONS`, `GITLAB_CI`, `BUILDKITE`, `CIRCLECI`, `JENKINS_URL`, `TEAMCITY_VERSION`, `TRAVIS`
+- **Proxies** — `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, `ALL_PROXY` (and lowercase variants)
+- **SSH agent** — `SSH_AUTH_SOCK`, `SSH_CONNECTION`
+- **Windows essentials** — `SYSTEMROOT`, `WINDIR`, `APPDATA`, `LOCALAPPDATA`, `PROGRAMDATA`, `PROGRAMFILES`, `PROGRAMFILES(X86)`, `USERPROFILE`, `USERNAME`, `HOMEDRIVE`, `HOMEPATH`, `COMSPEC`, `PATHEXT`
+- **Namespace prefixes** — anything starting with `ENTIRE_`, `LC_`, or `XDG_`
+
+The full list lives in `pluginEnvAllowed` and `pluginEnvPrefixes` in `cmd/entire/cli/plugin_env.go`.
+
+### Opting names back in: `ENTIRE_PLUGIN_ENV`
+
+If a plugin needs an environment variable that isn't on the allowlist (for example `AWS_PROFILE` for an `entire-deploy` command), the user can opt names back in via `ENTIRE_PLUGIN_ENV`. It's a comma-separated list of either exact names or `PREFIX_*` wildcards:
+
+```sh
+# Forward AWS_* and EDITOR
+ENTIRE_PLUGIN_ENV='AWS_*,EDITOR' entire deploy
+
+# Forward a single token
+ENTIRE_PLUGIN_ENV='GH_TOKEN' entire pgr
+```
+
+`ENTIRE_PLUGIN_ENV` itself is forwarded to plugins (it matches the `ENTIRE_` prefix), so plugins can introspect what was opened up.
+
+### Why filter?
+
+This is a **defense-in-depth** boundary, not a security perimeter. Plugins on `$PATH` are trusted to run as the user — they can read `~/.aws/credentials` directly if they want. The filter exists to:
+
+1. Avoid accidental token leakage to plugins that don't need credentials.
+2. Make the contract between the CLI and a plugin explicit (plugins document the env they require).
+3. Catch typos and stale env (a forgotten `OPENAI_API_KEY=...` from yesterday's experiment).
+
+Plugin authors who need a variable should either rely on the allowlist or document the `ENTIRE_PLUGIN_ENV` value users should set.
 
 ## Author Contract
 
@@ -94,6 +135,7 @@ The resolver lives in `cmd/entire/cli/plugin.go`. The entry point is `MaybeRunPl
 Key files:
 
 - `cmd/entire/cli/plugin.go` — entry point, `resolvePlugin`, `runPlugin`
+- `cmd/entire/cli/plugin_env.go` — `pluginEnv`, the allowlist, and `ENTIRE_PLUGIN_ENV` parsing
 - `cmd/entire/cli/plugin_official.go` — `officialPlugins` allowlist, `IsOfficialPlugin`
 - `cmd/entire/cli/telemetry/detached.go` — `BuildPluginEventPayload`, `TrackPluginDetached`
 - `cmd/entire/cli/integration_test/external_command_test.go` — end-to-end coverage of the resolution path

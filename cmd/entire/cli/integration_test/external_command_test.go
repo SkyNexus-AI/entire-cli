@@ -264,6 +264,95 @@ func TestExternalCommand_EnvVarsForwarded(t *testing.T) {
 	}
 }
 
+// writeEnvDumpPlugin creates an entire-envfilter plugin in its own dir
+// that dumps the full child environment to env.txt. Each caller gets a
+// fresh dir so parallel subtests don't trample each other's output.
+func writeEnvDumpPlugin(t *testing.T) (pluginDir, envFile string) {
+	t.Helper()
+	pluginDir = t.TempDir()
+	envFile = filepath.Join(pluginDir, "env.txt")
+	body := fmt.Sprintf("#!/bin/sh\nenv > %q\nexit 0\n", envFile)
+	if err := os.WriteFile(filepath.Join(pluginDir, "entire-envfilter"), []byte(body), 0o755); err != nil { //nolint:gosec // test fixture
+		t.Fatalf("write plugin: %v", err)
+	}
+	return pluginDir, envFile
+}
+
+// TestExternalCommand_EnvFiltered_CredentialsDropped asserts that
+// credential-shaped variables in the parent environment do NOT reach
+// the plugin, while allowlisted OS-plumbing variables do.
+func TestExternalCommand_EnvFiltered_CredentialsDropped(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("plugin shell-script harness only runs on Unix")
+	}
+	pluginDir, envFile := writeEnvDumpPlugin(t)
+
+	cmd := execx.NonInteractive(context.Background(), getTestBinary(), "envfilter")
+	cmd.Env = append(pathWith(pluginDir),
+		"GITHUB_TOKEN=must-not-leak",
+		"AWS_ACCESS_KEY_ID=must-not-leak",
+		"NO_COLOR=1",
+	)
+	cmd.Stdout = &bytes.Buffer{}
+	cmd.Stderr = &bytes.Buffer{}
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("entire envfilter failed: %v", err)
+	}
+	got, err := os.ReadFile(envFile)
+	if err != nil {
+		t.Fatalf("read env file: %v", err)
+	}
+	envVars := parseEnvLines(t, string(got))
+	if _, ok := envVars["GITHUB_TOKEN"]; ok {
+		t.Error("GITHUB_TOKEN must be filtered out of plugin env")
+	}
+	if _, ok := envVars["AWS_ACCESS_KEY_ID"]; ok {
+		t.Error("AWS_ACCESS_KEY_ID must be filtered out of plugin env")
+	}
+	if got := envVars["NO_COLOR"]; got != "1" {
+		t.Errorf("NO_COLOR = %q, want %q", got, "1")
+	}
+}
+
+// TestExternalCommand_EnvFiltered_OverrideWildcard asserts that
+// ENTIRE_PLUGIN_ENV opens names back up via wildcard, but does not
+// disable filtering for everything else.
+func TestExternalCommand_EnvFiltered_OverrideWildcard(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("plugin shell-script harness only runs on Unix")
+	}
+	pluginDir, envFile := writeEnvDumpPlugin(t)
+
+	cmd := execx.NonInteractive(context.Background(), getTestBinary(), "envfilter")
+	cmd.Env = append(pathWith(pluginDir),
+		"ENTIRE_PLUGIN_ENV=AWS_*",
+		"AWS_PROFILE=dev",
+		"AWS_REGION=us-east-1",
+		"GITHUB_TOKEN=still-must-not-leak",
+	)
+	cmd.Stdout = &bytes.Buffer{}
+	cmd.Stderr = &bytes.Buffer{}
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("entire envfilter failed: %v", err)
+	}
+	got, err := os.ReadFile(envFile)
+	if err != nil {
+		t.Fatalf("read env file: %v", err)
+	}
+	envVars := parseEnvLines(t, string(got))
+	if got := envVars["AWS_PROFILE"]; got != "dev" {
+		t.Errorf("AWS_PROFILE = %q, want %q (override should admit it)", got, "dev")
+	}
+	if got := envVars["AWS_REGION"]; got != "us-east-1" {
+		t.Errorf("AWS_REGION = %q, want %q (override should admit it)", got, "us-east-1")
+	}
+	if _, ok := envVars["GITHUB_TOKEN"]; ok {
+		t.Error("GITHUB_TOKEN must remain filtered even with override")
+	}
+}
+
 // parseEnvLines splits "KEY=value" lines into a map. Missing keys map
 // to empty strings.
 func parseEnvLines(t *testing.T, contents string) map[string]string {

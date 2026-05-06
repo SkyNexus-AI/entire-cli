@@ -159,10 +159,11 @@ func runPlugin(ctx context.Context, binPath string, args []string) int {
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	cmd.Env = append(os.Environ(), "ENTIRE_CLI_VERSION="+versioninfo.Version)
+	extras := []string{"ENTIRE_CLI_VERSION=" + versioninfo.Version}
 	if repoRoot, err := paths.WorktreeRoot(ctx); err == nil {
-		cmd.Env = append(cmd.Env, "ENTIRE_REPO_ROOT="+repoRoot)
+		extras = append(extras, "ENTIRE_REPO_ROOT="+repoRoot)
 	}
+	cmd.Env = pluginEnv(os.Environ(), extras...)
 
 	if err := cmd.Run(); err != nil {
 		var exitErr *exec.ExitError
