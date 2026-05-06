@@ -674,14 +674,18 @@ Trailers:
 
 ### `entire review` Command
 
-`entire review` runs a set of configured review skills inside a single agent session. The review session is an immutable fact attached to a checkpoint — no verdict, no status tracking, no empty commits. On the next `git commit`, the review session is condensed into the checkpoint metadata alongside normal sessions, permanently recording that the code was reviewed and which skills were run.
+`entire review` runs a set of configured review skills inside an agent session. The review session is an immutable fact attached to a checkpoint — no verdict, no status tracking, no empty commits. On the next `git commit`, the review session is condensed into the checkpoint metadata alongside normal sessions, permanently recording that the code was reviewed and which skills were run.
 
 #### Command Surface
 
 ```
 entire review                          # Normal run: load config, spawn configured agent
 entire review --edit                   # Re-open the skills picker before running
-entire review --track-only             # Write the pending-review marker; do not spawn agent
+entire review --agent <name>           # Override which configured agent runs
+entire review attach <session-id>      # Tag an existing agent session as a review (post-hoc)
+entire review attach --force           # Skip confirmation
+entire review attach --agent <name>    # Agent that created the session
+entire review attach --skills <s,...>  # Declare which skills were run
 ```
 
 #### Settings Schema
@@ -691,38 +695,68 @@ Review skills are configured per-agent in `.entire/settings.json`:
 ```json
 {
   "review": {
-    "claude-code": ["/pr-review-toolkit:review-pr", "/test-auditor"],
-    "codex": ["/codex:adversarial-review"]
+    "claude-code": {"skills": ["/pr-review-toolkit:review-pr"], "prompt": "Be thorough."},
+    "codex": {"skills": ["/codex:adversarial-review"]}
   }
 }
 ```
 
-The key is the agent name (matching the agent's `Name()` return value). The value is a list of skill invocations passed verbatim to the agent. Settings field: `EntireSettings.Review` in `cmd/entire/cli/settings/settings.go`.
+The key is the agent name. The value is a `ReviewConfig` with `skills` (skill invocations passed verbatim to the agent) and optional `prompt` (an always-prompt appended to the composed prompt). Settings field: `EntireSettings.Review` in `cmd/entire/cli/settings/settings.go`.
 
-#### How It Works
+#### How It Works (env-var handshake)
 
-1. `entire review` writes a pending-review marker (scoped to the current worktree) before spawning the agent
-2. The agent's `UserPromptSubmit` lifecycle hook adopts the marker, tagging the session with `Kind = "agent_review"` and recording the configured skills in `ReviewSkills`. The marker is only adopted by a session whose worktree matches — sessions in other worktrees of the same repo leave it untouched
-3. The agent runs the review skills and the session ends naturally
-4. On the next `git commit`, the PostCommit hook condenses the review session into the checkpoint on `entire/checkpoints/v1`, with `Kind` and `ReviewSkills` recorded in `CommittedMetadata`
-5. The `CheckpointSummary` sets `HasReview = true` for O(1) lookup. `HasReview` is an umbrella "any review happened" flag — future review kinds (e.g. manual review) should also set it so callers don't have to disjunction a growing list of booleans
-6. `entire status` and the re-run guard in `entire review` read `HasReview` from the checkpoint metadata (no commit history walking)
+1. `entire review` selects the configured agent (override → alphabetically first → prompt if multiple), composes the review prompt via `review.ComposeReviewPrompt`, and computes scope (closest-ancestor branch via `review.ComputeScopeStats`).
+2. **For launchable agents** (claude-code, codex, gemini-cli): the spawned agent process is given env vars `ENTIRE_REVIEW_{SESSION,AGENT,SKILLS,PROMPT,STARTING_SHA}` that the agent's `UserPromptSubmit` lifecycle hook reads to tag the session as `Kind = "agent_review"` with the configured skills/prompt. Each spawned process has its own env, so multiple worktrees and multi-agent runs are correct by construction (no shared marker file, no race).
+3. **For non-launchable agents** (cursor, opencode, factoryai-droid): `RunMarkerFallback` writes a `PendingReviewMarker` file and prints guidance — the user opens the agent themselves and runs the skills. Single shared file (`review/marker_fallback.go`); adding new non-launchable agents is a registry entry, not a new file.
+4. The agent runs the review skills; the session ends naturally.
+5. On the next `git commit`, the PostCommit hook condenses the review session into the checkpoint on `entire/checkpoints/v1`, with `Kind` and `ReviewSkills` recorded in `CommittedMetadata`.
+6. The `CheckpointSummary` sets `HasReview = true` for O(1) lookup. `HasReview` is an umbrella "any review happened" flag — future review kinds (e.g. manual review) should also set it.
+7. `entire status` and the re-run guard read `HasReview` from the checkpoint metadata (no commit history walking).
 
 #### Checkpoint Metadata
 
 Review metadata is stored at two levels on `entire/checkpoints/v1`:
 
-- **`CommittedMetadata` (per-session)**: `kind: "agent_review"`, `review_skills: ["/skill1", "/skill2"]`
+- **`CommittedMetadata` (per-session)**: `kind: "agent_review"`, `review_skills: ["/skill1", "/skill2"]`, `review_prompt: "..."`
 - **`CheckpointSummary` (per-checkpoint)**: `has_review: true` (umbrella; set when any session in the checkpoint has a review-kind `Kind`)
+
+#### Architecture
+
+- **`AgentReviewer` interface** (`cmd/entire/cli/review/types/reviewer.go`): per-agent contract with `Name() string` and `Start(ctx, RunConfig) (Process, error)`. Each launchable agent implements this in its own package.
+- **`ReviewerTemplate`** (`cmd/entire/cli/review/types/template.go`): shared scaffolding (Spawn → pipe stdout → run parser → forward events → close). Each agent supplies only its `BuildCmd` (argv/env) and `Parser` (stdout-to-Event stream).
+- **`Sink` interface**: consumers of the event stream. `DumpSink` renders the per-agent narrative dump after the run. CU8 will add a TUI sink and a synthesis sink.
+- **`Run(ctx, reviewer, cfg, sinks)`** (`cmd/entire/cli/review/run.go`): single-agent orchestrator. Forwards events to all sinks via `AgentEvent`, calls `RunFinished` once at end with a populated `RunSummary`. Sink dispatch is serialized; sinks need not internally synchronize. Multi-agent fan-out (CU8) preserves this serial-dispatch contract via fan-in.
+- **Env-var contract** (`cmd/entire/cli/review/env.go`): single source of truth for `ENTIRE_REVIEW_*` constants used by spawn-side and lifecycle adoption.
+- **Scope detection** (`cmd/entire/cli/review/scope.go`): `detectScopeBaseRef` finds the closest non-self ancestor branch by tip timestamp, with fallback chain `origin/HEAD → origin/main → origin/master → main → master`. Banner output: "Reviewing feat/X vs main: 3 commits, 7 files changed, 2 uncommitted".
+
+#### Anti-Features (do NOT recreate)
+
+The redesign eliminated several constructs from the prior implementation. None should be reintroduced without explicit design:
+
+- `PendingReviewMarker` for launchable agents (env-var handshake makes it unnecessary)
+- `WorktreePath` field + worktree-scoping logic (env per process eliminates the multi-tenant problem)
+- `AgentEntries` map on the marker (each agent has its own env)
+- Marker overwrite tripwire / refuse-attach guard (the bug classes they defended against don't exist)
+- `--track-only` flag (intentionally removed by #1009)
+- `--postreview` / `--finalize` / empty review commits / `/entire-review:finish` skill installer
+- `Launcher` + `HeadlessLauncher` as separate interfaces (single `AgentReviewer`)
+- `filterCodexOutput` in shared multi-agent code (lives in codex's adapter)
+- `sync.Once`-guarded onCancel + parallel `signal.Notify` goroutine (single cancel from start)
 
 #### Key Files
 
-- `cmd/entire/cli/review.go` - Command registration, config picker, agent spawn, re-run guard, pending marker management (including `WorktreePath`-scoped adoption)
-- `cmd/entire/cli/lifecycle.go` - Session adoption: pending-review marker promotes to `Kind=agent_review` on `UserPromptSubmit` when worktrees match
-- `cmd/entire/cli/agent/agent.go` - `Launcher` interface used by `entire review` to spawn agents
-- `cmd/entire/cli/agent/{claudecode,codex,geminicli}/` - Per-agent `Launcher` implementations
-- `cmd/entire/cli/checkpoint/checkpoint.go` - `Kind` and `ReviewSkills` fields on `WriteCommittedOptions`, `CommittedMetadata`, and `HasReview` on `CheckpointSummary`
-- `cmd/entire/cli/settings/settings.go` - `EntireSettings.Review` field (`map[string][]string`) and `ReviewSkillsFor` helper
+- `cmd/entire/cli/review/cmd.go` — `NewCommand()`, `runReview` flow (launchable vs non-launchable dispatch)
+- `cmd/entire/cli/review/picker.go` — config-edit picker, first-run setup, agent selection helpers
+- `cmd/entire/cli/review/attach.go` + `cli/review_helpers.go:newReviewAttachCmd` — `entire review attach` subcommand
+- `cmd/entire/cli/review/marker_fallback.go` — non-launchable agent flow (single shared file)
+- `cmd/entire/cli/review/prompt.go` / `scope.go` / `run.go` / `dump.go` — core machinery (CU4–CU5)
+- `cmd/entire/cli/review/types/{reviewer,sink,template}.go` — interface contracts (CU2 + CU4 + CU5b)
+- `cmd/entire/cli/review/env.go` — `ENTIRE_REVIEW_*` constants + `EncodeSkills`/`DecodeSkills` + `AppendReviewEnv`
+- `cmd/entire/cli/agent/{claudecode,codex,geminicli}/reviewer.go` — per-agent `AgentReviewer` implementations (claude-code, codex with chrome filter, gemini-cli)
+- `cmd/entire/cli/lifecycle.go` — `adoptReviewEnv` reads `ENTIRE_REVIEW_*` from process env; replaces marker-file adoption
+- `cmd/entire/cli/review_bridge.go` / `review_helpers.go` — bridge code in `cli` package for cycle-bound functions (`headHasReviewCheckpoint`, `launchableReviewerFor`, `newReviewAttachCmd`)
+- `cmd/entire/cli/checkpoint/checkpoint.go` — `Kind`, `ReviewSkills`, `ReviewPrompt` on `CommittedMetadata`; `HasReview` on `CheckpointSummary`
+- `cmd/entire/cli/settings/settings.go` — `EntireSettings.Review` field
 
 # Important Notes
 

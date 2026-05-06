@@ -69,6 +69,12 @@ type Process interface {
 // invocations (e.g., "/pr-review-toolkit:review-pr") the configured agent
 // should run.
 type RunConfig struct {
+	// PromptOverride, when non-empty, is the exact prompt sent to the agent.
+	// It preserves settings.ReviewConfig.Prompt's existing verbatim-override
+	// contract: configured skills are still recorded as structured metadata,
+	// but they are not prepended to the prompt text.
+	PromptOverride string
+
 	// Skills are skill invocation strings passed to the agent verbatim.
 	Skills []string
 
