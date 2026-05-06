@@ -282,6 +282,10 @@ func migrateCheckpointsV2(ctx context.Context, repo *git.Repository, v1Store *ch
 		if err := writeMigratedFinalFullCurrent(ctx, repo, v2Store, pendingFull); err != nil {
 			return result, writtenRefs, fmt.Errorf("failed to pack migrated raw transcripts: %w", err)
 		}
+		// If /full/current already had checkpoints, this final migration write can
+		// briefly push the generation past the threshold before rotation. That
+		// mirrors other v2 ref-merge cases where a generation may exceed the soft
+		// threshold by a small amount.
 		if refName, rotated, err := v2Store.RotateCurrentGenerationIfNeeded(ctx, batchSize); err != nil {
 			return result, writtenRefs, fmt.Errorf("failed to rotate migrated full/current generation: %w", err)
 		} else if rotated {
