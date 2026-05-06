@@ -283,6 +283,11 @@ func migrateCheckpointsV2(ctx context.Context, repo *git.Repository, v1Store *ch
 		if err := writeMigratedFinalFullCurrent(ctx, repo, v2Store, pendingFull); err != nil {
 			return result, writtenRefs, fmt.Errorf("failed to pack migrated raw transcripts: %w", err)
 		}
+		if refName, rotated, err := v2Store.RotateCurrentGenerationIfNeeded(ctx, batchSize); err != nil {
+			return result, writtenRefs, fmt.Errorf("failed to rotate migrated full/current generation: %w", err)
+		} else if rotated {
+			writtenRefs = append(writtenRefs, refName)
+		}
 	} else if len(writtenRefs) > 0 && !fullCurrentExistsBefore {
 		if err := ensureEmptyV2FullCurrent(ctx, repo); err != nil {
 			return result, writtenRefs, fmt.Errorf("failed to pack migrated raw transcripts: %w", err)
