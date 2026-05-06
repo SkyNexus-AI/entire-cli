@@ -252,6 +252,111 @@ func TestDiscoverReviewSkills_SkipsReadme(t *testing.T) {
 	}
 }
 
+// TestDiscoverReviewSkills_DedupesPluginVersions verifies that when a plugin
+// has multiple version directories (common after an upgrade — old version
+// isn't always cleaned up), only the latest version's skills appear once.
+//
+// Without dedupe, the picker would show every review skill twice with no
+// way to tell the entries apart, and the prompt to the agent would list
+// the same skill multiple times.
+func TestDiscoverReviewSkills_DedupesPluginVersions(t *testing.T) {
+	home := withFakeHome(t)
+	old := filepath.Join(home, ".claude", "plugins", "cache",
+		"fake-market", "pr-review-toolkit", "0.1.0", "skills", "review-pr")
+	newer := filepath.Join(home, ".claude", "plugins", "cache",
+		"fake-market", "pr-review-toolkit", "0.2.0", "skills", "review-pr")
+	if err := os.MkdirAll(old, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(newer, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	oldContent := "---\nname: review-pr\ndescription: Old review\n---\n"
+	newContent := "---\nname: review-pr\ndescription: New review\n---\n"
+	if err := os.WriteFile(filepath.Join(old, "SKILL.md"), []byte(oldContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(newer, "SKILL.md"), []byte(newContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	a := &claudecode.ClaudeCodeAgent{}
+	skills, err := a.DiscoverReviewSkills(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(skills) != 1 {
+		t.Fatalf("expected 1 deduped skill, got %d: %+v", len(skills), skills)
+	}
+	if skills[0].Description != "New review" {
+		t.Errorf("Description = %q, want %q (latest version should win)", skills[0].Description, "New review")
+	}
+}
+
+// TestDiscoverReviewSkills_NonSemverVersionFallback verifies that a plugin
+// version dir like "unknown" (which pr-review-toolkit ships) is still
+// scanned when no semver dirs are present.
+func TestDiscoverReviewSkills_NonSemverVersionFallback(t *testing.T) {
+	home := withFakeHome(t)
+	skillDir := filepath.Join(home, ".claude", "plugins", "cache",
+		"fake-market", "pr-review-toolkit", "unknown", "skills", "review-pr")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"),
+		[]byte("---\nname: review-pr\ndescription: Review\n---\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	a := &claudecode.ClaudeCodeAgent{}
+	skills, err := a.DiscoverReviewSkills(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(skills) != 1 {
+		t.Fatalf("expected 1 skill from non-semver version, got %d: %+v", len(skills), skills)
+	}
+}
+
+// TestDiscoverReviewSkills_SemverWinsOverNonSemver verifies that when a
+// plugin has both a semver-shaped version and a non-semver one (e.g.
+// "0.2.0" alongside "unknown"), the semver dir is picked. This matches
+// real upgrade flows where the old "unknown" stub remains alongside the
+// installed semver version.
+func TestDiscoverReviewSkills_SemverWinsOverNonSemver(t *testing.T) {
+	home := withFakeHome(t)
+	semverSkill := filepath.Join(home, ".claude", "plugins", "cache",
+		"fake-market", "pr-review-toolkit", "0.2.0", "skills", "review-pr")
+	unknownSkill := filepath.Join(home, ".claude", "plugins", "cache",
+		"fake-market", "pr-review-toolkit", "unknown", "skills", "review-pr")
+	if err := os.MkdirAll(semverSkill, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(unknownSkill, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(semverSkill, "SKILL.md"),
+		[]byte("---\nname: review-pr\ndescription: From 0.2.0\n---\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(unknownSkill, "SKILL.md"),
+		[]byte("---\nname: review-pr\ndescription: From unknown\n---\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	a := &claudecode.ClaudeCodeAgent{}
+	skills, err := a.DiscoverReviewSkills(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(skills) != 1 {
+		t.Fatalf("expected 1 skill, got %d: %+v", len(skills), skills)
+	}
+	if skills[0].Description != "From 0.2.0" {
+		t.Errorf("Description = %q, want From 0.2.0 (semver should win)", skills[0].Description)
+	}
+}
+
 func TestDiscoverReviewSkills_UserSkillsDir(t *testing.T) {
 	home := withFakeHome(t)
 	userSkillDir := filepath.Join(home, ".claude", "skills", "my-review")

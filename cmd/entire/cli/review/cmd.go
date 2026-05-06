@@ -66,6 +66,16 @@ type Deps struct {
 	// subcommand. Callers in the cli package pass newReviewAttachCmd() here;
 	// tests pass nil to skip the subcommand.
 	AttachCmd *cobra.Command
+
+	// SynthesisProvider, when non-nil, enables the synthesis sink in TTY mode.
+	// Production wiring resolves the same provider entire explain uses.
+	// When nil, the synthesis sink is not appended and synthesis is unavailable.
+	SynthesisProvider SynthesisProvider
+
+	// PromptYN overrides the y/N confirmation form used by SynthesisSink.
+	// Nil means the real huh form is used (realPromptYN in synthesis_sink.go).
+	// Tests inject a stub to avoid TTY interactions.
+	PromptYN func(ctx context.Context, question string, def bool) (bool, error)
 }
 
 // runReviewDeps carries the subset of Deps that runReview itself reads
@@ -446,15 +456,20 @@ func runMultiAgentPath(
 	//     forever — happens when entire review is invoked from inside an
 	//     agent like Claude Code or Gemini CLI, where stdout is a TTY but
 	//     keypresses are never delivered)
-	var sinks []reviewtypes.Sink
-	if interactive.IsTerminalWriter(out) && interactive.CanPromptInteractively() {
-		tuiSink := NewTUISink(agentNames, cancelRun, out)
+	sinks := composeMultiAgentSinks(multiAgentSinkInputs{
+		out:               out,
+		isTTY:             interactive.IsTerminalWriter(out) && interactive.CanPromptInteractively(),
+		canPrompt:         interactive.CanPromptInteractively(),
+		agentNames:        agentNames,
+		cancelRun:         cancelRun,
+		runContext:        runCtx,
+		synthesisProvider: deps.SynthesisProvider,
+		promptYN:          deps.PromptYN,
+		perRunPrompt:      picked.PerRun,
+	})
+	if tuiSink, ok := findTUISink(sinks); ok {
 		tuiSink.Start()
 		defer tuiSink.Wait()
-		sinks = append(sinks, tuiSink)
-		sinks = append(sinks, DumpSink{W: out})
-	} else {
-		sinks = append(sinks, DumpSink{W: out})
 	}
 
 	_, waitErr := RunMulti(runCtx, reviewers, reviewtypes.RunConfig{}, sinks)
@@ -476,6 +491,71 @@ func handlePickerError(cmd *cobra.Command, silentErr func(error) error, pickErr 
 	cmd.SilenceUsage = true
 	fmt.Fprintln(cmd.ErrOrStderr(), pickErr.Error())
 	return silentErr(pickErr)
+}
+
+// multiAgentSinkInputs collects the parameters composeMultiAgentSinks needs.
+// It exists so tests can drive the helper with explicit isTTY / canPrompt
+// values instead of monkey-patching interactive helpers at run time.
+//
+// isTTY here means "the TUI sink is safe to compose" — production callers
+// AND IsTerminalWriter(out) with CanPromptInteractively() before passing
+// it in, since the TUI both writes ANSI to stdout AND reads keypresses
+// from stdin. A terminal-stdout-but-non-interactive-stdin scenario (an
+// agent host like Claude Code invoking `entire review`) must NOT use the
+// TUI — its dismissal loop would block forever.
+type multiAgentSinkInputs struct {
+	out               io.Writer
+	isTTY             bool
+	canPrompt         bool
+	agentNames        []string
+	cancelRun         context.CancelFunc
+	runContext        context.Context
+	synthesisProvider SynthesisProvider
+	promptYN          func(ctx context.Context, question string, def bool) (bool, error)
+	perRunPrompt      string
+}
+
+// composeMultiAgentSinks builds the sink slice for a multi-agent run.
+//
+//   - Non-TTY: [DumpSink] alone — narrative dump only, no live UI, no prompts.
+//   - TTY: [TUISink, DumpSink, SynthesisSink?] — TUI owns the live dashboard;
+//     DumpSink renders the post-run narrative; SynthesisSink (if a provider is
+//     configured AND stdin can prompt) appends the y/N synthesis offer.
+//
+// The synthesis sink is only appended when canPrompt is true: without a
+// promptable stdin, the y/N form would never resolve. SynthesisSink also
+// guards on InputTTY internally (defense in depth) but suppressing it here
+// avoids constructing a sink that will silently no-op.
+func composeMultiAgentSinks(in multiAgentSinkInputs) []reviewtypes.Sink {
+	if !in.isTTY {
+		return []reviewtypes.Sink{DumpSink{W: in.out}}
+	}
+	sinks := []reviewtypes.Sink{
+		NewTUISink(in.agentNames, in.cancelRun, in.out),
+		DumpSink{W: in.out},
+	}
+	if in.synthesisProvider != nil && in.canPrompt {
+		sinks = append(sinks, SynthesisSink{
+			Provider:     in.synthesisProvider,
+			Writer:       in.out,
+			InputTTY:     in.canPrompt,
+			PromptYN:     in.promptYN,
+			PerRunPrompt: in.perRunPrompt,
+			RunContext:   in.runContext,
+		})
+	}
+	return sinks
+}
+
+// findTUISink returns the first *TUISink in the slice (if any). Used by the
+// caller to wire Start/Wait around the run without re-running composition.
+func findTUISink(sinks []reviewtypes.Sink) (*TUISink, bool) {
+	for _, s := range sinks {
+		if t, ok := s.(*TUISink); ok {
+			return t, true
+		}
+	}
+	return nil, false
 }
 
 // perAgentConfiguredReviewer is an AgentReviewer adapter that overrides the
