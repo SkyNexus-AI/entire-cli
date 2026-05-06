@@ -2143,6 +2143,58 @@ func addCheckpointTrailerWithComment(message string, checkpointID id.CheckpointI
 	return userContent + "\n\n" + trailer + "\n" + comment + "\n\n" + gitComments
 }
 
+// resolveSessionAgentType picks the most reliable identifier for which agent
+// owns a session, given the agent whose hook is firing right now (callerAgentType),
+// an optional transcript path, and the SessionStart hint stored under the
+// session ID.
+//
+// Priority (strongest signal wins):
+//  1. Transcript path — when transcriptPath is inside a registered agent's
+//     GetSessionDir(repoRoot), the file's location is direct evidence.
+//  2. SessionStart hint — first agent to fire SessionStart for this session.
+//     Useful when transcriptPath is empty (e.g., Claude Code's first TurnStart
+//     in a forwarded-hook scenario).
+//  3. callerAgentType — the agent whose hook called us. Used when no stronger
+//     signal exists.
+func resolveSessionAgentType(ctx context.Context, sessionID string, callerAgentType types.AgentType, transcriptPath string) types.AgentType {
+	if repoRoot, err := paths.WorktreeRoot(ctx); err == nil && transcriptPath != "" {
+		if owner, ok := agent.AgentForTranscriptPath(transcriptPath, repoRoot); ok {
+			return owner.Type()
+		}
+	}
+	if hint := LoadAgentTypeHint(ctx, sessionID); hint != "" && hint != agent.AgentTypeUnknown {
+		return hint
+	}
+	return callerAgentType
+}
+
+// correctSessionAgentType returns the agent type that owns transcriptPath when
+// it disagrees with currentType. Returns (currentType, false) if there's no
+// disagreement or no transcript signal — callers should treat that as a no-op.
+//
+// Used to repair sessions whose AgentType was set incorrectly on an earlier
+// turn (e.g., a wrapper agent's hook fired first before the real agent's
+// transcript path was available). Only the transcript path is considered;
+// the SessionStart hint is intentionally ignored here because it can also be
+// the wrong-first-writer that we're trying to correct.
+func correctSessionAgentType(ctx context.Context, currentType types.AgentType, transcriptPath string) (types.AgentType, bool) {
+	if transcriptPath == "" {
+		return currentType, false
+	}
+	repoRoot, err := paths.WorktreeRoot(ctx)
+	if err != nil {
+		return currentType, false
+	}
+	owner, ok := agent.AgentForTranscriptPath(transcriptPath, repoRoot)
+	if !ok {
+		return currentType, false
+	}
+	if owner.Type() == currentType {
+		return currentType, false
+	}
+	return owner.Type(), true
+}
+
 // InitializeSession creates session state for a new session or updates an existing one.
 // This implements the optional SessionInitializer interface.
 // Called during UserPromptSubmit to allow git hooks to detect active sessions.
@@ -2158,10 +2210,20 @@ func addCheckpointTrailerWithComment(message string, checkpointID id.CheckpointI
 // userPrompt is the user's prompt text (stored truncated as LastPrompt for display).
 // model is the LLM model identifier (e.g., "claude-sonnet-4-20250514"); empty if unknown.
 func (s *ManualCommitStrategy) InitializeSession(ctx context.Context, sessionID string, agentType types.AgentType, transcriptPath string, userPrompt string, model string) error {
+	// Concurrent calls for the same session_id are accepted; convergence on
+	// AgentType is via correctSessionAgentType on the next turn.
 	repo, err := OpenRepository(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to open git repository: %w", err)
 	}
+
+	// Resolve which agent actually owns this session. The hook firing isn't
+	// authoritative when multiple agents' hooks fire for the same session ID
+	// (e.g., Cursor IDE forwarding to both .cursor/hooks.json and
+	// .claude/settings.json). Stronger signals: transcript path (file lives in
+	// a specific agent's session dir) and the SessionStart hint (first agent
+	// to claim the session ID).
+	resolvedAgentType := resolveSessionAgentType(ctx, sessionID, agentType, transcriptPath)
 
 	// Check if session already exists
 	state, err := s.loadSessionState(ctx, sessionID)
@@ -2184,9 +2246,20 @@ func (s *ManualCommitStrategy) InitializeSession(ctx context.Context, sessionID 
 		}
 		state.TurnID = turnID.String()
 
-		// Set AgentType from hook context if not yet set
-		if state.AgentType == "" && agentType != "" {
-			state.AgentType = agentType
+		// Update AgentType when:
+		//   - it isn't yet set, or
+		//   - the resolved type came from a stronger signal (transcript path)
+		//     than what's currently stored. correctSessionAgentType handles the
+		//     "transcript path proves we're a different agent" case.
+		if state.AgentType == "" && resolvedAgentType != "" {
+			state.AgentType = resolvedAgentType
+		} else if corrected, changed := correctSessionAgentType(ctx, state.AgentType, transcriptPath); changed {
+			logging.Info(logging.WithComponent(ctx, "hooks"), "corrected session agent type from transcript path",
+				slog.String("session_id", sessionID),
+				slog.String("from", string(state.AgentType)),
+				slog.String("to", string(corrected)),
+				slog.String("transcript_path", transcriptPath))
+			state.AgentType = corrected
 		}
 
 		// Update ModelName if provided (model can change between turns)
@@ -2256,7 +2329,7 @@ func (s *ManualCommitStrategy) InitializeSession(ctx context.Context, sessionID 
 	// Continue below to properly initialize it
 
 	// Initialize new session
-	state, err = s.initializeSession(ctx, repo, sessionID, agentType, transcriptPath, userPrompt, model)
+	state, err = s.initializeSession(ctx, repo, sessionID, resolvedAgentType, transcriptPath, userPrompt, model)
 	if err != nil {
 		return fmt.Errorf("failed to initialize session: %w", err)
 	}
@@ -2713,14 +2786,24 @@ func (s *ManualCommitStrategy) finalizeAllTurnCheckpoints(ctx context.Context, s
 
 	precomputed := precomputeTranscriptBlobsForFinalize(logCtx, repo, redactedTranscript, state)
 
-	// Resolve the agent and try external compaction once before the loop —
-	// external compaction is invariant across checkpoints (same session/transcript).
-	// Internal compaction must remain per-checkpoint due to per-checkpoint startLine.
+	// Resolve the agent and produce the compact transcripts once before the loop.
+	// Compact transcripts are invariant across checkpoints within a turn: v2 /main
+	// stores a single cumulative transcript.jsonl per session and each checkpoint's
+	// metadata.json indexes into it via checkpoint_transcript_start. Producing a
+	// per-checkpoint scoped delta here would replace the cumulative transcript with
+	// only the latest turn's lines while leaving each metadata's start offset pointing
+	// at the original cumulative position — yielding metadata that claims start=N for
+	// a transcript with K<N lines. Always pass startLine=0 to keep the cumulative
+	// invariant from buildInternalCompactTranscript intact.
 	finalAg, _ := agent.GetByAgentType(state.AgentType) //nolint:errcheck // ag may be nil; compactTranscriptForV2 handles nil
 	var externalCompact []byte
+	var internalCompact []byte
 	var isExternalAgent bool
 	if v2Store != nil {
 		externalCompact, isExternalAgent = compactAndRedactExternalTranscript(logCtx, finalAg, state)
+		if !isExternalAgent && redactedTranscript.Len() > 0 {
+			internalCompact = compactTranscriptForV2(logCtx, finalAg, redactedTranscript, 0)
+		}
 	}
 
 	// Update each checkpoint with the full transcript
@@ -2748,8 +2831,8 @@ func (s *ManualCommitStrategy) finalizeAllTurnCheckpoints(ctx context.Context, s
 		if v2Store != nil {
 			if isExternalAgent {
 				updateOpts.CompactTranscript = externalCompact
-			} else if redactedTranscript.Len() > 0 {
-				updateOpts.CompactTranscript = finalizeInternalCompactTranscript(logCtx, finalAg, cpID, state, redactedTranscript, store, v2Store, v2)
+			} else {
+				updateOpts.CompactTranscript = internalCompact
 			}
 		}
 
@@ -2794,44 +2877,6 @@ func (s *ManualCommitStrategy) finalizeAllTurnCheckpoints(ctx context.Context, s
 	state.TurnCheckpointIDs = nil
 
 	return errCount
-}
-
-// finalizeInternalCompactTranscript resolves the per-checkpoint startLine and
-// produces the compact transcript for built-in agents during finalization.
-func finalizeInternalCompactTranscript(
-	ctx context.Context,
-	ag agent.Agent,
-	cpID id.CheckpointID,
-	state *SessionState,
-	redactedTranscript redact.RedactedBytes,
-	store *checkpoint.GitStore,
-	v2Store *checkpoint.V2GitStore,
-	v2 bool,
-) []byte {
-	var (
-		content *checkpoint.SessionContent
-		readErr error
-	)
-	if v2 {
-		content, readErr = v2Store.ReadSessionContentByID(ctx, cpID, state.SessionID)
-	} else {
-		content, readErr = store.ReadSessionContentByID(ctx, cpID, state.SessionID)
-	}
-	startLine := 0
-	if readErr == nil && content != nil {
-		startLine = content.Metadata.GetTranscriptStart()
-	} else {
-		errMsg := "unknown"
-		if readErr != nil {
-			errMsg = readErr.Error()
-		}
-		logging.Debug(ctx, "finalize: failed to read checkpoint metadata, using full transcript for compact output",
-			slog.String("checkpoint_id", cpID.String()),
-			slog.String("session_id", state.SessionID),
-			slog.String("error", errMsg),
-		)
-	}
-	return compactTranscriptForV2(ctx, ag, redactedTranscript, startLine)
 }
 
 // filesChangedInCommit returns the set of files changed in a commit using git diff-tree.

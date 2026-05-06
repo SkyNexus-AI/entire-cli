@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/huh"
+	"charm.land/huh/v2"
 
 	git "github.com/go-git/go-git/v6"
 

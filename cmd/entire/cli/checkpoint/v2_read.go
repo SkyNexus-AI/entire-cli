@@ -44,7 +44,8 @@ func (s *V2GitStore) ReadCommitted(ctx context.Context, checkpointID id.Checkpoi
 		return nil, nil //nolint:nilnil,nilerr // Checkpoint subtree not found
 	}
 
-	metadataFile, err := cpTree.File(paths.MetadataFileName)
+	cpFT := s.wrapWithFetcher(ctx, cpTree)
+	metadataFile, err := cpFT.File(paths.MetadataFileName)
 	if err != nil {
 		return nil, nil //nolint:nilnil,nilerr // metadata.json not found
 	}
@@ -165,7 +166,8 @@ func (s *V2GitStore) ReadSessionCompactTranscript(ctx context.Context, checkpoin
 		return nil, ErrCheckpointNotFound
 	}
 
-	compactFile, err := sessionTree.File(paths.CompactTranscriptFileName)
+	sessionFT := s.wrapWithFetcher(ctx, sessionTree)
+	compactFile, err := sessionFT.File(paths.CompactTranscriptFileName)
 	if err != nil {
 		return nil, ErrNoTranscript
 	}
@@ -179,6 +181,54 @@ func (s *V2GitStore) ReadSessionCompactTranscript(ctx context.Context, checkpoin
 	}
 
 	return []byte(content), nil
+}
+
+// ReadSessionMetadata reads only the session's metadata.json from the v2
+// /main ref — cheaper than ReadSessionMetadataAndPrompts when the caller
+// only needs metadata fields (e.g. SessionID, Kind, Agent). Lazy-fetches
+// the metadata blob via wrapWithFetcher when missing locally. Returns
+// ErrCheckpointNotFound if the checkpoint or session doesn't exist on /main.
+func (s *V2GitStore) ReadSessionMetadata(ctx context.Context, checkpointID id.CheckpointID, sessionIndex int) (*CommittedMetadata, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err //nolint:wrapcheck // Propagating context cancellation
+	}
+
+	refName := plumbing.ReferenceName(paths.V2MainRefName)
+	_, rootTreeHash, err := s.GetRefState(refName)
+	if err != nil {
+		return nil, ErrCheckpointNotFound
+	}
+
+	rootTree, err := s.repo.TreeObject(rootTreeHash)
+	if err != nil {
+		return nil, ErrCheckpointNotFound
+	}
+
+	cpTree, err := rootTree.Tree(checkpointID.Path())
+	if err != nil {
+		return nil, ErrCheckpointNotFound
+	}
+
+	sessionTree, err := cpTree.Tree(strconv.Itoa(sessionIndex))
+	if err != nil {
+		return nil, ErrCheckpointNotFound
+	}
+
+	sessionFT := s.wrapWithFetcher(ctx, sessionTree)
+	metadataFile, err := sessionFT.File(paths.MetadataFileName)
+	if err != nil {
+		return nil, fmt.Errorf("read session metadata file: %w", err)
+	}
+	content, err := metadataFile.Contents()
+	if err != nil {
+		return nil, fmt.Errorf("read session metadata contents: %w", err)
+	}
+
+	var meta CommittedMetadata
+	if err := json.Unmarshal([]byte(content), &meta); err != nil {
+		return nil, fmt.Errorf("parse session metadata: %w", err)
+	}
+	return &meta, nil
 }
 
 // ReadSessionMetadataAndPrompts reads a session's metadata and prompts from the
@@ -196,8 +246,9 @@ func (s *V2GitStore) ReadSessionMetadataAndPrompts(ctx context.Context, checkpoi
 	}
 
 	result := &SessionContent{}
+	sessionFT := s.wrapWithFetcher(ctx, sessionTree)
 
-	if metadataFile, fileErr := sessionTree.File(paths.MetadataFileName); fileErr == nil {
+	if metadataFile, fileErr := sessionFT.File(paths.MetadataFileName); fileErr == nil {
 		if content, contentErr := metadataFile.Contents(); contentErr == nil {
 			if jsonErr := json.Unmarshal([]byte(content), &result.Metadata); jsonErr != nil {
 				return nil, fmt.Errorf("failed to parse session metadata: %w", jsonErr)
@@ -205,50 +256,20 @@ func (s *V2GitStore) ReadSessionMetadataAndPrompts(ctx context.Context, checkpoi
 		}
 	}
 
-	if file, fileErr := sessionTree.File(paths.PromptFileName); fileErr == nil {
+	if file, fileErr := sessionFT.File(paths.PromptFileName); fileErr == nil {
 		if content, contentErr := file.Contents(); contentErr == nil {
 			result.Prompts = content
 		}
 	}
 
 	// Read compact transcript from the same session tree (avoids a second tree walk).
-	if compactFile, fileErr := sessionTree.File(paths.CompactTranscriptFileName); fileErr == nil {
+	if compactFile, fileErr := sessionFT.File(paths.CompactTranscriptFileName); fileErr == nil {
 		if content, contentErr := compactFile.Contents(); contentErr == nil && content != "" {
 			result.Transcript = []byte(content)
 		}
 	}
 
 	return result, nil
-}
-
-// ReadSessionMetadata reads only the session metadata.json from the v2 /main ref.
-// This avoids prompting or transcript reads for callers that only need session
-// classification fields such as Kind and Agent.
-func (s *V2GitStore) ReadSessionMetadata(ctx context.Context, checkpointID id.CheckpointID, sessionIndex int) (*CommittedMetadata, error) {
-	sessionTree, err := s.sessionTreeFromMain(ctx, checkpointID, sessionIndex)
-	if err != nil {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return nil, ctxErr //nolint:wrapcheck // Propagating context cancellation
-		}
-		return nil, ErrCheckpointNotFound
-	}
-
-	metadataFile, err := sessionTree.File(paths.MetadataFileName)
-	if err != nil {
-		return nil, fmt.Errorf("metadata.json not found for session %d: %w", sessionIndex, err)
-	}
-
-	content, err := metadataFile.Contents()
-	if err != nil {
-		return nil, fmt.Errorf("failed to read session metadata: %w", err)
-	}
-
-	var metadata CommittedMetadata
-	if err := json.Unmarshal([]byte(content), &metadata); err != nil {
-		return nil, fmt.Errorf("failed to parse session metadata: %w", err)
-	}
-
-	return &metadata, nil
 }
 
 // ReadSessionContent reads a session's metadata and prompts from the v2 /main ref,
@@ -264,8 +285,9 @@ func (s *V2GitStore) ReadSessionContent(ctx context.Context, checkpointID id.Che
 	}
 
 	result := &SessionContent{}
+	sessionFT := s.wrapWithFetcher(ctx, sessionTree)
 
-	if metadataFile, fileErr := sessionTree.File(paths.MetadataFileName); fileErr == nil {
+	if metadataFile, fileErr := sessionFT.File(paths.MetadataFileName); fileErr == nil {
 		if content, contentErr := metadataFile.Contents(); contentErr == nil {
 			if jsonErr := json.Unmarshal([]byte(content), &result.Metadata); jsonErr != nil {
 				return nil, fmt.Errorf("failed to parse session metadata: %w", jsonErr)
@@ -273,7 +295,7 @@ func (s *V2GitStore) ReadSessionContent(ctx context.Context, checkpointID id.Che
 		}
 	}
 
-	if file, fileErr := sessionTree.File(paths.PromptFileName); fileErr == nil {
+	if file, fileErr := sessionFT.File(paths.PromptFileName); fileErr == nil {
 		if content, contentErr := file.Contents(); contentErr == nil {
 			result.Prompts = content
 		}
