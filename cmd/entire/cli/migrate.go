@@ -57,29 +57,9 @@ func newMigrateCmd() *cobra.Command {
 				return NewSilentError(errors.New("not a git repository"))
 			}
 
-			commonDir, err := strategy.GetGitCommonDir(ctx)
+			release, err := acquireCommandLock(ctx, cmd, "entire-migrate.lock", "migrate")
 			if err != nil {
-				return NewSilentError(fmt.Errorf("resolve git common dir: %w", err))
-			}
-			lockPath := filepath.Join(commonDir, "entire-migrate.lock")
-
-			lk, err := lockfile.Acquire(lockPath)
-			if err != nil {
-				if errors.Is(err, lockfile.ErrLocked) {
-					cmd.SilenceUsage = true
-					holder := lockfile.ReadHolderPID(lockPath)
-					if holder > 0 {
-						fmt.Fprintf(cmd.ErrOrStderr(),
-							"another `entire migrate` is already running (PID %d, lock at %s); refusing to start a second instance\n",
-							holder, lockPath)
-					} else {
-						fmt.Fprintf(cmd.ErrOrStderr(),
-							"another `entire migrate` is already running (PID unknown, lock at %s); refusing to start a second instance\n",
-							lockPath)
-					}
-					return NewSilentError(errors.New("migration already in progress"))
-				}
-				return NewSilentError(fmt.Errorf("acquire migration lock: %w", err))
+				return err
 			}
 
 			logging.SetLogLevelGetter(GetLogLevel)
@@ -88,15 +68,7 @@ func newMigrateCmd() *cobra.Command {
 			} else {
 				defer logging.Close()
 			}
-
-			// Defer release AFTER logging is initialized, so a release
-			// error can be logged while logging is still open. LIFO means
-			// this defer runs before logging.Close().
-			defer func() {
-				if relErr := lk.Release(); relErr != nil {
-					logging.Warn(ctx, "failed to release migration lock", slog.String("error", relErr.Error()))
-				}
-			}()
+			defer release()
 
 			return runMigrateCheckpointsV2(ctx, cmd, forceFlag)
 		},
@@ -106,6 +78,51 @@ func newMigrateCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&forceFlag, "force", false, "Force re-migration of all checkpoints, overwriting existing v2 data")
 
 	return cmd
+}
+
+// acquireCommandLock acquires an exclusive file lock at
+// <git-common-dir>/<lockFile>. On contention it writes a user-facing
+// message to stderr citing opName and returns a SilentError; the caller
+// should defer the returned release function AFTER logging is
+// initialized, so a release error can be warned while logging is still
+// open (LIFO ordering ensures release runs before logging.Close).
+//
+// Lives in migrate.go because migrate is the only current caller; move
+// to a shared file when a second top-level command needs the same
+// exclusive-instance semantics.
+func acquireCommandLock(ctx context.Context, cmd *cobra.Command, lockFile, opName string) (release func(), err error) {
+	commonDir, err := strategy.GetGitCommonDir(ctx)
+	if err != nil {
+		return nil, NewSilentError(fmt.Errorf("resolve git common dir: %w", err))
+	}
+	lockPath := filepath.Join(commonDir, lockFile)
+
+	lk, err := lockfile.Acquire(lockPath)
+	if err != nil {
+		if errors.Is(err, lockfile.ErrLocked) {
+			cmd.SilenceUsage = true
+			holder := lockfile.ReadHolderPID(lockPath)
+			if holder > 0 {
+				fmt.Fprintf(cmd.ErrOrStderr(),
+					"another `entire %s` is already running (PID %d, lock at %s); refusing to start a second instance\n",
+					opName, holder, lockPath)
+			} else {
+				fmt.Fprintf(cmd.ErrOrStderr(),
+					"another `entire %s` is already running (PID unknown, lock at %s); refusing to start a second instance\n",
+					opName, lockPath)
+			}
+			return nil, NewSilentError(fmt.Errorf("%s already in progress", opName))
+		}
+		return nil, NewSilentError(fmt.Errorf("acquire %s lock: %w", opName, err))
+	}
+
+	return func() {
+		if relErr := lk.Release(); relErr != nil {
+			logging.Warn(ctx, "failed to release command lock",
+				slog.String("op", opName),
+				slog.String("error", relErr.Error()))
+		}
+	}, nil
 }
 
 type migrateResult struct {
