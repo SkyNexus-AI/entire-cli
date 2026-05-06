@@ -11,6 +11,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"strings"
 
@@ -21,6 +22,7 @@ import (
 	"github.com/entireio/cli/cmd/entire/cli/agent"
 	"github.com/entireio/cli/cmd/entire/cli/agent/external"
 	"github.com/entireio/cli/cmd/entire/cli/agent/types"
+	"github.com/entireio/cli/cmd/entire/cli/interactive"
 	"github.com/entireio/cli/cmd/entire/cli/logging"
 	"github.com/entireio/cli/cmd/entire/cli/paths"
 	reviewtypes "github.com/entireio/cli/cmd/entire/cli/review/types"
@@ -43,6 +45,10 @@ type Deps struct {
 	// PromptForAgentFn overrides the interactive agent picker. Nil means
 	// PromptForAgent is used (the real huh form). Tests inject a stub.
 	PromptForAgentFn func(ctx context.Context, eligible []AgentChoice) (string, error)
+
+	// MultiPickerFn overrides PickAgents for the multi-agent picker. Nil
+	// means PickAgents is used (the real huh form). Tests inject a stub.
+	MultiPickerFn func(ctx context.Context, eligible []AgentChoice) (PickedAgents, error)
 
 	// HeadHasReviewCheckpoint checks whether HEAD's checkpoint metadata
 	// includes a review session. Returns (true, infoString) if HasReview is set.
@@ -67,6 +73,7 @@ type Deps struct {
 // Deps value at the package boundary; runReview unpacks the relevant fields.
 type runReviewDeps struct {
 	promptForAgentFn func(ctx context.Context, eligible []AgentChoice) (string, error)
+	multiPickerFn    func(ctx context.Context, eligible []AgentChoice) (PickedAgents, error)
 }
 
 // NewCommand returns the `entire review` cobra command wired with the
@@ -108,7 +115,10 @@ Subcommands:
 				_, err := RunReviewConfigPicker(ctx, cmd.OutOrStdout(), deps.GetAgentsWithHooksInstalled)
 				return err
 			}
-			innerDeps := runReviewDeps{promptForAgentFn: deps.PromptForAgentFn}
+			innerDeps := runReviewDeps{
+				promptForAgentFn: deps.PromptForAgentFn,
+				multiPickerFn:    deps.MultiPickerFn,
+			}
 			return runReview(ctx, cmd, agentOverride, deps, innerDeps)
 		},
 	}
@@ -160,9 +170,27 @@ func runReview(ctx context.Context, cmd *cobra.Command, agentOverride string, de
 		fmt.Fprintln(out, "Setup complete — running review now.")
 	}
 
-	// 3. Pick agent. When --agent override is empty, base the selection on
-	// the eligible set (configured AND installed) so the run always picks a
-	// usable agent:
+	// 3. Resolve installed agents and determine the dispatch path.
+	//
+	// Three paths:
+	//   - Multi-agent: 2+ launchable eligible agents AND no --agent override →
+	//     show multi-select picker then RunMulti. Steps 3.5, 3.6, and the
+	//     single-agent skill-verify guard are skipped; each reviewer pulls
+	//     its own skills from settings at spawn time via RunConfig.
+	//   - Single-agent (default): 1 or fewer launchable eligible agents, OR
+	//     --agent override set. Falls through to the full agent-selection and
+	//     validation path below (steps 3–3.6).
+	installed := deps.GetAgentsWithHooksInstalled(ctx)
+	if agentOverride == "" {
+		launchableEligible := computeLaunchableEligible(s, installed, deps.ReviewerFor)
+		if len(launchableEligible) >= 2 {
+			return runMultiAgentPath(ctx, cmd, launchableEligible, s, innerDeps, deps, out)
+		}
+	}
+
+	// Single-agent path: pick agent, verify hooks + skills, scope, run.
+
+	// 3a. Base selection on the eligible set (configured AND installed):
 	//   - 0 eligible: fall through; SelectReviewAgent below errors with the
 	//     full configured map (clearer "no installed agent" diagnostic than
 	//     a silent fail).
@@ -170,8 +198,8 @@ func runReview(ctx context.Context, cmd *cobra.Command, agentOverride string, de
 	//     first configured agent isn't installed but exactly one other is —
 	//     without this, SelectReviewAgent would default to the alphabetical
 	//     first and the verify-hooks check below would error needlessly.
-	//   - 2+ eligible: prompt.
-	installed := deps.GetAgentsWithHooksInstalled(ctx)
+	//   - 2+ eligible: prompt with single-select (non-launchable agents reach
+	//     this branch since computeLaunchableEligible filtered them out above).
 	if agentOverride == "" {
 		eligible := ComputeEligibleConfigured(s, installed)
 		switch {
@@ -207,11 +235,26 @@ func runReview(ctx context.Context, cmd *cobra.Command, agentOverride string, de
 		return silentErr(err)
 	}
 
+	return runSingleAgentPath(ctx, cmd, agentName, cfg, installed, deps, out)
+}
+
+// runSingleAgentPath completes a single-agent review: verifies hooks + skills,
+// guards against re-review, resolves scope, then dispatches via Run or
+// RunMarkerFallback.
+func runSingleAgentPath(
+	ctx context.Context,
+	cmd *cobra.Command,
+	agentName string,
+	cfg settings.ReviewConfig,
+	installed []types.AgentName,
+	deps Deps,
+	out io.Writer,
+) error {
+	silentErr := deps.NewSilentError
+
 	// 3.5. Verify hooks are installed for the selected agent.
-	installedNames := make([]types.AgentName, len(installed))
-	copy(installedNames, installed)
 	found := false
-	for _, n := range installedNames {
+	for _, n := range installed {
 		if string(n) == agentName {
 			found = true
 			break
@@ -261,33 +304,12 @@ func runReview(ctx context.Context, cmd *cobra.Command, agentOverride string, de
 		return fmt.Errorf("resolve worktree root: %w", err)
 	}
 
-	// 6. Resolve HEAD SHA and detect scope. Scope work happens BEFORE the
-	// launchability branch so non-launchable agents (cursor, opencode,
-	// factoryai-droid) also see the scope banner and get a scope-aware
-	// prompt persisted to the marker — same context the launchable path
-	// passes to Run(). Best-effort: scope detection failure prints no
-	// banner and leaves ScopeBaseRef empty.
+	// 6. Resolve HEAD SHA and detect scope.
 	headSHA, shaErr := currentHeadSHA(ctx, worktreeRoot)
 	if shaErr != nil {
 		return fmt.Errorf("resolve HEAD: %w", shaErr)
 	}
-
-	// Compute scope via the canonical scope.go path: closest non-self
-	// ancestor branch by tip timestamp, fallback chain, full ScopeStats
-	// (commits + files changed + uncommitted). Best-effort: scope detection
-	// failure prints no banner and leaves ScopeBaseRef empty so the run
-	// proceeds with the agent picking its own scope (degraded mode).
-	var scopeBaseRef string
-	if repo, openErr := git.PlainOpen(worktreeRoot); openErr == nil {
-		if stats, statsErr := ComputeScopeStats(ctx, repo); statsErr == nil {
-			scopeBaseRef = stats.BaseRef
-			fmt.Fprintln(out, formatScopeBanner(stats))
-		} else {
-			logging.Debug(ctx, "review scope detection failed", slog.String("error", statsErr.Error()))
-		}
-	} else {
-		logging.Debug(ctx, "review repo open failed", slog.String("error", openErr.Error()))
-	}
+	scopeBaseRef := detectScope(ctx, worktreeRoot, out)
 
 	runCfg := reviewtypes.RunConfig{
 		PromptOverride: cfg.Prompt,
@@ -310,6 +332,168 @@ func runReview(ctx context.Context, cmd *cobra.Command, agentOverride string, de
 	}
 	return nil
 }
+
+// detectScope computes the scope base ref for the current repo and prints a
+// scope banner to out on success. Best-effort: on any failure, returns an
+// empty string and prints no banner so the run proceeds in degraded mode.
+func detectScope(ctx context.Context, worktreeRoot string, out io.Writer) (scopeBaseRef string) {
+	if repo, openErr := git.PlainOpen(worktreeRoot); openErr == nil {
+		if stats, statsErr := ComputeScopeStats(ctx, repo); statsErr == nil {
+			fmt.Fprintln(out, formatScopeBanner(stats))
+			return stats.BaseRef
+		} else { //nolint:revive // else-after-return is clearer here for the error-path log
+			logging.Debug(ctx, "review scope detection failed", slog.String("error", statsErr.Error()))
+		}
+	} else {
+		logging.Debug(ctx, "review repo open failed", slog.String("error", openErr.Error()))
+	}
+	return ""
+}
+
+// runMultiAgentPath handles the multi-agent review flow: shows the multi-select
+// picker, collects an optional per-run prompt, builds per-agent RunConfigs,
+// then runs all selected agents concurrently via RunMulti.
+//
+// This path skips the single-agent validation steps (3.5 hooks, 3.6 skills,
+// re-run guard) for brevity — computeLaunchableEligible has already ensured
+// each eligible agent has hooks installed and a Reviewer available.
+func runMultiAgentPath(
+	ctx context.Context,
+	cmd *cobra.Command,
+	launchableEligible []AgentChoice,
+	s *settings.EntireSettings,
+	innerDeps runReviewDeps,
+	deps Deps,
+	out io.Writer,
+) error {
+	// Note: skill verification is intentionally skipped here. The
+	// computeLaunchableEligible filter in the dispatch fork already
+	// guarantees every agent in launchableEligible has hooks installed
+	// AND a non-nil ReviewerFor mapping, so a per-agent verify pass would
+	// be redundant.
+	silentErr := deps.NewSilentError
+
+	// Show multi-select picker (or use injected stub in tests).
+	pickerFn := innerDeps.multiPickerFn
+	if pickerFn == nil {
+		pickerFn = PickAgents
+	}
+	picked, pickErr := pickerFn(ctx, launchableEligible)
+	if pickErr != nil {
+		return handlePickerError(cmd, silentErr, pickErr)
+	}
+
+	// Resolve worktree root and HEAD SHA for scope detection.
+	worktreeRoot, err := paths.WorktreeRoot(ctx)
+	if err != nil {
+		return fmt.Errorf("resolve worktree root: %w", err)
+	}
+	headSHA, shaErr := currentHeadSHA(ctx, worktreeRoot)
+	if shaErr != nil {
+		return fmt.Errorf("resolve HEAD: %w", shaErr)
+	}
+
+	scopeBaseRef := detectScope(ctx, worktreeRoot, out)
+
+	// Build per-agent reviewers with individual RunConfigs (each agent has
+	// its own skills + always-prompt from s.Review[name]).
+	reviewers := make([]reviewtypes.AgentReviewer, 0, len(picked.Names))
+	for _, name := range picked.Names {
+		agentCfg := s.Review[name] // zero value is safe (empty skills/prompt)
+		reviewer := deps.ReviewerFor(name)
+		if reviewer == nil {
+			// Shouldn't happen given launchableEligible was filtered for
+			// ReviewerFor != nil, but be defensive.
+			cmd.SilenceUsage = true
+			return silentErr(fmt.Errorf("agent %q is not launchable but appeared in eligible list", name))
+		}
+		// Wrap the reviewer so it sees the per-agent RunConfig at Start time.
+		// We cannot pass a different RunConfig per reviewer in RunMulti's
+		// current API (all reviewers share one RunConfig). Instead, build a
+		// configuredReviewer adapter that injects per-agent skills into
+		// RunConfig before forwarding to the underlying reviewer.
+		reviewers = append(reviewers, &perAgentConfiguredReviewer{
+			inner: reviewer,
+			cfg: reviewtypes.RunConfig{
+				PromptOverride: agentCfg.Prompt,
+				Skills:         agentCfg.Skills,
+				PerRunPrompt:   picked.PerRun,
+				ScopeBaseRef:   scopeBaseRef,
+				StartingSHA:    headSHA,
+			},
+		})
+	}
+
+	// Compose sinks based on TTY detection.
+	// TTY mode: [TUISink, DumpSink] — TUI owns the live dashboard; DumpSink
+	// renders the post-run narrative after TUI dismisses (RunFinished is called
+	// on each sink in order, and TUISink.RunFinished blocks until user dismisses).
+	// Non-TTY mode: [DumpSink] alone.
+	//
+	// A derived context is used so the TUI's Ctrl+C handler can cancel the run
+	// via the same cancelRun function that the orchestrator's context is built on.
+	runCtx, cancelRun := context.WithCancel(ctx)
+	defer cancelRun()
+
+	agentNames := make([]string, len(reviewers))
+	for i, r := range reviewers {
+		agentNames[i] = r.Name()
+	}
+
+	// TUI requires both:
+	//   - terminal stdout (otherwise ANSI codes corrupt redirected output)
+	//   - a promptable stdin (otherwise the post-run dismissal loop blocks
+	//     forever — happens when entire review is invoked from inside an
+	//     agent like Claude Code or Gemini CLI, where stdout is a TTY but
+	//     keypresses are never delivered)
+	var sinks []reviewtypes.Sink
+	if interactive.IsTerminalWriter(out) && interactive.CanPromptInteractively() {
+		tuiSink := NewTUISink(agentNames, cancelRun, out)
+		tuiSink.Start()
+		defer tuiSink.Wait()
+		sinks = append(sinks, tuiSink)
+		sinks = append(sinks, DumpSink{W: out})
+	} else {
+		sinks = append(sinks, DumpSink{W: out})
+	}
+
+	_, waitErr := RunMulti(runCtx, reviewers, reviewtypes.RunConfig{}, sinks)
+	if waitErr != nil && runCtx.Err() == nil && ctx.Err() == nil {
+		return fmt.Errorf("review run: %w", waitErr)
+	}
+	return nil
+}
+
+// handlePickerError maps multi-picker error sentinels to the appropriate
+// command-layer response.
+//   - ErrPickerCancelled → return nil (user cancelled; no error shown)
+//   - ErrNoAgentsSelected → surface error to user
+//   - other errors → surface to user
+func handlePickerError(cmd *cobra.Command, silentErr func(error) error, pickErr error) error {
+	if errors.Is(pickErr, ErrPickerCancelled) {
+		return nil
+	}
+	cmd.SilenceUsage = true
+	fmt.Fprintln(cmd.ErrOrStderr(), pickErr.Error())
+	return silentErr(pickErr)
+}
+
+// perAgentConfiguredReviewer is an AgentReviewer adapter that overrides the
+// RunConfig passed to the underlying reviewer's Start method. This lets
+// RunMulti pass a single shared RunConfig at the API boundary while each
+// agent in a multi-agent run still sees its own skills and always-prompt.
+type perAgentConfiguredReviewer struct {
+	inner reviewtypes.AgentReviewer
+	cfg   reviewtypes.RunConfig
+}
+
+func (r *perAgentConfiguredReviewer) Name() string { return r.inner.Name() }
+func (r *perAgentConfiguredReviewer) Start(ctx context.Context, _ reviewtypes.RunConfig) (reviewtypes.Process, error) {
+	return r.inner.Start(ctx, r.cfg) //nolint:wrapcheck // transparent adapter; callers see inner's error type directly
+}
+
+// Compile-time interface check.
+var _ reviewtypes.AgentReviewer = (*perAgentConfiguredReviewer)(nil)
 
 // currentHeadSHA returns the current HEAD commit hash as a 40-char hex string.
 func currentHeadSHA(ctx context.Context, repoRoot string) (string, error) {

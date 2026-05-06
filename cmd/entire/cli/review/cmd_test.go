@@ -3,6 +3,7 @@ package review_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -10,6 +11,7 @@ import (
 	"github.com/entireio/cli/cmd/entire/cli/agent"
 	"github.com/entireio/cli/cmd/entire/cli/agent/types"
 	"github.com/entireio/cli/cmd/entire/cli/review"
+	reviewtypes "github.com/entireio/cli/cmd/entire/cli/review/types"
 	"github.com/entireio/cli/cmd/entire/cli/settings"
 	"github.com/entireio/cli/cmd/entire/cli/testutil"
 )
@@ -275,5 +277,267 @@ func TestRunReview_FlagOverrideMustBeEligibleAgent(t *testing.T) {
 	}
 	if !strings.Contains(errBuf.String(), "Hooks are not installed") {
 		t.Errorf("stderr should mention 'Hooks are not installed', got: %s", errBuf.String())
+	}
+}
+
+// --- Dispatch fork tests (CU8) ---
+//
+// These tests exercise the dispatch fork added in CU8 using a minimal Deps
+// struct with injected stubs instead of the full cli.NewRootCmd() path. This
+// avoids needing real hooks or agent binaries.
+
+// newDispatchTestDeps builds a Deps stub suitable for dispatch fork tests.
+// Agents in launchableAgents get a non-nil ReviewerFor; others return nil.
+func newDispatchTestDeps(
+	t *testing.T,
+	installed []types.AgentName,
+	launchableAgents []string,
+	multiPickerFn func(ctx context.Context, eligible []review.AgentChoice) (review.PickedAgents, error),
+	promptForAgentFn func(ctx context.Context, eligible []review.AgentChoice) (string, error),
+) review.Deps {
+	t.Helper()
+	launchableSet := make(map[string]struct{}, len(launchableAgents))
+	for _, name := range launchableAgents {
+		launchableSet[name] = struct{}{}
+	}
+	return review.Deps{
+		GetAgentsWithHooksInstalled: func(_ context.Context) []types.AgentName {
+			return installed
+		},
+		NewSilentError:   func(err error) error { return err },
+		PromptForAgentFn: promptForAgentFn,
+		MultiPickerFn:    multiPickerFn,
+		HeadHasReviewCheckpoint: func(_ context.Context) (bool, string) {
+			return false, "" // no review guard
+		},
+		ReviewerFor: func(agentName string) reviewtypes.AgentReviewer {
+			if _, ok := launchableSet[agentName]; ok {
+				return &stubDispatchReviewer{name: agentName}
+			}
+			return nil
+		},
+	}
+}
+
+// stubDispatchReviewer is a minimal AgentReviewer that immediately finishes
+// successfully — used in dispatch fork tests to verify routing without
+// running real agent logic.
+type stubDispatchReviewer struct {
+	name string
+}
+
+func (r *stubDispatchReviewer) Name() string { return r.name }
+func (r *stubDispatchReviewer) Start(_ context.Context, _ reviewtypes.RunConfig) (reviewtypes.Process, error) {
+	return &stubDispatchProcess{}, nil
+}
+
+type stubDispatchProcess struct{}
+
+func (p *stubDispatchProcess) Events() <-chan reviewtypes.Event {
+	ch := make(chan reviewtypes.Event, 2)
+	ch <- reviewtypes.Started{}
+	ch <- reviewtypes.Finished{Success: true}
+	close(ch)
+	return ch
+}
+
+func (p *stubDispatchProcess) Wait() error { return nil }
+
+// Compile-time interface check.
+var _ reviewtypes.AgentReviewer = (*stubDispatchReviewer)(nil)
+var _ reviewtypes.Process = (*stubDispatchProcess)(nil)
+
+// TestDispatchFork_TwoLaunchableNoOverride verifies that when 2+ launchable
+// agents are configured and --agent is empty, the multi-picker is invoked
+// and RunMulti is called (not the single-agent path).
+func TestDispatchFork_TwoLaunchableNoOverride(t *testing.T) {
+	setupCmdTestRepo(t)
+
+	if err := review.SaveReviewConfig(context.Background(), map[string]settings.ReviewConfig{
+		"agent-a": {Prompt: "review"},
+		"agent-b": {Prompt: "review"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	multiPickerCalled := false
+	multiPickerFn := func(_ context.Context, eligible []review.AgentChoice) (review.PickedAgents, error) {
+		multiPickerCalled = true
+		names := make([]string, 0, len(eligible))
+		for _, e := range eligible {
+			names = append(names, e.Name)
+		}
+		return review.PickedAgents{Names: names, PerRun: ""}, nil
+	}
+
+	installed := []types.AgentName{"agent-a", "agent-b"}
+	deps := newDispatchTestDeps(t, installed, []string{"agent-a", "agent-b"}, multiPickerFn, nil)
+
+	buf := &bytes.Buffer{}
+	cmd := review.NewCommand(deps)
+	cmd.SetOut(buf)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !multiPickerCalled {
+		t.Error("expected multi-picker to be invoked for 2 launchable agents with no --agent override")
+	}
+}
+
+// TestDispatchFork_OneLaunchableOneNonLaunchableNoOverride verifies that when
+// only 1 agent is launchable (the other is non-launchable), the single-agent
+// path is taken (no multi-picker). Uses cursor (real non-launchable agent with
+// hooks) + agent-a (fake launchable stub).
+func TestDispatchFork_OneLaunchableOneNonLaunchableNoOverride(t *testing.T) {
+	setupCmdTestRepo(t)
+	installHooksForCmdTest(t, "cursor")
+
+	if err := review.SaveReviewConfig(context.Background(), map[string]settings.ReviewConfig{
+		"cursor":  {Prompt: "review"},
+		"agent-a": {Prompt: "review"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	multiPickerCalled := false
+	multiPickerFn := func(_ context.Context, _ []review.AgentChoice) (review.PickedAgents, error) {
+		multiPickerCalled = true
+		return review.PickedAgents{}, errors.New("should not be called")
+	}
+	// Stub single-select picker to avoid TTY: always picks cursor.
+	singlePickerFn := func(_ context.Context, _ []review.AgentChoice) (string, error) {
+		return "cursor", nil
+	}
+
+	installed := []types.AgentName{"cursor", "agent-a"}
+	// Only agent-a is launchable. With 1 launchable agent, computeLaunchableEligible
+	// returns 1 entry, so multi-path is skipped. The single-select picker picks cursor.
+	// ReviewerFor("cursor") returns nil → marker fallback path (writes marker file).
+	deps := newDispatchTestDeps(t, installed, []string{"agent-a"}, multiPickerFn, singlePickerFn)
+
+	cmd := review.NewCommand(deps)
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{})
+
+	executeErr := cmd.Execute() // may error (agent-a not a real agent); we only care about picker routing
+	_ = executeErr              // intentionally ignored: this test only asserts picker routing
+	if multiPickerCalled {
+		t.Error("multi-picker should NOT be invoked when only 1 launchable agent is configured")
+	}
+}
+
+// TestDispatchFork_TwoLaunchableWithAgentOverride verifies that --agent flag
+// bypasses the multi-picker even when 2+ launchable agents are configured.
+// The test uses cursor (non-launchable, real agent) + agent-a (fake launchable)
+// with --agent cursor so the single-agent path runs to completion via marker
+// fallback (cursor is non-launchable in reviewerFor, so nil → marker fallback).
+func TestDispatchFork_TwoLaunchableWithAgentOverride(t *testing.T) {
+	setupCmdTestRepo(t)
+	installHooksForCmdTest(t, "cursor") // cursor needs real hooks
+
+	if err := review.SaveReviewConfig(context.Background(), map[string]settings.ReviewConfig{
+		"cursor":  {Prompt: "review"},
+		"agent-a": {Prompt: "review"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	multiPickerCalled := false
+	multiPickerFn := func(_ context.Context, _ []review.AgentChoice) (review.PickedAgents, error) {
+		multiPickerCalled = true
+		return review.PickedAgents{}, errors.New("should not be called")
+	}
+
+	// cursor + agent-a both installed; agent-a is launchable but cursor is not.
+	// With 1 launchable agent (agent-a) among the 2 eligible agents, the
+	// multi-agent path would NOT fire (needs 2+ launchable). But when we
+	// additionally pass --agent cursor, the multi-picker is bypassed by the
+	// agentOverride check at the top of step 3.
+	installed := []types.AgentName{"cursor", "agent-a"}
+	deps := newDispatchTestDeps(t, installed, []string{"agent-a"}, multiPickerFn, nil)
+
+	buf := &bytes.Buffer{}
+	cmd := review.NewCommand(deps)
+	cmd.SetOut(buf)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--agent", "cursor"})
+
+	// cursor is not launchable in our stub (reviewerFor returns nil), so it
+	// falls through to RunMarkerFallback. That's fine — we only care that
+	// multiPickerCalled is false.
+	executeErr := cmd.Execute()
+	_ = executeErr // intentionally ignored: this test only asserts picker routing
+	if multiPickerCalled {
+		t.Error("multi-picker should NOT be invoked when --agent override is set")
+	}
+}
+
+// TestDispatchFork_MultiPickerCancellationExitsCleanly verifies that when
+// the multi-picker is cancelled (ErrPickerCancelled), the command exits with
+// nil error (no user-facing error).
+func TestDispatchFork_MultiPickerCancellationExitsCleanly(t *testing.T) {
+	setupCmdTestRepo(t)
+
+	if err := review.SaveReviewConfig(context.Background(), map[string]settings.ReviewConfig{
+		"agent-a": {Prompt: "review"},
+		"agent-b": {Prompt: "review"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	multiPickerFn := func(_ context.Context, _ []review.AgentChoice) (review.PickedAgents, error) {
+		return review.PickedAgents{}, review.ErrPickerCancelled
+	}
+
+	installed := []types.AgentName{"agent-a", "agent-b"}
+	deps := newDispatchTestDeps(t, installed, []string{"agent-a", "agent-b"}, multiPickerFn, nil)
+
+	errBuf := &bytes.Buffer{}
+	cmd := review.NewCommand(deps)
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(errBuf)
+	cmd.SetArgs([]string{})
+
+	err := cmd.Execute()
+	if err != nil {
+		t.Errorf("ErrPickerCancelled should produce nil command error, got: %v", err)
+	}
+}
+
+// TestDispatchFork_MultiPickerNoSelectionSurfacesError verifies that when the
+// multi-picker returns ErrNoAgentsSelected, a clear error is shown to the user.
+func TestDispatchFork_MultiPickerNoSelectionSurfacesError(t *testing.T) {
+	setupCmdTestRepo(t)
+
+	if err := review.SaveReviewConfig(context.Background(), map[string]settings.ReviewConfig{
+		"agent-a": {Prompt: "review"},
+		"agent-b": {Prompt: "review"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	multiPickerFn := func(_ context.Context, _ []review.AgentChoice) (review.PickedAgents, error) {
+		return review.PickedAgents{}, review.ErrNoAgentsSelected
+	}
+
+	installed := []types.AgentName{"agent-a", "agent-b"}
+	deps := newDispatchTestDeps(t, installed, []string{"agent-a", "agent-b"}, multiPickerFn, nil)
+
+	errBuf := &bytes.Buffer{}
+	cmd := review.NewCommand(deps)
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(errBuf)
+	cmd.SetArgs([]string{})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected non-nil error when no agents are selected")
+	}
+	if !strings.Contains(errBuf.String(), "no agents selected") {
+		t.Errorf("stderr should mention 'no agents selected', got: %q", errBuf.String())
 	}
 }

@@ -21,6 +21,7 @@ import (
 	"github.com/entireio/cli/cmd/entire/cli/agent/skilldiscovery"
 	"github.com/entireio/cli/cmd/entire/cli/agent/types"
 	"github.com/entireio/cli/cmd/entire/cli/logging"
+	reviewtypes "github.com/entireio/cli/cmd/entire/cli/review/types"
 	"github.com/entireio/cli/cmd/entire/cli/settings"
 )
 
@@ -298,6 +299,28 @@ func labelForAgentChoice(name string, cfg settings.ReviewConfig) string {
 	default:
 		return name
 	}
+}
+
+// computeLaunchableEligible returns the subset of ComputeEligibleConfigured
+// that also have a non-nil AgentReviewer (i.e., are launchable by the CLI).
+// Used by the dispatch fork in cmd.go to decide whether to route to the
+// multi-agent path.
+//
+// reviewerFor is deps.ReviewerFor injected at the cmd layer; it returns nil
+// for non-launchable agents (cursor, opencode, factoryai-droid, copilot-cli).
+func computeLaunchableEligible(
+	s *settings.EntireSettings,
+	installed []types.AgentName,
+	reviewerFor func(string) reviewtypes.AgentReviewer,
+) []AgentChoice {
+	eligible := ComputeEligibleConfigured(s, installed)
+	out := make([]AgentChoice, 0, len(eligible))
+	for _, c := range eligible {
+		if reviewerFor(c.Name) != nil {
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 // PromptForAgent renders the single-select agent picker shown when more than
