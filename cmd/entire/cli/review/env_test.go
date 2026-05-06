@@ -2,6 +2,8 @@ package review
 
 import (
 	"testing"
+
+	reviewtypes "github.com/entireio/cli/cmd/entire/cli/review/types"
 )
 
 func TestEnvSkillsRoundtrip(t *testing.T) {
@@ -71,5 +73,73 @@ func TestDecodeSkillsRejectsInvalidJSON(t *testing.T) {
 	}
 	if _, err := DecodeSkills(""); err != nil {
 		t.Errorf("expected empty string to decode as empty slice, got error: %v", err)
+	}
+}
+
+// TestAppendReviewEnv_StripsPreExistingReviewVars pins the contract that
+// AppendReviewEnv removes any pre-existing ENTIRE_REVIEW_* entries before
+// appending the new values. Defense against nested invocations and stale
+// env inheritance from a parent shell — duplicate keys would otherwise have
+// implementation-defined precedence.
+func TestAppendReviewEnv_StripsPreExistingReviewVars(t *testing.T) {
+	t.Parallel()
+	base := []string{
+		"PATH=/usr/bin",
+		"HOME=/home/u",
+		EnvSession + "=stale",
+		EnvAgent + "=stale-agent",
+		EnvSkills + "=[\"/stale\"]",
+		EnvPrompt + "=stale prompt",
+		EnvStartingSHA + "=stalehash",
+	}
+	got := AppendReviewEnv(base, "claude-code", reviewtypes.RunConfig{
+		Skills:      []string{"/fresh"},
+		StartingSHA: "freshhash",
+	}, "fresh prompt")
+
+	// Each ENTIRE_REVIEW_* key should appear exactly once with the fresh value.
+	want := map[string]string{
+		EnvSession:     "1",
+		EnvAgent:       "claude-code",
+		EnvSkills:      `["/fresh"]`,
+		EnvPrompt:      "fresh prompt",
+		EnvStartingSHA: "freshhash",
+	}
+	counts := make(map[string]int)
+	values := make(map[string]string)
+	for _, kv := range got {
+		for key := range want {
+			prefix := key + "="
+			if len(kv) > len(prefix) && kv[:len(prefix)] == prefix {
+				counts[key]++
+				values[key] = kv[len(prefix):]
+			} else if kv == prefix {
+				counts[key]++
+				values[key] = ""
+			}
+		}
+	}
+	for key, wantVal := range want {
+		if counts[key] != 1 {
+			t.Errorf("%s: expected exactly 1 occurrence, got %d", key, counts[key])
+		}
+		if values[key] != wantVal {
+			t.Errorf("%s: got %q, want %q", key, values[key], wantVal)
+		}
+	}
+
+	// Non-review entries (PATH, HOME) must survive unchanged.
+	pathSeen := false
+	homeSeen := false
+	for _, kv := range got {
+		if kv == "PATH=/usr/bin" {
+			pathSeen = true
+		}
+		if kv == "HOME=/home/u" {
+			homeSeen = true
+		}
+	}
+	if !pathSeen || !homeSeen {
+		t.Errorf("non-review env entries should survive: PATH=%v HOME=%v", pathSeen, homeSeen)
 	}
 }
