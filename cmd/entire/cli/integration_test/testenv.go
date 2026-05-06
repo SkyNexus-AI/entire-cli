@@ -614,44 +614,6 @@ func (env *TestEnv) GitCommitWithMultipleCheckpoints(message string, checkpointI
 	}
 }
 
-// WritePendingReviewMarker writes a review-pending marker under
-// .git/entire-sessions/, mirroring the on-disk shape that `entire
-// review` produces before spawning an agent. Used by integration tests
-// to set up adoption scenarios without running the full spawn pipeline.
-//
-// The JSON shape is duplicated here intentionally: the test shouldn't
-// import the cli package just for a struct literal, and the marker
-// format is small + stable.
-func (env *TestEnv) WritePendingReviewMarker(agentName string, skills []string, startingSHA string) {
-	env.T.Helper()
-	marker := struct {
-		AgentName    string    `json:"agent_name"`
-		Skills       []string  `json:"skills"`
-		Prompt       string    `json:"prompt,omitempty"`
-		StartingSHA  string    `json:"starting_sha"`
-		StartedAt    time.Time `json:"started_at"`
-		WorktreePath string    `json:"worktree_path,omitempty"`
-	}{
-		AgentName:    agentName,
-		Skills:       skills,
-		Prompt:       composeReviewPromptForTest(skills),
-		StartingSHA:  startingSHA,
-		StartedAt:    time.Now().UTC(),
-		WorktreePath: env.RepoDir,
-	}
-	dir := filepath.Join(env.RepoDir, ".git", "entire-sessions")
-	if err := os.MkdirAll(dir, 0o750); err != nil {
-		env.T.Fatalf("failed to create sessions dir: %v", err)
-	}
-	data, err := json.MarshalIndent(marker, "", "  ")
-	if err != nil {
-		env.T.Fatalf("failed to marshal marker: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "review-pending.json"), data, 0o600); err != nil {
-		env.T.Fatalf("failed to write marker: %v", err)
-	}
-}
-
 // WriteSettings writes arbitrary JSON to .entire/settings.json. Used in
 // tests that need to seed specific config shapes before running a CLI
 // command. Overwrites any existing file.

@@ -29,6 +29,7 @@ import (
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint/remote"
 	"github.com/entireio/cli/cmd/entire/cli/logging"
 	"github.com/entireio/cli/cmd/entire/cli/paths"
+	reviewenv "github.com/entireio/cli/cmd/entire/cli/review"
 	"github.com/entireio/cli/cmd/entire/cli/session"
 	"github.com/entireio/cli/cmd/entire/cli/settings"
 	"github.com/entireio/cli/cmd/entire/cli/trailers"
@@ -136,100 +137,6 @@ func ClearPendingReviewMarker(ctx context.Context) error {
 }
 
 // Curated built-ins and install hints live in package skilldiscovery.
-
-// sameWorktreePath compares two worktree paths after filepath.Clean. Both
-// paths come from paths.WorktreeRoot, so an exact-bytes match is expected in
-// the common case; Clean is defense-in-depth against trailing slashes and
-// duplicate separators.
-func sameWorktreePath(a, b string) bool {
-	return filepath.Clean(a) == filepath.Clean(b)
-}
-
-// adoptPendingReviewMarkerInto reads any pending review marker and applies it
-// to the given session state. Returns (newState, modified, error). If the
-// state already has Kind set (e.g., a subsequent turn of a review session),
-// the marker is left in place and modified=false — adoption only happens on
-// first tag. The marker is cleared on successful first adoption.
-//
-// Scoping rules — the marker is left untouched (not cleared) when a scope
-// mismatch still leaves open the possibility that a future session could
-// legitimately claim it:
-//
-//   - WorktreePath: a Claude session in worktree A must not claim a marker
-//     meant for a session `entire review` spawned in worktree B. Both
-//     worktrees share the same .git/entire-sessions/ directory.
-//   - AgentName: a cursor session must not claim a marker that records a
-//     claude-code review — the review config and skills are agent-specific,
-//     and whichever session fires its UserPromptSubmit hook first would
-//     otherwise silently steal the wrong agent's review metadata.
-//
-// StartingSHA is different: once HEAD moves past the marker's commit, no
-// future session will meaningfully match the original review intent.
-// A stale marker is cleared rather than left to mis-tag a later unrelated
-// session.
-//
-// Pre-fix markers with empty fields fall back to unscoped adoption for
-// each missing field (backwards compat).
-func adoptPendingReviewMarkerInto(ctx context.Context, s session.State, agentName types.AgentName) (session.State, bool, error) {
-	// Already tagged — don't re-apply on subsequent turns.
-	if s.Kind != "" {
-		return s, false, nil
-	}
-	m, ok, err := ReadPendingReviewMarker(ctx)
-	if err != nil {
-		return s, false, err
-	}
-	if !ok {
-		return s, false, nil
-	}
-	if m.WorktreePath != "" && !sameWorktreePath(m.WorktreePath, s.WorktreePath) {
-		// Marker belongs to a different worktree — leave it for the session
-		// `entire review` actually spawned, which will reach its own hook
-		// and claim the marker.
-		return s, false, nil
-	}
-	if m.AgentName != "" && m.AgentName != string(agentName) {
-		// Marker was written for a different agent — leave it alone. The
-		// correct agent's session will reach its own hook and claim the
-		// marker.
-		return s, false, nil
-	}
-	// SHA drift: the marker was written for a specific commit. If HEAD has
-	// moved since, the user's intent (review THAT commit) no longer applies
-	// to this session, and we'd otherwise silently tag an unrelated session
-	// as a review. Discard the stale marker rather than adopting it or
-	// leaving it in place to mis-tag a later session.
-	//
-	// Failure to resolve HEAD is non-fatal: adoption is best-effort, and
-	// crashing a legitimate review because git rev-parse hiccupped would be
-	// worse than skipping the check.
-	if m.StartingSHA != "" {
-		headSHA, headErr := currentHeadSHA(ctx)
-		switch {
-		case headErr != nil:
-			logging.Debug(ctx, "adopt marker: resolve HEAD failed, skipping SHA check",
-				slog.String("error", headErr.Error()))
-		case headSHA != m.StartingSHA:
-			logging.Warn(ctx, "adopt marker: HEAD moved since marker was written; discarding stale marker",
-				slog.String("marker_sha", m.StartingSHA),
-				slog.String("head_sha", headSHA))
-			if clearErr := ClearPendingReviewMarker(ctx); clearErr != nil {
-				logging.Debug(ctx, "failed to clear stale marker", slog.String("error", clearErr.Error()))
-			}
-			return s, false, nil
-		}
-	}
-	s.Kind = session.KindAgentReview
-	s.ReviewSkills = m.Skills
-	s.ReviewPrompt = m.Prompt
-	if err := ClearPendingReviewMarker(ctx); err != nil {
-		// Tagging succeeded; leftover marker self-heals on next session start
-		// (since Kind is now set, the next turn will return modified=false
-		// and the marker will be re-cleared on any next review session).
-		logging.Warn(ctx, "failed to clear pending review marker", slog.String("error", err.Error()))
-	}
-	return s, true, nil
-}
 
 // confirmFirstRunSetup prints a banner framing the picker as first-run
 // setup (rather than the review itself) and waits for the user to confirm.
@@ -737,10 +644,47 @@ func runReview(ctx context.Context, cmd *cobra.Command, agentOverride string, de
 	if err != nil {
 		return fmt.Errorf("launch %s: %w", agentName, err)
 	}
+	execCmd.Env = appendReviewSpawnEnv(execCmd.Env, agentName, cfg.Skills, prompt, headSHA)
 	if err := execCmd.Run(); err != nil {
 		return fmt.Errorf("agent exited: %w", err)
 	}
 	return nil
+}
+
+func appendReviewSpawnEnv(base []string, agentName string, skills []string, prompt, startingSHA string) []string {
+	skillsJSON, _ := reviewenv.EncodeSkills(skills) //nolint:errcheck // json.Marshal([]string) cannot fail
+	if base == nil {
+		base = os.Environ()
+	}
+	out := make([]string, 0, len(base)+5)
+	for _, kv := range base {
+		if isReviewSpawnEnvEntry(kv) {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return append(out,
+		reviewenv.EnvSession+"=1",
+		reviewenv.EnvAgent+"="+agentName,
+		reviewenv.EnvSkills+"="+skillsJSON,
+		reviewenv.EnvPrompt+"="+prompt,
+		reviewenv.EnvStartingSHA+"="+startingSHA,
+	)
+}
+
+func isReviewSpawnEnvEntry(kv string) bool {
+	for _, prefix := range []string{
+		reviewenv.EnvSession + "=",
+		reviewenv.EnvAgent + "=",
+		reviewenv.EnvSkills + "=",
+		reviewenv.EnvPrompt + "=",
+		reviewenv.EnvStartingSHA + "=",
+	} {
+		if strings.HasPrefix(kv, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // computeEligibleConfigured returns the sorted list of agents that are both
