@@ -28,7 +28,8 @@ precedence:
   $ENTIRE_PLUGIN_DIR/bin (override)
   $XDG_DATA_HOME/entire/plugins/bin (Linux/macOS, when set)
   ~/.local/share/entire/plugins/bin (Linux/macOS default)
-  %LOCALAPPDATA%\entire\plugins\bin (Windows)
+  %LOCALAPPDATA%\entire\plugins\bin (Windows, when set)
+  ~\AppData\Local\entire\plugins\bin (Windows fallback when LOCALAPPDATA is unset)
 
 Commands:
   install   Install a plugin by linking or copying an existing executable
