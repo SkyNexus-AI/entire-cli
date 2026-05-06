@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -16,6 +17,7 @@ import (
 	"github.com/entireio/cli/cmd/entire/cli/agent"
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint"
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint/id"
+	"github.com/entireio/cli/cmd/entire/cli/lockfile"
 	"github.com/entireio/cli/cmd/entire/cli/logging"
 	"github.com/entireio/cli/cmd/entire/cli/paths"
 	"github.com/entireio/cli/cmd/entire/cli/strategy"
@@ -55,12 +57,47 @@ func newMigrateCmd() *cobra.Command {
 				return NewSilentError(errors.New("not a git repository"))
 			}
 
+			commonDir, err := strategy.GetGitCommonDir(ctx)
+			if err != nil {
+				return NewSilentError(fmt.Errorf("resolve git common dir: %w", err))
+			}
+			lockPath := filepath.Join(commonDir, "entire-migrate.lock")
+
+			lk, err := lockfile.Acquire(lockPath)
+			if err != nil {
+				if errors.Is(err, lockfile.ErrLocked) {
+					cmd.SilenceUsage = true
+					holder := lockfile.ReadHolderPID(lockPath)
+					if holder > 0 {
+						fmt.Fprintf(cmd.ErrOrStderr(),
+							"another `entire migrate` is already running (PID %d, lock at %s); refusing to start a second instance\n",
+							holder, lockPath)
+					} else {
+						fmt.Fprintf(cmd.ErrOrStderr(),
+							"another `entire migrate` is already running (PID unknown, lock at %s); refusing to start a second instance\n",
+							lockPath)
+					}
+					return NewSilentError(errors.New("migration already in progress"))
+				}
+				return NewSilentError(fmt.Errorf("acquire migration lock: %w", err))
+			}
+
 			logging.SetLogLevelGetter(GetLogLevel)
 			if initErr := logging.Init(ctx, ""); initErr != nil {
 				fmt.Fprintf(cmd.ErrOrStderr(), "Warning: could not initialize logging: %v\n", initErr)
 			} else {
 				defer logging.Close()
 			}
+
+			// Defer release AFTER logging is initialized, so a release
+			// error can be logged while logging is still open. LIFO means
+			// this defer runs before logging.Close().
+			defer func() {
+				if relErr := lk.Release(); relErr != nil {
+					logging.Warn(ctx, "failed to release migration lock", slog.String("error", relErr.Error()))
+				}
+			}()
+
 			return runMigrateCheckpointsV2(ctx, cmd, forceFlag)
 		},
 	}
