@@ -727,6 +727,12 @@ func TestMigrateCmd_ForceFlag(t *testing.T) {
 }
 
 func TestMigrateCmd_RepairsArchivedGenerationMetadata(t *testing.T) {
+	oldMax := migrateMaxCheckpointsPerGeneration
+	migrateMaxCheckpointsPerGeneration = 1
+	t.Cleanup(func() {
+		migrateMaxCheckpointsPerGeneration = oldMax
+	})
+
 	repo := initMigrateTestRepo(t)
 	wt, err := repo.Worktree()
 	require.NoError(t, err)
@@ -743,7 +749,7 @@ func TestMigrateCmd_RepairsArchivedGenerationMetadata(t *testing.T) {
 		time.Date(2026, 1, 7, 1, 0, 0, 0, time.UTC),
 		rawOldest, rawNewest)
 
-	// A real v1 checkpoint that the migration will pack — without this,
+	// A real v1 checkpoint that the migration will archive — without this,
 	// migration is a no-op and (correctly) skips the repair pass to avoid
 	// gigabytes of unconditional transcript-blob reads on every rerun.
 	v1Store, _ := newMigrateStores(repo)
