@@ -601,7 +601,7 @@ func TestMigrateCheckpointsV2_ForceOverwritesExisting(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 1, result3.migrated)
 	assert.Equal(t, 0, result3.skipped)
-	assert.Empty(t, stdout.String())
+	assert.Equal(t, "✓ Packing migrated raw transcripts\n", stdout.String())
 
 	// Verify checkpoint still readable in v2
 	summary, readErr := v2Store.ReadCommitted(context.Background(), cpID)
@@ -767,7 +767,7 @@ func TestMigrateCmd_RepairsArchivedGenerationMetadata(t *testing.T) {
 
 	require.NoError(t, cmd.Execute())
 	assert.Contains(t, stdout.String(), "Archived generation metadata repair: 1 repaired")
-	assert.Empty(t, stderr.String())
+	assert.Equal(t, "✓ Packing migrated raw transcripts\n✓ Repairing archived generation metadata\n", stderr.String())
 
 	v2Store := checkpoint.NewV2GitStore(repo, migrateRemoteName)
 	gen, genErr := v2Store.ReadGenerationFromRef(plumbing.ReferenceName(paths.V2FullRefPrefix + "0000000000007"))
@@ -1316,7 +1316,7 @@ func TestMigrateCheckpointsV2_CompactionSkipped(t *testing.T) {
 	require.NoError(t, migrateErr)
 	assert.Equal(t, 1, result.migrated)
 	assert.Equal(t, 1, result.compactTranscriptSkipped)
-	assert.Empty(t, stdout.String())
+	assert.Equal(t, "✓ Packing migrated raw transcripts\n", stdout.String())
 }
 
 func TestMigrateCheckpointsV2_TaskCheckpoint(t *testing.T) {

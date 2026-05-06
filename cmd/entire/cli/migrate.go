@@ -105,11 +105,14 @@ func runMigrateCheckpointsV2(ctx context.Context, cmd *cobra.Command, force bool
 	// AggregateTranscriptTimestamps in the packer.
 	var repairResult *strategy.RepairV2GenerationMetadataResult
 	if len(freshlyPackedRefs) > 0 {
+		stopRepair := startSpinner(cmd.ErrOrStderr(), "Repairing archived generation metadata")
 		var repairErr error
 		repairResult, repairErr = strategy.RepairV2GenerationMetadata(ctx, freshlyPackedRefs)
 		if repairErr != nil {
+			stopRepair(false)
 			return fmt.Errorf("failed to repair archived v2 generation metadata: %w", repairErr)
 		}
+		stopRepair(true)
 		printV2GenerationRepairResult(out, cmd.ErrOrStderr(), repairResult)
 	}
 
@@ -278,8 +281,11 @@ func migrateCheckpointsV2(ctx context.Context, repo *git.Repository, v1Store *ch
 		progress.Increment()
 	}
 
+	progress.Finish()
+	stopFinalize := startSpinner(progressOut, "Packing migrated raw transcripts")
 	if len(pendingFull) > 0 {
 		if err := writeMigratedFinalFullCurrent(ctx, repo, v2Store, pendingFull); err != nil {
+			stopFinalize(false)
 			return result, writtenRefs, fmt.Errorf("failed to pack migrated raw transcripts: %w", err)
 		}
 		// If /full/current already had checkpoints, this final migration write can
@@ -287,15 +293,18 @@ func migrateCheckpointsV2(ctx context.Context, repo *git.Repository, v1Store *ch
 		// mirrors other v2 ref-merge cases where a generation may exceed the soft
 		// threshold by a small amount.
 		if refName, rotated, err := v2Store.RotateCurrentGenerationIfNeeded(ctx, batchSize); err != nil {
+			stopFinalize(false)
 			return result, writtenRefs, fmt.Errorf("failed to rotate migrated full/current generation: %w", err)
 		} else if rotated {
 			writtenRefs = append(writtenRefs, refName)
 		}
 	} else if len(writtenRefs) > 0 && !fullCurrentExistsBefore {
 		if err := ensureEmptyV2FullCurrent(ctx, repo); err != nil {
+			stopFinalize(false)
 			return result, writtenRefs, fmt.Errorf("failed to pack migrated raw transcripts: %w", err)
 		}
 	}
+	stopFinalize(true)
 
 	return result, writtenRefs, nil
 }
