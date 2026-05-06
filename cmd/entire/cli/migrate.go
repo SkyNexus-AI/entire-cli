@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os/exec"
 	"sort"
 	"strconv"
 	"strings"
@@ -25,6 +26,7 @@ import (
 	"github.com/go-git/go-git/v6/plumbing"
 	"github.com/go-git/go-git/v6/plumbing/filemode"
 	"github.com/go-git/go-git/v6/plumbing/object"
+	"github.com/go-git/go-git/v6/storage"
 	"github.com/spf13/cobra"
 )
 
@@ -263,7 +265,7 @@ func migrateCheckpointsV2(ctx context.Context, repo *git.Repository, v1Store *ch
 					}
 					nextGeneration = next
 				}
-				refName := plumbing.ReferenceName(fmt.Sprintf("%s%013d", paths.V2FullRefPrefix, nextGeneration))
+				refName := checkpoint.ArchivedGenerationRefName(nextGeneration)
 				if packErr := writeMigratedFullGeneration(ctx, repo, refName, pendingFull); packErr != nil {
 					return result, writtenRefs, fmt.Errorf("failed to pack migrated raw transcripts: %w", packErr)
 				}
@@ -512,17 +514,14 @@ func writeMigratedFinalFullCurrent(ctx context.Context, repo *git.Repository, v2
 		return fmt.Errorf("create migrated full/current commit: %w", err)
 	}
 
-	return updateV2FullCurrentRef(repo, parentHash, commitHash)
+	return updateV2FullCurrentRef(ctx, repo, parentHash, commitHash)
 }
 
-func updateV2FullCurrentRef(repo *git.Repository, expectedHash, newHash plumbing.Hash) error {
+func updateV2FullCurrentRef(ctx context.Context, repo *git.Repository, expectedHash, newHash plumbing.Hash) error {
 	refName := plumbing.ReferenceName(paths.V2FullCurrentRefName)
 	newRef := plumbing.NewHashReference(refName, newHash)
 	if expectedHash == plumbing.ZeroHash {
-		if err := repo.Storer.SetReference(newRef); err != nil {
-			return fmt.Errorf("update %s: %w", refName, err)
-		}
-		return nil
+		return createV2FullCurrentRefIfMissing(ctx, repo, refName, newHash)
 	}
 
 	oldRef := plumbing.NewHashReference(refName, expectedHash)
@@ -530,6 +529,43 @@ func updateV2FullCurrentRef(repo *git.Repository, expectedHash, newHash plumbing
 		return fmt.Errorf("update %s: %w", refName, err)
 	}
 	return nil
+}
+
+func createV2FullCurrentRefIfMissing(ctx context.Context, repo *git.Repository, refName plumbing.ReferenceName, newHash plumbing.Hash) error {
+	root, err := repoWorktreeRoot(repo)
+	if err != nil {
+		return fmt.Errorf("resolve worktree root for %s update: %w", refName, err)
+	}
+
+	cmd := exec.CommandContext(ctx, "git", "update-ref", "--no-deref", refName.String(), newHash.String(), "")
+	cmd.Dir = root
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		return nil
+	}
+
+	if currentRef, refErr := repo.Reference(refName, true); refErr == nil {
+		if currentRef.Hash() == newHash {
+			return nil
+		}
+		return fmt.Errorf("update %s: %w", refName, storage.ErrReferenceHasChanged)
+	}
+	if len(output) > 0 {
+		return fmt.Errorf("update %s: %w: %s", refName, err, strings.TrimSpace(string(output)))
+	}
+	return fmt.Errorf("update %s: %w", refName, err)
+}
+
+func repoWorktreeRoot(repo *git.Repository) (string, error) {
+	worktree, err := repo.Worktree()
+	if err != nil {
+		return "", fmt.Errorf("open worktree: %w", err)
+	}
+	root := worktree.Filesystem.Root()
+	if root == "" {
+		return "", errors.New("repository worktree filesystem has no root path")
+	}
+	return root, nil
 }
 
 func writeMigratedFullGeneration(ctx context.Context, repo *git.Repository, refName plumbing.ReferenceName, checkpoints []migratedFullCheckpoint) error {

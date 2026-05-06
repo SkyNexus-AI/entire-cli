@@ -22,6 +22,7 @@ import (
 	"github.com/go-git/go-git/v6/plumbing"
 	"github.com/go-git/go-git/v6/plumbing/filemode"
 	"github.com/go-git/go-git/v6/plumbing/object"
+	"github.com/go-git/go-git/v6/storage"
 )
 
 // DefaultMaxCheckpointsPerGeneration is the rotation threshold.
@@ -407,6 +408,11 @@ func MergeGenerationTime(gen *GenerationMetadata, found *bool, ts time.Time) {
 // generationRefWidth is the zero-padded width of archived generation ref names.
 const generationRefWidth = 13
 
+// ArchivedGenerationRefName returns the full ref name for an archived generation number.
+func ArchivedGenerationRefName(number int) plumbing.ReferenceName {
+	return plumbing.ReferenceName(fmt.Sprintf("%s%0*d", paths.V2FullRefPrefix, generationRefWidth, number))
+}
+
 // GenerationRefPattern matches exactly 13 digits (the archived generation ref suffix format).
 var GenerationRefPattern = regexp.MustCompile(`^\d{13}$`)
 
@@ -502,7 +508,7 @@ func (s *V2GitStore) RotateCurrentGenerationIfNeeded(ctx context.Context, maxChe
 
 	// Phase 1: Archive — create ref pointing to the current commit.
 	// If the archive ref already exists, another instance already rotated — skip.
-	archiveRefName := plumbing.ReferenceName(fmt.Sprintf("%s%0*d", paths.V2FullRefPrefix, generationRefWidth, archiveNumber))
+	archiveRefName := ArchivedGenerationRefName(archiveNumber)
 	if _, refErr := s.repo.Reference(archiveRefName, true); refErr == nil {
 		logging.Info(ctx, "rotation: archive ref already exists, skipping",
 			slog.String("archive_ref", string(archiveRefName)),
@@ -556,9 +562,12 @@ func (s *V2GitStore) RotateCurrentGenerationIfNeeded(ctx context.Context, maxChe
 		return "", false, fmt.Errorf("rotation: failed to create orphan commit: %w", err)
 	}
 
-	orphanRef := plumbing.NewHashReference(refName, orphanCommitHash)
-	if err := s.repo.Storer.SetReference(orphanRef); err != nil {
-		return "", false, fmt.Errorf("rotation: failed to reset /full/current: %w", err)
+	reset, err := s.resetFullCurrentRefIfUnchanged(ctx, refName, postArchiveRef, orphanCommitHash)
+	if err != nil {
+		return "", false, err
+	}
+	if !reset {
+		return archiveRefName, false, nil
 	}
 
 	logging.Info(ctx, "generation rotation complete",
@@ -567,6 +576,18 @@ func (s *V2GitStore) RotateCurrentGenerationIfNeeded(ctx context.Context, maxChe
 	)
 
 	return archiveRefName, true, nil
+}
+
+func (s *V2GitStore) resetFullCurrentRefIfUnchanged(ctx context.Context, refName plumbing.ReferenceName, expectedRef *plumbing.Reference, newHash plumbing.Hash) (bool, error) {
+	newRef := plumbing.NewHashReference(refName, newHash)
+	if err := s.repo.Storer.CheckAndSetReference(newRef, expectedRef); err != nil {
+		if errors.Is(err, storage.ErrReferenceHasChanged) {
+			logging.Info(ctx, "rotation: /full/current changed before reset, leaving current ref intact")
+			return false, nil
+		}
+		return false, fmt.Errorf("rotation: failed to reset /full/current: %w", err)
+	}
+	return true, nil
 }
 
 func (s *V2GitStore) rotateGeneration(ctx context.Context) error {

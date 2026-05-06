@@ -414,7 +414,32 @@ func TestUpdateV2FullCurrentRefRejectsConcurrentChange(t *testing.T) {
 	require.NoError(t, repo.Storer.SetReference(plumbing.NewHashReference(refName, baseCommit)))
 	require.NoError(t, repo.Storer.SetReference(plumbing.NewHashReference(refName, concurrentCommit)))
 
-	err = updateV2FullCurrentRef(repo, baseCommit, candidateCommit)
+	err = updateV2FullCurrentRef(ctx, repo, baseCommit, candidateCommit)
+	require.ErrorIs(t, err, storage.ErrReferenceHasChanged)
+
+	currentRef, err := repo.Reference(refName, true)
+	require.NoError(t, err)
+	assert.Equal(t, concurrentCommit, currentRef.Hash())
+}
+
+func TestUpdateV2FullCurrentRefRejectsConcurrentCreation(t *testing.T) {
+	t.Parallel()
+	repo := initMigrateTestRepo(t)
+	ctx := context.Background()
+
+	treeHash, err := checkpoint.BuildTreeFromEntries(ctx, repo, map[string]object.TreeEntry{})
+	require.NoError(t, err)
+	concurrentCommit, err := checkpoint.CreateCommit(ctx, repo, treeHash, plumbing.ZeroHash,
+		"concurrent current\n", "Test", "test@test.com")
+	require.NoError(t, err)
+	candidateCommit, err := checkpoint.CreateCommit(ctx, repo, treeHash, plumbing.ZeroHash,
+		"candidate current\n", "Test", "test@test.com")
+	require.NoError(t, err)
+
+	refName := plumbing.ReferenceName(paths.V2FullCurrentRefName)
+	require.NoError(t, repo.Storer.SetReference(plumbing.NewHashReference(refName, concurrentCommit)))
+
+	err = updateV2FullCurrentRef(ctx, repo, plumbing.ZeroHash, candidateCommit)
 	require.ErrorIs(t, err, storage.ErrReferenceHasChanged)
 
 	currentRef, err := repo.Reference(refName, true)
