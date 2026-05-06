@@ -147,35 +147,47 @@ func EnsurePluginBinDir() (string, error) {
 }
 
 // PrependPluginBinDirToPATH prepends the managed bin dir to the process's
-// PATH so the kubectl dispatcher discovers managed-installed plugins. Idempotent
-// against an already-prepended dir. Called from main.go before MaybeRunPlugin.
+// PATH so the kubectl dispatcher discovers managed-installed plugins.
+// Idempotent against an already-prepended dir.
 //
-// Errors are non-fatal — managed installs simply won't be discoverable on this
-// invocation, which mirrors the kubectl-style "drop a binary on PATH yourself"
-// fallback.
-func PrependPluginBinDirToPATH() {
+// Returns a restore closure the caller invokes to revert PATH to its
+// previous value. Restoring matters when no plugin runs: built-in commands
+// and the subprocesses they spawn (git, hooks, less, …) should see the
+// user's original PATH, not one with the managed plugin dir prepended.
+// When a plugin *is* dispatched, callers can simply skip the restore — the
+// process exits anyway, and the plugin child intentionally inherits the
+// prepended PATH so it can spawn sibling managed plugins.
+//
+// Errors and no-op cases (already-prepended, lookup failure) return a
+// no-op restore so callers always have a safe func to call.
+func PrependPluginBinDirToPATH() func() {
 	dir, err := PluginBinDir()
 	if err != nil || dir == "" {
-		return
+		return func() {}
 	}
-	cur := os.Getenv("PATH")
+	prev := os.Getenv("PATH")
 	sep := string(os.PathListSeparator)
-	if cur == "" {
-		_ = os.Setenv("PATH", dir)
-		return
+	if prev == "" {
+		if err := os.Setenv("PATH", dir); err != nil {
+			return func() {}
+		}
+		return func() { _ = os.Setenv("PATH", "") }
 	}
-	// Idempotent: if the first entry already matches, leave it alone.
+	// Idempotent: if the first entry already matches, leave PATH alone.
 	// Windows PATH lookups are case-insensitive (`C:\Foo` and `c:\foo`
 	// resolve identically), so a case-different first entry is the same
 	// dir and we should not double-prepend.
-	first := cur
-	if i := strings.Index(cur, sep); i >= 0 {
-		first = cur[:i]
+	first := prev
+	if i := strings.Index(prev, sep); i >= 0 {
+		first = prev[:i]
 	}
 	if pathEntriesEqual(first, dir) {
-		return
+		return func() {}
 	}
-	_ = os.Setenv("PATH", dir+sep+cur)
+	if err := os.Setenv("PATH", dir+sep+prev); err != nil {
+		return func() {}
+	}
+	return func() { _ = os.Setenv("PATH", prev) }
 }
 
 // pathEntriesEqual reports whether two PATH entries refer to the same dir.
@@ -460,18 +472,25 @@ func copyFileStreaming(src, dest string, srcInfo os.FileInfo) error {
 	return nil
 }
 
-// RemoveInstalledPlugin removes the managed-dir entry for name. Symlinks are
-// unlinked without touching the source file.
+// RemoveInstalledPlugin removes every managed-dir entry whose bare name
+// matches name. Symlinks are unlinked without touching the source file.
+//
+// Iterating all variants matters on Windows, where entire-foo.exe,
+// entire-foo.bat, and entire-foo.cmd all map to bare name "foo" and could
+// otherwise leave a runnable variant behind after `entire plugin remove foo`.
+// On Unix the loop typically runs once.
 func RemoveInstalledPlugin(name string) error {
-	p, err := FindInstalledPlugin(name)
+	variants, err := installedVariantsByBareName(name)
 	if err != nil {
 		return err
 	}
-	if p == nil {
+	if len(variants) == 0 {
 		return fmt.Errorf("plugin %q is not installed in the managed directory", name)
 	}
-	if err := os.Remove(p.Path); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("remove plugin entry: %w", err)
+	for _, p := range variants {
+		if err := os.Remove(p.Path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("remove plugin entry %s: %w", p.Path, err)
+		}
 	}
 	return nil
 }
