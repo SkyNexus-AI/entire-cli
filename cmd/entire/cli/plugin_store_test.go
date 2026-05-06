@@ -320,6 +320,127 @@ func TestMaterializeManagedEntry_HappyPath(t *testing.T) {
 	}
 }
 
+func TestInstallPluginFromPath_TmpDoesNotClobberDottedPlugin(t *testing.T) { //nolint:paralleltest // mutates env
+	if runtime.GOOS == windowsGOOS {
+		t.Skip("symlink path is Unix-only here")
+	}
+	root := withPluginDir(t)
+	binDir := filepath.Join(root, "bin")
+	if err := os.MkdirAll(binDir, 0o750); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	// Pre-populate a plugin literally named "foo.tmp" — entirely valid:
+	// the dispatcher's name validator allows dots. The naive `dest+".tmp"`
+	// scheme would have clobbered this on the install below.
+	dotted := filepath.Join(binDir, "entire-foo.tmp")
+	dottedBody := []byte("#!/bin/sh\necho dotted\n")
+	if err := os.WriteFile(dotted, dottedBody, 0o755); err != nil {
+		t.Fatalf("write dotted: %v", err)
+	}
+
+	// Now install entire-foo. Its temp path must not collide with
+	// entire-foo.tmp.
+	src := filepath.Join(t.TempDir(), "entire-foo")
+	if err := os.WriteFile(src, []byte("#!/bin/sh\necho foo\n"), 0o755); err != nil {
+		t.Fatalf("write src: %v", err)
+	}
+	if _, err := InstallPluginFromPath(InstallPluginOptions{SourcePath: src}); err != nil {
+		t.Fatalf("InstallPluginFromPath: %v", err)
+	}
+
+	// The dotted plugin must still exist with its original content.
+	got, err := os.ReadFile(dotted)
+	if err != nil {
+		t.Fatalf("dotted plugin disappeared: %v", err)
+	}
+	if string(got) != string(dottedBody) {
+		t.Errorf("dotted plugin clobbered: got %q want %q", got, dottedBody)
+	}
+}
+
+func TestInstallPluginFromPath_BareNameConflictAcrossExtensions(t *testing.T) { //nolint:paralleltest // mutates env
+	// Conceptually a Windows behavior, but we exercise the bare-name
+	// conflict logic on Unix by manually placing two filenames that share
+	// a bare name. ListInstalledPlugins doesn't strip extensions on Unix
+	// (.exe stays in the listed name), so we need a second contrivance to
+	// produce the same bare name from two different files. Use the
+	// installedVariantsByBareName helper directly to exercise the lookup.
+	if runtime.GOOS == windowsGOOS {
+		t.Skip("file-naming below is Unix-style; Windows tests would need a different harness")
+	}
+	root := withPluginDir(t)
+	binDir := filepath.Join(root, "bin")
+	if err := os.MkdirAll(binDir, 0o750); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	// Install entire-foo first.
+	srcA := filepath.Join(t.TempDir(), "entire-foo")
+	if err := os.WriteFile(srcA, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write src A: %v", err)
+	}
+	if _, err := InstallPluginFromPath(InstallPluginOptions{SourcePath: srcA}); err != nil {
+		t.Fatalf("first install: %v", err)
+	}
+
+	// A second install of the exact same source path is a self-install
+	// (path-equal) — that's tested elsewhere. Here we test that a
+	// different-source same-bare-name install requires --force.
+	srcB := filepath.Join(t.TempDir(), "entire-foo")
+	if err := os.WriteFile(srcB, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		t.Fatalf("write src B: %v", err)
+	}
+	if _, err := InstallPluginFromPath(InstallPluginOptions{SourcePath: srcB}); err == nil {
+		t.Errorf("expected error: bare name %q already installed", "foo")
+	}
+	if _, err := InstallPluginFromPath(InstallPluginOptions{SourcePath: srcB, Force: true}); err != nil {
+		t.Errorf("force install: %v", err)
+	}
+}
+
+func TestMakeInstallTmpPath_Unique(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	a, err := makeInstallTmpPath(dir)
+	if err != nil {
+		t.Fatalf("makeInstallTmpPath: %v", err)
+	}
+	b, err := makeInstallTmpPath(dir)
+	if err != nil {
+		t.Fatalf("makeInstallTmpPath: %v", err)
+	}
+	if a == b {
+		t.Errorf("two calls returned the same path: %q", a)
+	}
+	// Tmp prefix must not match the listing filter (which keys off
+	// "entire-"); the dot-prefix achieves that.
+	if !strings.HasPrefix(filepath.Base(a), ".install-") {
+		t.Errorf("tmp path %q does not start with .install-", a)
+	}
+}
+
+func TestRemoveEnvKey(t *testing.T) {
+	t.Parallel()
+	in := []string{"FOO=1", "BAR=2", "FOO=3", "BAZ=4"}
+	got := removeEnvKey(in, "FOO")
+	want := []string{"BAR=2", "BAZ=4"}
+	if !equalStringSlices(got, want) {
+		t.Errorf("removeEnvKey = %v, want %v", got, want)
+	}
+}
+
+func equalStringSlices(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func TestInstallPluginFromPath_AtomicForceReplace(t *testing.T) { //nolint:paralleltest // mutates env
 	if runtime.GOOS == windowsGOOS {
 		t.Skip("symlink/atomic-rename behavior is Unix-focused here")

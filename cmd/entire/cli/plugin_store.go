@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -323,20 +325,47 @@ func InstallPluginFromPath(opts InstallPluginOptions) (*InstalledPlugin, error) 
 		return nil, fmt.Errorf("source %s is already the managed entry; nothing to install", src)
 	}
 
-	if _, err := os.Lstat(dest); err == nil {
-		if !opts.Force {
-			return nil, fmt.Errorf("plugin %q already installed; use --force to replace", bare)
+	// Conflict check on the bare name (not the exact filename). On Windows,
+	// entire-foo.exe / .bat / .cmd all map to bare name "foo"; checking only
+	// the destination filename would let a second install of a different
+	// extension silently coexist with the first, with PATHEXT ordering then
+	// deciding which one runs. List all variants and require --force when
+	// any exist.
+	conflicts, err := installedVariantsByBareName(bare)
+	if err != nil {
+		return nil, err
+	}
+	if len(conflicts) > 0 && !opts.Force {
+		return nil, fmt.Errorf("plugin %q already installed at %s; use --force to replace", bare, conflicts[0].Path)
+	}
+	// With --force, remove every variant other than the one we're about to
+	// atomically overwrite. The same-extension case is handled by the
+	// rename below, which atomically replaces dest.
+	for _, c := range conflicts {
+		if filepath.Clean(c.Path) == filepath.Clean(dest) {
+			continue
 		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return nil, fmt.Errorf("stat install destination: %w", err)
+		if err := os.Remove(c.Path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("remove existing variant %s: %w", c.Path, err)
+		}
 	}
 
 	// Atomic replace via tmp + rename. Rename is atomic on POSIX and
 	// replaces an existing target on Windows (Go's os.Rename uses
 	// MoveFileEx with MOVEFILE_REPLACE_EXISTING). If linking or rename
 	// fails, the previously installed plugin (if any) is unaffected.
-	tmpDest := dest + ".tmp"
-	_ = os.Remove(tmpDest) // best-effort: clean up any stale tmp from a prior failed run
+	//
+	// The tmp path uses a random suffix and a `.install-` prefix that does
+	// NOT match `entire-`. This protects against two distinct hazards:
+	//   1. A user can have a legitimate plugin named "foo.tmp" (file
+	//      "entire-foo.tmp"), which a naive `dest + ".tmp"` would clobber.
+	//   2. ListInstalledPlugins filters by `entire-` prefix, so a tmp that
+	//      starts with `.install-` will not appear in `entire plugin list`
+	//      while the install is in progress.
+	tmpDest, err := makeInstallTmpPath(binDir)
+	if err != nil {
+		return nil, err
+	}
 	if err := materializeManagedEntry(src, tmpDest, srcInfo); err != nil {
 		return nil, fmt.Errorf("install plugin: %w", err)
 	}
@@ -345,6 +374,36 @@ func InstallPluginFromPath(opts InstallPluginOptions) (*InstalledPlugin, error) 
 		return nil, fmt.Errorf("install plugin: %w", err)
 	}
 	return FindInstalledPlugin(bare)
+}
+
+// installedVariantsByBareName returns every managed entry whose bare name
+// matches name. On Unix this is at most one entry; on Windows multiple
+// extensions can map to the same bare name.
+func installedVariantsByBareName(name string) ([]*InstalledPlugin, error) {
+	all, err := ListInstalledPlugins()
+	if err != nil {
+		return nil, err
+	}
+	var out []*InstalledPlugin
+	for _, p := range all {
+		if p.Name == name {
+			out = append(out, p)
+		}
+	}
+	return out, nil
+}
+
+// makeInstallTmpPath returns a unique scratch path inside binDir for the
+// in-progress install. The `.install-` prefix is deliberately distinct from
+// pluginBinaryPrefix so ListInstalledPlugins ignores it; a 16-char hex
+// suffix from crypto/rand makes collisions vanishingly unlikely and keeps
+// concurrent installs safe from each other.
+func makeInstallTmpPath(binDir string) (string, error) {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", fmt.Errorf("generate install tmp suffix: %w", err)
+	}
+	return filepath.Join(binDir, ".install-"+hex.EncodeToString(b[:])), nil
 }
 
 // materializeManagedEntry creates dest as a reference to src, falling back

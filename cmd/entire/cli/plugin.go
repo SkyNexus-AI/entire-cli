@@ -179,12 +179,20 @@ func runPlugin(ctx context.Context, pluginName, binPath string, args []string) i
 	// branch can't fire here. We warn-and-proceed rather than refuse to
 	// launch: a HOME-less environment is the user's problem to surface,
 	// not a reason to break plugins that don't read the var.
+	parentEnv := os.Environ()
 	if dataDir, err := PluginDataDir(pluginName); err == nil {
 		extras = append(extras, pluginEnvPluginData+"="+dataDir)
 	} else {
+		// Strip any inherited value so the warning's "not set" claim
+		// matches reality. Otherwise a user with ENTIRE_PLUGIN_DATA_DIR
+		// pre-set in their shell would silently see that value reach the
+		// plugin even though we logged the opposite (ENTIRE_* is in the
+		// pluginEnv allowlist prefix, so without this strip the inherited
+		// value would pass through).
+		parentEnv = removeEnvKey(parentEnv, pluginEnvPluginData)
 		fmt.Fprintf(os.Stderr, "warning: ENTIRE_PLUGIN_DATA_DIR not set for plugin %q: %v\n", pluginName, err)
 	}
-	cmd.Env = pluginEnv(os.Environ(), extras...)
+	cmd.Env = pluginEnv(parentEnv, extras...)
 
 	if err := cmd.Run(); err != nil {
 		var exitErr *exec.ExitError
