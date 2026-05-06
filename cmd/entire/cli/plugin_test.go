@@ -73,6 +73,39 @@ func TestResolvePlugin_NotFound(t *testing.T) {
 	}
 }
 
+// Cobra registers `help` and `completion` lazily, inside Execute. The plugin
+// resolver runs before Execute, so it must prime those commands before
+// consulting Find — otherwise an entire-help / entire-completion binary on
+// PATH would shadow the built-in, violating "built-ins always win."
+func TestResolvePlugin_BuiltinHelpWins(t *testing.T) { //nolint:paralleltest // mutates PATH via t.Setenv
+	dir := t.TempDir()
+	writePluginBinary(t, dir, "entire-help", filepath.Join(dir, "args.txt"), 0)
+	withPathDir(t, dir)
+
+	// Use a Cobra-style root that mirrors NewRootCmd: SetHelpCommand only
+	// stashes the help command on the struct — it is not in the tree until
+	// InitDefaultHelpCmd runs.
+	root := newTestRoot()
+	root.SetHelpCommand(&cobra.Command{Use: "help"})
+
+	if _, _, ok := resolvePlugin(root, []string{"help"}); ok {
+		t.Fatal("built-in 'help' must take precedence over entire-help plugin")
+	}
+	if _, _, ok := resolvePlugin(root, []string{"help", "session"}); ok {
+		t.Fatal("'help session' must route to built-in help, not entire-help plugin")
+	}
+}
+
+func TestResolvePlugin_BuiltinCompletionWins(t *testing.T) { //nolint:paralleltest // mutates PATH via t.Setenv
+	dir := t.TempDir()
+	writePluginBinary(t, dir, "entire-completion", filepath.Join(dir, "args.txt"), 0)
+	withPathDir(t, dir)
+
+	if _, _, ok := resolvePlugin(newTestRoot(), []string{"completion", "bash"}); ok {
+		t.Fatal("built-in 'completion' must take precedence over entire-completion plugin")
+	}
+}
+
 func TestResolvePlugin_RejectsAgentPrefix(t *testing.T) { //nolint:paralleltest // mutates PATH via t.Setenv
 	dir := t.TempDir()
 	writePluginBinary(t, dir, "entire-agent-foo", filepath.Join(dir, "args.txt"), 0)

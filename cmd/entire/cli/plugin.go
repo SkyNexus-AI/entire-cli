@@ -75,6 +75,13 @@ func resolvePlugin(rootCmd *cobra.Command, args []string) (binPath string, plugi
 	if !isPluginCandidate(name) {
 		return "", nil, false
 	}
+	// Cobra adds `help` and `completion` to the command tree inside Execute,
+	// not in the constructor / SetHelpCommand. Without priming them, Find
+	// reports "unknown command" for those names and an entire-help (or
+	// entire-completion) binary on PATH would shadow the built-in. Both
+	// initializers are idempotent and Execute calls them again later.
+	rootCmd.InitDefaultHelpCmd()
+	rootCmd.InitDefaultCompletionCmd(args...)
 	// Built-in commands always win.
 	if cmd, _, err := rootCmd.Find(args); err == nil && cmd != rootCmd {
 		return "", nil, false
