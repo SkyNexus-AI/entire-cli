@@ -80,16 +80,10 @@ func newMigrateCmd() *cobra.Command {
 	return cmd
 }
 
-// acquireCommandLock acquires an exclusive file lock at
-// <git-common-dir>/<lockFile>. On contention it writes a user-facing
-// message to stderr citing opName and returns a SilentError; the caller
-// should defer the returned release function AFTER logging is
-// initialized, so a release error can be warned while logging is still
-// open (LIFO ordering ensures release runs before logging.Close).
-//
-// Lives in migrate.go because migrate is the only current caller; move
-// to a shared file when a second top-level command needs the same
-// exclusive-instance semantics.
+// acquireCommandLock takes <git-common-dir>/<lockFile> as a per-command
+// exclusive lock. On contention it prints a message to stderr and
+// returns a SilentError. Defer release() after logging.Init so a
+// release error can still be warned (LIFO defer order).
 func acquireCommandLock(ctx context.Context, cmd *cobra.Command, lockFile, opName string) (release func(), err error) {
 	commonDir, err := strategy.GetGitCommonDir(ctx)
 	if err != nil {
@@ -101,16 +95,13 @@ func acquireCommandLock(ctx context.Context, cmd *cobra.Command, lockFile, opNam
 	if err != nil {
 		if errors.Is(err, lockfile.ErrLocked) {
 			cmd.SilenceUsage = true
-			holder := lockfile.ReadHolderPID(lockPath)
-			if holder > 0 {
-				fmt.Fprintf(cmd.ErrOrStderr(),
-					"another `entire %s` is already running (PID %d, lock at %s); refusing to start a second instance\n",
-					opName, holder, lockPath)
-			} else {
-				fmt.Fprintf(cmd.ErrOrStderr(),
-					"another `entire %s` is already running (PID unknown, lock at %s); refusing to start a second instance\n",
-					opName, lockPath)
+			pidStr := "unknown"
+			if holder := lockfile.ReadHolderPID(lockPath); holder > 0 {
+				pidStr = strconv.Itoa(holder)
 			}
+			fmt.Fprintf(cmd.ErrOrStderr(),
+				"another `entire %s` is already running (PID %s, lock at %s); refusing to start a second instance\n",
+				opName, pidStr, lockPath)
 			return nil, NewSilentError(fmt.Errorf("%s already in progress", opName))
 		}
 		return nil, NewSilentError(fmt.Errorf("acquire %s lock: %w", opName, err))
