@@ -14,9 +14,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/charmbracelet/bubbles/spinner"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/spinner"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	reviewtypes "github.com/entireio/cli/cmd/entire/cli/review/types"
 	"github.com/entireio/cli/cmd/entire/cli/stringutil"
@@ -161,7 +161,7 @@ func (m reviewTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m = m.clampScroll()
 		return m, nil
 
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		return m.handleKey(msg)
 	}
 	return m, nil
@@ -235,14 +235,14 @@ func (m reviewTUIModel) handleAgentEvent(msg agentEventMsg) (tea.Model, tea.Cmd)
 // handleKey processes keyboard input.
 //
 //nolint:ireturn // tea.Model is an interface; required by Bubble Tea
-func (m reviewTUIModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m reviewTUIModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// Any key after finished dismisses.
 	if m.finished {
 		return m, tea.Quit
 	}
 
-	switch msg.Type { //nolint:exhaustive // only handling the keys we care about
-	case tea.KeyCtrlC:
+	switch {
+	case msg.Code == 'c' && msg.Mod == tea.ModCtrl:
 		if m.detailMode {
 			// In drill-in: Ctrl+C is intentionally ignored; Esc first.
 			return m, nil
@@ -250,46 +250,46 @@ func (m reviewTUIModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.cancelOnce.Do(m.cancel)
 		return m, tea.Quit
 
-	case tea.KeyCtrlO:
+	case msg.Code == 'o' && msg.Mod == tea.ModCtrl:
 		if m.detailMode {
 			m.detailMode = false
-			return m, tea.ExitAltScreen
+			return m, nil
 		}
 		m.detailMode = true
 		if len(m.rows) > 0 && (m.detailIdx < 0 || m.detailIdx >= len(m.rows)) {
 			m.detailIdx = 0
 		}
 		m.detailScroll = m.maxDetailScroll()
-		return m, tea.EnterAltScreen
+		return m, nil
 
-	case tea.KeyEsc:
+	case msg.Code == tea.KeyEscape || msg.Code == tea.KeyEsc:
 		if m.detailMode {
 			m.detailMode = false
-			return m, tea.ExitAltScreen
+			return m, nil
 		}
 		return m, nil
 
-	case tea.KeyLeft:
+	case msg.Code == tea.KeyLeft:
 		if m.detailMode && len(m.rows) > 0 {
 			m.detailIdx = (m.detailIdx - 1 + len(m.rows)) % len(m.rows)
 			m.detailScroll = m.maxDetailScroll()
 		}
 		return m, nil
 
-	case tea.KeyRight:
+	case msg.Code == tea.KeyRight:
 		if m.detailMode && len(m.rows) > 0 {
 			m.detailIdx = (m.detailIdx + 1) % len(m.rows)
 			m.detailScroll = m.maxDetailScroll()
 		}
 		return m, nil
 
-	case tea.KeyUp:
+	case msg.Code == tea.KeyUp:
 		if m.detailMode && m.detailScroll > 0 {
 			m.detailScroll--
 		}
 		return m, nil
 
-	case tea.KeyDown:
+	case msg.Code == tea.KeyDown:
 		if m.detailMode {
 			if maxScroll := m.maxDetailScroll(); m.detailScroll < maxScroll {
 				m.detailScroll++
@@ -325,11 +325,16 @@ func (m reviewTUIModel) clampScroll() reviewTUIModel {
 }
 
 // View renders the current state.
-func (m reviewTUIModel) View() string {
+func (m reviewTUIModel) View() tea.View {
+	var content string
 	if m.detailMode && len(m.rows) > 0 {
-		return detailView(m.rows[m.detailIdx], m.detailScroll, m.termWidth, m.termHeight)
+		content = detailView(m.rows[m.detailIdx], m.detailScroll, m.termWidth, m.termHeight)
+	} else {
+		content = m.dashboardView()
 	}
-	return m.dashboardView()
+	v := tea.NewView(content)
+	v.AltScreen = m.detailMode
+	return v
 }
 
 // dashboardView renders the summary table.

@@ -16,8 +16,9 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"time"
 
-	"github.com/charmbracelet/huh"
+	"charm.land/huh/v2"
 
 	"github.com/entireio/cli/cmd/entire/cli/logging"
 	"github.com/entireio/cli/cmd/entire/cli/mdrender"
@@ -39,15 +40,19 @@ type SynthesisProvider interface {
 // summary provider after the run finishes. AgentEvent is a no-op; all
 // work happens in RunFinished.
 type SynthesisSink struct {
-	Provider     SynthesisProvider
-	Writer       io.Writer
-	InputTTY     bool // true if stdin can prompt the user
-	PromptYN     func(ctx context.Context, question string, def bool) (bool, error)
-	PerRunPrompt string // if non-empty, included in the synthesis prompt for context
+	Provider        SynthesisProvider
+	Writer          io.Writer
+	InputTTY        bool // true if stdin can prompt the user
+	PromptYN        func(ctx context.Context, question string, def bool) (bool, error)
+	PerRunPrompt    string          // if non-empty, included in the synthesis prompt for context
+	RunContext      context.Context // optional; nil falls back to context.Background()
+	ProviderTimeout time.Duration   // optional; zero uses defaultSynthesisProviderTimeout
 }
 
 // Compile-time interface check.
 var _ reviewtypes.Sink = SynthesisSink{}
+
+const defaultSynthesisProviderTimeout = 2 * time.Minute
 
 // AgentEvent is a no-op; SynthesisSink only acts in RunFinished.
 func (SynthesisSink) AgentEvent(_ string, _ reviewtypes.Event) {}
@@ -74,7 +79,7 @@ func (s SynthesisSink) RunFinished(summary reviewtypes.RunSummary) {
 		return
 	}
 
-	ctx := context.Background()
+	ctx := s.runContext()
 	promptFn := s.PromptYN
 	if promptFn == nil {
 		promptFn = realPromptYN
@@ -94,7 +99,10 @@ func (s SynthesisSink) RunFinished(summary reviewtypes.RunSummary) {
 	}
 
 	synthesisPrompt := composeSynthesisPrompt(summary, s.PerRunPrompt)
-	result, provErr := s.Provider.Synthesize(ctx, synthesisPrompt)
+	providerCtx, cancelProvider := s.providerContext()
+	defer cancelProvider()
+	fmt.Fprintln(s.Writer, "Generating summary...")
+	result, provErr := s.Provider.Synthesize(providerCtx, synthesisPrompt)
 	if provErr != nil {
 		fmt.Fprintf(s.Writer, "synthesis unavailable: %v\n", provErr)
 		return
@@ -112,6 +120,21 @@ func (s SynthesisSink) RunFinished(summary reviewtypes.RunSummary) {
 		rendered = result
 	}
 	fmt.Fprint(s.Writer, rendered)
+}
+
+func (s SynthesisSink) runContext() context.Context {
+	if s.RunContext != nil {
+		return s.RunContext
+	}
+	return context.Background()
+}
+
+func (s SynthesisSink) providerContext() (context.Context, context.CancelFunc) {
+	timeout := s.ProviderTimeout
+	if timeout <= 0 {
+		timeout = defaultSynthesisProviderTimeout
+	}
+	return context.WithTimeout(s.runContext(), timeout)
 }
 
 // usableAgentCount returns the number of agents that produced usable narrative

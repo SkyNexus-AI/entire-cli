@@ -15,7 +15,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/charmbracelet/huh"
+	"charm.land/huh/v2"
 
 	"github.com/entireio/cli/cmd/entire/cli/agent"
 	"github.com/entireio/cli/cmd/entire/cli/agent/skilldiscovery"
@@ -37,7 +37,7 @@ type AgentChoice struct {
 // the ACCESSIBLE env var is set. Mirrors cli.NewAccessibleForm without
 // requiring an import of the cli package (which would be circular).
 func newAccessibleForm(groups ...*huh.Group) *huh.Form {
-	form := huh.NewForm(groups...).WithTheme(huh.ThemeDracula())
+	form := huh.NewForm(groups...).WithTheme(huh.ThemeFunc(huh.ThemeDracula))
 	if os.Getenv("ACCESSIBLE") != "" {
 		form = form.WithAccessible(true)
 	}

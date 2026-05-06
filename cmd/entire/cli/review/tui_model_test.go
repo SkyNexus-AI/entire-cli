@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	reviewtypes "github.com/entireio/cli/cmd/entire/cli/review/types"
 )
@@ -15,6 +15,14 @@ import (
 // newTestModel returns a reviewTUIModel wired to the provided cancel stub.
 func newTestModel(agents []string, cancel func()) reviewTUIModel {
 	return newReviewTUIModel(agents, cancel)
+}
+
+func testKey(code rune) tea.KeyPressMsg {
+	return tea.KeyPressMsg{Code: code}
+}
+
+func testCtrlKey(code rune) tea.KeyPressMsg {
+	return tea.KeyPressMsg{Code: code, Mod: tea.ModCtrl}
 }
 
 // mustModel extracts a reviewTUIModel from a tea.Model, failing the test if
@@ -114,7 +122,7 @@ func TestTUIModel_KeyCtrlC_NotDetailMode_CancelsAndQuits(t *testing.T) {
 	cancel := func() { called.Store(true) }
 
 	m := newTestModel([]string{"agent-a"}, cancel)
-	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	_, cmd := m.Update(testCtrlKey('c'))
 	if !called.Load() {
 		t.Error("expected cancel to be called on Ctrl+C outside detail mode")
 	}
@@ -136,7 +144,7 @@ func TestTUIModel_KeyCtrlC_DetailMode_Ignored(t *testing.T) {
 	m := newTestModel([]string{"agent-a"}, cancel)
 	m.detailMode = true
 
-	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	_, cmd := m.Update(testCtrlKey('c'))
 	if called.Load() {
 		t.Error("cancel must NOT be called when Ctrl+C is pressed in detail mode")
 	}
@@ -156,8 +164,8 @@ func TestTUIModel_CancelOnce_DuplicateKeyCtrlC(t *testing.T) {
 	cancel := func() { count.Add(1) }
 
 	m := newTestModel([]string{"agent-a"}, cancel)
-	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
-	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	_, _ = m.Update(testCtrlKey('c'))
+	_, _ = m.Update(testCtrlKey('c'))
 	if count.Load() != 1 {
 		t.Errorf("cancel should fire exactly once even on duplicate Ctrl+C; called %d time(s)", count.Load())
 	}
@@ -167,13 +175,16 @@ func TestTUIModel_KeyCtrlO_EntersDrillIn(t *testing.T) {
 	t.Parallel()
 	m := newTestModel([]string{"agent-a", "agent-b"}, func() {})
 
-	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlO})
+	updated, cmd := m.Update(testCtrlKey('o'))
 	m2 := mustModel(t, updated)
 	if !m2.detailMode {
 		t.Error("expected detailMode=true after Ctrl+O")
 	}
-	if cmd == nil {
-		t.Error("expected EnterAltScreen command after Ctrl+O")
+	if cmd != nil {
+		t.Error("Ctrl+O should not return an alt-screen command in Bubble Tea v2")
+	}
+	if !m2.View().AltScreen {
+		t.Error("expected View().AltScreen=true in detail mode")
 	}
 }
 
@@ -182,13 +193,16 @@ func TestTUIModel_KeyEsc_ExitsDrillIn(t *testing.T) {
 	m := newTestModel([]string{"agent-a"}, func() {})
 	m.detailMode = true
 
-	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	updated, cmd := m.Update(testKey(tea.KeyEscape))
 	m2 := mustModel(t, updated)
 	if m2.detailMode {
 		t.Error("expected detailMode=false after Esc")
 	}
-	if cmd == nil {
-		t.Error("expected ExitAltScreen command after Esc")
+	if cmd != nil {
+		t.Error("Esc should not return an alt-screen command in Bubble Tea v2")
+	}
+	if m2.View().AltScreen {
+		t.Error("expected View().AltScreen=false outside detail mode")
 	}
 }
 
@@ -201,7 +215,7 @@ func TestTUIModel_LeftRight_CycleDetailIdx(t *testing.T) {
 
 	// Right: 0 → 1 → 2 → 0 (wrap).
 	for _, wantIdx := range []int{1, 2, 0} {
-		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRight})
+		updated, _ := m.Update(testKey(tea.KeyRight))
 		m = mustModel(t, updated)
 		if m.detailIdx != wantIdx {
 			t.Errorf("after Right: want detailIdx=%d, got %d", wantIdx, m.detailIdx)
@@ -209,7 +223,7 @@ func TestTUIModel_LeftRight_CycleDetailIdx(t *testing.T) {
 	}
 
 	// Left: 0 → 2 (wrap).
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	updated, _ := m.Update(testKey(tea.KeyLeft))
 	m = mustModel(t, updated)
 	if m.detailIdx != 2 {
 		t.Errorf("after Left from 0: want detailIdx=2, got %d", m.detailIdx)
@@ -227,21 +241,21 @@ func TestTUIModel_UpDown_Scroll(t *testing.T) {
 	m.detailScroll = 4 // at max
 
 	// Down when at max: clamp.
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	updated, _ := m.Update(testKey(tea.KeyDown))
 	m = mustModel(t, updated)
 	if m.detailScroll != 4 {
 		t.Errorf("scroll should stay at max on Down; got %d", m.detailScroll)
 	}
 
 	// Up: 4 → 3.
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
+	updated, _ = m.Update(testKey(tea.KeyUp))
 	m = mustModel(t, updated)
 	if m.detailScroll != 3 {
 		t.Errorf("expected scroll=3 after Up; got %d", m.detailScroll)
 	}
 
 	// Down again: 3 → 4.
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	updated, _ = m.Update(testKey(tea.KeyDown))
 	m = mustModel(t, updated)
 	if m.detailScroll != 4 {
 		t.Errorf("expected scroll=4 after Down; got %d", m.detailScroll)
@@ -280,7 +294,7 @@ func TestTUIModel_RunFinishedMsg_AnyKeyQuits(t *testing.T) {
 	}
 
 	// Any key should now quit.
-	_, cmd := m2.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	_, cmd := m2.Update(testKey(tea.KeyEnter))
 	if cmd == nil {
 		t.Error("expected quit command after finished + any key")
 	}
@@ -313,12 +327,12 @@ func TestTUIModel_View_DashboardMode(t *testing.T) {
 	m := newTestModel([]string{"agent-a", "agent-b"}, func() {})
 
 	v := m.View()
-	if v == "" {
+	if v.Content == "" {
 		t.Error("View() should not return empty string")
 	}
 	// Should contain agent names.
 	for _, name := range []string{"agent-a", "agent-b"} {
-		if !strings.Contains(v, name) {
+		if !strings.Contains(v.Content, name) {
 			t.Errorf("View() missing agent %q", name)
 		}
 	}

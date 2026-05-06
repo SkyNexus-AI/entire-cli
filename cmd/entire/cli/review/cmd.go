@@ -15,7 +15,7 @@ import (
 	"log/slog"
 	"strings"
 
-	"github.com/charmbracelet/huh"
+	"charm.land/huh/v2"
 	git "github.com/go-git/go-git/v6"
 	"github.com/spf13/cobra"
 
@@ -322,10 +322,10 @@ func runSingleAgentPath(
 	scopeBaseRef := detectScope(ctx, worktreeRoot, out)
 
 	runCfg := reviewtypes.RunConfig{
-		Skills:       cfg.Skills,
-		AlwaysPrompt: cfg.Prompt,
-		ScopeBaseRef: scopeBaseRef,
-		StartingSHA:  headSHA,
+		PromptOverride: cfg.Prompt,
+		Skills:         cfg.Skills,
+		ScopeBaseRef:   scopeBaseRef,
+		StartingSHA:    headSHA,
 	}
 
 	// 7. Branch on launchability.
@@ -425,11 +425,11 @@ func runMultiAgentPath(
 		reviewers = append(reviewers, &perAgentConfiguredReviewer{
 			inner: reviewer,
 			cfg: reviewtypes.RunConfig{
-				Skills:       agentCfg.Skills,
-				AlwaysPrompt: agentCfg.Prompt,
-				PerRunPrompt: picked.PerRun,
-				ScopeBaseRef: scopeBaseRef,
-				StartingSHA:  headSHA,
+				PromptOverride: agentCfg.Prompt,
+				Skills:         agentCfg.Skills,
+				PerRunPrompt:   picked.PerRun,
+				ScopeBaseRef:   scopeBaseRef,
+				StartingSHA:    headSHA,
 			},
 		})
 	}
@@ -462,6 +462,7 @@ func runMultiAgentPath(
 		canPrompt:         interactive.CanPromptInteractively(),
 		agentNames:        agentNames,
 		cancelRun:         cancelRun,
+		runContext:        runCtx,
 		synthesisProvider: deps.SynthesisProvider,
 		promptYN:          deps.PromptYN,
 		perRunPrompt:      picked.PerRun,
@@ -508,6 +509,7 @@ type multiAgentSinkInputs struct {
 	canPrompt         bool
 	agentNames        []string
 	cancelRun         context.CancelFunc
+	runContext        context.Context
 	synthesisProvider SynthesisProvider
 	promptYN          func(ctx context.Context, question string, def bool) (bool, error)
 	perRunPrompt      string
@@ -539,6 +541,7 @@ func composeMultiAgentSinks(in multiAgentSinkInputs) []reviewtypes.Sink {
 			InputTTY:     in.canPrompt,
 			PromptYN:     in.promptYN,
 			PerRunPrompt: in.perRunPrompt,
+			RunContext:   in.runContext,
 		})
 	}
 	return sinks

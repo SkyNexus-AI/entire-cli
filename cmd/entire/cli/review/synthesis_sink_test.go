@@ -28,6 +28,18 @@ func (s *stubSynthesisProvider) Synthesize(_ context.Context, prompt string) (st
 	return s.response, nil
 }
 
+type contextWaitingSynthesisProvider struct {
+	capturedPrompt string
+	capturedErr    error
+}
+
+func (s *contextWaitingSynthesisProvider) Synthesize(ctx context.Context, prompt string) (string, error) {
+	s.capturedPrompt = prompt
+	<-ctx.Done()
+	s.capturedErr = ctx.Err()
+	return "", ctx.Err()
+}
+
 // buildSink is a helper to construct a SynthesisSink for tests.
 func buildSink(
 	provider review.SynthesisProvider,
@@ -255,8 +267,57 @@ func TestSynthesisSink_UserPicksYes(t *testing.T) {
 		t.Fatal("provider should have been called when user picks Y")
 	}
 	out := w.String()
+	if !strings.Contains(out, "Generating summary...") {
+		t.Errorf("writer should show progress before provider response, got: %q", out)
+	}
 	if !strings.Contains(out, "Unified verdict: looks good.") {
 		t.Errorf("writer should contain provider response, got: %q", out)
+	}
+}
+
+// TestSynthesisSink_ProviderUsesRunContext verifies the provider receives the
+// cancellable context supplied by the orchestrator instead of Background.
+func TestSynthesisSink_ProviderUsesRunContext(t *testing.T) {
+	t.Parallel()
+	w := &bytes.Buffer{}
+	provider := &contextWaitingSynthesisProvider{}
+	promptFn := func(_ context.Context, _ string, _ bool) (bool, error) {
+		return true, nil
+	}
+	runCtx, cancelRun := context.WithCancel(context.Background())
+	cancelRun()
+	sink := buildSink(provider, w, true, promptFn, "")
+	sink.RunContext = runCtx
+
+	sink.RunFinished(makeTwoAgentSummary())
+
+	if provider.capturedPrompt == "" {
+		t.Fatal("provider should have been called")
+	}
+	if !errors.Is(provider.capturedErr, context.Canceled) {
+		t.Fatalf("provider context error = %v, want context.Canceled", provider.capturedErr)
+	}
+}
+
+// TestSynthesisSink_ProviderTimeout verifies the provider call has a deadline
+// guard even when no run context is supplied.
+func TestSynthesisSink_ProviderTimeout(t *testing.T) {
+	t.Parallel()
+	w := &bytes.Buffer{}
+	provider := &contextWaitingSynthesisProvider{}
+	promptFn := func(_ context.Context, _ string, _ bool) (bool, error) {
+		return true, nil
+	}
+	sink := buildSink(provider, w, true, promptFn, "")
+	sink.ProviderTimeout = time.Nanosecond
+
+	sink.RunFinished(makeTwoAgentSummary())
+
+	if provider.capturedPrompt == "" {
+		t.Fatal("provider should have been called")
+	}
+	if !errors.Is(provider.capturedErr, context.DeadlineExceeded) {
+		t.Fatalf("provider context error = %v, want context.DeadlineExceeded", provider.capturedErr)
 	}
 }
 
