@@ -29,6 +29,7 @@ import (
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint/remote"
 	"github.com/entireio/cli/cmd/entire/cli/logging"
 	"github.com/entireio/cli/cmd/entire/cli/paths"
+	reviewenv "github.com/entireio/cli/cmd/entire/cli/review"
 	"github.com/entireio/cli/cmd/entire/cli/session"
 	"github.com/entireio/cli/cmd/entire/cli/settings"
 	"github.com/entireio/cli/cmd/entire/cli/trailers"
@@ -643,10 +644,47 @@ func runReview(ctx context.Context, cmd *cobra.Command, agentOverride string, de
 	if err != nil {
 		return fmt.Errorf("launch %s: %w", agentName, err)
 	}
+	execCmd.Env = appendReviewSpawnEnv(execCmd.Env, agentName, cfg.Skills, prompt, headSHA)
 	if err := execCmd.Run(); err != nil {
 		return fmt.Errorf("agent exited: %w", err)
 	}
 	return nil
+}
+
+func appendReviewSpawnEnv(base []string, agentName string, skills []string, prompt, startingSHA string) []string {
+	skillsJSON, _ := reviewenv.EncodeSkills(skills) //nolint:errcheck // json.Marshal([]string) cannot fail
+	if base == nil {
+		base = os.Environ()
+	}
+	out := make([]string, 0, len(base)+5)
+	for _, kv := range base {
+		if isReviewSpawnEnvEntry(kv) {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return append(out,
+		reviewenv.EnvSession+"=1",
+		reviewenv.EnvAgent+"="+agentName,
+		reviewenv.EnvSkills+"="+skillsJSON,
+		reviewenv.EnvPrompt+"="+prompt,
+		reviewenv.EnvStartingSHA+"="+startingSHA,
+	)
+}
+
+func isReviewSpawnEnvEntry(kv string) bool {
+	for _, prefix := range []string{
+		reviewenv.EnvSession + "=",
+		reviewenv.EnvAgent + "=",
+		reviewenv.EnvSkills + "=",
+		reviewenv.EnvPrompt + "=",
+		reviewenv.EnvStartingSHA + "=",
+	} {
+		if strings.HasPrefix(kv, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // computeEligibleConfigured returns the sorted list of agents that are both

@@ -56,8 +56,9 @@ type Process interface {
 	//   - other error types for I/O or pipe failures
 	//
 	// Wait must be called exactly once per Process. It is safe to call Wait
-	// after the Events channel has closed; Wait returns the same value
-	// regardless of whether Events was fully drained.
+	// after the Events channel has closed. Consumers must drain Events until
+	// close before calling Wait; otherwise an implementation that forwards
+	// parsed events from another goroutine may block while sending.
 	Wait() error
 }
 
@@ -127,6 +128,8 @@ func (ToolCall) isEvent() {}
 // Tokens reports cumulative token counts (running totals, not deltas).
 // Adapters may emit multiple Tokens events during a run; each emission
 // supersedes the prior, so consumers should overwrite (not sum) on receipt.
+// Adapters that only receive aggregate shutdown totals should emit at most one
+// final Tokens event rather than inventing deltas.
 type Tokens struct {
 	In  int
 	Out int
