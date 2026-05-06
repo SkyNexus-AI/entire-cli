@@ -21,6 +21,7 @@ import (
 	"github.com/go-git/go-git/v6/plumbing"
 	"github.com/go-git/go-git/v6/plumbing/filemode"
 	"github.com/go-git/go-git/v6/plumbing/object"
+	"github.com/go-git/go-git/v6/storage"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -330,6 +331,35 @@ func TestMigrateCheckpointsV2_PacksFullGenerationsOldestFirst(t *testing.T) {
 	require.NoError(t, err)
 	_, err = currentTree.Tree(checkpointIDs[4].Path())
 	require.NoError(t, err, "/full/current should contain final partial checkpoint")
+}
+
+func TestUpdateV2FullCurrentRefRejectsConcurrentChange(t *testing.T) {
+	t.Parallel()
+	repo := initMigrateTestRepo(t)
+	ctx := context.Background()
+
+	treeHash, err := checkpoint.BuildTreeFromEntries(ctx, repo, map[string]object.TreeEntry{})
+	require.NoError(t, err)
+	baseCommit, err := checkpoint.CreateCommit(ctx, repo, treeHash, plumbing.ZeroHash,
+		"base current\n", "Test", "test@test.com")
+	require.NoError(t, err)
+	concurrentCommit, err := checkpoint.CreateCommit(ctx, repo, treeHash, baseCommit,
+		"concurrent current\n", "Test", "test@test.com")
+	require.NoError(t, err)
+	candidateCommit, err := checkpoint.CreateCommit(ctx, repo, treeHash, baseCommit,
+		"candidate current\n", "Test", "test@test.com")
+	require.NoError(t, err)
+
+	refName := plumbing.ReferenceName(paths.V2FullCurrentRefName)
+	require.NoError(t, repo.Storer.SetReference(plumbing.NewHashReference(refName, baseCommit)))
+	require.NoError(t, repo.Storer.SetReference(plumbing.NewHashReference(refName, concurrentCommit)))
+
+	err = updateV2FullCurrentRef(repo, baseCommit, candidateCommit)
+	require.ErrorIs(t, err, storage.ErrReferenceHasChanged)
+
+	currentRef, err := repo.Reference(refName, true)
+	require.NoError(t, err)
+	assert.Equal(t, concurrentCommit, currentRef.Hash())
 }
 
 func TestMigrateCheckpointsV2_PacksFullGenerationMetadataFromRawTranscriptTimestamps(t *testing.T) {

@@ -514,7 +514,24 @@ func writeMigratedFinalFullCurrent(ctx context.Context, repo *git.Repository, v2
 		return fmt.Errorf("create migrated full/current commit: %w", err)
 	}
 
-	if err := repo.Storer.SetReference(plumbing.NewHashReference(refName, commitHash)); err != nil {
+	if err := updateV2FullCurrentRef(repo, parentHash, commitHash); err != nil {
+		return err
+	}
+	return nil
+}
+
+func updateV2FullCurrentRef(repo *git.Repository, expectedHash, newHash plumbing.Hash) error {
+	refName := plumbing.ReferenceName(paths.V2FullCurrentRefName)
+	newRef := plumbing.NewHashReference(refName, newHash)
+	if expectedHash == plumbing.ZeroHash {
+		if err := repo.Storer.SetReference(newRef); err != nil {
+			return fmt.Errorf("update %s: %w", refName, err)
+		}
+		return nil
+	}
+
+	oldRef := plumbing.NewHashReference(refName, expectedHash)
+	if err := repo.Storer.CheckAndSetReference(newRef, oldRef); err != nil {
 		return fmt.Errorf("update %s: %w", refName, err)
 	}
 	return nil
