@@ -13,7 +13,7 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/charmbracelet/huh"
+	"charm.land/huh/v2"
 )
 
 // PickedAgents is the result of PickAgents: the agents the user selected
