@@ -79,11 +79,30 @@ Examples:
 				return fmt.Errorf("install plugin: %w", err)
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "Installed plugin %q → %s\n", p.Name, p.Path)
+			warnIfShadowsBuiltin(cmd, p.Name)
 			return nil
 		},
 	}
 	cmd.Flags().BoolVar(&force, "force", false, "Replace an existing entry with the same name")
 	return cmd
+}
+
+// warnIfShadowsBuiltin prints a one-line note to stderr when the just-installed
+// plugin name matches a built-in command. The dispatcher's resolvePlugin gates
+// dispatch on rootCmd.Find, so the built-in always wins at runtime — without
+// this hint, a user who installed a shadowed plugin would silently get the
+// built-in and have no idea their install was inert. We mirror the dispatcher's
+// help/completion priming so names like "help" surface the warning too.
+func warnIfShadowsBuiltin(cmd *cobra.Command, name string) {
+	root := cmd.Root()
+	if root == nil {
+		return
+	}
+	root.InitDefaultHelpCmd()
+	root.InitDefaultCompletionCmd(name)
+	if c, _, err := root.Find([]string{name}); err == nil && c != root {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Note: %q shadows the built-in command; the built-in will take precedence at runtime.\n", name)
+	}
 }
 
 func newPluginListCmd() *cobra.Command {
