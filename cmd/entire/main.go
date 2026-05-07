@@ -32,6 +32,12 @@ func main() {
 
 	// Create and execute root command
 	rootCmd := cli.NewRootCmd()
+
+	if handled, code := cli.MaybeRunPlugin(ctx, rootCmd, os.Args[1:]); handled {
+		cancel()
+		os.Exit(code)
+	}
+
 	err := rootCmd.ExecuteContext(ctx)
 	if err != nil {
 		var silent *cli.SilentError
