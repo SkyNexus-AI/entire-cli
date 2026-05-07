@@ -369,8 +369,18 @@ func LoadAgentTypeHint(ctx context.Context, sessionID string) types.AgentType {
 // mid-turn lifecycle events (per-tool-use hooks) so PostCommit's carry-forward
 // decision sees an accurate file list. Caller must pre-normalize paths to
 // repo-relative form. No-ops when the session state doesn't exist (event
-// arrived before InitializeSession) or the merge produced no changes — this
-// matters on Codex's hot path, where PostToolUse fires after every tool call.
+// arrived before InitializeSession) or the merge produced no changes.
+//
+// Concurrency: PostToolUse fires after every Codex tool call and may run in
+// parallel for parallel tool dispatch, so the load → merge → save runs
+// under an OS-level advisory file lock against
+// .git/entire-sessions/<id>.lock. Two PostToolUse processes cannot lose
+// each other's FilesTouched merges. Other writers (TurnEnd, PostCommit) do
+// not yet participate in the lock — a stale save here can still revert
+// fields they updated between our load and our save. The window is small
+// (lock is only held for the load+save) but real, and the residual race is
+// tracked for a follow-up that converts all session-state mutations to a
+// shared MutateSessionState(ctx, fn) helper.
 func RecordFilesTouched(ctx context.Context, sessionID string, modified, added, deleted []string) error {
 	if sessionID == "" {
 		return nil
@@ -378,6 +388,17 @@ func RecordFilesTouched(ctx context.Context, sessionID string, modified, added, 
 	if len(modified) == 0 && len(added) == 0 && len(deleted) == 0 {
 		return nil
 	}
+
+	lockPath, err := stateLockPath(ctx, sessionID)
+	if err != nil {
+		return fmt.Errorf("resolve state lock path: %w", err)
+	}
+	release, err := acquireStateFileLock(lockPath)
+	if err != nil {
+		return fmt.Errorf("acquire state lock: %w", err)
+	}
+	defer release()
+
 	state, err := LoadSessionState(ctx, sessionID)
 	if err != nil {
 		return fmt.Errorf("load session state: %w", err)
@@ -394,6 +415,24 @@ func RecordFilesTouched(ctx context.Context, sessionID string, modified, added, 
 		return fmt.Errorf("save session state: %w", err)
 	}
 	return nil
+}
+
+// stateLockPath returns a sibling .lock path next to the session state file.
+// A separate file (rather than locking the state file itself) keeps the
+// lock holder distinct from the data — Save's atomic-rename pattern would
+// otherwise unlink the inode the flock is held on.
+func stateLockPath(ctx context.Context, sessionID string) (string, error) {
+	if err := validation.ValidateSessionID(sessionID); err != nil {
+		return "", fmt.Errorf("invalid session ID: %w", err)
+	}
+	stateDir, err := getSessionStateDir(ctx)
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(stateDir, 0o750); err != nil {
+		return "", fmt.Errorf("create session state directory: %w", err)
+	}
+	return filepath.Join(stateDir, sessionID+".lock"), nil
 }
 
 // ClearSessionState removes the session state file for the given session ID.

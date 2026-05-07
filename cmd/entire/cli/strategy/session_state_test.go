@@ -3,8 +3,10 @@ package strategy
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -13,6 +15,7 @@ import (
 	"github.com/entireio/cli/cmd/entire/cli/paths"
 	"github.com/entireio/cli/cmd/entire/cli/session"
 	"github.com/go-git/go-git/v6"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -264,6 +267,43 @@ func TestRecordFilesTouched_EmptyInputsIsNoop(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, loaded)
 	require.Equal(t, []string{"keep.txt"}, loaded.FilesTouched)
+}
+
+// TestRecordFilesTouched_ParallelMergesAreSerialized verifies the file-lock
+// in RecordFilesTouched: many concurrent callers, each merging a unique
+// file, must all land in FilesTouched. Without the lock, parallel
+// load → merge → save would lose updates and the final list would be missing
+// entries (or have duplicates).
+func TestRecordFilesTouched_ParallelMergesAreSerialized(t *testing.T) {
+	dir := t.TempDir()
+	_, err := git.PlainInit(dir, false)
+	require.NoError(t, err)
+	t.Chdir(dir)
+
+	state := &SessionState{
+		SessionID:  "ft-parallel",
+		BaseCommit: "deadbeef",
+		StartedAt:  time.Now(),
+	}
+	require.NoError(t, SaveSessionState(context.Background(), state))
+
+	const n = 20
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := range n {
+		go func() {
+			defer wg.Done()
+			path := fmt.Sprintf("file-%02d.go", i)
+			err := RecordFilesTouched(context.Background(), "ft-parallel", nil, []string{path}, nil)
+			assert.NoError(t, err)
+		}()
+	}
+	wg.Wait()
+
+	loaded, err := LoadSessionState(context.Background(), "ft-parallel")
+	require.NoError(t, err)
+	require.NotNil(t, loaded)
+	require.Len(t, loaded.FilesTouched, n, "every concurrent merge should be present")
 }
 
 // TestLoadSessionState_PackageLevel_NonExistent tests loading a non-existent session.
