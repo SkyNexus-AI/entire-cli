@@ -470,3 +470,35 @@ func TestEnd_NoErrorFlagByDefault(t *testing.T) {
 		t.Errorf("parent span should have nil error, got %v", parent.err)
 	}
 }
+
+func TestAnnotate_AttachesChildWithExactDuration(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	ctx, root := Start(ctx, "root")
+	Annotate(ctx, "cumulative_step", 250*time.Millisecond)
+
+	if len(root.children) != 1 {
+		t.Fatalf("expected 1 child, got %d", len(root.children))
+	}
+	child := root.children[0]
+	if child.name != "cumulative_step" {
+		t.Errorf("child name = %q, want %q", child.name, "cumulative_step")
+	}
+	if child.duration != 250*time.Millisecond {
+		t.Errorf("child duration = %v, want %v", child.duration, 250*time.Millisecond)
+	}
+	if !child.ended {
+		t.Error("child should be marked ended")
+	}
+}
+
+// Annotate is a no-op when ctx has no parent span: nothing to attach to,
+// and we shouldn't crash or leak state.
+func TestAnnotate_NoParentIsNoop(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	// Must not panic.
+	Annotate(ctx, "orphan", 50*time.Millisecond)
+}

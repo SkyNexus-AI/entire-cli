@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/entireio/cli/cmd/entire/cli/agent"
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint"
@@ -297,104 +298,65 @@ func migrateCheckpointsV2(ctx context.Context, repo *git.Repository, v1Store *ch
 	}
 
 	batchSize := migrateFullBatchSize()
-	pendingFull := make([]migratedFullCheckpoint, 0, batchSize)
-	pendingMain := make([]checkpoint.WriteCommittedOptions, 0, batchSize)
-	var writtenRefs []plumbing.ReferenceName
-	nextGeneration := 0
-
-	flushMain := func() error {
-		if len(pendingMain) == 0 {
-			return nil
-		}
-		if _, err := v2Store.WriteCommittedMainBatch(ctx, pendingMain); err != nil {
-			return fmt.Errorf("v2 /main batch write: %w", err)
-		}
-		pendingMain = pendingMain[:0]
-		return nil
-	}
+	state := newMigrateLoopState(batchSize)
 
 	// Span around the migration loop. No per-iteration spans: at 4k+ checkpoints
 	// the resulting attr count would blow past trace.go's 1MB scanner limit.
-	_, processSpan := perf.Start(ctx, "process_checkpoints")
+	// Sub-phase totals are folded in via perf.Annotate at end-of-loop so a
+	// `doctor trace` reader can attribute time to migrate_one_checkpoint vs.
+	// flush_main vs. pack_full_generation without per-iteration spans. Each
+	// batch flush + archive pack also gets its own span so bursty cost is
+	// visible per batch.
+	loopCtx, processSpan := perf.Start(ctx, "process_checkpoints")
+
 	for _, info := range v1List {
+		iterStart := time.Now()
 		fullCheckpoint, mainOpts, outcome, migrateErr := migrateOneCheckpoint(ctx, repo, v1Store, v2Store, info, force, fullArtifactsIndex)
+		state.totalMigrateOne += time.Since(iterStart)
 		result.missingSessions += outcome.missingSessions
 		if outcome.compactTranscriptSkipped {
 			result.compactTranscriptSkipped++
 		}
 
 		if migrateErr != nil {
-			switch {
-			case errors.Is(migrateErr, errAlreadyMigrated):
-				logCheckpointMigrationSkip(ctx, info.CheckpointID, "already in v2", migrateErr)
-				result.skipped++
-			case errors.Is(migrateErr, errNoMigratableSessions):
-				logCheckpointMigrationSkip(ctx, info.CheckpointID, "no migratable v1 sessions", migrateErr)
-				result.skipped++
-			default:
-				logging.Error(ctx, "checkpoint migration failed",
-					slog.String("checkpoint_id", string(info.CheckpointID)),
-					slog.String("error", migrateErr.Error()),
-				)
-				result.failed++
-			}
+			recordMigrationSkipOrFailure(ctx, result, info.CheckpointID, migrateErr)
 			progress.Increment()
 			continue
 		}
 
 		if len(mainOpts) > 0 {
-			pendingMain = append(pendingMain, mainOpts...)
+			state.pendingMain = append(state.pendingMain, mainOpts...)
 		}
 		if fullCheckpoint != nil {
-			pendingFull = append(pendingFull, *fullCheckpoint)
-			if len(pendingFull) == batchSize {
-				// Flush /main entries before archiving /full so the index ref
-				// can never lag behind the data ref on a mid-batch crash.
-				if err := flushMain(); err != nil {
+			state.pendingFull = append(state.pendingFull, *fullCheckpoint)
+			if len(state.pendingFull) == batchSize {
+				if err := state.packCurrentBatch(ctx, loopCtx, repo, v2Store, batchSize); err != nil {
 					processSpan.RecordError(err)
+					state.annotateTotals(loopCtx)
 					processSpan.End()
-					return result, writtenRefs, fmt.Errorf("failed to write batched v2 /main entries: %w", err)
+					return result, state.writtenRefs, err
 				}
-				if nextGeneration == 0 {
-					// Resolve the archive slot only when the first full batch is ready;
-					// force migration may prune existing archived refs earlier in the loop.
-					next, nextErr := v2Store.NextGenerationNumber()
-					if nextErr != nil {
-						processSpan.RecordError(nextErr)
-						processSpan.End()
-						return result, writtenRefs, fmt.Errorf("list archived v2 generations: %w", nextErr)
-					}
-					nextGeneration = next
-				}
-				refName := checkpoint.ArchivedGenerationRefName(nextGeneration)
-				if packErr := writeMigratedFullGeneration(ctx, repo, refName, pendingFull); packErr != nil {
-					processSpan.RecordError(packErr)
-					processSpan.End()
-					return result, writtenRefs, fmt.Errorf("failed to pack migrated raw transcripts: %w", packErr)
-				}
-				writtenRefs = append(writtenRefs, refName)
-				nextGeneration++
-				pendingFull = make([]migratedFullCheckpoint, 0, batchSize)
 			}
 		}
 		result.migrated++
 		progress.Increment()
 	}
 
+	state.annotateTotals(loopCtx)
 	processSpan.End()
 
 	progress.Finish()
-	if err := flushMain(); err != nil {
-		return result, writtenRefs, fmt.Errorf("failed to write batched v2 /main entries: %w", err)
+	if err := state.flushMain(ctx, loopCtx, v2Store); err != nil {
+		return result, state.writtenRefs, err
 	}
 	stopFinalize := startSpinner(progressOut, "Packing migrated raw transcripts")
 	_, partialSpan := perf.Start(ctx, "pack_partial_generation")
-	if len(pendingFull) > 0 {
-		if err := writeMigratedFinalFullCurrent(ctx, repo, v2Store, pendingFull); err != nil {
+	if len(state.pendingFull) > 0 {
+		if err := writeMigratedFinalFullCurrent(ctx, repo, v2Store, state.pendingFull); err != nil {
 			partialSpan.RecordError(err)
 			partialSpan.End()
 			stopFinalize(false)
-			return result, writtenRefs, fmt.Errorf("failed to pack migrated raw transcripts: %w", err)
+			return result, state.writtenRefs, fmt.Errorf("failed to pack migrated raw transcripts: %w", err)
 		}
 		// If /full/current already had checkpoints, this final migration write can
 		// briefly push the generation past the threshold before rotation. That
@@ -404,22 +366,127 @@ func migrateCheckpointsV2(ctx context.Context, repo *git.Repository, v1Store *ch
 			partialSpan.RecordError(err)
 			partialSpan.End()
 			stopFinalize(false)
-			return result, writtenRefs, fmt.Errorf("failed to rotate migrated full/current generation: %w", err)
+			return result, state.writtenRefs, fmt.Errorf("failed to rotate migrated full/current generation: %w", err)
 		} else if rotated {
-			writtenRefs = append(writtenRefs, refName)
+			state.writtenRefs = append(state.writtenRefs, refName)
 		}
-	} else if len(writtenRefs) > 0 && !fullCurrentExistsBefore {
+	} else if len(state.writtenRefs) > 0 && !fullCurrentExistsBefore {
 		if err := ensureEmptyV2FullCurrent(ctx, repo); err != nil {
 			partialSpan.RecordError(err)
 			partialSpan.End()
 			stopFinalize(false)
-			return result, writtenRefs, fmt.Errorf("failed to pack migrated raw transcripts: %w", err)
+			return result, state.writtenRefs, fmt.Errorf("failed to pack migrated raw transcripts: %w", err)
 		}
 	}
 	partialSpan.End()
 	stopFinalize(true)
 
-	return result, writtenRefs, nil
+	return result, state.writtenRefs, nil
+}
+
+// migrateLoopState holds the mutable bookkeeping carried across iterations of
+// migrateCheckpointsV2's main loop. Helpers hang off it so the loop body
+// stays small enough to satisfy the maintainability-index lint.
+type migrateLoopState struct {
+	pendingFull    []migratedFullCheckpoint
+	pendingMain    []checkpoint.WriteCommittedOptions
+	writtenRefs    []plumbing.ReferenceName
+	nextGeneration int
+	batchSize      int
+
+	totalMigrateOne time.Duration
+	totalFlushMain  time.Duration
+	totalPackFull   time.Duration
+}
+
+func newMigrateLoopState(batchSize int) *migrateLoopState {
+	return &migrateLoopState{
+		pendingFull: make([]migratedFullCheckpoint, 0, batchSize),
+		pendingMain: make([]checkpoint.WriteCommittedOptions, 0, batchSize),
+		batchSize:   batchSize,
+	}
+}
+
+// flushMain pushes any buffered /main entries through WriteCommittedMainBatch
+// and times the call into a flush_main span + cumulative counter.
+func (s *migrateLoopState) flushMain(ctx, loopCtx context.Context, v2Store *checkpoint.V2GitStore) error {
+	if len(s.pendingMain) == 0 {
+		return nil
+	}
+	_, span := perf.Start(loopCtx, "flush_main")
+	start := time.Now()
+	_, err := v2Store.WriteCommittedMainBatch(ctx, s.pendingMain)
+	s.totalFlushMain += time.Since(start)
+	if err != nil {
+		span.RecordError(err)
+		span.End()
+		return fmt.Errorf("failed to write batched v2 /main entries: %w", err)
+	}
+	span.End()
+	s.pendingMain = s.pendingMain[:0]
+	return nil
+}
+
+// packCurrentBatch flushes /main, resolves the next archive slot if needed,
+// then archives pendingFull into a /full/<n> ref. Records perf spans for
+// flush_main and pack_full_generation; rolls into cumulative counters.
+func (s *migrateLoopState) packCurrentBatch(ctx, loopCtx context.Context, repo *git.Repository, v2Store *checkpoint.V2GitStore, batchSize int) error {
+	// Flush /main entries first so the index ref can never lag behind the
+	// data ref on a mid-batch crash.
+	if err := s.flushMain(ctx, loopCtx, v2Store); err != nil {
+		return err
+	}
+	if s.nextGeneration == 0 {
+		// Resolve the archive slot only when the first full batch is ready;
+		// force migration may prune existing archived refs earlier in the loop.
+		next, err := v2Store.NextGenerationNumber()
+		if err != nil {
+			return fmt.Errorf("list archived v2 generations: %w", err)
+		}
+		s.nextGeneration = next
+	}
+	refName := checkpoint.ArchivedGenerationRefName(s.nextGeneration)
+	_, packSpan := perf.Start(loopCtx, "pack_full_generation")
+	packStart := time.Now()
+	packErr := writeMigratedFullGeneration(ctx, repo, refName, s.pendingFull)
+	s.totalPackFull += time.Since(packStart)
+	if packErr != nil {
+		packSpan.RecordError(packErr)
+		packSpan.End()
+		return fmt.Errorf("failed to pack migrated raw transcripts: %w", packErr)
+	}
+	packSpan.End()
+	s.writtenRefs = append(s.writtenRefs, refName)
+	s.nextGeneration++
+	s.pendingFull = make([]migratedFullCheckpoint, 0, batchSize)
+	return nil
+}
+
+// annotateTotals stamps cumulative per-phase durations onto the surrounding
+// span as synthetic child spans so they show up in `doctor trace` output.
+func (s *migrateLoopState) annotateTotals(loopCtx context.Context) {
+	perf.Annotate(loopCtx, "migrate_one_checkpoint_total", s.totalMigrateOne)
+	perf.Annotate(loopCtx, "flush_main_total", s.totalFlushMain)
+	perf.Annotate(loopCtx, "pack_full_generation_total", s.totalPackFull)
+}
+
+// recordMigrationSkipOrFailure classifies a failing migrateOneCheckpoint
+// outcome into the appropriate result counter and emits a log line.
+func recordMigrationSkipOrFailure(ctx context.Context, result *migrateResult, cpID id.CheckpointID, err error) {
+	switch {
+	case errors.Is(err, errAlreadyMigrated):
+		logCheckpointMigrationSkip(ctx, cpID, "already in v2", err)
+		result.skipped++
+	case errors.Is(err, errNoMigratableSessions):
+		logCheckpointMigrationSkip(ctx, cpID, "no migratable v1 sessions", err)
+		result.skipped++
+	default:
+		logging.Error(ctx, "checkpoint migration failed",
+			slog.String("checkpoint_id", string(cpID)),
+			slog.String("error", err.Error()),
+		)
+		result.failed++
+	}
 }
 
 func logCheckpointMigrationSkip(ctx context.Context, checkpointID id.CheckpointID, reason string, err error) {

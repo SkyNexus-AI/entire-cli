@@ -142,6 +142,27 @@ func childStepKey(name string, seen map[string]int) string {
 	return fmt.Sprintf("%s~%d", name, n)
 }
 
+// Annotate attaches a synthetic child span with a pre-computed duration to
+// the current span in ctx. Useful for surfacing cumulative timings (e.g.
+// summed across many iterations) in the perf tree without emitting one span
+// per iteration. No-op when ctx has no parent span.
+func Annotate(ctx context.Context, name string, duration time.Duration) {
+	parent := spanFromContext(ctx)
+	if parent == nil {
+		return
+	}
+	now := time.Now()
+	s := &Span{
+		name:     name,
+		start:    now.Add(-duration),
+		parent:   parent,
+		duration: duration,
+		ended:    true,
+		ctx:      ctx,
+	}
+	parent.children = append(parent.children, s)
+}
+
 // LoopSpan wraps a Span that groups loop iterations. Each call to Iteration
 // creates a child span representing one pass through the loop.
 //
