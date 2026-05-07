@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/entireio/cli/cmd/entire/cli/agent/external"
+	"github.com/entireio/cli/cmd/entire/cli/logging"
 	"github.com/entireio/cli/cmd/entire/cli/paths"
 	"github.com/entireio/cli/cmd/entire/cli/telemetry"
 	"github.com/entireio/cli/cmd/entire/cli/versioncheck"
@@ -42,7 +44,7 @@ func MaybeRunPlugin(ctx context.Context, rootCmd *cobra.Command, args []string) 
 		return false, 0
 	}
 	pluginName := args[0]
-	exitCode = runPlugin(ctx, binPath, pluginArgs)
+	exitCode = runPlugin(ctx, pluginName, binPath, pluginArgs)
 	if exitCode == 0 {
 		maybeTrackPluginInvocation(ctx, pluginName)
 		versioncheck.CheckAndNotify(ctx, os.Stdout, versioninfo.Version)
@@ -123,21 +125,12 @@ func findInaccessiblePlugin(filename string) (string, bool) {
 	return "", false
 }
 
+// isPluginCandidate reports whether name is a syntactically valid plugin
+// name the dispatcher should attempt to resolve. It is a thin bool wrapper
+// over validatePluginName so the dispatcher's gate and the managed store's
+// install-time check can never drift.
 func isPluginCandidate(name string) bool {
-	if name == "" {
-		return false
-	}
-	if strings.HasPrefix(name, "-") {
-		return false
-	}
-	// `agent-*` is reserved for the external agent protocol.
-	if strings.HasPrefix(name, "agent-") {
-		return false
-	}
-	if strings.ContainsAny(name, `/\`) {
-		return false
-	}
-	return true
+	return validatePluginName(name) == nil
 }
 
 // isAgentProtocolBinary returns true when the binary name is reserved for
@@ -152,7 +145,7 @@ func isAgentProtocolBinary(binPath string) bool {
 // On context cancellation the child gets SIGINT (with a 5s grace before the
 // runtime falls back to SIGKILL) so plugins can clean up. Terminal signals
 // reach the child directly via the shared process group.
-func runPlugin(ctx context.Context, binPath string, args []string) int {
+func runPlugin(ctx context.Context, pluginName, binPath string, args []string) int {
 	cmd := exec.CommandContext(ctx, binPath, args...)
 	cmd.Cancel = func() error { return cmd.Process.Signal(os.Interrupt) }
 	cmd.WaitDelay = 5 * time.Second
@@ -163,7 +156,34 @@ func runPlugin(ctx context.Context, binPath string, args []string) int {
 	if repoRoot, err := paths.WorktreeRoot(ctx); err == nil {
 		extras = append(extras, "ENTIRE_REPO_ROOT="+repoRoot)
 	}
-	cmd.Env = pluginEnv(os.Environ(), extras...)
+	// Per-plugin durable storage. Passed regardless of where the binary lives
+	// so plugins installed via raw PATH and via `entire plugin install` get
+	// the same contract. The dir is not pre-created — that's the plugin's
+	// responsibility on first use.
+	//
+	// PluginDataDir can only fail in degenerate environments (no resolvable
+	// home dir, or a relative ENTIRE_PLUGIN_DIR override). The plugin name
+	// itself already passed isPluginCandidate in resolvePlugin, so the name
+	// validator branch can't fire here. Proceed without the var rather than
+	// refuse to launch: a misconfigured environment is the user's problem to
+	// surface, not a reason to break plugins that don't read the var. The
+	// failure is logged at debug rather than printed to stderr — printing
+	// would noise every plugin invocation in a degenerate env.
+	parentEnv := os.Environ()
+	if dataDir, err := PluginDataDir(pluginName); err == nil {
+		extras = append(extras, pluginEnvPluginData+"="+dataDir)
+	} else {
+		// Strip any inherited value so the plugin doesn't silently see a
+		// value we never sanctioned. Without this strip, a user with
+		// ENTIRE_PLUGIN_DATA_DIR pre-set in their shell would have that
+		// value pass through (ENTIRE_* is in the pluginEnv allowlist
+		// prefix), even though resolution here failed.
+		parentEnv = removeEnvKey(parentEnv, pluginEnvPluginData)
+		logging.Debug(ctx, "ENTIRE_PLUGIN_DATA_DIR unset for plugin",
+			slog.String("plugin", pluginName),
+			slog.String("error", err.Error()))
+	}
+	cmd.Env = pluginEnv(parentEnv, extras...)
 
 	if err := cmd.Run(); err != nil {
 		var exitErr *exec.ExitError

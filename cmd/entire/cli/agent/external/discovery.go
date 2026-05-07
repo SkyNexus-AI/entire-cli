@@ -131,12 +131,17 @@ func discoverAndRegister(ctx context.Context) {
 	}
 }
 
-// StripExeExt removes Windows executable extensions (.exe, .bat, .cmd) from a
-// file name so that the agent name derived from the binary matches on all platforms.
-// On Unix this is effectively a no-op because binaries have no extension.
+// StripExeExt removes Windows executable extensions (.exe, .bat, .cmd, .com)
+// from a file name so that the derived name matches on all platforms. On Unix
+// this is effectively a no-op because binaries have no extension.
+//
+// .com is included because Windows PATHEXT defaults to ".COM;.EXE;.BAT;.CMD;…",
+// so exec.LookPath can resolve a `.com` next to a `.exe`. Without stripping
+// it, a managed-plugin or agent-binary installer would treat foo.exe and
+// foo.com as distinct names while PATHEXT silently picks one.
 func StripExeExt(name string) string {
 	switch strings.ToLower(filepath.Ext(name)) {
-	case ".exe", ".bat", ".cmd":
+	case ".exe", ".bat", ".cmd", ".com":
 		return strings.TrimSuffix(name, filepath.Ext(name))
 	}
 	return name
