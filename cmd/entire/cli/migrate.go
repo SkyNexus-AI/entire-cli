@@ -88,6 +88,7 @@ func newMigrateCmd() *cobra.Command {
 func acquireCommandLock(ctx context.Context, cmd *cobra.Command, lockFile, opName string) (release func(), err error) {
 	commonDir, err := strategy.GetGitCommonDir(ctx)
 	if err != nil {
+		cmd.SilenceUsage = true
 		return nil, fmt.Errorf("resolve git common dir: %w", err)
 	}
 	lockPath := filepath.Join(commonDir, lockFile)
@@ -105,6 +106,7 @@ func acquireCommandLock(ctx context.Context, cmd *cobra.Command, lockFile, opNam
 				opName, pidStr, lockPath)
 			return nil, NewSilentError(fmt.Errorf("%s already in progress", opName))
 		}
+		cmd.SilenceUsage = true
 		return nil, fmt.Errorf("acquire %s lock: %w", opName, err)
 	}
 
