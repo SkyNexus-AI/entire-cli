@@ -123,26 +123,12 @@ func findInaccessiblePlugin(filename string) (string, bool) {
 	return "", false
 }
 
+// isPluginCandidate reports whether name is a syntactically valid plugin
+// name the dispatcher should attempt to resolve. It is a thin bool wrapper
+// over validatePluginName so the dispatcher's gate and the managed store's
+// install-time check can never drift.
 func isPluginCandidate(name string) bool {
-	if name == "" {
-		return false
-	}
-	if strings.HasPrefix(name, "-") {
-		return false
-	}
-	// `agent-*` is reserved for the external agent protocol.
-	if strings.HasPrefix(name, "agent-") {
-		return false
-	}
-	if strings.ContainsAny(name, `/\`) {
-		return false
-	}
-	// "." and ".." would collapse out of any joined path (e.g. for
-	// ENTIRE_PLUGIN_DATA_DIR), breaking the per-plugin isolation contract.
-	if name == "." || name == ".." {
-		return false
-	}
-	return true
+	return validatePluginName(name) == nil
 }
 
 // isAgentProtocolBinary returns true when the binary name is reserved for
