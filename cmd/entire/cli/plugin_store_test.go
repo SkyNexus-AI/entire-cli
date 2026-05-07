@@ -416,13 +416,14 @@ func TestInstallPluginFromPath_TmpDoesNotClobberDottedPlugin(t *testing.T) { //n
 	}
 }
 
-func TestInstallPluginFromPath_BareNameConflictAcrossExtensions(t *testing.T) { //nolint:paralleltest // mutates env
-	// Conceptually a Windows behavior, but we exercise the bare-name
-	// conflict logic on Unix by manually placing two filenames that share
-	// a bare name. ListInstalledPlugins doesn't strip extensions on Unix
-	// (.exe stays in the listed name), so we need a second contrivance to
-	// produce the same bare name from two different files. Use the
-	// installedVariantsByBareName helper directly to exercise the lookup.
+func TestInstallPluginFromPath_RequiresForceForSameBareName(t *testing.T) { //nolint:paralleltest // mutates env
+	// A second install of a different source file that resolves to the
+	// same bare name as a prior install must require --force. The
+	// cross-extension flavor of this conflict (entire-foo.exe vs
+	// entire-foo.bat sharing bare name "foo") is Windows-only and
+	// exercised by installedVariantsByBareName at the implementation
+	// level — the same-bare-name guard tested here is the user-visible
+	// surface on every platform.
 	if runtime.GOOS == windowsGOOS {
 		t.Skip("file-naming below is Unix-style; Windows tests would need a different harness")
 	}
