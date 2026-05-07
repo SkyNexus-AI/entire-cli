@@ -1327,6 +1327,35 @@ func TestMigrateCmd_FailsFastWhenLockHeld(t *testing.T) {
 	assert.Contains(t, errBuf.String(), fmt.Sprintf("PID %d", os.Getpid()))
 }
 
+func TestAcquireCommandLock_SetupFailuresReturnVisibleError(t *testing.T) {
+	cmd := newMigrateCmd()
+
+	t.Run("git common dir", func(t *testing.T) {
+		t.Chdir(t.TempDir())
+
+		release, err := acquireCommandLock(t.Context(), cmd, "entire-migrate.lock", "migrate")
+		require.Nil(t, release)
+		require.Error(t, err)
+		var silent *SilentError
+		assert.NotErrorAs(t, err, &silent)
+		assert.Contains(t, err.Error(), "resolve git common dir")
+	})
+
+	t.Run("lock file open", func(t *testing.T) {
+		repo := initMigrateTestRepo(t)
+		wt, err := repo.Worktree()
+		require.NoError(t, err)
+		t.Chdir(wt.Filesystem.Root())
+
+		release, err := acquireCommandLock(t.Context(), cmd, filepath.Join("missing-dir", "entire-migrate.lock"), "migrate")
+		require.Nil(t, release)
+		require.Error(t, err)
+		var silent *SilentError
+		assert.NotErrorAs(t, err, &silent)
+		assert.Contains(t, err.Error(), "acquire migrate lock")
+	})
+}
+
 func TestMigrateCheckpointsV2_CompactionSkipped(t *testing.T) {
 	t.Parallel()
 	repo := initMigrateTestRepo(t)

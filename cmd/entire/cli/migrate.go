@@ -81,13 +81,14 @@ func newMigrateCmd() *cobra.Command {
 }
 
 // acquireCommandLock takes <git-common-dir>/<lockFile> as a per-command
-// exclusive lock. On contention it prints a message to stderr and
-// returns a SilentError. Defer release() after logging.Init so a
-// release error can still be warned (LIFO defer order).
+// exclusive lock. On contention it prints a message to stderr and returns a
+// SilentError. Other setup failures return regular errors so main.go prints
+// them. Defer release() after logging.Init so a release error can still be
+// warned (LIFO defer order).
 func acquireCommandLock(ctx context.Context, cmd *cobra.Command, lockFile, opName string) (release func(), err error) {
 	commonDir, err := strategy.GetGitCommonDir(ctx)
 	if err != nil {
-		return nil, NewSilentError(fmt.Errorf("resolve git common dir: %w", err))
+		return nil, fmt.Errorf("resolve git common dir: %w", err)
 	}
 	lockPath := filepath.Join(commonDir, lockFile)
 
@@ -104,7 +105,7 @@ func acquireCommandLock(ctx context.Context, cmd *cobra.Command, lockFile, opNam
 				opName, pidStr, lockPath)
 			return nil, NewSilentError(fmt.Errorf("%s already in progress", opName))
 		}
-		return nil, NewSilentError(fmt.Errorf("acquire %s lock: %w", opName, err))
+		return nil, fmt.Errorf("acquire %s lock: %w", opName, err)
 	}
 
 	return func() {
