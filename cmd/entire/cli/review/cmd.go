@@ -55,6 +55,11 @@ type Deps struct {
 	// Injected to avoid an import cycle: review → checkpoint → codex → review.
 	HeadHasReviewCheckpoint func(ctx context.Context) (bool, string)
 
+	// ReviewCheckpointContext returns best-effort checkpoint context for the
+	// branch review scope. Injected from the cli package because checkpoint
+	// readers cannot be imported here without cycling through agent reviewers.
+	ReviewCheckpointContext func(ctx context.Context, worktreeRoot string, scopeBaseRef string) string
+
 	// ReviewerFor maps an agent registry name to its AgentReviewer
 	// implementation. Returns nil for non-launchable agents (cursor, opencode,
 	// factoryai-droid, copilot-cli). Injected to break the import cycle:
@@ -323,13 +328,17 @@ func runSingleAgentPath(
 		return fmt.Errorf("resolve HEAD: %w", shaErr)
 	}
 	scopeBaseRef := detectScope(ctx, worktreeRoot, out)
+	checkpointContext := ""
+	if deps.ReviewCheckpointContext != nil {
+		checkpointContext = deps.ReviewCheckpointContext(ctx, worktreeRoot, scopeBaseRef)
+	}
 
 	runCfg := reviewtypes.RunConfig{
-		PromptOverride: cfg.Prompt,
-		Skills:         cfg.Skills,
-		ScopeBaseRef:   scopeBaseRef,
-		StartingSHA:    headSHA,
+		ScopeBaseRef:      scopeBaseRef,
+		CheckpointContext: checkpointContext,
+		StartingSHA:       headSHA,
 	}
+	applyReviewConfig(&runCfg, cfg)
 
 	// 7. Branch on launchability.
 	reviewer := deps.ReviewerFor(agentName)
@@ -338,8 +347,24 @@ func runSingleAgentPath(
 		return RunMarkerFallback(ctx, agentName, runCfg, worktreeRoot, out)
 	}
 
-	_, waitErr := Run(ctx, reviewer, runCfg, []reviewtypes.Sink{DumpSink{W: out}})
-	if waitErr != nil && ctx.Err() == nil {
+	runCtx, cancelRun := context.WithCancel(ctx)
+	defer cancelRun()
+
+	canPrompt := interactive.CanPromptInteractively()
+	sinks := composeSingleAgentSinks(singleAgentSinkInputs{
+		out:       out,
+		isTTY:     interactive.IsTerminalWriter(out) && canPrompt,
+		canPrompt: canPrompt,
+		agentName: agentName,
+		cancelRun: cancelRun,
+	})
+	if tuiSink, ok := findTUISink(sinks); ok {
+		tuiSink.Start()
+		defer tuiSink.Wait()
+	}
+
+	_, waitErr := Run(runCtx, reviewer, runCfg, sinks)
+	if waitErr != nil && runCtx.Err() == nil && ctx.Err() == nil {
 		// Non-cancellation error: surface to caller.
 		return fmt.Errorf("review run: %w", waitErr)
 	}
@@ -407,6 +432,10 @@ func runMultiAgentPath(
 	}
 
 	scopeBaseRef := detectScope(ctx, worktreeRoot, out)
+	checkpointContext := ""
+	if deps.ReviewCheckpointContext != nil {
+		checkpointContext = deps.ReviewCheckpointContext(ctx, worktreeRoot, scopeBaseRef)
+	}
 
 	// Build per-agent reviewers with individual RunConfigs (each agent has
 	// its own skills + always-prompt from s.Review[name]).
@@ -427,13 +456,12 @@ func runMultiAgentPath(
 		// RunConfig before forwarding to the underlying reviewer.
 		reviewers = append(reviewers, &perAgentConfiguredReviewer{
 			inner: reviewer,
-			cfg: reviewtypes.RunConfig{
-				PromptOverride: agentCfg.Prompt,
-				Skills:         agentCfg.Skills,
-				PerRunPrompt:   picked.PerRun,
-				ScopeBaseRef:   scopeBaseRef,
-				StartingSHA:    headSHA,
-			},
+			cfg: runConfigWithReviewConfig(reviewtypes.RunConfig{
+				PerRunPrompt:      picked.PerRun,
+				ScopeBaseRef:      scopeBaseRef,
+				CheckpointContext: checkpointContext,
+				StartingSHA:       headSHA,
+			}, agentCfg),
 		})
 	}
 
@@ -518,6 +546,14 @@ type multiAgentSinkInputs struct {
 	perRunPrompt      string
 }
 
+type singleAgentSinkInputs struct {
+	out       io.Writer
+	isTTY     bool
+	canPrompt bool
+	agentName string
+	cancelRun context.CancelFunc
+}
+
 // composeMultiAgentSinks builds the sink slice for a multi-agent run.
 //
 //   - Non-TTY: [DumpSink] alone — narrative dump only, no live UI, no prompts.
@@ -548,6 +584,31 @@ func composeMultiAgentSinks(in multiAgentSinkInputs) []reviewtypes.Sink {
 		})
 	}
 	return sinks
+}
+
+func composeSingleAgentSinks(in singleAgentSinkInputs) []reviewtypes.Sink {
+	if !in.isTTY || !in.canPrompt {
+		fmt.Fprintf(in.out, "Running review with %s...\n", in.agentName)
+		return []reviewtypes.Sink{DumpSink{W: in.out}}
+	}
+	return []reviewtypes.Sink{
+		NewTUISink([]string{in.agentName}, in.cancelRun, in.out),
+		DumpSink{W: in.out},
+	}
+}
+
+func runConfigWithReviewConfig(base reviewtypes.RunConfig, cfg settings.ReviewConfig) reviewtypes.RunConfig {
+	applyReviewConfig(&base, cfg)
+	return base
+}
+
+func applyReviewConfig(runCfg *reviewtypes.RunConfig, cfg settings.ReviewConfig) {
+	runCfg.Skills = cfg.Skills
+	if len(cfg.Skills) == 0 {
+		runCfg.PromptOverride = cfg.Prompt
+		return
+	}
+	runCfg.AlwaysPrompt = cfg.Prompt
 }
 
 // findTUISink returns the first *TUISink in the slice (if any). Used by the
