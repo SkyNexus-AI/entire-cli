@@ -8,10 +8,19 @@ import (
 	"path/filepath"
 
 	"github.com/entireio/cli/cmd/entire/cli/logging"
-	"github.com/go-git/go-git/v5"
-	"github.com/go-git/go-git/v5/plumbing"
-	"github.com/go-git/go-git/v5/plumbing/object"
+	"github.com/go-git/go-git/v6"
+	"github.com/go-git/go-git/v6/plumbing"
+	"github.com/go-git/go-git/v6/plumbing/format/config"
+	"github.com/go-git/go-git/v6/plumbing/object"
 )
+
+// truncateStringSlice returns the first n elements of a slice, for concise logging.
+func truncateStringSlice(s []string, n int) []string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n]
+}
 
 // Content-aware overlap detection for checkpoint management.
 //
@@ -232,6 +241,9 @@ func stagedFilesOverlapWithContent(ctx context.Context, repo *git.Repository, sh
 	// Check each staged file
 	for _, stagedPath := range stagedFiles {
 		if !touchedSet[stagedPath] {
+			logging.Debug(logCtx, "stagedFilesOverlapWithContent: staged file not in files_touched, skipping",
+				slog.String("staged_file", stagedPath),
+			)
 			continue // Not in filesTouched, skip
 		}
 
@@ -333,6 +345,8 @@ func stagedFilesOverlapWithContent(ctx context.Context, repo *git.Repository, sh
 	logging.Debug(logCtx, "stagedFilesOverlapWithContent: no overlapping files found",
 		slog.Int("staged_files", len(stagedFiles)),
 		slog.Int("files_touched", len(filesTouched)),
+		slog.Any("staged_paths", truncateStringSlice(stagedFiles, 10)),
+		slog.Any("touched_paths", truncateStringSlice(filesTouched, 10)),
 	)
 	return false
 }
@@ -434,20 +448,26 @@ func filesWithRemainingAgentChanges(
 	var remaining []string
 
 	for _, filePath := range filesTouched {
-		// If file wasn't committed at all, it definitely has remaining changes
-		if _, wasCommitted := committedFiles[filePath]; !wasCommitted {
-			remaining = append(remaining, filePath)
-			logging.Debug(logCtx, "filesWithRemainingAgentChanges: file not committed, keeping",
+		// Skip files absent from the shadow tree — nothing to carry forward.
+		// This covers two cases:
+		//  1. Phantom paths: transcript mentions files the agent never created
+		//     (e.g. agent writes src/types.go then creates src/types/types.go).
+		//  2. Agent deletions: file was deleted on disk, so buildTreeWithChanges
+		//     excluded it from the shadow tree. Carrying it forward would be a
+		//     no-op since there's no content on disk to snapshot.
+		// Without this check, phantom paths cause infinite carry-forward loops.
+		shadowFile, err := shadowTree.File(filePath)
+		if err != nil {
+			logging.Debug(logCtx, "filesWithRemainingAgentChanges: file not in shadow tree, skipping",
 				slog.String("file", filePath),
 			)
 			continue
 		}
 
-		// File was committed - check if committed content matches shadow branch
-		shadowFile, err := shadowTree.File(filePath)
-		if err != nil {
-			// File not in shadow branch - nothing to carry forward for this file
-			logging.Debug(logCtx, "filesWithRemainingAgentChanges: file not in shadow branch, skipping",
+		// File wasn't committed at all — it has remaining changes
+		if _, wasCommitted := committedFiles[filePath]; !wasCommitted {
+			remaining = append(remaining, filePath)
+			logging.Debug(logCtx, "filesWithRemainingAgentChanges: file not committed, keeping",
 				slog.String("file", filePath),
 			)
 			continue
@@ -507,11 +527,15 @@ func workingTreeMatchesCommit(worktreeRoot, filePath string, commitHash plumbing
 	if err != nil {
 		return false
 	}
-	h := plumbing.NewHasher(plumbing.BlobObject, int64(len(diskContent)))
+	of := config.SHA1
+	if commitHash.Size() == config.SHA256.Size() {
+		of = config.SHA256
+	}
+	h := plumbing.NewHasher(of, plumbing.BlobObject, int64(len(diskContent)))
 	if _, err := h.Write(diskContent); err != nil {
 		return false
 	}
-	return h.Sum() == commitHash
+	return commitHash.Equal(h.Sum())
 }
 
 // subtractFilesByName returns files from filesTouched that are NOT in committedFiles.

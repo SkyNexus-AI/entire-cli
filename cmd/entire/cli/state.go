@@ -14,10 +14,12 @@ import (
 	"github.com/entireio/cli/cmd/entire/cli/agent"
 	"github.com/entireio/cli/cmd/entire/cli/jsonutil"
 	"github.com/entireio/cli/cmd/entire/cli/logging"
+	"github.com/entireio/cli/cmd/entire/cli/osroot"
 	"github.com/entireio/cli/cmd/entire/cli/paths"
 	"github.com/entireio/cli/cmd/entire/cli/strategy"
+	"github.com/entireio/cli/cmd/entire/cli/validation"
 
-	"github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v6"
 )
 
 // PrePromptState stores the state captured before a user prompt
@@ -97,11 +99,12 @@ func CapturePrePromptState(ctx context.Context, ag agent.Agent, sessionID, sessi
 		sessionID = unknownSessionID
 	}
 
-	// Get absolute path for tmp directory
-	tmpDirAbs, err := paths.AbsPath(ctx, paths.EntireTmpDir)
-	if err != nil {
-		tmpDirAbs = paths.EntireTmpDir // Fallback to relative
+	if err := validation.ValidateSessionID(sessionID); err != nil {
+		return fmt.Errorf("invalid session ID for pre-prompt state: %w", err)
 	}
+
+	// Get absolute path for tmp directory
+	tmpDirAbs := resolveTmpDir(ctx)
 
 	// Create tmp directory if it doesn't exist
 	if err := os.MkdirAll(tmpDirAbs, 0o750); err != nil {
@@ -116,7 +119,7 @@ func CapturePrePromptState(ctx context.Context, ag agent.Agent, sessionID, sessi
 
 	// Get transcript position using TranscriptAnalyzer if available
 	var transcriptOffset int
-	if analyzer, ok := ag.(agent.TranscriptAnalyzer); ok && sessionRef != "" {
+	if analyzer, ok := agent.AsTranscriptAnalyzer(ag); ok && sessionRef != "" {
 		pos, posErr := analyzer.GetTranscriptPosition(sessionRef)
 		if posErr != nil {
 			logging.Warn(logging.WithComponent(ctx, "state"), "failed to get transcript position",
@@ -126,8 +129,7 @@ func CapturePrePromptState(ctx context.Context, ag agent.Agent, sessionID, sessi
 		}
 	}
 
-	// Create state file
-	stateFile := prePromptStateFile(ctx, sessionID)
+	// Create state file using os.Root for traversal-resistant write
 	state := PrePromptState{
 		SessionID:        sessionID,
 		Timestamp:        time.Now().UTC().Format(time.RFC3339),
@@ -140,7 +142,14 @@ func CapturePrePromptState(ctx context.Context, ag agent.Agent, sessionID, sessi
 		return fmt.Errorf("failed to marshal state: %w", err)
 	}
 
-	if err := os.WriteFile(stateFile, data, 0o600); err != nil {
+	fileName := fmt.Sprintf("pre-prompt-%s.json", sessionID)
+	root, err := os.OpenRoot(tmpDirAbs)
+	if err != nil {
+		return fmt.Errorf("failed to open tmp directory root: %w", err)
+	}
+	defer root.Close()
+
+	if err := osroot.WriteFile(root, fileName, data, 0o600); err != nil {
 		return fmt.Errorf("failed to write state file: %w", err)
 	}
 
@@ -153,14 +162,28 @@ func CapturePrePromptState(ctx context.Context, ag agent.Agent, sessionID, sessi
 // LoadPrePromptState loads previously captured state.
 // Returns nil if no state file exists.
 func LoadPrePromptState(ctx context.Context, sessionID string) (*PrePromptState, error) {
-	stateFile := prePromptStateFile(ctx, sessionID)
-
-	if !fileExists(stateFile) {
-		return nil, nil //nolint:nilnil // already present in codebase
+	if err := validation.ValidateSessionID(sessionID); err != nil {
+		return nil, fmt.Errorf("invalid session ID for pre-prompt state: %w", err)
 	}
 
-	data, err := os.ReadFile(stateFile) //nolint:gosec // Reading from controlled git metadata path
+	tmpDirAbs := resolveTmpDir(ctx)
+
+	root, err := os.OpenRoot(tmpDirAbs)
 	if err != nil {
+		// Directory doesn't exist yet — no state file
+		if os.IsNotExist(err) {
+			return nil, nil //nolint:nilnil // already present in codebase
+		}
+		return nil, fmt.Errorf("failed to open tmp directory root: %w", err)
+	}
+	defer root.Close()
+
+	fileName := fmt.Sprintf("pre-prompt-%s.json", sessionID)
+	data, err := osroot.ReadFile(root, fileName)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil //nolint:nilnil // already present in codebase
+		}
 		return nil, fmt.Errorf("failed to read state file: %w", err)
 	}
 
@@ -176,11 +199,23 @@ func LoadPrePromptState(ctx context.Context, sessionID string) (*PrePromptState,
 
 // CleanupPrePromptState removes the state file after use
 func CleanupPrePromptState(ctx context.Context, sessionID string) error {
-	stateFile := prePromptStateFile(ctx, sessionID)
-	if fileExists(stateFile) {
-		return os.Remove(stateFile) //nolint:wrapcheck // already present in codebase
+	if err := validation.ValidateSessionID(sessionID); err != nil {
+		return fmt.Errorf("invalid session ID for pre-prompt state cleanup: %w", err)
 	}
-	return nil
+
+	tmpDirAbs := resolveTmpDir(ctx)
+
+	root, err := os.OpenRoot(tmpDirAbs)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil // Directory doesn't exist, nothing to clean up
+		}
+		return fmt.Errorf("failed to open tmp directory root: %w", err)
+	}
+	defer root.Close()
+
+	fileName := fmt.Sprintf("pre-prompt-%s.json", sessionID)
+	return osroot.Remove(root, fileName) //nolint:wrapcheck // best-effort cleanup, caller adds context via wrapping function name
 }
 
 // FileChanges holds categorized file changes from git status.
@@ -188,6 +223,31 @@ type FileChanges struct {
 	Modified []string // Modified or staged files
 	New      []string // Untracked files (filtered if previouslyUntracked provided)
 	Deleted  []string // Deleted files (staged or unstaged)
+}
+
+// shouldIgnoreSessionTrackingPath returns true for repo files that belong to
+// Entire or the agent integration itself rather than user work.
+func shouldIgnoreSessionTrackingPath(relPath string) bool {
+	cleanPath := filepath.Clean(filepath.FromSlash(relPath))
+	if paths.IsInfrastructurePath(cleanPath) {
+		return true
+	}
+
+	for _, file := range agent.AllProtectedFiles() {
+		cleanFile := filepath.Clean(filepath.FromSlash(file))
+		if cleanPath == cleanFile {
+			return true
+		}
+	}
+
+	for _, dir := range agent.AllProtectedDirs() {
+		cleanDir := filepath.Clean(filepath.FromSlash(dir))
+		if paths.IsSubpath(cleanDir, cleanPath) {
+			return true
+		}
+	}
+
+	return false
 }
 
 // DetectFileChanges returns categorized file changes from the current git status.
@@ -226,7 +286,7 @@ func DetectFileChanges(ctx context.Context, previouslyUntracked []string) (*File
 
 	var changes FileChanges
 	for file, st := range status {
-		if paths.IsInfrastructurePath(file) {
+		if shouldIgnoreSessionTrackingPath(file) {
 			continue
 		}
 
@@ -280,11 +340,16 @@ func filterToUncommittedFiles(ctx context.Context, files []string, repoRoot stri
 		return files // fail open
 	}
 
+	logCtx := logging.WithComponent(ctx, "filter-uncommitted")
+
 	var result []string
 	for _, relPath := range files {
 		headFile, err := headTree.File(relPath)
 		if err != nil {
 			// File not in HEAD — it's uncommitted
+			logging.Debug(logCtx, "file not in HEAD tree, keeping",
+				slog.String("file", relPath),
+				slog.String("error", err.Error()))
 			result = append(result, relPath)
 			continue
 		}
@@ -323,10 +388,10 @@ func FilterAndNormalizePaths(files []string, cwd string) []string {
 		if relPath == "" {
 			continue // outside repo
 		}
-		if paths.IsInfrastructurePath(relPath) {
-			continue // skip .entire directory
+		if shouldIgnoreSessionTrackingPath(relPath) {
+			continue
 		}
-		result = append(result, relPath)
+		result = append(result, filepath.ToSlash(relPath))
 	}
 	return result
 }
@@ -349,14 +414,14 @@ func mergeUnique(base, extra []string) []string {
 	return base
 }
 
-// prePromptStateFile returns the absolute path to the pre-prompt state file for a session.
-// Works correctly from any subdirectory within the repository.
-func prePromptStateFile(ctx context.Context, sessionID string) string {
-	tmpDirAbs, err := paths.AbsPath(ctx, paths.EntireTmpDir)
+// resolveTmpDir returns the absolute path to the .entire/tmp directory,
+// falling back to a relative path if the repo root can't be determined.
+func resolveTmpDir(ctx context.Context) string {
+	abs, err := paths.AbsPath(ctx, paths.EntireTmpDir)
 	if err != nil {
-		tmpDirAbs = paths.EntireTmpDir // Fallback to relative
+		return paths.EntireTmpDir
 	}
-	return filepath.Join(tmpDirAbs, fmt.Sprintf("pre-prompt-%s.json", sessionID))
+	return abs
 }
 
 // getUntrackedFilesForState returns a list of untracked files using go-git
@@ -380,8 +445,7 @@ func getUntrackedFilesForState(ctx context.Context) ([]string, error) {
 	untrackedFiles := []string{}
 	for file, st := range status {
 		if st.Worktree == git.Untracked {
-			// Exclude .entire directory
-			if !strings.HasPrefix(file, paths.EntireDir+"/") && file != paths.EntireDir {
+			if !shouldIgnoreSessionTrackingPath(file) {
 				untrackedFiles = append(untrackedFiles, file)
 			}
 		}
@@ -417,11 +481,12 @@ func CapturePreTaskState(ctx context.Context, toolUseID string) error {
 		return errors.New("tool_use_id is required")
 	}
 
-	// Get absolute path for tmp directory
-	tmpDirAbs, err := paths.AbsPath(ctx, paths.EntireTmpDir)
-	if err != nil {
-		tmpDirAbs = paths.EntireTmpDir // Fallback to relative
+	if err := validation.ValidateToolUseID(toolUseID); err != nil {
+		return fmt.Errorf("invalid tool use ID for pre-task state: %w", err)
 	}
+
+	// Get absolute path for tmp directory
+	tmpDirAbs := resolveTmpDir(ctx)
 
 	// Create tmp directory if it doesn't exist
 	if err := os.MkdirAll(tmpDirAbs, 0o750); err != nil {
@@ -434,8 +499,7 @@ func CapturePreTaskState(ctx context.Context, toolUseID string) error {
 		return fmt.Errorf("failed to get untracked files: %w", err)
 	}
 
-	// Create state file
-	stateFile := preTaskStateFile(ctx, toolUseID)
+	// Create state file using os.Root for traversal-resistant write
 	state := PreTaskState{
 		ToolUseID:      toolUseID,
 		Timestamp:      time.Now().UTC().Format(time.RFC3339),
@@ -447,7 +511,14 @@ func CapturePreTaskState(ctx context.Context, toolUseID string) error {
 		return fmt.Errorf("failed to marshal state: %w", err)
 	}
 
-	if err := os.WriteFile(stateFile, data, 0o600); err != nil {
+	fileName := fmt.Sprintf("pre-task-%s.json", toolUseID)
+	root, err := os.OpenRoot(tmpDirAbs)
+	if err != nil {
+		return fmt.Errorf("failed to open tmp directory root: %w", err)
+	}
+	defer root.Close()
+
+	if err := osroot.WriteFile(root, fileName, data, 0o600); err != nil {
 		return fmt.Errorf("failed to write state file: %w", err)
 	}
 
@@ -459,14 +530,27 @@ func CapturePreTaskState(ctx context.Context, toolUseID string) error {
 // LoadPreTaskState loads previously captured task state.
 // Returns nil if no state file exists.
 func LoadPreTaskState(ctx context.Context, toolUseID string) (*PreTaskState, error) {
-	stateFile := preTaskStateFile(ctx, toolUseID)
-
-	if !fileExists(stateFile) {
-		return nil, nil //nolint:nilnil // already present in codebase
+	if err := validation.ValidateToolUseID(toolUseID); err != nil {
+		return nil, fmt.Errorf("invalid tool use ID for pre-task state: %w", err)
 	}
 
-	data, err := os.ReadFile(stateFile) //nolint:gosec // Reading from controlled git metadata path
+	tmpDirAbs := resolveTmpDir(ctx)
+
+	root, err := os.OpenRoot(tmpDirAbs)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil //nolint:nilnil // already present in codebase
+		}
+		return nil, fmt.Errorf("failed to open tmp directory root: %w", err)
+	}
+	defer root.Close()
+
+	fileName := fmt.Sprintf("pre-task-%s.json", toolUseID)
+	data, err := osroot.ReadFile(root, fileName)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil //nolint:nilnil // already present in codebase
+		}
 		return nil, fmt.Errorf("failed to read state file: %w", err)
 	}
 
@@ -480,21 +564,23 @@ func LoadPreTaskState(ctx context.Context, toolUseID string) (*PreTaskState, err
 
 // CleanupPreTaskState removes the task state file after use
 func CleanupPreTaskState(ctx context.Context, toolUseID string) error {
-	stateFile := preTaskStateFile(ctx, toolUseID)
-	if fileExists(stateFile) {
-		return os.Remove(stateFile) //nolint:wrapcheck // already present in codebase
+	if err := validation.ValidateToolUseID(toolUseID); err != nil {
+		return fmt.Errorf("invalid tool use ID for pre-task state cleanup: %w", err)
 	}
-	return nil
-}
 
-// preTaskStateFile returns the absolute path to the pre-task state file for a tool use.
-// Works correctly from any subdirectory within the repository.
-func preTaskStateFile(ctx context.Context, toolUseID string) string {
-	tmpDirAbs, err := paths.AbsPath(ctx, paths.EntireTmpDir)
+	tmpDirAbs := resolveTmpDir(ctx)
+
+	root, err := os.OpenRoot(tmpDirAbs)
 	if err != nil {
-		tmpDirAbs = paths.EntireTmpDir // Fallback to relative
+		if os.IsNotExist(err) {
+			return nil // Directory doesn't exist, nothing to clean up
+		}
+		return fmt.Errorf("failed to open tmp directory root: %w", err)
 	}
-	return filepath.Join(tmpDirAbs, fmt.Sprintf("pre-task-%s.json", toolUseID))
+	defer root.Close()
+
+	fileName := fmt.Sprintf("pre-task-%s.json", toolUseID)
+	return osroot.Remove(root, fileName) //nolint:wrapcheck // best-effort cleanup, caller adds context via wrapping function name
 }
 
 // preTaskFilePrefix is the prefix for pre-task state files
@@ -506,10 +592,7 @@ const preTaskFilePrefix = "pre-task-"
 // modified one.
 // Works correctly from any subdirectory within the repository.
 func FindActivePreTaskFile(ctx context.Context) (taskToolUseID string, found bool) {
-	tmpDirAbs, err := paths.AbsPath(ctx, paths.EntireTmpDir)
-	if err != nil {
-		tmpDirAbs = paths.EntireTmpDir // Fallback to relative
-	}
+	tmpDirAbs := resolveTmpDir(ctx)
 	entries, err := os.ReadDir(tmpDirAbs)
 	if err != nil {
 		return "", false

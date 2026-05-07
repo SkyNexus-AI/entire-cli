@@ -2,118 +2,480 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
-	"path/filepath"
 	"strings"
 
+	"charm.land/huh/v2"
+	"github.com/entireio/cli/cmd/entire/cli/checkpoint"
 	"github.com/entireio/cli/cmd/entire/cli/logging"
 	"github.com/entireio/cli/cmd/entire/cli/paths"
+	"github.com/entireio/cli/cmd/entire/cli/session"
+	"github.com/entireio/cli/cmd/entire/cli/settings"
 	"github.com/entireio/cli/cmd/entire/cli/strategy"
+	"github.com/go-git/go-git/v6/plumbing"
 	"github.com/spf13/cobra"
 )
 
+func cleanLongDescription(ctx context.Context) string {
+	description := `Clean up Entire session data for the current HEAD commit.
+
+By default, cleans session state and shadow branches for the current HEAD:
+  - Session state files (.git/entire-sessions/<session-id>.json)
+  - Shadow branch (entire/<commit-hash>-<worktree-hash>)
+
+Use --all to clean all Entire session data across the repository:
+  - All session state files (.git/entire-sessions/)
+  - All shadow branches
+  - Temporary files (.entire/tmp/)`
+
+	s, err := settings.Load(ctx)
+	if err == nil && s.IsCheckpointsV2Enabled() {
+		description += fmt.Sprintf(`
+  - Archived v2 full transcripts older than the configured %d-day retention window`, s.GetFullTranscriptGenerationRetentionDays())
+	}
+
+	description += `
+
+Use --session <id> to clean a specific session only.
+
+Without --force, prompts for confirmation before deleting.
+Use --dry-run to preview what would be deleted without prompting.`
+
+	return description
+}
+
 func newCleanCmd() *cobra.Command {
 	var forceFlag bool
+	var allFlag bool
+	var dryRunFlag bool
+	var sessionFlag string
 
 	cmd := &cobra.Command{
 		Use:   "clean",
-		Short: "Clean up orphaned Entire data",
-		Long: `Remove orphaned Entire data (session state, shadow branches, checkpoint metadata, temp files) that wasn't cleaned up automatically.
-
-This command finds and removes orphaned data from any strategy:
-
-  Shadow branches (entire/<commit-hash>)
-    Normally auto-cleaned when sessions
-    are condensed during commits.
-
-  Session state files (.git/entire-sessions/)
-    Track active sessions. Orphaned when no checkpoints or shadow branches
-    reference them.
-
-  Checkpoint metadata (entire/checkpoints/v1 branch)
-    Checkpoints are permanent (condensed session history) and are
-    never considered orphaned.
-
-  Temporary files (.entire/tmp/)
-    Cached transcripts and other temporary data. Safe to delete when no
-    active sessions are using them.
-
-Default: shows a preview of items that would be deleted.
-With --force, actually deletes the orphaned items.
-
-The entire/checkpoints/v1 branch itself is never deleted.`,
+		Short: "Clean up Entire session data",
+		Long:  cleanLongDescription(context.Background()),
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runClean(cmd.Context(), cmd.OutOrStdout(), forceFlag)
+			ctx := cmd.Context()
+
+			// Validate mutually exclusive flags
+			if allFlag && sessionFlag != "" {
+				return errors.New("--all and --session cannot be used together")
+			}
+
+			// Check if in git repository before initializing logging,
+			// to avoid creating .entire/logs in arbitrary directories.
+			if _, err := paths.WorktreeRoot(ctx); err != nil {
+				return errors.New("not a git repository")
+			}
+
+			// Initialize logging
+			logging.SetLogLevelGetter(GetLogLevel)
+			if err := logging.Init(ctx, ""); err == nil {
+				defer logging.Close()
+			}
+
+			if allFlag {
+				return runCleanAll(ctx, cmd, forceFlag, dryRunFlag)
+			}
+
+			if sessionFlag != "" {
+				strat := GetStrategy(ctx)
+				return runCleanSession(ctx, cmd, strat, sessionFlag, forceFlag, dryRunFlag, "Clean", "cleaned")
+			}
+
+			return runCleanCurrentHead(ctx, cmd, forceFlag, dryRunFlag)
 		},
 	}
 
-	cmd.Flags().BoolVarP(&forceFlag, "force", "f", false, "Actually delete items (default: dry run)")
+	cmd.Flags().BoolVarP(&forceFlag, "force", "f", false, "Skip confirmation prompt and override active session guard")
+	cmd.Flags().BoolVarP(&allFlag, "all", "a", false, "Clean all session data across the repository")
+	cmd.Flags().BoolVarP(&dryRunFlag, "dry-run", "d", false, "Preview what would be deleted without deleting")
+	cmd.Flags().StringVar(&sessionFlag, "session", "", "Clean a specific session by ID")
 
 	return cmd
 }
 
-func runClean(ctx context.Context, w io.Writer, force bool) error {
-	// Initialize logging so structured logs go to .entire/logs/ instead of stderr.
-	// Error is non-fatal: if logging init fails, logs go to stderr (acceptable fallback).
-	logging.SetLogLevelGetter(GetLogLevel)
-	if err := logging.Init(ctx, ""); err == nil {
-		defer logging.Close()
+// runCleanCurrentHead cleans session data for the current HEAD commit.
+func runCleanCurrentHead(ctx context.Context, cmd *cobra.Command, force, dryRun bool) error {
+	strat := GetStrategy(ctx)
+	w := cmd.OutOrStdout()
+
+	// Dry-run: show what would be cleaned
+	if dryRun {
+		return previewCurrentHead(ctx, w)
 	}
 
-	// List all cleanup items
-	items, err := strategy.ListAllCleanupItems(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to list orphaned items: %w", err)
+	// Check for active sessions before cleaning
+	if !force {
+		activeSessions, err := activeSessionsOnCurrentHead(ctx)
+		if err != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "Warning: could not check for active sessions: %v\n", err)
+			fmt.Fprintln(cmd.ErrOrStderr(), "Use --force to override.")
+			return nil
+		}
+		if len(activeSessions) > 0 {
+			fmt.Fprintln(cmd.ErrOrStderr(), "Active sessions detected on current HEAD:")
+			for _, s := range activeSessions {
+				fmt.Fprintf(cmd.ErrOrStderr(), "  %s (phase: %s)\n", s.SessionID, s.Phase)
+			}
+			fmt.Fprintln(cmd.ErrOrStderr(), "Use --force to override or wait for sessions to finish.")
+			return nil
+		}
 	}
 
-	// List temp files
-	tempFiles, err := listTempFiles(ctx)
-	if err != nil {
-		// Non-fatal: continue with other cleanup items
-		fmt.Fprintf(w, "Warning: failed to list temp files: %v\n", err)
+	// Prompt for confirmation
+	if !force {
+		var confirmed bool
+
+		form := NewAccessibleForm(
+			huh.NewGroup(
+				huh.NewConfirm().
+					Title("Clean session data for current HEAD?").
+					Value(&confirmed),
+			),
+		)
+
+		if err := form.Run(); err != nil {
+			if errors.Is(err, huh.ErrUserAborted) {
+				return nil
+			}
+			return fmt.Errorf("failed to get confirmation: %w", err)
+		}
+
+		if !confirmed {
+			return nil
+		}
 	}
 
-	return runCleanWithItems(ctx, w, force, items, tempFiles)
+	if err := strat.Reset(ctx, cmd.OutOrStdout(), cmd.ErrOrStderr()); err != nil {
+		return fmt.Errorf("clean failed: %w", err)
+	}
+
+	return nil
 }
 
-// listTempFiles returns files in .entire/tmp/ that are safe to delete,
-// excluding files belonging to active sessions.
-func listTempFiles(ctx context.Context) ([]string, error) {
-	tmpDir, err := paths.AbsPath(ctx, paths.EntireTmpDir)
+// previewCurrentHead shows what would be cleaned for the current HEAD.
+func previewCurrentHead(ctx context.Context, w io.Writer) error {
+	repo, err := openRepository(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get temp dir path: %w", err)
+		return err
 	}
 
-	entries, err := os.ReadDir(tmpDir)
+	head, err := repo.Head()
+	if err != nil {
+		return fmt.Errorf("failed to get HEAD: %w", err)
+	}
+
+	worktreePath, err := paths.WorktreeRoot(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get worktree path: %w", err)
+	}
+	worktreeID, err := paths.GetWorktreeID(worktreePath)
+	if err != nil {
+		return fmt.Errorf("failed to get worktree ID: %w", err)
+	}
+
+	shadowBranchName := checkpoint.ShadowBranchNameForCommit(head.Hash().String(), worktreeID)
+
+	// Check if shadow branch exists
+	refName := plumbing.NewBranchReferenceName(shadowBranchName)
+	_, refErr := repo.Reference(refName, true)
+	hasShadowBranch := refErr == nil
+
+	// Find sessions for this commit
+	strat := GetStrategy(ctx)
+	sessions, err := strat.FindSessionsForCommit(ctx, head.Hash().String())
+	if err != nil {
+		sessions = nil
+	}
+
+	if !hasShadowBranch && len(sessions) == 0 {
+		fmt.Fprintln(w, "Nothing to clean for current HEAD.")
+		return nil
+	}
+
+	fmt.Fprint(w, "Would clean the following items:\n\n")
+
+	if len(sessions) > 0 {
+		fmt.Fprintf(w, "Session states (%d):\n", len(sessions))
+		for _, s := range sessions {
+			fmt.Fprintf(w, "  %s (checkpoints: %d)\n", s.SessionID, s.StepCount)
+		}
+		fmt.Fprintln(w)
+	}
+
+	if hasShadowBranch {
+		fmt.Fprintf(w, "Shadow branch:\n  %s\n\n", shadowBranchName)
+	}
+
+	fmt.Fprintln(w, "Run without --dry-run to clean these items.")
+	return nil
+}
+
+// runCleanSession handles the --session flag: clean/reset a single session.
+// actionVerb is the capitalized verb (e.g., "Clean" or "Reset") and pastVerb
+// is the past tense (e.g., "cleaned" or "reset") used in user-facing messages.
+func runCleanSession(ctx context.Context, cmd *cobra.Command, strat *strategy.ManualCommitStrategy, sessionID string, force, dryRun bool, actionVerb, pastVerb string) error {
+	// Verify the session exists
+	state, err := strategy.LoadSessionState(ctx, sessionID)
+	if err != nil {
+		return fmt.Errorf("failed to load session: %w", err)
+	}
+	if state == nil {
+		return fmt.Errorf("session not found: %s", sessionID)
+	}
+
+	if dryRun {
+		w := cmd.OutOrStdout()
+		fmt.Fprintf(w, "Would %s session %s (phase: %s, checkpoints: %d)\n", strings.ToLower(actionVerb), sessionID, state.Phase, state.StepCount)
+		return nil
+	}
+
+	if !force {
+		var confirmed bool
+
+		title := fmt.Sprintf("%s session %s?", actionVerb, sessionID)
+		description := fmt.Sprintf("Phase: %s, Checkpoints: %d", state.Phase, state.StepCount)
+
+		form := NewAccessibleForm(
+			huh.NewGroup(
+				huh.NewConfirm().
+					Title(title).
+					Description(description).
+					Value(&confirmed),
+			),
+		)
+
+		if err := form.Run(); err != nil {
+			if errors.Is(err, huh.ErrUserAborted) {
+				return nil
+			}
+			return fmt.Errorf("failed to get confirmation: %w", err)
+		}
+
+		if !confirmed {
+			return nil
+		}
+	}
+
+	if err := strat.ResetSession(ctx, cmd.OutOrStdout(), cmd.ErrOrStderr(), sessionID); err != nil {
+		return fmt.Errorf("%s session failed: %w", strings.ToLower(actionVerb), err)
+	}
+
+	fmt.Fprintf(cmd.OutOrStdout(), "Session %s has been %s. File changes remain in the working directory.\n", sessionID, pastVerb)
+	return nil
+}
+
+// runCleanAll cleans all session data across the repository.
+func runCleanAll(ctx context.Context, cmd *cobra.Command, force, dryRun bool) error {
+	s, err := settings.Load(ctx)
+	if err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Warning: failed to load settings: %v\n", err)
+		s = &settings.EntireSettings{}
+	}
+
+	// List all items (sessions, shadow branches) — not just orphaned ones
+	items, err := strategy.ListAllItems(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to list items: %w", err)
+	}
+
+	if s.IsCheckpointsV2Enabled() {
+		v2Items, warnings, err := strategy.ListEligibleV2Generations(ctx, s)
+		if err != nil {
+			return fmt.Errorf("failed to list v2 generations: %w", err)
+		}
+		items = append(items, v2Items...)
+		for _, warning := range warnings {
+			fmt.Fprintf(cmd.ErrOrStderr(), "Warning: %s\n", warning)
+		}
+	}
+
+	// List temp files — skip active-session filter since --all deletes those sessions
+	tempFiles, err := listAllTempFiles(ctx)
+	if err != nil {
+		// Non-fatal: continue with other cleanup items
+		fmt.Fprintf(cmd.ErrOrStderr(), "Warning: failed to list temp files: %v\n", err)
+	}
+
+	return runCleanAllWithItems(ctx, cmd, force, dryRun, items, tempFiles)
+}
+
+// printSection prints a titled list of items if the slice is non-empty.
+func printSection(w io.Writer, title string, items []string) {
+	if len(items) == 0 {
+		return
+	}
+	fmt.Fprintf(w, "%s (%d):\n", title, len(items))
+	for _, item := range items {
+		fmt.Fprintf(w, "  %s\n", item)
+	}
+	fmt.Fprintln(w)
+}
+
+// printResultSection prints a titled list with a leading newline, for post-deletion output.
+func printResultSection(w io.Writer, title string, items []string) {
+	if len(items) == 0 {
+		return
+	}
+	fmt.Fprintf(w, "\n%s (%d):\n", title, len(items))
+	for _, item := range items {
+		fmt.Fprintf(w, "  %s\n", item)
+	}
+}
+
+// runCleanAllWithItems is the core logic for cleaning all items.
+// Separated for testability — tests pass a cmd without a TTY and use force or dryRun to avoid prompts.
+func runCleanAllWithItems(ctx context.Context, cmd *cobra.Command, force, dryRun bool, items []strategy.CleanupItem, tempFiles []string) error {
+	w := cmd.OutOrStdout()
+	errW := cmd.ErrOrStderr()
+	// Handle no items case
+	if len(items) == 0 && len(tempFiles) == 0 {
+		fmt.Fprintln(w, "No items to clean up.")
+		return nil
+	}
+
+	// Group items by type for display
+	var branches, states, checkpoints, v2Generations []strategy.CleanupItem
+	for _, item := range items {
+		switch item.Type {
+		case strategy.CleanupTypeShadowBranch:
+			branches = append(branches, item)
+		case strategy.CleanupTypeSessionState:
+			states = append(states, item)
+		case strategy.CleanupTypeCheckpoint:
+			checkpoints = append(checkpoints, item)
+		case strategy.CleanupTypeV2Generation:
+			v2Generations = append(v2Generations, item)
+		}
+	}
+
+	// Show preview when not in force mode
+	if !force || dryRun {
+		totalItems := len(items) + len(tempFiles)
+		fmt.Fprintf(w, "Found %d %s to clean:\n\n", totalItems, itemWord(totalItems))
+
+		printSection(w, "Shadow branches", cleanupItemIDs(branches))
+		printSection(w, "Session states", cleanupItemIDs(states))
+		printSection(w, "Checkpoint metadata", cleanupItemIDs(checkpoints))
+		printSection(w, "Archived v2 generations", cleanupItemIDs(v2Generations))
+		printSection(w, "Temp files", tempFiles)
+
+		if dryRun {
+			fmt.Fprintln(w, "Run without --dry-run to delete these items.")
+			return nil
+		}
+
+		// Prompt for confirmation
+		var confirmed bool
+		form := NewAccessibleForm(
+			huh.NewGroup(
+				huh.NewConfirm().
+					Title(fmt.Sprintf("Delete %d %s?", totalItems, itemWord(totalItems))).
+					Value(&confirmed),
+			),
+		)
+		if err := form.Run(); err != nil {
+			if errors.Is(err, huh.ErrUserAborted) {
+				return nil
+			}
+			return fmt.Errorf("failed to get confirmation: %w", err)
+		}
+		if !confirmed {
+			return nil
+		}
+	}
+
+	// Force mode - delete items
+	result, err := strategy.DeleteAllCleanupItems(ctx, items)
+	if err != nil {
+		return fmt.Errorf("failed to delete items: %w", err)
+	}
+
+	// Delete temp files
+	deletedTempFiles, failedTempFiles := deleteTempFiles(ctx, tempFiles)
+
+	// Report results
+	totalDeleted := len(result.ShadowBranches) + len(result.SessionStates) + len(result.Checkpoints) + len(result.V2Generations) + len(deletedTempFiles)
+	totalFailed := len(result.FailedBranches) + len(result.FailedStates) + len(result.FailedCheckpoints) + len(result.FailedV2Refs) + len(failedTempFiles)
+
+	if totalDeleted > 0 {
+		fmt.Fprintf(w, "✓ Deleted %d %s:\n", totalDeleted, itemWord(totalDeleted))
+
+		printResultSection(w, "Shadow branches", result.ShadowBranches)
+		printResultSection(w, "Session states", result.SessionStates)
+		printResultSection(w, "Checkpoints", result.Checkpoints)
+		printResultSection(w, "Archived v2 generations", result.V2Generations)
+
+		printResultSection(w, "Temp files", deletedTempFiles)
+	}
+
+	if totalFailed > 0 {
+		fmt.Fprintf(errW, "\nFailed to delete %d %s:\n", totalFailed, itemWord(totalFailed))
+
+		printResultSection(errW, "Shadow branches", result.FailedBranches)
+		printResultSection(errW, "Session states", result.FailedStates)
+		printResultSection(errW, "Checkpoints", result.FailedCheckpoints)
+		printResultSection(errW, "Archived v2 generations", result.FailedV2Refs)
+
+		if len(failedTempFiles) > 0 {
+			fmt.Fprintf(errW, "\nTemp files:\n")
+			for _, fe := range failedTempFiles {
+				fmt.Fprintf(errW, "  %s: %v\n", fe.File, fe.Err)
+			}
+		}
+
+		return fmt.Errorf("failed to delete %d %s", totalFailed, itemWord(totalFailed))
+	}
+
+	return nil
+}
+
+// cleanupItemIDs extracts IDs from a slice of CleanupItems.
+func cleanupItemIDs(items []strategy.CleanupItem) []string {
+	ids := make([]string, len(items))
+	for i, item := range items {
+		ids[i] = item.ID
+	}
+	return ids
+}
+
+// listAllTempFiles returns all files in .entire/tmp/ without filtering.
+// Used by --all since those sessions are being deleted anyway.
+func listAllTempFiles(ctx context.Context) ([]string, error) {
+	absDir, err := paths.AbsPath(ctx, paths.EntireTmpDir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve temp dir: %w", err)
+	}
+	root, err := os.OpenRoot(absDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to open root: %w", err)
+	}
+	defer root.Close()
+
+	var files []string
+	err = fs.WalkDir(root.FS(), ".", func(_ string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		files = append(files, d.Name())
+		return nil
+	})
 	if os.IsNotExist(err) {
 		return nil, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("failed to read temp dir: %w", err)
-	}
-
-	// Build set of active session IDs to protect their temp files
-	activeSessionIDs := make(map[string]bool)
-	if states, listErr := strategy.ListSessionStates(ctx); listErr == nil {
-		for _, state := range states {
-			activeSessionIDs[state.SessionID] = true
-		}
-	}
-
-	var files []string
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		// Skip temp files belonging to active sessions (e.g., "session-id.json")
-		name := entry.Name()
-		sessionID := strings.TrimSuffix(name, ".json")
-		if sessionID != name && activeSessionIDs[sessionID] {
-			continue
-		}
-		files = append(files, name)
+		return nil, fmt.Errorf("failed to list temp dir: %w", err)
 	}
 	return files, nil
 }
@@ -125,20 +487,27 @@ type TempFileDeleteError struct {
 }
 
 // deleteTempFiles removes all files in .entire/tmp/.
+// Uses os.Root to ensure deletions are confined to the temp directory.
 // Returns successfully deleted files and any failures with their error reasons.
 func deleteTempFiles(ctx context.Context, files []string) (deleted []string, failed []TempFileDeleteError) {
-	tmpDir, err := paths.AbsPath(ctx, paths.EntireTmpDir)
+	absDir, err := paths.AbsPath(ctx, paths.EntireTmpDir)
 	if err != nil {
-		// Can't get path - mark all as failed with the same error
 		for _, file := range files {
 			failed = append(failed, TempFileDeleteError{File: file, Err: err})
 		}
 		return nil, failed
 	}
+	root, err := os.OpenRoot(absDir)
+	if err != nil {
+		for _, file := range files {
+			failed = append(failed, TempFileDeleteError{File: file, Err: err})
+		}
+		return nil, failed
+	}
+	defer root.Close()
 
 	for _, file := range files {
-		path := filepath.Join(tmpDir, file)
-		if err := os.Remove(path); err != nil {
+		if err := root.Remove(file); err != nil {
 			failed = append(failed, TempFileDeleteError{File: file, Err: err})
 		} else {
 			deleted = append(deleted, file)
@@ -147,147 +516,42 @@ func deleteTempFiles(ctx context.Context, files []string) (deleted []string, fai
 	return deleted, failed
 }
 
-// runCleanWithItems is the core logic for cleaning orphaned items.
-// Separated for testability.
-func runCleanWithItems(ctx context.Context, w io.Writer, force bool, items []strategy.CleanupItem, tempFiles []string) error {
-	// Handle no items case
-	if len(items) == 0 && len(tempFiles) == 0 {
-		fmt.Fprintln(w, "No orphaned items to clean up.")
-		return nil
-	}
-
-	// Group items by type for display
-	var branches, states, checkpoints []strategy.CleanupItem
-	for _, item := range items {
-		switch item.Type {
-		case strategy.CleanupTypeShadowBranch:
-			branches = append(branches, item)
-		case strategy.CleanupTypeSessionState:
-			states = append(states, item)
-		case strategy.CleanupTypeCheckpoint:
-			checkpoints = append(checkpoints, item)
-		}
-	}
-
-	// Preview mode (default)
-	if !force {
-		totalItems := len(items) + len(tempFiles)
-		fmt.Fprintf(w, "Found %d items to clean:\n\n", totalItems)
-
-		if len(branches) > 0 {
-			fmt.Fprintf(w, "Shadow branches (%d):\n", len(branches))
-			for _, item := range branches {
-				fmt.Fprintf(w, "  %s\n", item.ID)
-			}
-			fmt.Fprintln(w)
-		}
-
-		if len(states) > 0 {
-			fmt.Fprintf(w, "Session states (%d):\n", len(states))
-			for _, item := range states {
-				fmt.Fprintf(w, "  %s\n", item.ID)
-			}
-			fmt.Fprintln(w)
-		}
-
-		if len(checkpoints) > 0 {
-			fmt.Fprintf(w, "Checkpoint metadata (%d):\n", len(checkpoints))
-			for _, item := range checkpoints {
-				fmt.Fprintf(w, "  %s\n", item.ID)
-			}
-			fmt.Fprintln(w)
-		}
-
-		if len(tempFiles) > 0 {
-			fmt.Fprintf(w, "Temp files (%d):\n", len(tempFiles))
-			for _, file := range tempFiles {
-				fmt.Fprintf(w, "  %s\n", file)
-			}
-			fmt.Fprintln(w)
-		}
-
-		fmt.Fprintln(w, "Run with --force to delete these items.")
-		return nil
-	}
-
-	// Force mode - delete items
-	result, err := strategy.DeleteAllCleanupItems(ctx, items)
+// activeSessionsOnCurrentHead returns sessions on the current HEAD
+// that are in an active phase (ACTIVE).
+func activeSessionsOnCurrentHead(ctx context.Context) ([]*session.State, error) {
+	repo, err := openRepository(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to delete orphaned items: %w", err)
+		return nil, err
 	}
 
-	// Delete temp files
-	deletedTempFiles, failedTempFiles := deleteTempFiles(ctx, tempFiles)
+	head, err := repo.Head()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get HEAD: %w", err)
+	}
+	currentHead := head.Hash().String()
 
-	// Report results
-	totalDeleted := len(result.ShadowBranches) + len(result.SessionStates) + len(result.Checkpoints) + len(deletedTempFiles)
-	totalFailed := len(result.FailedBranches) + len(result.FailedStates) + len(result.FailedCheckpoints) + len(failedTempFiles)
+	states, err := strategy.ListSessionStates(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list session states: %w", err)
+	}
 
-	if totalDeleted > 0 {
-		fmt.Fprintf(w, "Deleted %d items:\n", totalDeleted)
-
-		if len(result.ShadowBranches) > 0 {
-			fmt.Fprintf(w, "\n  Shadow branches (%d):\n", len(result.ShadowBranches))
-			for _, branch := range result.ShadowBranches {
-				fmt.Fprintf(w, "    %s\n", branch)
-			}
+	var active []*session.State
+	for _, state := range states {
+		if state.BaseCommit != currentHead {
+			continue
 		}
-
-		if len(result.SessionStates) > 0 {
-			fmt.Fprintf(w, "\n  Session states (%d):\n", len(result.SessionStates))
-			for _, state := range result.SessionStates {
-				fmt.Fprintf(w, "    %s\n", state)
-			}
-		}
-
-		if len(result.Checkpoints) > 0 {
-			fmt.Fprintf(w, "\n  Checkpoints (%d):\n", len(result.Checkpoints))
-			for _, cp := range result.Checkpoints {
-				fmt.Fprintf(w, "    %s\n", cp)
-			}
-		}
-
-		if len(deletedTempFiles) > 0 {
-			fmt.Fprintf(w, "\n  Temp files (%d):\n", len(deletedTempFiles))
-			for _, file := range deletedTempFiles {
-				fmt.Fprintf(w, "    %s\n", file)
-			}
+		if state.Phase.IsActive() {
+			active = append(active, state)
 		}
 	}
 
-	if totalFailed > 0 {
-		fmt.Fprintf(w, "\nFailed to delete %d items:\n", totalFailed)
+	return active, nil
+}
 
-		if len(result.FailedBranches) > 0 {
-			fmt.Fprintf(w, "\n  Shadow branches:\n")
-			for _, branch := range result.FailedBranches {
-				fmt.Fprintf(w, "    %s\n", branch)
-			}
-		}
-
-		if len(result.FailedStates) > 0 {
-			fmt.Fprintf(w, "\n  Session states:\n")
-			for _, state := range result.FailedStates {
-				fmt.Fprintf(w, "    %s\n", state)
-			}
-		}
-
-		if len(result.FailedCheckpoints) > 0 {
-			fmt.Fprintf(w, "\n  Checkpoints:\n")
-			for _, cp := range result.FailedCheckpoints {
-				fmt.Fprintf(w, "    %s\n", cp)
-			}
-		}
-
-		if len(failedTempFiles) > 0 {
-			fmt.Fprintf(w, "\n  Temp files:\n")
-			for _, fe := range failedTempFiles {
-				fmt.Fprintf(w, "    %s: %v\n", fe.File, fe.Err)
-			}
-		}
-
-		return fmt.Errorf("failed to delete %d items", totalFailed)
+// itemWord returns "item" or "items" based on count.
+func itemWord(n int) string {
+	if n == 1 {
+		return "item"
 	}
-
-	return nil
+	return "items"
 }

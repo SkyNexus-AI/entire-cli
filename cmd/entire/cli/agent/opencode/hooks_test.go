@@ -37,7 +37,7 @@ func TestInstallHooks_FreshInstall(t *testing.T) {
 
 	content := string(data)
 	// The plugin uses JS template literal ${ENTIRE_CMD} — check the constant was set correctly
-	if !strings.Contains(content, `const ENTIRE_CMD = "entire"`) {
+	if !strings.Contains(content, `const ENTIRE_CMD = 'entire'`) {
 		t.Error("plugin file does not contain production command constant")
 	}
 	if !strings.Contains(content, "hooks opencode") {
@@ -96,8 +96,120 @@ func TestInstallHooks_LocalDev(t *testing.T) {
 	}
 
 	content := string(data)
-	if !strings.Contains(content, "go run") {
-		t.Error("local dev mode: plugin file should contain 'go run'")
+	if !strings.Contains(content, `go run "$(git rev-parse --show-toplevel)"/cmd/entire/main.go`) {
+		t.Error("local dev mode: plugin file should use git rev-parse for go run path")
+	}
+}
+
+func TestInstallHooks_SessionStartIsGuardedBySessionSwitch(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	ag := &OpenCodeAgent{}
+
+	if _, err := ag.InstallHooks(context.Background(), false, false); err != nil {
+		t.Fatalf("install failed: %v", err)
+	}
+
+	pluginPath := filepath.Join(dir, ".opencode", "plugins", "entire.ts")
+	data, err := os.ReadFile(pluginPath)
+	if err != nil {
+		t.Fatalf("plugin file not created: %v", err)
+	}
+
+	content := string(data)
+	guard := "if (resetSessionTracking(session.id)) {"
+	hook := `const proc = Bun.spawn(hookCmd("session-start"), {`
+
+	guardIdx := strings.Index(content, guard)
+	hookIdx := strings.Index(content, hook)
+
+	if guardIdx == -1 {
+		t.Fatalf("plugin file missing guard %q", guard)
+	}
+	if hookIdx == -1 {
+		t.Fatalf("plugin file missing session-start hook spawn %q", hook)
+	}
+	if guardIdx >= hookIdx {
+		t.Fatalf("expected guarded session-start call after guard, got guard=%d hook=%d",
+			guardIdx, hookIdx)
+	}
+	if !strings.Contains(content, `if ! command -v entire >/dev/null 2>&1; then exit 0; fi; exec entire hooks opencode ${hookName}`) {
+		t.Fatal("plugin file missing silent production hook command")
+	}
+}
+
+func TestInstallHooks_TurnStartUsesSyncHook(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	ag := &OpenCodeAgent{}
+
+	if _, err := ag.InstallHooks(context.Background(), false, false); err != nil {
+		t.Fatalf("install failed: %v", err)
+	}
+
+	pluginPath := filepath.Join(dir, ".opencode", "plugins", "entire.ts")
+	data, err := os.ReadFile(pluginPath)
+	if err != nil {
+		t.Fatalf("plugin file not created: %v", err)
+	}
+
+	content := string(data)
+	if !strings.Contains(content, `callHookSync("turn-start", {`) {
+		t.Fatal("plugin file should dispatch turn-start via callHookSync")
+	}
+	if strings.Contains(content, `await callHook("turn-start", {`) {
+		t.Fatal("plugin file should not dispatch turn-start via async callHook")
+	}
+}
+
+func TestInstallHooks_MessageUpdatedFallsBackToSessionStart(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	ag := &OpenCodeAgent{}
+
+	if _, err := ag.InstallHooks(context.Background(), false, false); err != nil {
+		t.Fatalf("install failed: %v", err)
+	}
+
+	pluginPath := filepath.Join(dir, ".opencode", "plugins", "entire.ts")
+	data, err := os.ReadFile(pluginPath)
+	if err != nil {
+		t.Fatalf("plugin file not created: %v", err)
+	}
+
+	content := string(data)
+	if !strings.Contains(content, `if (msg.sessionID && resetSessionTracking(msg.sessionID)) {`) {
+		t.Fatal("plugin file should bootstrap session tracking from message.updated")
+	}
+	if !strings.Contains(content, `callHookSync("session-start", {`) {
+		t.Fatal("plugin file should dispatch fallback session-start via callHookSync")
+	}
+	if !strings.Contains(content, `session_id: msg.sessionID,`) {
+		t.Fatal("plugin file should pass msg.sessionID in fallback session-start")
+	}
+}
+
+func TestInstallHooks_MessageUpdatedFallsBackToTurnStart(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	ag := &OpenCodeAgent{}
+
+	if _, err := ag.InstallHooks(context.Background(), false, false); err != nil {
+		t.Fatalf("install failed: %v", err)
+	}
+
+	pluginPath := filepath.Join(dir, ".opencode", "plugins", "entire.ts")
+	data, err := os.ReadFile(pluginPath)
+	if err != nil {
+		t.Fatalf("plugin file not created: %v", err)
+	}
+
+	content := string(data)
+	if !strings.Contains(content, `if (msg.role === "user" && !seenUserMessages.has(msg.id)) {`) {
+		t.Fatal("plugin file should use message.updated as a fallback turn-start source")
+	}
+	if !strings.Contains(content, `prompt: "",`) {
+		t.Fatal("plugin file should send an empty prompt for fallback turn-start")
 	}
 }
 
@@ -118,6 +230,50 @@ func TestInstallHooks_ForceReinstall(t *testing.T) {
 	}
 	if count != 1 {
 		t.Errorf("force install: expected 1, got %d", count)
+	}
+}
+
+func TestInstallHooks_RewritesWhenContentDiffers(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	ag := &OpenCodeAgent{}
+
+	// Install with localDev=true
+	count, err := ag.InstallHooks(context.Background(), true, false)
+	if err != nil {
+		t.Fatalf("first install failed: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("first install: expected 1, got %d", count)
+	}
+
+	pluginPath := filepath.Join(dir, ".opencode", "plugins", "entire.ts")
+	before, err := os.ReadFile(pluginPath)
+	if err != nil {
+		t.Fatalf("failed to read plugin file: %v", err)
+	}
+	if !strings.Contains(string(before), "go run") {
+		t.Fatal("expected localDev content with 'go run'")
+	}
+
+	// Reinstall with localDev=false (content differs) — should rewrite
+	count, err = ag.InstallHooks(context.Background(), false, false)
+	if err != nil {
+		t.Fatalf("second install failed: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("second install with different content: expected 1, got %d", count)
+	}
+
+	after, err := os.ReadFile(pluginPath)
+	if err != nil {
+		t.Fatalf("failed to read plugin file after rewrite: %v", err)
+	}
+	if strings.Contains(string(after), "go run") {
+		t.Error("expected production content after rewrite, but still contains 'go run'")
+	}
+	if !strings.Contains(string(after), `const ENTIRE_CMD = 'entire'`) {
+		t.Error("expected production command constant after rewrite")
 	}
 }
 

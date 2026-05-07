@@ -5,9 +5,11 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/entireio/cli/cmd/entire/cli/agent/external"
 	"github.com/entireio/cli/cmd/entire/cli/logging"
 	"github.com/entireio/cli/cmd/entire/cli/settings"
 	"github.com/entireio/cli/cmd/entire/cli/strategy"
+	"github.com/entireio/cli/perf"
 
 	"github.com/spf13/cobra"
 )
@@ -20,16 +22,22 @@ var gitHooksDisabled bool
 type gitHookContext struct {
 	hookName string
 	ctx      context.Context
-	start    time.Time
+	span     *perf.Span
 	strategy *strategy.ManualCommitStrategy
 }
 
-// newGitHookContext creates a new git hook context with logging initialized.
+// newGitHookContext creates a new git hook context with logging and a root perf span.
+// The perf span ensures all perf.Start calls in strategy methods become child spans,
+// producing a single perf log line per hook with a full timing breakdown.
+// Callers must defer g.span.End() to emit the perf log.
 func newGitHookContext(ctx context.Context, hookName string) *gitHookContext {
+	ctx = logging.WithComponent(ctx, "hooks")
+	ctx, span := perf.Start(ctx, hookName,
+		slog.String("hook_type", "git"))
 	g := &gitHookContext{
 		hookName: hookName,
-		start:    time.Now(),
-		ctx:      logging.WithComponent(ctx, "hooks"),
+		ctx:      ctx,
+		span:     span,
 	}
 	g.strategy = GetStrategy(ctx)
 	return g
@@ -45,16 +53,9 @@ func (g *gitHookContext) logInvoked(extraAttrs ...any) {
 	logging.Debug(g.ctx, g.hookName+" hook invoked", append(attrs, extraAttrs...)...)
 }
 
-// logCompleted logs hook completion with duration at DEBUG level.
-// The actual work logging (checkpoint operations) happens at INFO level in the handlers.
-func (g *gitHookContext) logCompleted(err error, extraAttrs ...any) {
-	attrs := []any{
-		slog.String("hook", g.hookName),
-		slog.String("hook_type", "git"),
-		slog.String("strategy", strategy.StrategyNameManualCommit),
-		slog.Bool("success", err == nil),
-	}
-	logging.LogDuration(g.ctx, slog.LevelDebug, g.hookName+" hook completed", g.start, append(attrs, extraAttrs...)...)
+// logCompleted records the error on the perf span.
+func (g *gitHookContext) logCompleted(err error) {
+	g.span.RecordError(err)
 }
 
 // initHookLogging initializes logging for hooks by finding the most recent session.
@@ -76,6 +77,10 @@ func initHookLogging(ctx context.Context) func() {
 		// Init failed - logging will use stderr fallback
 		return func() {}
 	}
+
+	// Configure PII redaction once at startup (reads settings, no-op if disabled).
+	strategy.EnsureRedactionConfigured()
+
 	return logging.Close
 }
 
@@ -98,6 +103,13 @@ func newHooksGitCmd() *cobra.Command {
 				gitHooksDisabled = true
 				return nil
 			}
+			// Discover external agent plugins so GetByAgentType works correctly
+			// during condensation (e.g. post-commit). Without this, external agents
+			// registered in the hook phase cannot be resolved here, causing token
+			// usage and other agent-specific data to be missing from metadata.json.
+			discoveryCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			defer cancel()
+			external.DiscoverAndRegister(discoveryCtx)
 			hookLogCleanup = initHookLogging(ctx)
 			return nil
 		},
@@ -112,6 +124,7 @@ func newHooksGitCmd() *cobra.Command {
 	cmd.AddCommand(newHooksGitPrepareCommitMsgCmd())
 	cmd.AddCommand(newHooksGitCommitMsgCmd())
 	cmd.AddCommand(newHooksGitPostCommitCmd())
+	cmd.AddCommand(newHooksGitPostRewriteCmd())
 	cmd.AddCommand(newHooksGitPrePushCmd())
 
 	return cmd
@@ -134,10 +147,11 @@ func newHooksGitPrepareCommitMsgCmd() *cobra.Command {
 			}
 
 			g := newGitHookContext(cmd.Context(), "prepare-commit-msg")
+			defer g.span.End()
 			g.logInvoked(slog.String("source", source))
 
 			hookErr := g.strategy.PrepareCommitMsg(g.ctx, commitMsgFile, source)
-			g.logCompleted(hookErr, slog.String("source", source))
+			g.logCompleted(hookErr)
 
 			return nil
 		},
@@ -157,6 +171,7 @@ func newHooksGitCommitMsgCmd() *cobra.Command {
 			commitMsgFile := args[0]
 
 			g := newGitHookContext(cmd.Context(), "commit-msg")
+			defer g.span.End()
 			g.logInvoked()
 
 			hookErr := g.strategy.CommitMsg(g.ctx, commitMsgFile)
@@ -177,9 +192,32 @@ func newHooksGitPostCommitCmd() *cobra.Command {
 			}
 
 			g := newGitHookContext(cmd.Context(), "post-commit")
+			defer g.span.End()
 			g.logInvoked()
 
 			hookErr := g.strategy.PostCommit(g.ctx)
+			g.logCompleted(hookErr)
+
+			return nil
+		},
+	}
+}
+
+func newHooksGitPostRewriteCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "post-rewrite <rewrite-type>",
+		Short: "Handle post-rewrite git hook",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if gitHooksDisabled {
+				return nil
+			}
+
+			g := newGitHookContext(cmd.Context(), "post-rewrite")
+			defer g.span.End()
+			g.logInvoked(slog.String("rewrite_type", args[0]))
+
+			hookErr := g.strategy.PostRewrite(g.ctx, args[0], cmd.InOrStdin())
 			g.logCompleted(hookErr)
 
 			return nil
@@ -200,10 +238,11 @@ func newHooksGitPrePushCmd() *cobra.Command {
 			remote := args[0]
 
 			g := newGitHookContext(cmd.Context(), "pre-push")
+			defer g.span.End()
 			g.logInvoked(slog.String("remote", remote))
 
 			hookErr := g.strategy.PrePush(g.ctx, remote)
-			g.logCompleted(hookErr, slog.String("remote", remote))
+			g.logCompleted(hookErr)
 
 			return nil
 		},

@@ -9,11 +9,28 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
 	"github.com/entireio/cli/cmd/entire/cli/logging"
+	"github.com/entireio/cli/cmd/entire/cli/versioninfo"
 	"golang.org/x/mod/semver"
+)
+
+const goosWindows = "windows"
+
+// goos is a test seam for runtime.GOOS so the Windows-specific auto-install
+// gating can be exercised from a non-Windows host.
+var goos = runtime.GOOS
+
+const (
+	installManagerBrew    = "brew"
+	installManagerMise    = "mise"
+	installManagerScoop   = "scoop"
+	installManagerUnknown = "unknown"
+	installChannelStable  = "stable"
+	installChannelNightly = "nightly"
 )
 
 // CheckAndNotify performs a version check and notifies the user if a newer version is available.
@@ -42,8 +59,13 @@ func CheckAndNotify(ctx context.Context, w io.Writer, currentVersion string) {
 		return
 	}
 
-	// Fetch the latest version from GitHub API
-	latestVersion, err := fetchLatestVersion(ctx)
+	// Fetch the latest version from the appropriate channel
+	var latestVersion string
+	if isNightly(currentVersion) {
+		latestVersion, err = fetchLatestNightlyVersion(ctx)
+	} else {
+		latestVersion, err = fetchLatestVersion(ctx)
+	}
 
 	// Always update cache to avoid retrying on every CLI invocation
 	cache.LastCheckTime = time.Now()
@@ -58,9 +80,20 @@ func CheckAndNotify(ctx context.Context, w io.Writer, currentVersion string) {
 		return
 	}
 
-	// Show notification if outdated
+	// Show notification and offer an interactive upgrade when outdated
 	if isOutdated(currentVersion, latestVersion) {
-		printNotification(w, currentVersion, latestVersion)
+		if cache.SkippedVersion == versionCacheKey(latestVersion) {
+			return
+		}
+
+		action := MaybeAutoUpdate(ctx, w, currentVersion, latestVersion)
+		if action == autoUpdateActionSkipUntilNextVersion {
+			cache.SkippedVersion = versionCacheKey(latestVersion)
+			if saveErr := saveCache(cache); saveErr != nil {
+				logging.Debug(ctx, "version check: failed to save skipped version",
+					"error", saveErr.Error())
+			}
+		}
 	}
 }
 
@@ -150,7 +183,7 @@ func saveCache(cache *VersionCache) error {
 	}
 
 	// Rename temp file to final location
-	//nolint:gosec // G703: filePath is constructed internally, not from user input
+
 	if err := os.Rename(tmpFile.Name(), filePath); err != nil {
 		return fmt.Errorf("renaming cache file: %w", err)
 	}
@@ -158,10 +191,8 @@ func saveCache(cache *VersionCache) error {
 	return nil
 }
 
-// fetchLatestVersion fetches the latest version from the GitHub API.
-// Returns a timeout-safe version check using the configured HTTP timeout.
+// fetchLatestVersion fetches the latest stable version tag from the GitHub API.
 func fetchLatestVersion(ctx context.Context) (string, error) {
-	// Create a context with timeout for the HTTP request
 	ctx, cancel := context.WithTimeout(ctx, httpTimeout)
 	defer cancel()
 
@@ -170,12 +201,11 @@ func fetchLatestVersion(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("creating request: %w", err)
 	}
 
-	// Set headers to identify as Entire CLI
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("User-Agent", "entire-cli")
 
 	client := &http.Client{}
-	resp, err := client.Do(req) //nolint:gosec // G704: intentional request to GitHub releases API
+	resp, err := client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("fetching release info: %w", err)
 	}
@@ -185,22 +215,70 @@ func fetchLatestVersion(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("unexpected status code: %d", resp.StatusCode)
 	}
 
-	// Read response body (limit to 1MB to prevent memory exhaustion)
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
 		return "", fmt.Errorf("reading response: %w", err)
 	}
 
-	// Parse GitHub release response
 	version, err := parseGitHubRelease(body)
 	if err != nil {
 		return "", fmt.Errorf("parsing release: %w", err)
 	}
-
 	return version, nil
 }
 
-// parseGitHubRelease parses the GitHub API response and extracts the latest stable version.
+// isNightly returns true if the version string is a nightly build.
+func isNightly(version string) bool {
+	if !strings.HasPrefix(version, "v") {
+		version = "v" + version
+	}
+	return strings.Contains(semver.Prerelease(version), "nightly")
+}
+
+// fetchLatestNightlyVersion fetches the latest nightly version tag from the GitHub releases list.
+func fetchLatestNightlyVersion(ctx context.Context) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, httpTimeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, githubReleasesURL+"?per_page=20", nil)
+	if err != nil {
+		return "", fmt.Errorf("creating request: %w", err)
+	}
+
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("User-Agent", "entire-cli/"+versioninfo.Version)
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("fetching releases: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return "", fmt.Errorf("reading response: %w", err)
+	}
+
+	var releases []GitHubRelease
+	if err := json.Unmarshal(body, &releases); err != nil {
+		return "", fmt.Errorf("parsing JSON: %w", err)
+	}
+
+	for _, r := range releases {
+		if r.Prerelease && strings.Contains(r.TagName, "-nightly.") {
+			return r.TagName, nil
+		}
+	}
+
+	return "", errors.New("no nightly release found")
+}
+
+// parseGitHubRelease parses the GitHub API response and returns the latest stable version tag.
 // Filters out prerelease versions.
 func parseGitHubRelease(body []byte) (string, error) {
 	var release GitHubRelease
@@ -208,12 +286,10 @@ func parseGitHubRelease(body []byte) (string, error) {
 		return "", fmt.Errorf("parsing JSON: %w", err)
 	}
 
-	// Skip prerelease versions
 	if release.Prerelease {
 		return "", errors.New("only prerelease versions available")
 	}
 
-	// Ensure we have a tag name
 	if release.TagName == "" {
 		return "", errors.New("empty tag name")
 	}
@@ -232,33 +308,112 @@ func isOutdated(current, latest string) bool {
 		latest = "v" + latest
 	}
 
+	// Skip notification for dev builds (e.g., "1.0.0-dev-xxx").
+	// These are local development builds and shouldn't trigger update notifications.
+	// Normal prereleases (e.g., "1.0.0-rc1") should still be compared normally.
+	if strings.Contains(semver.Prerelease(current), "dev") {
+		return false
+	}
+
 	// semver.Compare returns -1 if current < latest
 	return semver.Compare(current, latest) < 0
 }
 
-// updateCommand returns the appropriate update instruction based on how the binary was installed.
-func updateCommand() string {
-	execPath, err := os.Executable()
+func versionCacheKey(version string) string {
+	if version == "" || strings.HasPrefix(version, "v") {
+		return version
+	}
+	return "v" + version
+}
+
+func displayVersion(version string) string {
+	return strings.TrimPrefix(version, "v")
+}
+
+func releaseNotesURL(version string) string {
+	return downloadsURL + "/tag/" + versionCacheKey(version)
+}
+
+// executablePath is the function used to get the current executable path.
+// It's a variable so tests can override it.
+var executablePath = os.Executable
+
+func releaseChannel(version string) string {
+	if isNightly(version) {
+		return installChannelNightly
+	}
+	return installChannelStable
+}
+
+func installManagerForCurrentBinary() string {
+	execPath, err := executablePath()
 	if err != nil {
-		return "curl -fsSL https://entire.io/install.sh | bash"
+		return installManagerUnknown
 	}
 
-	// Resolve symlinks to find the real path (Homebrew symlinks from bin/ to Cellar/)
 	realPath, err := filepath.EvalSymlinks(execPath)
 	if err != nil {
 		realPath = execPath
 	}
+	normalizedPath := strings.ReplaceAll(filepath.ToSlash(realPath), "\\", "/")
 
-	if strings.Contains(realPath, "/Cellar/") || strings.Contains(realPath, "/homebrew/") {
+	switch {
+	case strings.Contains(normalizedPath, "/Cellar/") ||
+		strings.Contains(normalizedPath, "/opt/homebrew/") ||
+		strings.Contains(normalizedPath, "/linuxbrew/") ||
+		strings.Contains(normalizedPath, "/Caskroom/"):
+		return installManagerBrew
+	case strings.Contains(normalizedPath, "/mise/installs/"):
+		return installManagerMise
+	case strings.Contains(normalizedPath, "/scoop/apps/"):
+		return installManagerScoop
+	default:
+		return installManagerUnknown
+	}
+}
+
+// canAutoInstall reports whether updateCommand(currentVersion) is safe to
+// execute on the current OS. Returns false on Windows when the install
+// manager is unknown, because the POSIX curl-pipe-bash fallback can't run
+// from cmd.exe and there's no Windows-native installer to substitute.
+func canAutoInstall() bool {
+	if goos != goosWindows {
+		return true
+	}
+	switch installManagerForCurrentBinary() {
+	case installManagerScoop, installManagerMise:
+		return true
+	default:
+		return false
+	}
+}
+
+// downloadsURL is the public page users visit when we can't offer an
+// auto-installable command on their platform.
+const downloadsURL = "https://github.com/entireio/cli/releases"
+
+// updateCommand returns the appropriate update instruction based on how the binary was installed.
+func updateCommand(currentVersion string) string {
+	switch installManagerForCurrentBinary() {
+	case installManagerBrew:
+		if releaseChannel(currentVersion) == installChannelNightly {
+			return "brew upgrade entire@nightly"
+		}
 		return "brew upgrade entire"
+	case installManagerMise:
+		return "mise upgrade entire"
+	case installManagerScoop:
+		return "scoop update entire/cli"
 	}
 
+	if releaseChannel(currentVersion) == installChannelNightly {
+		return "curl -fsSL https://entire.io/install.sh | bash -s -- --channel nightly"
+	}
 	return "curl -fsSL https://entire.io/install.sh | bash"
 }
 
 // printNotification prints the version update notification to the user.
 func printNotification(w io.Writer, current, latest string) {
-	msg := fmt.Sprintf("\nA newer version of Entire CLI is available: %s (current: %s)\nRun '%s' to update.\n",
-		latest, current, updateCommand())
-	fmt.Fprint(w, msg)
+	fmt.Fprintf(w, "\nUpdate available! %s -> %s\nRelease notes: %s\n",
+		displayVersion(current), displayVersion(latest), releaseNotesURL(latest))
 }

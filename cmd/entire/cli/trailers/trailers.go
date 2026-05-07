@@ -52,7 +52,6 @@ const (
 
 // Pre-compiled regexes for trailer parsing.
 var (
-	// Trailer parsing regexes.
 	strategyTrailerRegex     = regexp.MustCompile(StrategyTrailerKey + `:\s*(.+)`)
 	metadataTrailerRegex     = regexp.MustCompile(MetadataTrailerKey + `:\s*(.+)`)
 	taskMetadataTrailerRegex = regexp.MustCompile(MetadataTaskTrailerKey + `:\s*(.+)`)
@@ -136,6 +135,32 @@ func ParseCheckpoint(commitMessage string) (checkpointID.CheckpointID, bool) {
 		}
 	}
 	return checkpointID.EmptyCheckpointID, false
+}
+
+// ParseAllCheckpoints extracts all checkpoint IDs from a commit message.
+// Returns a slice of CheckpointIDs (may be empty if none found).
+// Duplicate IDs are deduplicated while preserving order.
+// This is useful for squash merge commits that contain multiple Entire-Checkpoint trailers.
+func ParseAllCheckpoints(commitMessage string) []checkpointID.CheckpointID {
+	matches := checkpointTrailerRegex.FindAllStringSubmatch(commitMessage, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+
+	seen := make(map[string]bool)
+	ids := make([]checkpointID.CheckpointID, 0, len(matches))
+	for _, match := range matches {
+		if len(match) > 1 {
+			idStr := strings.TrimSpace(match[1])
+			if !seen[idStr] {
+				if cpID, err := checkpointID.NewCheckpointID(idStr); err == nil {
+					seen[idStr] = true
+					ids = append(ids, cpID)
+				}
+			}
+		}
+	}
+	return ids
 }
 
 // ParseAllSessions extracts all session IDs from a commit message.
@@ -225,4 +250,60 @@ func FormatShadowTaskCommit(message, taskMetadataDir, sessionID string) string {
 // This links user commits to their checkpoint metadata on entire/checkpoints/v1 branch.
 func FormatCheckpoint(message string, cpID checkpointID.CheckpointID) string {
 	return fmt.Sprintf("%s\n\n%s: %s\n", message, CheckpointTrailerKey, cpID.String())
+}
+
+// trailerLineRe matches git trailer format: "Key-Name: value" (no spaces before colon).
+var trailerLineRe = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9-]*: `)
+
+// IsTrailerLine reports whether a line matches git trailer format.
+func IsTrailerLine(line string) bool {
+	return trailerLineRe.MatchString(line)
+}
+
+// appendTrailerLine appends a single pre-formatted trailer line (e.g. "Key: value")
+// to message in trailer-block-aware format. If the message already ends with a
+// trailer paragraph the line is joined directly to it; otherwise a blank line is
+// inserted first to start a new trailer block.
+func appendTrailerLine(message, trailerLine string) string {
+	trimmed := strings.TrimRight(message, "\n")
+
+	lines := strings.Split(trimmed, "\n")
+	i := len(lines) - 1
+	for i >= 0 && strings.HasPrefix(strings.TrimSpace(lines[i]), "#") {
+		i--
+	}
+
+	hasTrailerBlock := false
+	if i >= 0 {
+		last := strings.TrimSpace(lines[i])
+		if last != "" && IsTrailerLine(last) {
+			for i > 0 {
+				i--
+				above := strings.TrimSpace(lines[i])
+				if strings.HasPrefix(above, "#") {
+					continue
+				}
+				if above == "" {
+					hasTrailerBlock = true
+					break
+				}
+				if !IsTrailerLine(above) {
+					break
+				}
+			}
+		}
+	}
+
+	if hasTrailerBlock {
+		return trimmed + "\n" + trailerLine + "\n"
+	}
+	return trimmed + "\n\n" + trailerLine + "\n"
+}
+
+// AppendCheckpointTrailer appends Entire-Checkpoint in trailer-aware format.
+// If the message already ends with a trailer paragraph, append directly to it;
+// otherwise add a blank line before starting a new trailer block.
+func AppendCheckpointTrailer(message, checkpointID string) string {
+	trailer := fmt.Sprintf("%s: %s", CheckpointTrailerKey, checkpointID)
+	return appendTrailerLine(message, trailer)
 }

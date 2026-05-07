@@ -14,10 +14,10 @@ import (
 	"github.com/entireio/cli/cmd/entire/cli/paths"
 	"github.com/entireio/cli/cmd/entire/cli/trailers"
 
-	"github.com/go-git/go-git/v5"
-	"github.com/go-git/go-git/v5/plumbing"
-	"github.com/go-git/go-git/v5/plumbing/filemode"
-	"github.com/go-git/go-git/v5/plumbing/object"
+	"github.com/go-git/go-git/v6"
+	"github.com/go-git/go-git/v6/plumbing"
+	"github.com/go-git/go-git/v6/plumbing/filemode"
+	"github.com/go-git/go-git/v6/plumbing/object"
 )
 
 const testSessionID = "2025-01-15-test-session"
@@ -174,6 +174,9 @@ func TestManualCommitStrategyGetAdditionalSessions(t *testing.T) {
 }
 
 func TestListSessionsFunctionsWithoutRepo(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Chdir(tmpDir)
+
 	// Without a git repo, these will fail - just verifying they're callable
 	_, err := ListSessions(context.Background())
 	if err != nil {
@@ -447,7 +450,7 @@ func createTestMultiSessionCheckpoint(t *testing.T, repo *git.Repository, checkp
 	}
 
 	// Build tree
-	treeHash, err := checkpoint.BuildTreeFromEntries(repo, entries)
+	treeHash, err := checkpoint.BuildTreeFromEntries(context.Background(), repo, entries)
 	if err != nil {
 		t.Fatalf("failed to build tree: %v", err)
 	}
@@ -563,7 +566,7 @@ func createTestMetadataBranchWithPrompt(t *testing.T, repo *git.Repository, sess
 	}
 
 	// Build tree
-	treeHash, err := checkpoint.BuildTreeFromEntries(repo, entries)
+	treeHash, err := checkpoint.BuildTreeFromEntries(context.Background(), repo, entries)
 	if err != nil {
 		t.Fatalf("failed to build tree: %v", err)
 	}

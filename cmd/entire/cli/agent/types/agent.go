@@ -1,4 +1,4 @@
-package types //nolint:revive // types is fine when used outside this package
+package types
 
 // AgentName is the registry key type for agents (e.g., "claude-code", "gemini").
 type AgentName string

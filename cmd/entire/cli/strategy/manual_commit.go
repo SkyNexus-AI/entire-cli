@@ -6,6 +6,8 @@ import (
 	"sync"
 
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint"
+	"github.com/entireio/cli/cmd/entire/cli/checkpoint/remote"
+	"github.com/entireio/cli/cmd/entire/cli/logging"
 	"github.com/entireio/cli/cmd/entire/cli/session"
 )
 
@@ -26,6 +28,15 @@ type ManualCommitStrategy struct {
 	checkpointStoreOnce sync.Once
 	// checkpointStoreErr captures any error during initialization
 	checkpointStoreErr error
+
+	// blobFetcher, when set, is passed to the checkpoint store to enable
+	// on-demand blob fetching after treeless fetches. Set via SetBlobFetcher.
+	blobFetcher checkpoint.BlobFetchFunc
+
+	// v2CheckpointStore manages v2 checkpoint reads
+	v2CheckpointStore     *checkpoint.V2GitStore
+	v2CheckpointStoreOnce sync.Once
+	v2CheckpointStoreErr  error
 }
 
 // getStateStore returns the session state store, initializing it lazily if needed.
@@ -51,14 +62,51 @@ func (s *ManualCommitStrategy) getCheckpointStore() (*checkpoint.GitStore, error
 			s.checkpointStoreErr = fmt.Errorf("failed to open repository: %w", err)
 			return
 		}
-		s.checkpointStore = checkpoint.NewGitStore(repo)
+		WarnIfMetadataDisconnected()
+		store := checkpoint.NewGitStore(repo)
+		if s.blobFetcher != nil {
+			store.SetBlobFetcher(s.blobFetcher)
+		}
+		s.checkpointStore = store
 	})
 	return s.checkpointStore, s.checkpointStoreErr
+}
+
+// getV2CheckpointStore returns the v2 checkpoint store, initializing it lazily.
+// The context from the first call is used for initialization (settings loading, repo opening).
+func (s *ManualCommitStrategy) getV2CheckpointStore(ctx context.Context) (*checkpoint.V2GitStore, error) {
+	s.v2CheckpointStoreOnce.Do(func() {
+		repo, err := OpenRepository(ctx)
+		if err != nil {
+			s.v2CheckpointStoreErr = fmt.Errorf("failed to open repository: %w", err)
+			return
+		}
+		v2URL, err := remote.FetchURL(ctx)
+		if err != nil {
+			logging.Debug(ctx, "manual-commit: using origin for v2 store fetch remote",
+				"error", err.Error(),
+			)
+		}
+		s.v2CheckpointStore = checkpoint.NewV2GitStore(repo, v2URL)
+	})
+	return s.v2CheckpointStore, s.v2CheckpointStoreErr
 }
 
 // NewManualCommitStrategy creates a new manual-commit strategy instance.
 func NewManualCommitStrategy() *ManualCommitStrategy {
 	return &ManualCommitStrategy{}
+}
+
+// SetBlobFetcher configures on-demand blob fetching for the checkpoint store.
+// Must be called before the first checkpoint store access (e.g., before RestoreLogsOnly).
+func (s *ManualCommitStrategy) SetBlobFetcher(f checkpoint.BlobFetchFunc) {
+	s.blobFetcher = f
+}
+
+// HasBlobFetcher reports whether a blob fetcher is configured.
+// Used in tests to verify the strategy is properly wired for treeless fetch support.
+func (s *ManualCommitStrategy) HasBlobFetcher() bool {
+	return s.blobFetcher != nil
 }
 
 // ValidateRepository validates that the repository is suitable for this strategy.

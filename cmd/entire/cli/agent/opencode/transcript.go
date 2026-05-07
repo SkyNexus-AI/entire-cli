@@ -14,6 +14,7 @@ import (
 var (
 	_ agent.TranscriptAnalyzer = (*OpenCodeAgent)(nil)
 	_ agent.TranscriptPreparer = (*OpenCodeAgent)(nil)
+	_ agent.PromptExtractor    = (*OpenCodeAgent)(nil)
 	_ agent.TokenCalculator    = (*OpenCodeAgent)(nil)
 )
 
@@ -198,61 +199,6 @@ func extractFilePaths(state *ToolState) []string {
 	return nil
 }
 
-// ExtractPrompts extracts user prompt strings from the transcript starting at the given offset.
-func (a *OpenCodeAgent) ExtractPrompts(sessionRef string, fromOffset int) ([]string, error) {
-	session, err := parseExportSessionFromFile(sessionRef)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	if session == nil {
-		return nil, nil
-	}
-
-	var prompts []string
-	for i := fromOffset; i < len(session.Messages); i++ {
-		msg := session.Messages[i]
-		if msg.Info.Role != roleUser {
-			continue
-		}
-		// Extract text from parts
-		content := ExtractTextFromParts(msg.Parts)
-		if content != "" {
-			prompts = append(prompts, content)
-		}
-	}
-
-	return prompts, nil
-}
-
-// ExtractSummary extracts the last assistant message content as a summary.
-func (a *OpenCodeAgent) ExtractSummary(sessionRef string) (string, error) {
-	session, err := parseExportSessionFromFile(sessionRef)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return "", nil
-		}
-		return "", err
-	}
-	if session == nil {
-		return "", nil
-	}
-
-	for i := len(session.Messages) - 1; i >= 0; i-- {
-		msg := session.Messages[i]
-		if msg.Info.Role == roleAssistant {
-			content := ExtractTextFromParts(msg.Parts)
-			if content != "" {
-				return content, nil
-			}
-		}
-	}
-
-	return "", nil
-}
-
 // ExtractTextFromParts extracts text content from message parts.
 func ExtractTextFromParts(parts []Part) string {
 	var texts []string
@@ -264,8 +210,48 @@ func ExtractTextFromParts(parts []Part) string {
 	return strings.Join(texts, "\n")
 }
 
+// Tags used by oh-my-opencode and similar orchestration tools to inject
+// context into the conversation with role "user" — not actual user prompts.
+const (
+	systemReminderOpen  = "<system-reminder>"
+	systemReminderClose = "</system-reminder>"
+)
+
+// isSystemReminderOnly reports whether content consists entirely of
+// <system-reminder>...</system-reminder> blocks (after trimming whitespace).
+// Delegates to stripSystemReminders to correctly handle multiple blocks
+// (HasPrefix+HasSuffix would false-positive on "<sr>a</sr>real<sr>b</sr>").
+func isSystemReminderOnly(content string) bool {
+	if strings.TrimSpace(content) == "" {
+		return false
+	}
+	return stripSystemReminders(content) == ""
+}
+
+// stripSystemReminders removes all <system-reminder>...</system-reminder>
+// sections from content and returns the remaining text. If nothing remains
+// after stripping (or the content was system-reminder-only), it returns "".
+func stripSystemReminders(content string) string {
+	result := content
+	for {
+		start := strings.Index(result, systemReminderOpen)
+		if start == -1 {
+			break
+		}
+		end := strings.Index(result[start:], systemReminderClose)
+		if end == -1 {
+			break
+		}
+		end += start + len(systemReminderClose)
+		result = result[:start] + result[end:]
+	}
+	return strings.TrimSpace(result)
+}
+
 // ExtractAllUserPrompts extracts all user prompts from raw export JSON transcript bytes.
 // This is a package-level function used by the condensation path.
+// Messages that consist entirely of <system-reminder> tags (e.g. from oh-my-opencode)
+// are excluded. Mixed messages have their system-reminder sections stripped.
 func ExtractAllUserPrompts(data []byte) ([]string, error) {
 	session, err := ParseExportSession(data)
 	if err != nil {
@@ -281,9 +267,36 @@ func ExtractAllUserPrompts(data []byte) ([]string, error) {
 			continue
 		}
 		content := ExtractTextFromParts(msg.Parts)
+		if content == "" {
+			continue
+		}
+		if isSystemReminderOnly(content) {
+			continue
+		}
+		content = stripSystemReminders(content)
 		if content != "" {
 			prompts = append(prompts, content)
 		}
+	}
+	return prompts, nil
+}
+
+// ExtractPrompts extracts user prompts from an OpenCode export transcript starting
+// at the given message offset.
+func (a *OpenCodeAgent) ExtractPrompts(sessionRef string, fromOffset int) ([]string, error) {
+	data, err := os.ReadFile(sessionRef) //nolint:gosec // path comes from validated agent session state
+	if err != nil {
+		return nil, fmt.Errorf("failed to read opencode transcript for prompt extraction: %w", err)
+	}
+
+	scoped, err := SliceFromMessage(data, fromOffset)
+	if err != nil {
+		return nil, fmt.Errorf("failed to scope opencode transcript for prompt extraction: %w", err)
+	}
+
+	prompts, err := ExtractAllUserPrompts(scoped)
+	if err != nil {
+		return nil, fmt.Errorf("failed to extract prompts from opencode transcript: %w", err)
 	}
 	return prompts, nil
 }

@@ -39,6 +39,14 @@ func detectHookManagers(repoRoot string) []hookManager {
 		}
 	}
 
+	// hk supports {.config/,}hk{,.local}.pkl
+	for _, dir := range []string{"", ".config/"} {
+		for _, variant := range []string{"", ".local"} {
+			name := dir + "hk" + variant + ".pkl"
+			checks = append(checks, hookManager{"hk", name, false})
+		}
+	}
+
 	seen := make(map[string]bool)
 	for _, c := range checks {
 		path := filepath.Join(repoRoot, c.ConfigPath)
@@ -113,7 +121,8 @@ func extractCommandLine(hookContent string) string {
 // CheckAndWarnHookManagers detects external hook managers and writes a warning
 // to w if any are found.
 // localDev controls whether the warning references "go run" or the "entire" binary.
-func CheckAndWarnHookManagers(ctx context.Context, w io.Writer, localDev bool) {
+// absolutePath embeds the full binary path for GUI git clients.
+func CheckAndWarnHookManagers(ctx context.Context, w io.Writer, localDev, absolutePath bool) {
 	repoRoot, err := paths.WorktreeRoot(ctx)
 	if err != nil {
 		return
@@ -124,7 +133,12 @@ func CheckAndWarnHookManagers(ctx context.Context, w io.Writer, localDev bool) {
 		return
 	}
 
-	warning := hookManagerWarning(managers, hookCmdPrefix(localDev))
+	cmdPrefix, err := hookCmdPrefix(localDev, absolutePath)
+	if err != nil {
+		// Best-effort: hook manager warnings are advisory, skip on resolution failure
+		return
+	}
+	warning := hookManagerWarning(managers, cmdPrefix)
 	if warning != "" {
 		fmt.Fprintln(w)
 		fmt.Fprint(w, warning)

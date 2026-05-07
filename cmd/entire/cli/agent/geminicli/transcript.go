@@ -151,32 +151,6 @@ func ExtractModifiedFilesFromTranscript(transcript *GeminiTranscript) []string {
 	return files
 }
 
-// ExtractLastUserPrompt extracts the last user message from transcript data
-func ExtractLastUserPrompt(data []byte) (string, error) {
-	transcript, err := ParseTranscript(data)
-	if err != nil {
-		return "", err
-	}
-
-	return ExtractLastUserPromptFromTranscript(transcript), nil
-}
-
-// ExtractLastUserPromptFromTranscript extracts the last user prompt from a parsed transcript
-func ExtractLastUserPromptFromTranscript(transcript *GeminiTranscript) string {
-	for i := len(transcript.Messages) - 1; i >= 0; i-- {
-		msg := transcript.Messages[i]
-		if msg.Type != MessageTypeUser {
-			continue
-		}
-
-		// Content is now a string field
-		if msg.Content != "" {
-			return msg.Content
-		}
-	}
-	return ""
-}
-
 // ExtractAllUserPrompts extracts all user messages from transcript data
 func ExtractAllUserPrompts(data []byte) ([]string, error) {
 	transcript, err := ParseTranscript(data)
@@ -196,27 +170,6 @@ func ExtractAllUserPromptsFromTranscript(transcript *GeminiTranscript) []string 
 		}
 	}
 	return prompts
-}
-
-// ExtractLastAssistantMessage extracts the last gemini response from transcript data
-func ExtractLastAssistantMessage(data []byte) (string, error) {
-	transcript, err := ParseTranscript(data)
-	if err != nil {
-		return "", err
-	}
-
-	return ExtractLastAssistantMessageFromTranscript(transcript), nil
-}
-
-// ExtractLastAssistantMessageFromTranscript extracts the last gemini response from a parsed transcript
-func ExtractLastAssistantMessageFromTranscript(transcript *GeminiTranscript) string {
-	for i := len(transcript.Messages) - 1; i >= 0; i-- {
-		msg := transcript.Messages[i]
-		if msg.Type == MessageTypeGemini && msg.Content != "" {
-			return msg.Content
-		}
-	}
-	return ""
 }
 
 // GetLastMessageID returns the ID of the last message in the transcript.
@@ -258,6 +211,94 @@ func GetLastMessageIDFromFile(path string) (string, error) {
 	}
 
 	return GetLastMessageID(data)
+}
+
+// NormalizeTranscript normalizes user message content fields in-place from
+// [{"text":"..."}] arrays to plain strings, preserving all other transcript fields
+// (timestamps, thoughts, tokens, model, toolCalls, etc.).
+//
+// This operates on raw JSON rather than using ParseTranscript + re-marshal because
+// GeminiMessage only captures a subset of fields (id, type, content, toolCalls).
+// Round-tripping through the struct would silently drop fields like timestamp, model,
+// and tokens that are present in real Gemini transcripts. The raw approach rewrites
+// only the content values while leaving all other fields untouched.
+func NormalizeTranscript(data []byte) ([]byte, error) {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, fmt.Errorf("failed to parse transcript: %w", err)
+	}
+
+	messagesRaw, ok := raw["messages"]
+	if !ok {
+		return data, nil
+	}
+
+	var messages []json.RawMessage
+	if err := json.Unmarshal(messagesRaw, &messages); err != nil {
+		return nil, fmt.Errorf("failed to parse messages: %w", err)
+	}
+
+	changed := false
+	for i, msgRaw := range messages {
+		var msg map[string]json.RawMessage
+		if err := json.Unmarshal(msgRaw, &msg); err != nil {
+			continue
+		}
+
+		contentRaw, hasContent := msg["content"]
+		if !hasContent || len(contentRaw) == 0 {
+			continue
+		}
+
+		// Skip if already a string
+		var strContent string
+		if json.Unmarshal(contentRaw, &strContent) == nil {
+			continue
+		}
+
+		// Try to convert array of {"text":"..."} to a plain string
+		var parts []struct {
+			Text string `json:"text"`
+		}
+		if json.Unmarshal(contentRaw, &parts) != nil {
+			continue
+		}
+
+		var texts []string
+		for _, p := range parts {
+			if p.Text != "" {
+				texts = append(texts, p.Text)
+			}
+		}
+		joined := strings.Join(texts, "\n")
+		strBytes, err := json.Marshal(joined)
+		if err != nil {
+			continue
+		}
+		msg["content"] = strBytes
+		rewritten, err := json.Marshal(msg)
+		if err != nil {
+			continue
+		}
+		messages[i] = rewritten
+		changed = true
+	}
+
+	if !changed {
+		return data, nil
+	}
+
+	rewrittenMessages, err := json.Marshal(messages)
+	if err != nil {
+		return nil, fmt.Errorf("failed to re-serialize messages: %w", err)
+	}
+	raw["messages"] = rewrittenMessages
+
+	result, err := json.MarshalIndent(raw, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("failed to re-serialize transcript: %w", err)
+	}
+	return result, nil
 }
 
 // SliceFromMessage returns a Gemini transcript scoped to messages starting from

@@ -4,6 +4,9 @@ import (
 	"fmt"
 	"runtime"
 
+	"github.com/entireio/cli/cmd/entire/cli/paths"
+	cliReview "github.com/entireio/cli/cmd/entire/cli/review"
+	"github.com/entireio/cli/cmd/entire/cli/settings"
 	"github.com/entireio/cli/cmd/entire/cli/telemetry"
 	"github.com/entireio/cli/cmd/entire/cli/versioncheck"
 	"github.com/entireio/cli/cmd/entire/cli/versioninfo"
@@ -13,8 +16,9 @@ import (
 const gettingStarted = `
 
 Getting Started:
-  To get started with Entire CLI, run 'entire enable' to configure
-  your project's environment. For more information, visit:
+  To get started with Entire CLI, run 'entire enable' to enable
+  session tracking in your repository, then 'entire agent add <name>'
+  to install hooks for a specific agent. For more information, visit:
   https://docs.entire.io/introduction
 
 `
@@ -67,24 +71,55 @@ func NewRootCmd() *cobra.Command {
 			versioncheck.CheckAndNotify(cmd.Context(), cmd.OutOrStdout(), versioninfo.Version)
 		},
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			ctx := cmd.Context()
+			// If we're in a git repo but Entire isn't set up yet, start the setup flow
+			if _, err := paths.WorktreeRoot(ctx); err == nil && !settings.IsSetUpAny(ctx) {
+				return runSetupFlow(ctx, cmd.OutOrStdout(), EnableOptions{})
+			}
 			return cmd.Help()
 		},
 	}
 
-	// Add subcommands here
-	cmd.AddCommand(newRewindCmd())
-	cmd.AddCommand(newResumeCmd())
+	// Noun groups (canonical homes for subcommands).
+	cmd.AddCommand(newSessionsCmd())        // 'session' (with 'sessions' as Cobra alias)
+	cmd.AddCommand(newCheckpointGroupCmd()) // 'checkpoint' / 'cp' / 'checkpoints'
+	cmd.AddCommand(newAgentGroupCmd())      // 'agent'
+	cmd.AddCommand(newAuthCmd())            // 'auth'
+	cmd.AddCommand(newDoctorCmd())          // 'doctor' (group: trace/logs/bundle)
+	cmd.AddCommand(newLabsCmd())            // 'labs' (experimental workflow discovery)
+	cmd.AddCommand(newPluginGroupCmd())     // 'plugin' (managed install/list/remove)
+
+	// Top-level lifecycle and standalone commands.
+	cmd.AddCommand(cliReview.NewCommand(buildReviewDeps(newReviewAttachCmd()))) // hidden during maturation; runs configured review skills
 	cmd.AddCommand(newCleanCmd())
-	cmd.AddCommand(newResetCmd())
+	cmd.AddCommand(newSetupCmd()) // 'configure' — non-agent settings; agent CRUD lives under 'agent'
 	cmd.AddCommand(newEnableCmd())
 	cmd.AddCommand(newDisableCmd())
 	cmd.AddCommand(newStatusCmd())
-	cmd.AddCommand(newHooksCmd())
+	cmd.AddCommand(newLoginCmd())
+	cmd.AddCommand(newLogoutCmd())
 	cmd.AddCommand(newVersionCmd())
-	cmd.AddCommand(newExplainCmd())
-	cmd.AddCommand(newDoctorCmd())
+	cmd.AddCommand(newDispatchCmd())
+	cmd.AddCommand(newActivityCmd())
+	cmd.AddCommand(newRecapCmd())
+
+	// Hidden top-level shortcuts. Functional but print a deprecation hint.
+	cmd.AddCommand(hideAsAlias(newRewindCmd(), "entire checkpoint rewind"))
+	cmd.AddCommand(hideAsAlias(newResumeCmd(), "entire session resume"))
+	cmd.AddCommand(hideAsAlias(newAttachCmd(), "entire session attach"))
+	cmd.AddCommand(hideAsAlias(newExplainCmd(), "entire checkpoint explain"))
+	cmd.AddCommand(hideAsAlias(newTraceCmd(), "entire doctor trace"))
+	cmd.AddCommand(newSearchCmd()) // 'entire search' = 'checkpoint search' (hidden, no hint)
+
+	// Deprecated top-level alias (functional; reset.go marks it Deprecated).
+	cmd.AddCommand(newResetCmd())
+
+	// Hidden infrastructure.
+	cmd.AddCommand(newHooksCmd())
+	cmd.AddCommand(newTrailCmd())
 	cmd.AddCommand(newSendAnalyticsCmd())
 	cmd.AddCommand(newCurlBashPostInstallCmd())
+	cmd.AddCommand(newMigrateCmd())
 
 	cmd.SetVersionTemplate(versionString())
 

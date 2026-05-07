@@ -5,12 +5,14 @@ package strategy
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"time"
 
 	"github.com/entireio/cli/cmd/entire/cli/agent"
 	"github.com/entireio/cli/cmd/entire/cli/agent/types"
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint/id"
+	"github.com/entireio/cli/cmd/entire/cli/osroot"
 )
 
 // ErrNoMetadata is returned when a commit does not have an Entire metadata trailer.
@@ -265,10 +267,15 @@ func TaskMetadataDir(sessionMetadataDir, toolUseID string) string {
 
 // ReadTaskCheckpoint reads the checkpoint.json file from a task metadata directory.
 // This is used during rewind to get the checkpoint UUID for transcript truncation.
+// Uses os.Root for traversal-resistant file reads within the metadata directory.
 func ReadTaskCheckpoint(taskMetadataDir string) (*TaskCheckpoint, error) {
-	checkpointFile := taskMetadataDir + "/checkpoint.json"
+	root, err := os.OpenRoot(taskMetadataDir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open task metadata directory: %w", err)
+	}
+	defer root.Close()
 
-	data, err := os.ReadFile(checkpointFile) //nolint:gosec // Reading from controlled git metadata path
+	data, err := osroot.ReadFile(root, "checkpoint.json")
 	if err != nil {
 		return nil, err //nolint:wrapcheck // already present in codebase
 	}

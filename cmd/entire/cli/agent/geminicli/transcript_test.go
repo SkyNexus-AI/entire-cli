@@ -1,9 +1,55 @@
 package geminicli
 
 import (
+	"encoding/json"
 	"os"
 	"testing"
 )
+
+func TestNormalizeTranscript(t *testing.T) {
+	t.Parallel()
+
+	// Raw Gemini format has content as array of objects for user messages,
+	// plus extra fields (timestamp, model, tokens) that must be preserved.
+	raw := []byte(`{"sessionId":"abc","messages":[{"id":"m1","type":"user","timestamp":"2026-01-01T10:00:00Z","content":[{"text":"fix the bug"}]},{"id":"m2","type":"gemini","content":"ok","model":"gemini-3-flash","tokens":{"input":100}}]}`)
+	normalized, err := NormalizeTranscript(raw)
+	if err != nil {
+		t.Fatalf("NormalizeTranscript() error: %v", err)
+	}
+
+	// After normalization, content should be a plain string
+	var result struct {
+		SessionID string `json:"sessionId"`
+		Messages  []struct {
+			ID        string `json:"id"`
+			Type      string `json:"type"`
+			Content   string `json:"content"`
+			Timestamp string `json:"timestamp"`
+			Model     string `json:"model"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(normalized, &result); err != nil {
+		t.Fatalf("failed to parse normalized transcript: %v", err)
+	}
+	if result.SessionID != "abc" {
+		t.Errorf("sessionId = %q, want %q", result.SessionID, "abc")
+	}
+	if len(result.Messages) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(result.Messages))
+	}
+	if result.Messages[0].Content != "fix the bug" {
+		t.Errorf("user content = %q, want %q", result.Messages[0].Content, "fix the bug")
+	}
+	if result.Messages[0].Timestamp != "2026-01-01T10:00:00Z" {
+		t.Errorf("user timestamp = %q, want preserved", result.Messages[0].Timestamp)
+	}
+	if result.Messages[1].Content != "ok" {
+		t.Errorf("gemini content = %q, want %q", result.Messages[1].Content, "ok")
+	}
+	if result.Messages[1].Model != "gemini-3-flash" {
+		t.Errorf("model = %q, want preserved", result.Messages[1].Model)
+	}
+}
 
 func TestParseTranscript(t *testing.T) {
 	t.Parallel()
@@ -267,63 +313,6 @@ func TestParseTranscript_NullContent(t *testing.T) {
 	}
 }
 
-func TestExtractLastUserPrompt(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name string
-		data string
-		want string
-	}{
-		{
-			name: "string content",
-			data: `{"messages": [
-				{"type": "user", "content": "first"},
-				{"type": "gemini", "content": "response"},
-				{"type": "user", "content": "second"}
-			]}`,
-			want: "second",
-		},
-		{
-			name: "array content",
-			data: `{"messages": [
-				{"type": "user", "content": [{"text": "first prompt"}]},
-				{"type": "gemini", "content": "response"},
-				{"type": "user", "content": [{"text": "second prompt"}]}
-			]}`,
-			want: "second prompt",
-		},
-		{
-			name: "only one user message",
-			data: `{"messages": [{"type": "user", "content": "only message"}]}`,
-			want: "only message",
-		},
-		{
-			name: "no user messages",
-			data: `{"messages": [{"type": "gemini", "content": "assistant only"}]}`,
-			want: "",
-		},
-		{
-			name: "empty messages",
-			data: `{"messages": []}`,
-			want: "",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			got, err := ExtractLastUserPrompt([]byte(tt.data))
-			if err != nil {
-				t.Fatalf("ExtractLastUserPrompt() error = %v", err)
-			}
-			if got != tt.want {
-				t.Errorf("ExtractLastUserPrompt() = %q, want %q", got, tt.want)
-			}
-		})
-	}
-}
-
 func TestGetLastMessageID(t *testing.T) {
 	t.Parallel()
 
@@ -582,24 +571,6 @@ func TestExtractModifiedFilesFromTranscript(t *testing.T) {
 	}
 	if len(files) > 0 && files[0] != "test.go" {
 		t.Errorf("got file %q, want test.go", files[0])
-	}
-}
-
-func TestExtractLastUserPromptFromTranscript(t *testing.T) {
-	t.Parallel()
-
-	transcript := &GeminiTranscript{
-		Messages: []GeminiMessage{
-			{Type: "user", Content: "first prompt"},
-			{Type: "gemini", Content: "response"},
-			{Type: "user", Content: "last prompt"},
-		},
-	}
-
-	got := ExtractLastUserPromptFromTranscript(transcript)
-
-	if got != "last prompt" {
-		t.Errorf("got %q, want 'last prompt'", got)
 	}
 }
 

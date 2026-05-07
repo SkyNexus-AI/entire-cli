@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 
 	"github.com/entireio/cli/cmd/entire/cli/strategy"
+	"github.com/entireio/cli/cmd/entire/cli/testutil"
 )
 
 // HookRunner executes CLI hooks in the test environment.
@@ -56,6 +57,21 @@ func (r *HookRunner) SimulateUserPromptSubmit(sessionID string) error {
 	return r.runHookWithInput("user-prompt-submit", input)
 }
 
+// SimulateUserPromptSubmitWithPrompt simulates the UserPromptSubmit hook
+// with an explicit user prompt. The prompt is passed to the lifecycle handler
+// and appended to the filesystem prompt.txt.
+func (r *HookRunner) SimulateUserPromptSubmitWithPrompt(sessionID, prompt string) error {
+	r.T.Helper()
+
+	input := map[string]string{
+		"session_id":      sessionID,
+		"transcript_path": "",
+		"prompt":          prompt,
+	}
+
+	return r.runHookWithInput("user-prompt-submit", input)
+}
+
 // SimulateUserPromptSubmitWithTranscriptPath simulates the UserPromptSubmit hook
 // with an explicit transcript path. This is needed for mid-session commit detection
 // which reads the live transcript to detect ongoing sessions.
@@ -65,6 +81,21 @@ func (r *HookRunner) SimulateUserPromptSubmitWithTranscriptPath(sessionID, trans
 	input := map[string]string{
 		"session_id":      sessionID,
 		"transcript_path": transcriptPath,
+	}
+
+	return r.runHookWithInput("user-prompt-submit", input)
+}
+
+// SimulateUserPromptSubmitWithPromptAndTranscriptPath simulates the UserPromptSubmit
+// hook with both an explicit prompt and transcript path. This combines the behavior
+// of SimulateUserPromptSubmitWithPrompt and SimulateUserPromptSubmitWithTranscriptPath.
+func (r *HookRunner) SimulateUserPromptSubmitWithPromptAndTranscriptPath(sessionID, prompt, transcriptPath string) error {
+	r.T.Helper()
+
+	input := map[string]string{
+		"session_id":      sessionID,
+		"transcript_path": transcriptPath,
+		"prompt":          prompt,
 	}
 
 	return r.runHookWithInput("user-prompt-submit", input)
@@ -204,14 +235,22 @@ func (r *HookRunner) runHookWithInput(flag string, input interface{}) error {
 }
 
 func (r *HookRunner) runHookInRepoDir(hookName string, inputJSON []byte) error {
+	return r.runHookInRepoDirWithExtraEnv(hookName, inputJSON, nil)
+}
+
+// runHookInRepoDirWithExtraEnv is like runHookInRepoDir but appends additional
+// env vars to the subprocess environment. Used by review-env adoption tests that
+// need ENTIRE_REVIEW_* vars present in the hook child process.
+func (r *HookRunner) runHookInRepoDirWithExtraEnv(hookName string, inputJSON []byte, extraEnv []string) error {
 	// Run using the shared test binary
 	// Command structure: entire hooks claude-code <hook-name>
 	cmd := exec.Command(getTestBinary(), "hooks", "claude-code", hookName)
 	cmd.Dir = r.RepoDir
 	cmd.Stdin = bytes.NewReader(inputJSON)
-	cmd.Env = append(gitIsolatedEnv(),
+	cmd.Env = append(testutil.GitIsolatedEnv(),
 		"ENTIRE_TEST_CLAUDE_PROJECT_DIR="+r.ClaudeProjectDir,
 	)
+	cmd.Env = append(cmd.Env, extraEnv...)
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -221,6 +260,27 @@ func (r *HookRunner) runHookInRepoDir(hookName string, inputJSON []byte) error {
 
 	r.T.Logf("Hook %s output: %s", hookName, output)
 	return nil
+}
+
+// SimulateUserPromptSubmitWithReviewEnvVars simulates the UserPromptSubmit
+// hook with ENTIRE_REVIEW_* env vars set on the subprocess, as `entire review`
+// would set them on the spawned agent process. The hook child process inherits
+// these vars, triggering env-based review adoption in the lifecycle handler.
+func (r *HookRunner) SimulateUserPromptSubmitWithReviewEnvVars(sessionID, prompt string, extraEnv []string) error {
+	r.T.Helper()
+
+	input := map[string]string{
+		"session_id":      sessionID,
+		"transcript_path": "",
+		"prompt":          prompt,
+	}
+
+	inputJSON, err := json.Marshal(input)
+	if err != nil {
+		return fmt.Errorf("failed to marshal hook input: %w", err)
+	}
+
+	return r.runHookInRepoDirWithExtraEnv("user-prompt-submit", inputJSON, extraEnv)
 }
 
 // Session represents a simulated Claude Code session.
@@ -280,12 +340,35 @@ func (env *TestEnv) SimulateUserPromptSubmit(sessionID string) error {
 	return runner.SimulateUserPromptSubmit(sessionID)
 }
 
+// SimulateUserPromptSubmitWithPrompt is a convenience method on TestEnv.
+func (env *TestEnv) SimulateUserPromptSubmitWithPrompt(sessionID, prompt string) error {
+	env.T.Helper()
+	runner := NewHookRunner(env.RepoDir, env.ClaudeProjectDir, env.T)
+	return runner.SimulateUserPromptSubmitWithPrompt(sessionID, prompt)
+}
+
+// SimulateUserPromptSubmitWithReviewEnvVars is a convenience method on TestEnv.
+// It simulates the UserPromptSubmit hook with ENTIRE_REVIEW_* env vars set on
+// the subprocess, reproducing what `entire review` does before spawning the agent.
+func (env *TestEnv) SimulateUserPromptSubmitWithReviewEnvVars(sessionID, prompt string, extraEnv []string) error {
+	env.T.Helper()
+	runner := NewHookRunner(env.RepoDir, env.ClaudeProjectDir, env.T)
+	return runner.SimulateUserPromptSubmitWithReviewEnvVars(sessionID, prompt, extraEnv)
+}
+
 // SimulateUserPromptSubmitWithTranscriptPath is a convenience method on TestEnv.
 // This is needed for mid-session commit detection which reads the live transcript.
 func (env *TestEnv) SimulateUserPromptSubmitWithTranscriptPath(sessionID, transcriptPath string) error {
 	env.T.Helper()
 	runner := NewHookRunner(env.RepoDir, env.ClaudeProjectDir, env.T)
 	return runner.SimulateUserPromptSubmitWithTranscriptPath(sessionID, transcriptPath)
+}
+
+// SimulateUserPromptSubmitWithPromptAndTranscriptPath is a convenience method on TestEnv.
+func (env *TestEnv) SimulateUserPromptSubmitWithPromptAndTranscriptPath(sessionID, prompt, transcriptPath string) error {
+	env.T.Helper()
+	runner := NewHookRunner(env.RepoDir, env.ClaudeProjectDir, env.T)
+	return runner.SimulateUserPromptSubmitWithPromptAndTranscriptPath(sessionID, prompt, transcriptPath)
 }
 
 // SimulateUserPromptSubmitWithResponse is a convenience method on TestEnv.
@@ -385,14 +468,16 @@ type HookOutput struct {
 	Err    error
 }
 
-// runHookWithOutput runs a hook and returns both stdout and stderr separately.
-func (r *HookRunner) runHookWithOutput(hookName string, inputJSON []byte) HookOutput {
-	cmd := exec.Command(getTestBinary(), "hooks", "claude-code", hookName)
+// runAgentHookWithOutput runs a hook for the given agent and returns stdout/stderr separately.
+func (r *HookRunner) runAgentHookWithOutput(agentName, hookName string, inputJSON []byte, extraEnv ...string) HookOutput {
+	cmd := exec.Command(getTestBinary(), "hooks", agentName, hookName)
 	cmd.Dir = r.RepoDir
 	cmd.Stdin = bytes.NewReader(inputJSON)
-	cmd.Env = append(gitIsolatedEnv(),
+	cmd.Env = append(testutil.GitIsolatedEnv(),
 		"ENTIRE_TEST_CLAUDE_PROJECT_DIR="+r.ClaudeProjectDir,
+		"GOCACHE=/tmp/go-build",
 	)
+	cmd.Env = append(cmd.Env, extraEnv...)
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -404,6 +489,35 @@ func (r *HookRunner) runHookWithOutput(hookName string, inputJSON []byte) HookOu
 		Stderr: stderr.Bytes(),
 		Err:    err,
 	}
+}
+
+// runShellHookCommandWithOutput runs an installed hook shell command exactly as written
+// in the hook file and returns stdout/stderr separately.
+func (r *HookRunner) runShellHookCommandWithOutput(command string, inputJSON []byte, extraEnv ...string) HookOutput {
+	cmd := exec.Command("/bin/sh", "-c", command)
+	cmd.Dir = r.RepoDir
+	cmd.Stdin = bytes.NewReader(inputJSON)
+	cmd.Env = append(testutil.GitIsolatedEnv(),
+		"ENTIRE_TEST_CLAUDE_PROJECT_DIR="+r.ClaudeProjectDir,
+		"GOCACHE=/tmp/go-build",
+	)
+	cmd.Env = append(cmd.Env, extraEnv...)
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+	return HookOutput{
+		Stdout: stdout.Bytes(),
+		Stderr: stderr.Bytes(),
+		Err:    err,
+	}
+}
+
+// runHookWithOutput runs a hook and returns both stdout and stderr separately.
+func (r *HookRunner) runHookWithOutput(hookName string, inputJSON []byte) HookOutput {
+	return r.runAgentHookWithOutput("claude-code", hookName, inputJSON)
 }
 
 // SimulateUserPromptSubmitWithOutput simulates the UserPromptSubmit hook and returns the output.
@@ -540,7 +654,7 @@ func (r *GeminiHookRunner) runGeminiHookInRepoDir(hookName string, inputJSON []b
 	cmd := exec.Command(getTestBinary(), "hooks", "gemini", hookName)
 	cmd.Dir = r.RepoDir
 	cmd.Stdin = bytes.NewReader(inputJSON)
-	cmd.Env = append(gitIsolatedEnv(),
+	cmd.Env = append(testutil.GitIsolatedEnv(),
 		"ENTIRE_TEST_GEMINI_PROJECT_DIR="+r.GeminiProjectDir,
 	)
 
@@ -559,7 +673,7 @@ func (r *GeminiHookRunner) runGeminiHookWithOutput(hookName string, inputJSON []
 	cmd := exec.Command(getTestBinary(), "hooks", "gemini", hookName)
 	cmd.Dir = r.RepoDir
 	cmd.Stdin = bytes.NewReader(inputJSON)
-	cmd.Env = append(gitIsolatedEnv(),
+	cmd.Env = append(testutil.GitIsolatedEnv(),
 		"ENTIRE_TEST_GEMINI_PROJECT_DIR="+r.GeminiProjectDir,
 	)
 
@@ -752,6 +866,364 @@ func (env *TestEnv) SimulateGeminiSessionEnd(sessionID, transcriptPath string) e
 	return runner.SimulateGeminiSessionEnd(sessionID, transcriptPath)
 }
 
+// --- Factory AI Droid Hook Runner ---
+
+// FactoryDroidHookRunner executes Factory AI Droid hooks in the test environment.
+type FactoryDroidHookRunner struct {
+	RepoDir string
+	T       interface {
+		Helper()
+		Fatalf(format string, args ...interface{})
+		Logf(format string, args ...interface{})
+	}
+}
+
+// NewFactoryDroidHookRunner creates a new Factory Droid hook runner.
+func NewFactoryDroidHookRunner(repoDir string, t interface {
+	Helper()
+	Fatalf(format string, args ...interface{})
+	Logf(format string, args ...interface{})
+}) *FactoryDroidHookRunner {
+	return &FactoryDroidHookRunner{
+		RepoDir: repoDir,
+		T:       t,
+	}
+}
+
+// runDroidHookWithInput runs a Factory Droid hook with the given input.
+func (r *FactoryDroidHookRunner) runDroidHookWithInput(hookName string, input interface{}) error {
+	r.T.Helper()
+
+	inputJSON, err := json.Marshal(input)
+	if err != nil {
+		return fmt.Errorf("failed to marshal hook input: %w", err)
+	}
+
+	return r.runDroidHookInRepoDir(hookName, inputJSON)
+}
+
+func (r *FactoryDroidHookRunner) runDroidHookInRepoDir(hookName string, inputJSON []byte) error {
+	cmd := exec.Command(getTestBinary(), "hooks", "factoryai-droid", hookName)
+	cmd.Dir = r.RepoDir
+	cmd.Stdin = bytes.NewReader(inputJSON)
+	cmd.Env = os.Environ()
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("hook %s failed: %w\nInput: %s\nOutput: %s",
+			hookName, err, inputJSON, output)
+	}
+
+	r.T.Logf("Droid hook %s output: %s", hookName, output)
+	return nil
+}
+
+// runDroidHookWithOutput runs a Factory Droid hook and returns both stdout and stderr separately.
+func (r *FactoryDroidHookRunner) runDroidHookWithOutput(hookName string, inputJSON []byte) HookOutput {
+	cmd := exec.Command(getTestBinary(), "hooks", "factoryai-droid", hookName)
+	cmd.Dir = r.RepoDir
+	cmd.Stdin = bytes.NewReader(inputJSON)
+	cmd.Env = os.Environ()
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+	return HookOutput{
+		Stdout: stdout.Bytes(),
+		Stderr: stderr.Bytes(),
+		Err:    err,
+	}
+}
+
+// SimulateUserPromptSubmit simulates the UserPromptSubmit hook for Factory Droid.
+func (r *FactoryDroidHookRunner) SimulateUserPromptSubmit(sessionID string) error {
+	r.T.Helper()
+
+	input := map[string]string{
+		"session_id":      sessionID,
+		"transcript_path": "",
+		"prompt":          "test prompt",
+	}
+
+	return r.runDroidHookWithInput("user-prompt-submit", input)
+}
+
+// SimulateUserPromptSubmitWithOutput simulates the UserPromptSubmit hook and returns the output.
+func (r *FactoryDroidHookRunner) SimulateUserPromptSubmitWithOutput(sessionID string) HookOutput {
+	r.T.Helper()
+
+	input := map[string]string{
+		"session_id":      sessionID,
+		"transcript_path": "",
+		"prompt":          "test prompt",
+	}
+
+	inputJSON, err := json.Marshal(input)
+	if err != nil {
+		return HookOutput{Err: fmt.Errorf("failed to marshal hook input: %w", err)}
+	}
+
+	return r.runDroidHookWithOutput("user-prompt-submit", inputJSON)
+}
+
+// SimulateStop simulates the Stop hook for Factory Droid.
+func (r *FactoryDroidHookRunner) SimulateStop(sessionID, transcriptPath string) error {
+	r.T.Helper()
+
+	input := map[string]string{
+		"session_id":      sessionID,
+		"transcript_path": transcriptPath,
+	}
+
+	return r.runDroidHookWithInput("stop", input)
+}
+
+// SimulateSessionStart simulates the SessionStart hook for Factory Droid.
+func (r *FactoryDroidHookRunner) SimulateSessionStart(sessionID string) error {
+	r.T.Helper()
+
+	input := map[string]string{
+		"session_id":      sessionID,
+		"transcript_path": "",
+	}
+
+	return r.runDroidHookWithInput("session-start", input)
+}
+
+// SimulateSessionStartWithOutput simulates the SessionStart hook and returns the output.
+func (r *FactoryDroidHookRunner) SimulateSessionStartWithOutput(sessionID string) HookOutput {
+	r.T.Helper()
+
+	input := map[string]string{
+		"session_id":      sessionID,
+		"transcript_path": "",
+	}
+
+	inputJSON, err := json.Marshal(input)
+	if err != nil {
+		return HookOutput{Err: fmt.Errorf("failed to marshal hook input: %w", err)}
+	}
+
+	return r.runDroidHookWithOutput("session-start", inputJSON)
+}
+
+// SimulateSessionEnd simulates the SessionEnd hook for Factory Droid.
+func (r *FactoryDroidHookRunner) SimulateSessionEnd(sessionID, transcriptPath string) error {
+	r.T.Helper()
+
+	input := map[string]string{
+		"session_id":      sessionID,
+		"transcript_path": transcriptPath,
+	}
+
+	return r.runDroidHookWithInput("session-end", input)
+}
+
+// SimulatePreTask simulates the PreToolUse[Task] hook for Factory Droid.
+func (r *FactoryDroidHookRunner) SimulatePreTask(sessionID, transcriptPath, toolUseID string) error {
+	r.T.Helper()
+
+	input := map[string]interface{}{
+		"session_id":      sessionID,
+		"transcript_path": transcriptPath,
+		"tool_use_id":     toolUseID,
+		"tool_input": map[string]string{
+			"subagent_type": "general-purpose",
+			"description":   "test task",
+		},
+	}
+
+	return r.runDroidHookWithInput("pre-tool-use", input)
+}
+
+// SimulatePostTask simulates the PostToolUse[Task] hook for Factory Droid.
+func (r *FactoryDroidHookRunner) SimulatePostTask(input PostTaskInput) error {
+	r.T.Helper()
+
+	hookInput := map[string]interface{}{
+		"session_id":      input.SessionID,
+		"transcript_path": input.TranscriptPath,
+		"tool_use_id":     input.ToolUseID,
+		"tool_input":      map[string]string{},
+		"tool_response": map[string]string{
+			"agentId": input.AgentID,
+		},
+	}
+
+	return r.runDroidHookWithInput("post-tool-use", hookInput)
+}
+
+// FactoryDroidSession represents a simulated Factory AI Droid session.
+type FactoryDroidSession struct {
+	ID             string
+	TranscriptPath string
+	env            *TestEnv
+}
+
+// NewFactoryDroidSession creates a new simulated Factory Droid session.
+func (env *TestEnv) NewFactoryDroidSession() *FactoryDroidSession {
+	env.T.Helper()
+
+	env.SessionCounter++
+	sessionID := fmt.Sprintf("droid-session-%d", env.SessionCounter)
+	transcriptPath := filepath.Join(env.RepoDir, ".entire", "tmp", sessionID+".jsonl")
+
+	return &FactoryDroidSession{
+		ID:             sessionID,
+		TranscriptPath: transcriptPath,
+		env:            env,
+	}
+}
+
+// CreateDroidTranscript creates a Droid-envelope JSONL transcript file.
+// Droid wraps messages as {"type":"message","id":"...","message":{"role":"...","content":[...]}},
+// unlike Claude Code which uses {"type":"assistant","uuid":"...","message":{"content":[...]}}.
+func (s *FactoryDroidSession) CreateDroidTranscript(prompt string, changes []FileChange) string {
+	var lines []map[string]interface{}
+
+	// User message with prompt
+	lines = append(lines, map[string]interface{}{
+		"type": "message",
+		"id":   "m1",
+		"message": map[string]interface{}{
+			"role": "user",
+			"content": []map[string]interface{}{
+				{"type": "text", "text": prompt},
+			},
+		},
+	})
+
+	// Assistant message with tool uses
+	assistantContent := []interface{}{
+		map[string]interface{}{"type": "text", "text": "I'll help you with that."},
+	}
+	for i, change := range changes {
+		assistantContent = append(assistantContent, map[string]interface{}{
+			"type":  "tool_use",
+			"id":    fmt.Sprintf("toolu_%d", i+1),
+			"name":  "Write",
+			"input": map[string]string{"file_path": change.Path, "content": change.Content},
+		})
+	}
+	lines = append(lines, map[string]interface{}{
+		"type": "message",
+		"id":   "m2",
+		"message": map[string]interface{}{
+			"role":    "assistant",
+			"content": assistantContent,
+		},
+	})
+
+	// Tool results
+	toolResultContent := make([]map[string]interface{}, 0, len(changes))
+	for i := range changes {
+		toolResultContent = append(toolResultContent, map[string]interface{}{
+			"type":        "tool_result",
+			"tool_use_id": fmt.Sprintf("toolu_%d", i+1),
+			"content":     "Success",
+		})
+	}
+	lines = append(lines, map[string]interface{}{
+		"type": "message",
+		"id":   "m3",
+		"message": map[string]interface{}{
+			"role":    "user",
+			"content": toolResultContent,
+		},
+	})
+
+	// Final assistant message
+	lines = append(lines, map[string]interface{}{
+		"type": "message",
+		"id":   "m4",
+		"message": map[string]interface{}{
+			"role": "assistant",
+			"content": []map[string]interface{}{
+				{"type": "text", "text": "Done!"},
+			},
+		},
+	})
+
+	// Ensure directory exists
+	if err := os.MkdirAll(filepath.Dir(s.TranscriptPath), 0o755); err != nil {
+		s.env.T.Fatalf("failed to create transcript dir: %v", err)
+	}
+
+	// Write as JSONL
+	file, err := os.Create(s.TranscriptPath)
+	if err != nil {
+		s.env.T.Fatalf("failed to create transcript file: %v", err)
+	}
+	defer func() { _ = file.Close() }()
+
+	encoder := json.NewEncoder(file)
+	for _, line := range lines {
+		if err := encoder.Encode(line); err != nil {
+			s.env.T.Fatalf("failed to encode transcript line: %v", err)
+		}
+	}
+
+	return s.TranscriptPath
+}
+
+// SimulateFactoryDroidUserPromptSubmit is a convenience method on TestEnv.
+func (env *TestEnv) SimulateFactoryDroidUserPromptSubmit(sessionID string) error {
+	env.T.Helper()
+	runner := NewFactoryDroidHookRunner(env.RepoDir, env.T)
+	return runner.SimulateUserPromptSubmit(sessionID)
+}
+
+// SimulateFactoryDroidUserPromptSubmitWithOutput is a convenience method on TestEnv.
+func (env *TestEnv) SimulateFactoryDroidUserPromptSubmitWithOutput(sessionID string) HookOutput {
+	env.T.Helper()
+	runner := NewFactoryDroidHookRunner(env.RepoDir, env.T)
+	return runner.SimulateUserPromptSubmitWithOutput(sessionID)
+}
+
+// SimulateFactoryDroidStop is a convenience method on TestEnv.
+func (env *TestEnv) SimulateFactoryDroidStop(sessionID, transcriptPath string) error {
+	env.T.Helper()
+	runner := NewFactoryDroidHookRunner(env.RepoDir, env.T)
+	return runner.SimulateStop(sessionID, transcriptPath)
+}
+
+// SimulateFactoryDroidSessionStart is a convenience method on TestEnv.
+func (env *TestEnv) SimulateFactoryDroidSessionStart(sessionID string) error {
+	env.T.Helper()
+	runner := NewFactoryDroidHookRunner(env.RepoDir, env.T)
+	return runner.SimulateSessionStart(sessionID)
+}
+
+// SimulateFactoryDroidSessionStartWithOutput is a convenience method on TestEnv.
+func (env *TestEnv) SimulateFactoryDroidSessionStartWithOutput(sessionID string) HookOutput {
+	env.T.Helper()
+	runner := NewFactoryDroidHookRunner(env.RepoDir, env.T)
+	return runner.SimulateSessionStartWithOutput(sessionID)
+}
+
+// SimulateFactoryDroidSessionEnd is a convenience method on TestEnv.
+func (env *TestEnv) SimulateFactoryDroidSessionEnd(sessionID, transcriptPath string) error {
+	env.T.Helper()
+	runner := NewFactoryDroidHookRunner(env.RepoDir, env.T)
+	return runner.SimulateSessionEnd(sessionID, transcriptPath)
+}
+
+// SimulateFactoryDroidPreTask is a convenience method on TestEnv.
+func (env *TestEnv) SimulateFactoryDroidPreTask(sessionID, transcriptPath, toolUseID string) error {
+	env.T.Helper()
+	runner := NewFactoryDroidHookRunner(env.RepoDir, env.T)
+	return runner.SimulatePreTask(sessionID, transcriptPath, toolUseID)
+}
+
+// SimulateFactoryDroidPostTask is a convenience method on TestEnv.
+func (env *TestEnv) SimulateFactoryDroidPostTask(input PostTaskInput) error {
+	env.T.Helper()
+	runner := NewFactoryDroidHookRunner(env.RepoDir, env.T)
+	return runner.SimulatePostTask(input)
+}
+
 // --- OpenCode Hook Runner ---
 
 // OpenCodeHookRunner executes OpenCode hooks in the test environment.
@@ -794,7 +1266,7 @@ func (r *OpenCodeHookRunner) runOpenCodeHookInRepoDir(hookName string, inputJSON
 	cmd := exec.Command(getTestBinary(), "hooks", "opencode", hookName)
 	cmd.Dir = r.RepoDir
 	cmd.Stdin = bytes.NewReader(inputJSON)
-	cmd.Env = append(gitIsolatedEnv(),
+	cmd.Env = append(testutil.GitIsolatedEnv(),
 		"ENTIRE_TEST_OPENCODE_PROJECT_DIR="+r.OpenCodeProjectDir,
 		"ENTIRE_TEST_OPENCODE_MOCK_EXPORT=1", // Use pre-written mock transcript instead of calling opencode export
 	)

@@ -3,13 +3,16 @@
 package integration
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -18,14 +21,16 @@ import (
 	"github.com/entireio/cli/cmd/entire/cli/agent/types"
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint"
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint/id"
+	"github.com/entireio/cli/cmd/entire/cli/execx"
 	"github.com/entireio/cli/cmd/entire/cli/jsonutil"
 	"github.com/entireio/cli/cmd/entire/cli/paths"
+	"github.com/entireio/cli/cmd/entire/cli/testutil"
 	"github.com/entireio/cli/cmd/entire/cli/trailers"
 
-	"github.com/go-git/go-git/v5"
-	"github.com/go-git/go-git/v5/plumbing"
-	"github.com/go-git/go-git/v5/plumbing/format/config"
-	"github.com/go-git/go-git/v5/plumbing/object"
+	"github.com/go-git/go-git/v6"
+	"github.com/go-git/go-git/v6/plumbing"
+	"github.com/go-git/go-git/v6/plumbing/format/config"
+	"github.com/go-git/go-git/v6/plumbing/object"
 )
 
 // testBinaryPath holds the path to the CLI binary built once in TestMain.
@@ -49,6 +54,13 @@ type TestEnv struct {
 	GeminiProjectDir   string
 	OpenCodeProjectDir string
 	SessionCounter     int
+	gitConfigSnapshot  string
+	gitConfigGuardSet  bool
+
+	// ExtraEnv holds additional environment variables appended to all CLI
+	// invocations (RunPrePush, GitCommitWithShadowHooks, etc.). Use this to
+	// pass ENTIRE_CHECKPOINT_TOKEN, GIT_SSL_CAINFO, and similar per-test env.
+	ExtraEnv []string
 }
 
 // NewTestEnv creates a new isolated test environment.
@@ -107,40 +119,16 @@ func (env *TestEnv) Cleanup() {
 	// No-op - temp dirs are cleaned up by t.TempDir()
 }
 
-// gitIsolatedEnv returns os.Environ() with git isolation variables set.
-// This prevents user/system git config (global gitignore, aliases, etc.) from
-// affecting test behavior. Use this for any exec.Command that runs git or the
-// CLI binary in integration tests.
-//
-// See https://git-scm.com/docs/git#Documentation/git.txt-GITCONFIGGLOBAL
-//
-// Existing GIT_CONFIG_GLOBAL/GIT_CONFIG_SYSTEM entries are filtered out before
-// appending overrides to ensure they take effect regardless of parent env.
-func gitIsolatedEnv() []string {
-	env := os.Environ()
-	filtered := make([]string, 0, len(env)+2)
-	for _, e := range env {
-		if strings.HasPrefix(e, "GIT_CONFIG_GLOBAL=") || strings.HasPrefix(e, "GIT_CONFIG_SYSTEM=") {
-			continue
-		}
-		filtered = append(filtered, e)
-	}
-	return append(filtered,
-		"GIT_CONFIG_GLOBAL=/dev/null", // Isolate from user's global git config (e.g. global gitignore)
-		"GIT_CONFIG_SYSTEM=/dev/null", // Isolate from system git config
-	)
-}
-
 // cliEnv returns the environment variables for CLI execution.
 // Includes Claude, Gemini, and OpenCode project dirs so tests work for any agent.
-// Delegates to gitIsolatedEnv() for git config isolation.
+// Delegates to testutil.GitIsolatedEnv() for git config isolation.
 func (env *TestEnv) cliEnv() []string {
-	return append(gitIsolatedEnv(),
+	base := append(testutil.GitIsolatedEnv(),
 		"ENTIRE_TEST_CLAUDE_PROJECT_DIR="+env.ClaudeProjectDir,
 		"ENTIRE_TEST_GEMINI_PROJECT_DIR="+env.GeminiProjectDir,
 		"ENTIRE_TEST_OPENCODE_PROJECT_DIR="+env.OpenCodeProjectDir,
-		"ENTIRE_TEST_TTY=0", // Prevent interactive prompts from blocking in tests
 	)
+	return append(base, env.ExtraEnv...)
 }
 
 // RunCLI runs the entire CLI with the given arguments and returns stdout.
@@ -157,8 +145,9 @@ func (env *TestEnv) RunCLI(args ...string) string {
 func (env *TestEnv) RunCLIWithError(args ...string) (string, error) {
 	env.T.Helper()
 
-	// Run CLI using the shared binary
-	cmd := exec.Command(getTestBinary(), args...)
+	// Run CLI using the shared binary, detached from any controlling TTY
+	// so interactive.CanPromptInteractively() returns false in the child.
+	cmd := execx.NonInteractive(context.Background(), getTestBinary(), args...)
 	cmd.Dir = env.RepoDir
 	cmd.Env = env.cliEnv()
 
@@ -170,8 +159,8 @@ func (env *TestEnv) RunCLIWithError(args ...string) (string, error) {
 func (env *TestEnv) RunCLIWithStdin(stdin string, args ...string) string {
 	env.T.Helper()
 
-	// Run CLI with stdin using the shared binary
-	cmd := exec.Command(getTestBinary(), args...)
+	// Run CLI with stdin using the shared binary, detached from controlling TTY.
+	cmd := execx.NonInteractive(context.Background(), getTestBinary(), args...)
 	cmd.Dir = env.RepoDir
 	cmd.Env = env.cliEnv()
 	cmd.Stdin = strings.NewReader(stdin)
@@ -240,9 +229,93 @@ func (env *TestEnv) InitRepo() {
 	}
 	cfg.Raw.Section("commit").SetOption("gpgsign", "false")
 
+	// Override any global core.hooksPath so tests use the repo-local hooks directory.
+	cfg.Raw.Section("core").SetOption("hooksPath", filepath.Join(env.RepoDir, ".git", "hooks"))
+
 	if err := repo.SetConfig(cfg); err != nil {
 		env.T.Fatalf("failed to set repo config: %v", err)
 	}
+
+	env.setGitConfigBaseline()
+}
+
+func (env *TestEnv) setGitConfigBaseline() {
+	env.T.Helper()
+
+	configPath := env.gitConfigPath()
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		env.T.Fatalf("failed to read %s: %v", configPath, err)
+	}
+
+	env.gitConfigSnapshot = string(data)
+	if env.gitConfigGuardSet {
+		return
+	}
+
+	env.gitConfigGuardSet = true
+	env.T.Cleanup(func() {
+		configPath := env.gitConfigPath()
+		currentData, err := os.ReadFile(configPath)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				if _, statErr := os.Stat(env.RepoDir); errors.Is(statErr, os.ErrNotExist) {
+					return
+				}
+			}
+			env.T.Fatalf(".git/config guard failed: could not read %s during cleanup: %v", configPath, err)
+		}
+
+		current := string(currentData)
+		if normalizeGitConfigForGuard(current) == normalizeGitConfigForGuard(env.gitConfigSnapshot) {
+			return
+		}
+
+		env.T.Fatalf(
+			".git/config changed unexpectedly during integration test\nBaseline:\n%s\nCurrent:\n%s",
+			env.gitConfigSnapshot,
+			current,
+		)
+	})
+}
+
+// AcceptGitConfigChanges updates the .git/config guard baseline after verifying
+// the config matches the exact content the test intended to write.
+func (env *TestEnv) AcceptGitConfigChanges(expected string) {
+	env.T.Helper()
+
+	actual, err := os.ReadFile(env.gitConfigPath())
+	if err != nil {
+		env.T.Fatalf("failed to read %s: %v", env.gitConfigPath(), err)
+	}
+	if string(actual) != expected {
+		env.T.Fatalf(
+			".git/config did not match expected test mutation\nExpected:\n%s\nActual:\n%s",
+			expected,
+			string(actual),
+		)
+	}
+
+	env.gitConfigSnapshot = expected
+}
+
+func (env *TestEnv) gitConfigPath() string {
+	return filepath.Join(env.RepoDir, ".git", "config")
+}
+
+var gitConfigGuardRepositoryFormatVersionRE = regexp.MustCompile(`(?m)^([ \t]*)repositoryformatversion = [01]$`)
+
+var gitConfigGuardTransportPromisorRemoteRE = regexp.MustCompile(
+	`(?m)^\[remote "(?:(?:https?|ssh|file)://|/|[A-Za-z]:[\\/]|[^"\n]+@[^"\n]+:[^"\n]+).+"\]\n(?:[ \t]+promisor = true\n[ \t]+partialclonefilter = blob:none\n?|[ \t]+partialclonefilter = blob:none\n[ \t]+promisor = true\n?)`,
+)
+
+func normalizeGitConfigForGuard(content string) string {
+	content = gitConfigGuardRepositoryFormatVersionRE.ReplaceAllString(content, `${1}repositoryformatversion = <normalized>`)
+	// Deliberately ignore only the full promisor+partialclonefilter pair that
+	// git writes for transport-keyed remotes during filtered fetches. If git ever
+	// writes a partial section, the guard should still fail loudly.
+	content = gitConfigGuardTransportPromisorRemoteRE.ReplaceAllString(content, "")
+	return content
 }
 
 // InitEntire initializes the .entire directory with the specified strategy.
@@ -294,7 +367,13 @@ func (env *TestEnv) initEntireInternal(strategyOptions map[string]any) {
 		"enabled":   true,
 		"local_dev": true, // Note: git-triggered hooks won't work (path is relative); tests call hooks via getTestBinary() instead
 	}
-	if strategyOptions != nil {
+	if strategyOptions == nil {
+		strategyOptions = make(map[string]any)
+	}
+	if _, exists := strategyOptions["filtered_fetches"]; !exists {
+		strategyOptions["filtered_fetches"] = true
+	}
+	if len(strategyOptions) > 0 {
 		settings["strategy_options"] = strategyOptions
 	}
 	data, err := jsonutil.MarshalIndentWithNewline(settings, "", "  ")
@@ -499,6 +578,75 @@ func (env *TestEnv) GitCommitWithMultipleSessions(message string, sessionIDs []s
 	}
 }
 
+// GitCommitWithMultipleCheckpoints creates a commit with multiple Entire-Checkpoint trailers.
+// This simulates a GitHub squash merge commit where multiple individual commits with
+// checkpoint trailers are combined into a single commit message.
+func (env *TestEnv) GitCommitWithMultipleCheckpoints(message string, checkpointIDs []string) {
+	env.T.Helper()
+
+	// Format message with multiple checkpoint trailers (simulating squash merge format)
+	var sb strings.Builder
+	sb.WriteString(message)
+	sb.WriteString("\n\n")
+	for _, cpID := range checkpointIDs {
+		sb.WriteString("Entire-Checkpoint: " + cpID + "\n")
+	}
+
+	repo, err := git.PlainOpen(env.RepoDir)
+	if err != nil {
+		env.T.Fatalf("failed to open git repo: %v", err)
+	}
+
+	worktree, err := repo.Worktree()
+	if err != nil {
+		env.T.Fatalf("failed to get worktree: %v", err)
+	}
+
+	_, err = worktree.Commit(sb.String(), &git.CommitOptions{
+		Author: &object.Signature{
+			Name:  "Test User",
+			Email: "test@example.com",
+			When:  time.Now(),
+		},
+	})
+	if err != nil {
+		env.T.Fatalf("failed to commit: %v", err)
+	}
+}
+
+// WriteSettings writes arbitrary JSON to .entire/settings.json. Used in
+// tests that need to seed specific config shapes before running a CLI
+// command. Overwrites any existing file.
+func (env *TestEnv) WriteSettings(m map[string]any) {
+	env.T.Helper()
+	dir := filepath.Join(env.RepoDir, ".entire")
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		env.T.Fatalf("mkdir .entire: %v", err)
+	}
+	data, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		env.T.Fatalf("marshal settings: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "settings.json"), data, 0o600); err != nil {
+		env.T.Fatalf("write settings.json: %v", err)
+	}
+}
+
+// composeReviewPromptForTest mirrors the prompt shape runReview composes
+// so integration tests can assert against the same ReviewPrompt format
+// that spawn would produce.
+func composeReviewPromptForTest(skills []string) string {
+	if len(skills) == 0 {
+		return ""
+	}
+	var sb strings.Builder
+	sb.WriteString("Please run these review skills in order:\n")
+	for i, skill := range skills {
+		fmt.Fprintf(&sb, "  %d. %s\n", i+1, skill)
+	}
+	return sb.String()
+}
+
 // GetHeadHash returns the current HEAD commit hash.
 func (env *TestEnv) GetHeadHash() string {
 	env.T.Helper()
@@ -580,7 +728,7 @@ func (env *TestEnv) GitCheckoutNewBranch(branchName string) {
 
 	cmd := exec.Command("git", "checkout", "-b", branchName)
 	cmd.Dir = env.RepoDir
-	cmd.Env = gitIsolatedEnv()
+	cmd.Env = testutil.GitIsolatedEnv()
 	if output, err := cmd.CombinedOutput(); err != nil {
 		env.T.Fatalf("failed to checkout new branch %s: %v\nOutput: %s", branchName, err, output)
 	}
@@ -624,7 +772,7 @@ func (env *TestEnv) GetRewindPoints() []RewindPoint {
 	env.T.Helper()
 
 	// Run rewind --list using the shared binary
-	cmd := exec.Command(getTestBinary(), "rewind", "--list")
+	cmd := exec.Command(getTestBinary(), "checkpoint", "rewind", "--list")
 	cmd.Dir = env.RepoDir
 	cmd.Env = env.cliEnv()
 
@@ -672,7 +820,7 @@ func (env *TestEnv) Rewind(commitID string) error {
 	env.T.Helper()
 
 	// Run rewind --to <commitID> using the shared binary
-	cmd := exec.Command(getTestBinary(), "rewind", "--to", commitID)
+	cmd := exec.Command(getTestBinary(), "checkpoint", "rewind", "--to", commitID)
 	cmd.Dir = env.RepoDir
 	cmd.Env = env.cliEnv()
 
@@ -691,7 +839,7 @@ func (env *TestEnv) RewindLogsOnly(commitID string) error {
 	env.T.Helper()
 
 	// Run rewind --to <commitID> --logs-only using the shared binary
-	cmd := exec.Command(getTestBinary(), "rewind", "--to", commitID, "--logs-only")
+	cmd := exec.Command(getTestBinary(), "checkpoint", "rewind", "--to", commitID, "--logs-only")
 	cmd.Dir = env.RepoDir
 	cmd.Env = env.cliEnv()
 
@@ -710,7 +858,7 @@ func (env *TestEnv) RewindReset(commitID string) error {
 	env.T.Helper()
 
 	// Run rewind --to <commitID> --reset using the shared binary
-	cmd := exec.Command(getTestBinary(), "rewind", "--to", commitID, "--reset")
+	cmd := exec.Command(getTestBinary(), "checkpoint", "rewind", "--to", commitID, "--reset")
 	cmd.Dir = env.RepoDir
 	cmd.Env = env.cliEnv()
 
@@ -732,20 +880,8 @@ func (env *TestEnv) BranchExists(branchName string) bool {
 		env.T.Fatalf("failed to open git repo: %v", err)
 	}
 
-	refs, err := repo.References()
-	if err != nil {
-		env.T.Fatalf("failed to get references: %v", err)
-	}
-
-	found := false
-	_ = refs.ForEach(func(ref *plumbing.Reference) error {
-		if ref.Name().Short() == branchName {
-			found = true
-		}
-		return nil
-	})
-
-	return found
+	_, err = repo.Reference(plumbing.NewBranchReferenceName(branchName), true)
+	return err == nil
 }
 
 // GetCommitMessage returns the commit message for the given commit hash.
@@ -849,6 +985,100 @@ func (env *TestEnv) ReadFileFromBranch(branchName, filePath string) (string, boo
 	return content, true
 }
 
+// ReadFileFromRef reads a file's content from a specific ref's tree.
+// Unlike ReadFileFromBranch, this takes a full ref name (e.g., "refs/entire/checkpoints/v2/main")
+// and does not prepend "refs/heads/".
+// Returns the content and true if found, empty string and false if not found.
+func (env *TestEnv) ReadFileFromRef(refName, filePath string) (string, bool) {
+	env.T.Helper()
+
+	repo, err := git.PlainOpen(env.RepoDir)
+	if err != nil {
+		env.T.Fatalf("failed to open git repo: %v", err)
+	}
+
+	ref, err := repo.Reference(plumbing.ReferenceName(refName), true)
+	if err != nil {
+		return "", false
+	}
+
+	commit, err := repo.CommitObject(ref.Hash())
+	if err != nil {
+		return "", false
+	}
+
+	tree, err := commit.Tree()
+	if err != nil {
+		return "", false
+	}
+
+	file, err := tree.File(filePath)
+	if err != nil {
+		return "", false
+	}
+
+	content, err := file.Contents()
+	if err != nil {
+		return "", false
+	}
+
+	return content, true
+}
+
+// AssertCheckpointContainsSession verifies that the checkpoint summary includes
+// a session with the given session ID by reading per-session metadata from the
+// metadata branch.
+func (env *TestEnv) AssertCheckpointContainsSession(t *testing.T, summary checkpoint.CheckpointSummary, sessionID string) {
+	t.Helper()
+	for _, s := range summary.Sessions {
+		if env.sessionMetadataMatchesID(s.Metadata, sessionID) {
+			return
+		}
+	}
+	t.Errorf("Checkpoint did not include session %q", sessionID)
+}
+
+// AssertCheckpointExcludesSession verifies that the checkpoint summary does NOT
+// include a session with the given session ID.
+func (env *TestEnv) AssertCheckpointExcludesSession(t *testing.T, summary checkpoint.CheckpointSummary, sessionID string) {
+	t.Helper()
+	for _, s := range summary.Sessions {
+		if env.sessionMetadataMatchesID(s.Metadata, sessionID) {
+			t.Errorf("Checkpoint incorrectly included session %q", sessionID)
+			return
+		}
+	}
+}
+
+// sessionMetadataMatchesID reads session metadata from the metadata branch and
+// checks if it belongs to the given session ID.
+func (env *TestEnv) sessionMetadataMatchesID(metadataPath, sessionID string) bool {
+	// Strip leading slash — git tree paths are relative
+	cleanPath := strings.TrimPrefix(metadataPath, "/")
+	content, found := env.ReadFileFromBranch(paths.MetadataBranchName, cleanPath)
+	if !found {
+		return false
+	}
+	var meta checkpoint.CommittedMetadata
+	if err := json.Unmarshal([]byte(content), &meta); err != nil {
+		return false
+	}
+	return meta.SessionID == sessionID
+}
+
+// RefExists checks if a ref exists in the repository.
+func (env *TestEnv) RefExists(refName string) bool {
+	env.T.Helper()
+
+	repo, err := git.PlainOpen(env.RepoDir)
+	if err != nil {
+		env.T.Fatalf("failed to open git repo: %v", err)
+	}
+
+	_, err = repo.Reference(plumbing.ReferenceName(refName), true)
+	return err == nil
+}
+
 // GetLatestCommitMessageOnBranch returns the commit message of the latest commit on the given branch.
 func (env *TestEnv) GetLatestCommitMessageOnBranch(branchName string) string {
 	env.T.Helper()
@@ -888,9 +1118,26 @@ func (env *TestEnv) GitCommitWithShadowHooksAsAgent(message string, files ...str
 	env.gitCommitWithShadowHooks(message, false, files...)
 }
 
+// prepareCommitMsgCmd builds the prepare-commit-msg hook command. When
+// simulateTTY is true, ENTIRE_TEST_TTY=1 forces interactive=true (an in-test
+// stand-in for a real terminal — Setsid can't synthesize a TTY). When false,
+// the child runs in a new session without a controlling terminal so its
+// /dev/tty probe fails and CanPromptInteractively() returns false.
+func (env *TestEnv) prepareCommitMsgCmd(simulateTTY bool, hookArgs ...string) *exec.Cmd {
+	args := append([]string{"hooks", "git", "prepare-commit-msg"}, hookArgs...)
+	var cmd *exec.Cmd
+	if simulateTTY {
+		cmd = exec.Command(getTestBinary(), args...)
+		cmd.Env = env.gitHookEnv("ENTIRE_TEST_TTY=1")
+	} else {
+		cmd = execx.NonInteractive(context.Background(), getTestBinary(), args...)
+		cmd.Env = env.gitHookEnv()
+	}
+	cmd.Dir = env.RepoDir
+	return cmd
+}
+
 // gitCommitWithShadowHooks is the shared implementation for committing with shadow hooks.
-// When simulateTTY is true, sets ENTIRE_TEST_TTY=1 to simulate a human at the terminal.
-// When false, filters it out to simulate an agent subprocess (no controlling terminal).
 func (env *TestEnv) gitCommitWithShadowHooks(message string, simulateTTY bool, files ...string) {
 	env.T.Helper()
 
@@ -907,17 +1154,7 @@ func (env *TestEnv) gitCommitWithShadowHooks(message string, simulateTTY bool, f
 
 	// Run prepare-commit-msg hook using the shared binary.
 	// Pass source="message" to match real `git commit -m` behavior.
-	prepCmd := exec.Command(getTestBinary(), "hooks", "git", "prepare-commit-msg", msgFile, "message")
-	prepCmd.Dir = env.RepoDir
-	if simulateTTY {
-		// Simulate human at terminal: ENTIRE_TEST_TTY=1 makes hasTTY() return true
-		// and askConfirmTTY() return defaultYes without reading from /dev/tty.
-		prepCmd.Env = append(gitIsolatedEnv(), "ENTIRE_TEST_TTY=1")
-	} else {
-		// Simulate agent: ENTIRE_TEST_TTY=0 makes hasTTY() return false,
-		// triggering the fast path that adds trailers for ACTIVE sessions.
-		prepCmd.Env = append(gitIsolatedEnv(), "ENTIRE_TEST_TTY=0")
-	}
+	prepCmd := env.prepareCommitMsgCmd(simulateTTY, msgFile, "message")
 	if output, err := prepCmd.CombinedOutput(); err != nil {
 		env.T.Logf("prepare-commit-msg output: %s", output)
 		// Don't fail - hook may silently succeed
@@ -955,10 +1192,19 @@ func (env *TestEnv) gitCommitWithShadowHooks(message string, simulateTTY bool, f
 	// This triggers condensation if the commit has an Entire-Checkpoint trailer
 	postCmd := exec.Command(getTestBinary(), "hooks", "git", "post-commit")
 	postCmd.Dir = env.RepoDir
+	postCmd.Env = env.gitHookEnv()
 	if output, err := postCmd.CombinedOutput(); err != nil {
 		env.T.Logf("post-commit output: %s", output)
 		// Don't fail - hook may silently succeed
 	}
+}
+
+func (env *TestEnv) gitHookEnv(extra ...string) []string {
+	envVars := append(testutil.GitIsolatedEnv(),
+		"ENTIRE_TEST_OPENCODE_PROJECT_DIR="+env.OpenCodeProjectDir,
+		"ENTIRE_TEST_OPENCODE_MOCK_EXPORT=1",
+	)
+	return append(envVars, extra...)
 }
 
 // GitCommitAmendWithShadowHooks amends the last commit with shadow hooks.
@@ -982,7 +1228,7 @@ func (env *TestEnv) GitCommitAmendWithShadowHooks(message string, files ...strin
 	// Set ENTIRE_TEST_TTY=1 to simulate human (amend is always a human operation).
 	prepCmd := exec.Command(getTestBinary(), "hooks", "git", "prepare-commit-msg", msgFile, "commit")
 	prepCmd.Dir = env.RepoDir
-	prepCmd.Env = append(gitIsolatedEnv(), "ENTIRE_TEST_TTY=1")
+	prepCmd.Env = env.gitHookEnv("ENTIRE_TEST_TTY=1")
 	if output, err := prepCmd.CombinedOutput(); err != nil {
 		env.T.Logf("prepare-commit-msg (amend) output: %s", output)
 	}
@@ -1019,8 +1265,31 @@ func (env *TestEnv) GitCommitAmendWithShadowHooks(message string, files ...strin
 	// Run post-commit hook
 	postCmd := exec.Command(getTestBinary(), "hooks", "git", "post-commit")
 	postCmd.Dir = env.RepoDir
+	postCmd.Env = env.gitHookEnv()
 	if output, err := postCmd.CombinedOutput(); err != nil {
 		env.T.Logf("post-commit (amend) output: %s", output)
+	}
+}
+
+// GitPostRewriteWithShadowHooks runs the git post-rewrite hook with the provided
+// old->new commit mappings. Each mapping is a pair of commit SHAs.
+func (env *TestEnv) GitPostRewriteWithShadowHooks(rewriteType string, mappings ...[2]string) {
+	env.T.Helper()
+
+	var input strings.Builder
+	for _, mapping := range mappings {
+		input.WriteString(mapping[0])
+		input.WriteByte(' ')
+		input.WriteString(mapping[1])
+		input.WriteByte('\n')
+	}
+
+	cmd := exec.Command(getTestBinary(), "hooks", "git", "post-rewrite", rewriteType)
+	cmd.Dir = env.RepoDir
+	cmd.Env = env.gitHookEnv()
+	cmd.Stdin = strings.NewReader(input.String())
+	if output, err := cmd.CombinedOutput(); err != nil {
+		env.T.Fatalf("post-rewrite hook failed: %v\nOutput: %s", err, output)
 	}
 }
 
@@ -1046,7 +1315,7 @@ func (env *TestEnv) GitCommitWithTrailerRemoved(message string, files ...string)
 	// the user removes the trailer before committing).
 	prepCmd := exec.Command(getTestBinary(), "hooks", "git", "prepare-commit-msg", msgFile)
 	prepCmd.Dir = env.RepoDir
-	prepCmd.Env = append(gitIsolatedEnv(), "ENTIRE_TEST_TTY=1")
+	prepCmd.Env = env.gitHookEnv("ENTIRE_TEST_TTY=1")
 	if output, err := prepCmd.CombinedOutput(); err != nil {
 		env.T.Logf("prepare-commit-msg output: %s", output)
 	}
@@ -1100,6 +1369,7 @@ func (env *TestEnv) GitCommitWithTrailerRemoved(message string, files ...string)
 	// Run post-commit hook - since trailer was removed, no condensation should happen
 	postCmd := exec.Command(getTestBinary(), "hooks", "git", "post-commit")
 	postCmd.Dir = env.RepoDir
+	postCmd.Env = env.gitHookEnv()
 	if output, err := postCmd.CombinedOutput(); err != nil {
 		env.T.Logf("post-commit output: %s", output)
 	}
@@ -1112,7 +1382,7 @@ func (env *TestEnv) GitRm(paths ...string) {
 	args := append([]string{"rm", "--"}, paths...)
 	cmd := exec.Command("git", args...)
 	cmd.Dir = env.RepoDir
-	cmd.Env = gitIsolatedEnv()
+	cmd.Env = testutil.GitIsolatedEnv()
 	if output, err := cmd.CombinedOutput(); err != nil {
 		env.T.Fatalf("git rm failed: %v\nOutput: %s", err, output)
 	}
@@ -1137,13 +1407,7 @@ func (env *TestEnv) gitCommitStagedWithShadowHooks(message string, simulateTTY b
 	}
 
 	// Run prepare-commit-msg hook using the shared binary.
-	prepCmd := exec.Command(getTestBinary(), "hooks", "git", "prepare-commit-msg", msgFile, "message")
-	prepCmd.Dir = env.RepoDir
-	if simulateTTY {
-		prepCmd.Env = append(gitIsolatedEnv(), "ENTIRE_TEST_TTY=1")
-	} else {
-		prepCmd.Env = append(gitIsolatedEnv(), "ENTIRE_TEST_TTY=0")
-	}
+	prepCmd := env.prepareCommitMsgCmd(simulateTTY, msgFile, "message")
 	if output, err := prepCmd.CombinedOutput(); err != nil {
 		env.T.Logf("prepare-commit-msg output: %s", output)
 	}
@@ -1179,6 +1443,7 @@ func (env *TestEnv) gitCommitStagedWithShadowHooks(message string, simulateTTY b
 	// Run post-commit hook
 	postCmd := exec.Command(getTestBinary(), "hooks", "git", "post-commit")
 	postCmd.Dir = env.RepoDir
+	postCmd.Env = env.gitHookEnv()
 	if output, err := postCmd.CombinedOutput(); err != nil {
 		env.T.Logf("post-commit output: %s", output)
 	}
@@ -1608,6 +1873,245 @@ func (env *TestEnv) validatePromptContent(checkpointID string, expectedPrompts [
 			env.T.Errorf("Prompt file should contain %q\nContent: %s", expected, content)
 		}
 	}
+}
+
+// SetupBareRemote creates a bare git repository, adds it as "origin" remote to the
+// test repo, and pushes the current HEAD. Returns the bare repo path.
+// This mirrors the E2E helper in e2e/testutil/repo.go but adapted for TestEnv.
+func (env *TestEnv) SetupBareRemote() string {
+	env.T.Helper()
+	return env.SetupNamedBareRemote("origin")
+}
+
+// SetupNamedBareRemote creates a bare git repository with a custom remote name.
+// Returns the bare repo path. Use this for checkpoint_remote scenarios that need
+// multiple remotes.
+func (env *TestEnv) SetupNamedBareRemote(remoteName string) string {
+	env.T.Helper()
+
+	ctx := env.T.Context()
+
+	bareDir := env.T.TempDir()
+	if resolved, err := filepath.EvalSymlinks(bareDir); err == nil {
+		bareDir = resolved
+	}
+
+	// Initialize bare repo
+	cmd := exec.CommandContext(ctx, "git", "init", "--bare")
+	cmd.Dir = bareDir
+	cmd.Env = testutil.GitIsolatedEnv()
+	if output, err := cmd.CombinedOutput(); err != nil {
+		env.T.Fatalf("failed to init bare repo: %v\n%s", err, output)
+	}
+
+	// Add as remote
+	cmd = exec.CommandContext(ctx, "git", "remote", "add", remoteName, bareDir)
+	cmd.Dir = env.RepoDir
+	cmd.Env = testutil.GitIsolatedEnv()
+	if output, err := cmd.CombinedOutput(); err != nil {
+		env.T.Fatalf("failed to add remote %s: %v\n%s", remoteName, err, output)
+	}
+
+	// Push HEAD to the remote
+	cmd = exec.CommandContext(ctx, "git", "push", "--no-verify", "-u", remoteName, "HEAD")
+	cmd.Dir = env.RepoDir
+	cmd.Env = testutil.GitIsolatedEnv()
+	if output, err := cmd.CombinedOutput(); err != nil {
+		env.T.Fatalf("failed to push to %s: %v\n%s", remoteName, err, output)
+	}
+
+	env.setGitConfigBaseline()
+
+	return bareDir
+}
+
+// CloneFrom clones from a bare repo into a new temp directory and returns a new TestEnv
+// pointing at the clone. The clone has its own .entire directory initialized.
+// The clone checks out the same branch as the current env's HEAD.
+func (env *TestEnv) CloneFrom(bareDir string) *TestEnv {
+	env.T.Helper()
+
+	ctx := env.T.Context()
+
+	cloneDir := env.T.TempDir()
+	if resolved, err := filepath.EvalSymlinks(cloneDir); err == nil {
+		cloneDir = resolved
+	}
+
+	// Get the current branch name to clone the right branch
+	currentBranch := env.GetCurrentBranch()
+
+	// Clone the bare repo, explicitly checking out the right branch.
+	// Bare repos may have HEAD pointing to a non-existent default branch
+	// when the original was on a feature branch.
+	cloneArgs := []string{"clone"}
+	if currentBranch != "" {
+		cloneArgs = append(cloneArgs, "--branch", currentBranch)
+	}
+	cloneArgs = append(cloneArgs, bareDir, cloneDir)
+	cmd := exec.CommandContext(ctx, "git", cloneArgs...)
+	cmd.Env = testutil.GitIsolatedEnv()
+	if output, err := cmd.CombinedOutput(); err != nil {
+		env.T.Fatalf("failed to clone from %s: %v\n%s", bareDir, err, output)
+	}
+
+	// Configure git user (clone doesn't inherit local config from the bare repo)
+	for _, kv := range [][2]string{
+		{"user.name", "Test User"},
+		{"user.email", "test@example.com"},
+		{"commit.gpgsign", "false"},
+	} {
+		cmd = exec.CommandContext(ctx, "git", "config", kv[0], kv[1])
+		cmd.Dir = cloneDir
+		cmd.Env = testutil.GitIsolatedEnv()
+		if output, err := cmd.CombinedOutput(); err != nil {
+			env.T.Fatalf("failed to set git config %s: %v\n%s", kv[0], err, output)
+		}
+	}
+
+	claudeProjectDir := env.T.TempDir()
+	if resolved, err := filepath.EvalSymlinks(claudeProjectDir); err == nil {
+		claudeProjectDir = resolved
+	}
+	geminiProjectDir := env.T.TempDir()
+	if resolved, err := filepath.EvalSymlinks(geminiProjectDir); err == nil {
+		geminiProjectDir = resolved
+	}
+	openCodeProjectDir := env.T.TempDir()
+	if resolved, err := filepath.EvalSymlinks(openCodeProjectDir); err == nil {
+		openCodeProjectDir = resolved
+	}
+
+	cloneEnv := &TestEnv{
+		T:                  env.T,
+		RepoDir:            cloneDir,
+		ClaudeProjectDir:   claudeProjectDir,
+		GeminiProjectDir:   geminiProjectDir,
+		OpenCodeProjectDir: openCodeProjectDir,
+	}
+
+	// Initialize Entire in the clone
+	cloneEnv.InitEntire()
+	cloneEnv.setGitConfigBaseline()
+
+	return cloneEnv
+}
+
+// BranchExistsOnRemote checks if a branch exists on a bare remote by inspecting its refs.
+func (env *TestEnv) BranchExistsOnRemote(bareDir, branchName string) bool {
+	env.T.Helper()
+
+	cmd := exec.CommandContext(env.T.Context(), "git", "show-ref", "--verify", "--quiet", "refs/heads/"+branchName)
+	cmd.Dir = bareDir
+	cmd.Env = testutil.GitIsolatedEnv()
+	return cmd.Run() == nil
+}
+
+// PatchSettings merges extra keys into .entire/settings.json.
+func (env *TestEnv) PatchSettings(extra map[string]any) {
+	env.T.Helper()
+
+	settingsPath := filepath.Join(env.RepoDir, ".entire", paths.SettingsFileName)
+	data, err := os.ReadFile(settingsPath) //nolint:gosec // G304: path is constructed from test env, not user input
+	if err != nil {
+		env.T.Fatalf("failed to read settings: %v", err)
+	}
+
+	var settings map[string]any
+	if err := json.Unmarshal(data, &settings); err != nil {
+		env.T.Fatalf("failed to parse settings: %v", err)
+	}
+
+	for k, v := range extra {
+		settings[k] = v
+	}
+
+	out, err := json.MarshalIndent(settings, "", "  ")
+	if err != nil {
+		env.T.Fatalf("failed to marshal settings: %v", err)
+	}
+	out = append(out, '\n')
+
+	if err := os.WriteFile(settingsPath, out, 0o644); err != nil { //nolint:gosec // G306: consistent with other settings writes in testenv.go
+		env.T.Fatalf("failed to write settings: %v", err)
+	}
+}
+
+// GitPush pushes a branch to a remote. Fails the test on error.
+func (env *TestEnv) GitPush(remote, refSpec string) {
+	env.T.Helper()
+
+	cmd := exec.CommandContext(env.T.Context(), "git", "push", "--no-verify", remote, refSpec)
+	cmd.Dir = env.RepoDir
+	cmd.Env = testutil.GitIsolatedEnv()
+	if output, err := cmd.CombinedOutput(); err != nil {
+		env.T.Fatalf("git push %s %s failed: %v\n%s", remote, refSpec, err, output)
+	}
+}
+
+// RunPrePush runs the pre-push hook via the CLI binary, consistent with how
+// other CLI invocations (GitCommitWithShadowHooks, RunCLI) use env.cliEnv().
+func (env *TestEnv) RunPrePush(remote string) {
+	env.T.Helper()
+	if err := env.RunPrePushWithError(remote); err != nil {
+		env.T.Fatalf("PrePush failed: %v", err)
+	}
+}
+
+// RunPrePushWithError runs the pre-push hook and returns any error instead of failing.
+func (env *TestEnv) RunPrePushWithError(remote string) error {
+	env.T.Helper()
+
+	cmd := exec.CommandContext(env.T.Context(), getTestBinary(), "hooks", "git", "pre-push", remote)
+	cmd.Dir = env.RepoDir
+	cmd.Env = env.cliEnv()
+	cmd.Stdin = nil
+
+	output, err := cmd.CombinedOutput()
+	env.T.Logf("pre-push output: %s", output)
+	if err != nil {
+		return fmt.Errorf("pre-push hook failed: %w", err)
+	}
+	return nil
+}
+
+// FetchMetadataBranch fetches the entire/checkpoints/v1 branch from a remote URL.
+// Fails the test on error. Use this for clone-and-resume tests that need metadata.
+func (env *TestEnv) FetchMetadataBranch(remoteURL string) {
+	env.T.Helper()
+
+	branchName := paths.MetadataBranchName
+	refSpec := "+refs/heads/" + branchName + ":refs/heads/" + branchName
+	cmd := exec.CommandContext(env.T.Context(), "git", "fetch", "--no-tags", remoteURL, refSpec)
+	cmd.Dir = env.RepoDir
+	cmd.Env = testutil.GitIsolatedEnv()
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		env.T.Fatalf("fetch metadata branch failed: %v\n%s", err, output)
+	}
+}
+
+// GetBranchTipParentCount returns the number of parents for the tip commit of a branch.
+func (env *TestEnv) GetBranchTipParentCount(branchName string) int {
+	env.T.Helper()
+
+	repo, err := git.PlainOpen(env.RepoDir)
+	if err != nil {
+		env.T.Fatalf("failed to open git repo: %v", err)
+	}
+
+	ref, err := repo.Reference(plumbing.NewBranchReferenceName(branchName), true)
+	if err != nil {
+		env.T.Fatalf("failed to get branch %s: %v", branchName, err)
+	}
+
+	commit, err := repo.CommitObject(ref.Hash())
+	if err != nil {
+		env.T.Fatalf("failed to get commit for branch %s: %v", branchName, err)
+	}
+
+	return len(commit.ParentHashes)
 }
 
 func findModuleRoot() string {

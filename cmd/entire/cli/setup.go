@@ -10,13 +10,17 @@ import (
 	"strings"
 
 	"github.com/entireio/cli/cmd/entire/cli/agent"
+	"github.com/entireio/cli/cmd/entire/cli/agent/external"
 	"github.com/entireio/cli/cmd/entire/cli/agent/types"
+	"github.com/entireio/cli/cmd/entire/cli/interactive"
+	"github.com/entireio/cli/cmd/entire/cli/logging"
 	"github.com/entireio/cli/cmd/entire/cli/paths"
 	"github.com/entireio/cli/cmd/entire/cli/session"
 	"github.com/entireio/cli/cmd/entire/cli/settings"
 	"github.com/entireio/cli/cmd/entire/cli/strategy"
+	"github.com/entireio/cli/cmd/entire/cli/vercelconfig"
 
-	"github.com/charmbracelet/huh"
+	"charm.land/huh/v2"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 )
@@ -27,46 +31,752 @@ const (
 	configDisplayLocal   = ".entire/settings.local.json"
 )
 
-func newEnableCmd() *cobra.Command {
-	var localDev bool
-	var ignoreUntracked bool
-	var useLocalSettings bool
-	var useProjectSettings bool
-	var agentName string
-	var forceHooks bool
-	var skipPushSessions bool
-	var telemetry bool
+// Flag names used across setup commands.
+const (
+	agentFlagName            = "agent"
+	flagCheckpointRemote     = "checkpoint-remote"
+	flagSkipPushSessions     = "skip-push-sessions"
+	flagSummarizeModel       = "summarize-model"
+	flagSummarizeAgent       = "summarize-provider"
+	flagTelemetry            = "telemetry"
+	flagAbsoluteGitHookPath  = "absolute-git-hook-path"
+	flagForce                = "force"
+	flagLocalDev             = "local-dev"
+	checkpointProviderGitHub = "github"
+)
+
+// externalAgentsAutoEnabledNotice is printed when picking an external summary
+// provider implicitly turns the external_agents setting on. It tells the user
+// that the change applies beyond summary generation, without exposing the
+// underlying flag name or discovery mechanics.
+const externalAgentsAutoEnabledNotice = "Note: external agents are now enabled for the rest of Entire too — not just summaries."
+
+// EnableOptions holds the flags for `entire enable`.
+type EnableOptions struct {
+	LocalDev            bool
+	UseLocalSettings    bool
+	UseProjectSettings  bool
+	ForceHooks          bool
+	SkipPushSessions    bool
+	CheckpointRemote    string
+	Telemetry           bool
+	AbsoluteGitHookPath bool
+	// SuppressDoneMessage tells `runEnableInteractive` to skip its final
+	// "Ready." line and the "commit the configuration files" hint. Set
+	// when the caller is running the bootstrap flow, which takes over
+	// presentation of the final state (commit, push, done).
+	SuppressDoneMessage bool
+	Yes                 bool
+}
+
+// applyStrategyOptions sets strategy_options on settings from CLI flags.
+func (opts *EnableOptions) applyStrategyOptions(settings *EntireSettings) {
+	if opts.SkipPushSessions {
+		if settings.StrategyOptions == nil {
+			settings.StrategyOptions = make(map[string]interface{})
+		}
+		settings.StrategyOptions["push_sessions"] = false
+	}
+	if opts.CheckpointRemote != "" {
+		provider, repo, err := parseCheckpointRemoteFlag(opts.CheckpointRemote)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: invalid --checkpoint-remote format: %v\n", err)
+		} else {
+			if settings.StrategyOptions == nil {
+				settings.StrategyOptions = make(map[string]interface{})
+			}
+			settings.StrategyOptions["checkpoint_remote"] = map[string]any{
+				"provider": provider,
+				"repo":     repo,
+			}
+		}
+	}
+}
+
+func hasStrategyFlags(cmd *cobra.Command) bool {
+	return cmd.Flags().Changed(flagCheckpointRemote) || cmd.Flags().Changed(flagSkipPushSessions)
+}
+
+func hasSummaryProviderFlags(cmd *cobra.Command) bool {
+	return cmd.Flags().Changed(flagSummarizeAgent) || cmd.Flags().Changed(flagSummarizeModel)
+}
+
+// hasGlobalSettingsFlags reports whether any flag affects telemetry or
+// the entire-managed git hook (force / absolute path / local-dev).
+func hasGlobalSettingsFlags(cmd *cobra.Command) bool {
+	return cmd.Flags().Changed(flagTelemetry) ||
+		cmd.Flags().Changed(flagAbsoluteGitHookPath) ||
+		cmd.Flags().Changed(flagForce) ||
+		cmd.Flags().Changed(flagLocalDev)
+}
+
+// hasConfigureSettingsFlags reports whether configure was invoked with any
+// flag that mutates settings or hooks. Bare invocation prints help instead.
+func hasConfigureSettingsFlags(cmd *cobra.Command) bool {
+	return hasStrategyFlags(cmd) || hasSummaryProviderFlags(cmd) || hasGlobalSettingsFlags(cmd)
+}
+
+// enableUsesSetupFlow reports whether `entire enable` should delegate to the
+// setup/configure flow instead of the lightweight re-enable path.
+// Bare `enable` and `enable --local/--project` remain state-toggle operations;
+// any other setup-mutating flag should share configure's behavior.
+func enableUsesSetupFlow(cmd *cobra.Command, agentName string) bool {
+	if agentName != "" || hasStrategyFlags(cmd) {
+		return true
+	}
+	return hasGlobalSettingsFlags(cmd) || cmd.Flags().Changed("yes")
+}
+
+func enableNeedsAgentManagement(cmd *cobra.Command) bool {
+	return hasGlobalSettingsFlags(cmd) || cmd.Flags().Changed("yes")
+}
+
+// updateStrategyOptions applies strategy flags to settings without re-running agent setup.
+// Loads and writes only the target file to avoid leaking settings between layers.
+func updateStrategyOptions(ctx context.Context, w io.Writer, opts EnableOptions) error {
+	// Validate before doing any I/O so we don't report "Settings updated" on bad input.
+	if opts.CheckpointRemote != "" {
+		if _, _, err := parseCheckpointRemoteFlag(opts.CheckpointRemote); err != nil {
+			return fmt.Errorf("invalid --checkpoint-remote: %w", err)
+		}
+	}
+
+	targetFile, configDisplay := settingsTargetFile(ctx, opts.UseLocalSettings, opts.UseProjectSettings)
+
+	targetFileAbs, err := paths.AbsPath(ctx, targetFile)
+	if err != nil {
+		targetFileAbs = targetFile
+	}
+
+	s, err := settings.LoadFromFile(targetFileAbs)
+	if err != nil {
+		return fmt.Errorf("failed to load settings: %w", err)
+	}
+
+	opts.applyStrategyOptions(s)
+
+	if targetFile == settings.EntireSettingsLocalFile {
+		if err := SaveEntireSettingsLocal(ctx, s); err != nil {
+			return fmt.Errorf("failed to save settings: %w", err)
+		}
+	} else {
+		if err := SaveEntireSettings(ctx, s); err != nil {
+			return fmt.Errorf("failed to save settings: %w", err)
+		}
+	}
+
+	fmt.Fprintf(w, "✓ Settings updated (%s)\n", configDisplay)
+	return nil
+}
+
+func updateSummaryGenerationSettings(ctx context.Context, w io.Writer, provider, model string, opts EnableOptions) error {
+	if provider == "" && model == "" {
+		return errors.New("at least one of --summarize-provider or --summarize-model must be set")
+	}
+
+	if provider != "" {
+		// Make external agents on $PATH resolvable for --summarize-provider.
+		external.DiscoverAndRegisterAlways(ctx)
+	}
+
+	targetFile, configDisplay := settingsTargetFile(ctx, opts.UseLocalSettings, opts.UseProjectSettings)
+	targetFileAbs, err := paths.AbsPath(ctx, targetFile)
+	if err != nil {
+		targetFileAbs = targetFile
+	}
+
+	s, err := settings.LoadFromFile(targetFileAbs)
+	if err != nil {
+		return fmt.Errorf("failed to load settings: %w", err)
+	}
+	if s.SummaryGeneration == nil {
+		s.SummaryGeneration = &settings.SummaryGenerationSettings{}
+	}
+
+	if provider != "" {
+		if err := validateSummaryProvider(provider); err != nil {
+			return err
+		}
+		if ag, getErr := getSummaryAgent(types.AgentName(provider)); getErr == nil && external.IsExternal(ag) {
+			if !s.ExternalAgents {
+				s.ExternalAgents = true
+				fmt.Fprintln(w, externalAgentsAutoEnabledNotice)
+			}
+		}
+	}
+	if model != "" && provider == "" && s.SummaryGeneration.Provider == "" {
+		// The target file alone has no provider, but the merged runtime
+		// settings might (e.g. provider in project, model override in local).
+		// Check the full merged view before rejecting.
+		merged, mergeErr := settings.Load(ctx)
+		if mergeErr != nil || merged.SummaryGeneration == nil || merged.SummaryGeneration.Provider == "" {
+			return errors.New("--summarize-model requires an existing summary provider or --summarize-provider")
+		}
+	}
+
+	s.SummaryGeneration.SetProvider(provider, model)
+
+	if targetFile == settings.EntireSettingsLocalFile {
+		if err := SaveEntireSettingsLocal(ctx, s); err != nil {
+			return fmt.Errorf("failed to save settings: %w", err)
+		}
+	} else {
+		if err := SaveEntireSettings(ctx, s); err != nil {
+			return fmt.Errorf("failed to save settings: %w", err)
+		}
+	}
+
+	fmt.Fprintf(w, "✓ Settings updated (%s)\n", configDisplay)
+	return nil
+}
+
+// updateGlobalSettings persists telemetry / hook-mode flags and reinstalls the
+// Entire git hook when --force, --absolute-git-hook-path, or --local-dev is set.
+func updateGlobalSettings(ctx context.Context, cmd *cobra.Command, w io.Writer, opts EnableOptions) error {
+	targetFile, configDisplay := settingsTargetFile(ctx, opts.UseLocalSettings, opts.UseProjectSettings)
+	targetFileAbs, err := paths.AbsPath(ctx, targetFile)
+	if err != nil {
+		targetFileAbs = targetFile
+	}
+	s, err := settings.LoadFromFile(targetFileAbs)
+	if err != nil {
+		return fmt.Errorf("failed to load settings: %w", err)
+	}
+
+	if cmd.Flags().Changed(flagTelemetry) {
+		v := opts.Telemetry
+		s.Telemetry = &v
+	}
+	if cmd.Flags().Changed(flagAbsoluteGitHookPath) {
+		s.AbsoluteGitHookPath = opts.AbsoluteGitHookPath
+	}
+	if cmd.Flags().Changed(flagLocalDev) {
+		s.LocalDev = opts.LocalDev
+	}
+
+	if err := saveSettingsToTarget(ctx, s, targetFile); err != nil {
+		return fmt.Errorf("failed to save settings: %w", err)
+	}
+
+	if cmd.Flags().Changed(flagForce) || cmd.Flags().Changed(flagAbsoluteGitHookPath) || cmd.Flags().Changed(flagLocalDev) {
+		if _, err := strategy.InstallGitHook(ctx, true, s.LocalDev, s.AbsoluteGitHookPath); err != nil {
+			return fmt.Errorf("failed to reinstall git hook: %w", err)
+		}
+		strategy.CheckAndWarnHookManagers(ctx, w, s.LocalDev, s.AbsoluteGitHookPath)
+		fmt.Fprintln(w, "  ✓ Reinstalled git hook")
+	}
+
+	fmt.Fprintf(w, "✓ Settings updated (%s)\n", configDisplay)
+	return nil
+}
+
+// settingsTargetFile determines which settings file to write to based on flags
+// and which files exist. Unlike determineSettingsTarget, this correctly handles
+// local-only repos by checking for settings.local.json when settings.json is absent.
+func settingsTargetFile(ctx context.Context, useLocal, useProject bool) (string, string) {
+	if useLocal {
+		return settings.EntireSettingsLocalFile, configDisplayLocal
+	}
+	if useProject {
+		return settings.EntireSettingsFile, configDisplayProject
+	}
+
+	// No explicit flag — write to whichever file exists.
+	// Check project file first, then local.
+	projectAbs, err := paths.AbsPath(ctx, settings.EntireSettingsFile)
+	if err == nil {
+		if _, statErr := os.Stat(projectAbs); statErr == nil {
+			return settings.EntireSettingsFile, configDisplayProject
+		}
+	}
+	localAbs, err := paths.AbsPath(ctx, settings.EntireSettingsLocalFile)
+	if err == nil {
+		if _, statErr := os.Stat(localAbs); statErr == nil {
+			return settings.EntireSettingsLocalFile, configDisplayLocal
+		}
+	}
+
+	// Neither exists — default to project
+	return settings.EntireSettingsFile, configDisplayProject
+}
+
+func saveSettingsToTarget(ctx context.Context, s *EntireSettings, targetFile string) error {
+	switch targetFile {
+	case settings.EntireSettingsLocalFile:
+		return SaveEntireSettingsLocal(ctx, s)
+	case settings.EntireSettingsFile:
+		return SaveEntireSettings(ctx, s)
+	default:
+		return fmt.Errorf("unknown settings target %q", targetFile)
+	}
+}
+
+// parseCheckpointRemoteFlag parses a "provider:owner/repo" string into its components.
+// Supported providers: "github".
+func parseCheckpointRemoteFlag(value string) (provider, repo string, err error) {
+	parts := strings.SplitN(value, ":", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", "", fmt.Errorf("expected format provider:owner/repo (e.g., github:org/checkpoints-repo), got %q", value)
+	}
+
+	provider = parts[0]
+	repo = parts[1]
+
+	switch provider {
+	case checkpointProviderGitHub:
+		// valid
+	default:
+		return "", "", fmt.Errorf("unsupported provider %q (supported: %s)", provider, checkpointProviderGitHub)
+	}
+
+	repoParts := strings.SplitN(repo, "/", 2)
+	if len(repoParts) != 2 || repoParts[0] == "" || repoParts[1] == "" {
+		return "", "", fmt.Errorf("repo must be in owner/name format, got %q", repo)
+	}
+
+	return provider, repo, nil
+}
+
+// runSetupFlow runs the first-time setup flow (agent selection + hooks + settings).
+// Shared by root command (no args), `entire configure`, and `entire enable` on fresh repos.
+func runSetupFlow(ctx context.Context, w io.Writer, opts EnableOptions) error {
+	// Discover external agent plugins so they appear in agent selection.
+	// Use DiscoverAndRegisterAlways to bypass the external_agents setting —
+	// during setup the setting doesn't exist yet.
+	external.DiscoverAndRegisterAlways(ctx)
+
+	var selectFn func(available []string) ([]string, error)
+	if opts.Yes {
+		selectFn = selectAllAgents
+	}
+
+	agents, err := detectOrSelectAgent(ctx, w, selectFn)
+	if err != nil {
+		return fmt.Errorf("agent selection failed: %w", err)
+	}
+
+	return runEnableInteractive(ctx, w, agents, opts)
+}
+
+// selectAllAgents is a selectFn that selects all available agents.
+// Used by --yes to skip the interactive agent selection prompt.
+func selectAllAgents(available []string) ([]string, error) {
+	if len(available) == 0 {
+		return nil, errors.New("no agents available")
+	}
+	return available, nil
+}
+
+// runManageAgents shows which agents are currently enabled and lets the user
+// add or remove agents. Deselecting an installed agent removes its hooks.
+func runManageAgents(ctx context.Context, w io.Writer, opts EnableOptions, selectFn func(available []string) ([]string, error)) error {
+	installedNames := GetAgentsWithHooksInstalled(ctx)
+
+	// Show currently installed agents
+	if len(installedNames) > 0 {
+		displayNames := make([]string, 0, len(installedNames))
+		for _, name := range installedNames {
+			if ag, err := agent.Get(name); err == nil {
+				displayNames = append(displayNames, string(ag.Type()))
+			}
+		}
+		fmt.Fprintf(w, "Enabled agents: %s\n\n", strings.Join(displayNames, ", "))
+	}
+
+	// Build pre-selection set from installed agents
+	installedSet := make(map[types.AgentName]struct{}, len(installedNames))
+	for _, name := range installedNames {
+		installedSet[name] = struct{}{}
+	}
+
+	// When no selectFn is provided, check if we can prompt interactively.
+	// A selectFn (e.g. from --yes) bypasses the interactive prompt entirely.
+	if selectFn == nil && !interactive.CanPromptInteractively() {
+		fmt.Fprintln(w, "Cannot show agent selection in non-interactive mode.")
+		fmt.Fprintln(w, "Use: entire agent add <name>")
+		return nil
+	}
+
+	// Discover external agent plugins so they appear in agent selection.
+	// Use DiscoverAndRegisterAlways to bypass the external_agents setting —
+	// during setup the setting doesn't exist yet.
+	external.DiscoverAndRegisterAlways(ctx)
+
+	// Build options from registered agents
+	agentNames := agent.List()
+	options := make([]huh.Option[string], 0, len(agentNames))
+	for _, name := range agentNames {
+		ag, err := agent.Get(name)
+		if err != nil {
+			continue
+		}
+		if _, ok := agent.AsHookSupport(ag); !ok {
+			continue
+		}
+		if to, ok := ag.(agent.TestOnly); ok && to.IsTestOnly() {
+			continue
+		}
+		opt := huh.NewOption(string(ag.Type()), string(name))
+		if _, installed := installedSet[name]; installed {
+			opt = opt.Selected(true)
+		}
+		options = append(options, opt)
+	}
+
+	if len(options) == 0 {
+		return errors.New("no agents with hook support available")
+	}
+
+	// Collect available agent names for the selector
+	availableNames := make([]string, 0, len(options))
+	for _, opt := range options {
+		availableNames = append(availableNames, opt.Value)
+	}
+
+	var selectedAgentNames []string
+	if selectFn != nil {
+		var err error
+		selectedAgentNames, err = selectFn(availableNames)
+		if err != nil {
+			return fmt.Errorf("agent selection cancelled: %w", err)
+		}
+	} else {
+		form := NewAccessibleForm(
+			huh.NewGroup(
+				huh.NewMultiSelect[string]().
+					Title("Manage agents").
+					Description("Use space to select/deselect, enter to confirm.").
+					Options(options...).
+					Value(&selectedAgentNames),
+			),
+		)
+		if err := form.Run(); err != nil {
+			return fmt.Errorf("agent selection cancelled: %w", err)
+		}
+	}
+
+	// Nothing selected and nothing installed — no-op.
+	if len(selectedAgentNames) == 0 && len(installedNames) == 0 {
+		targetFile, _ := settingsTargetFile(ctx, opts.UseLocalSettings, opts.UseProjectSettings)
+		changed, err := maybePromptVercelDeploymentDisable(ctx, w, targetFile, nil)
+		if err != nil {
+			return err
+		}
+		if !changed {
+			fmt.Fprintln(w, "No changes made.")
+		}
+		return nil
+	}
+
+	err := applyAgentChanges(ctx, w, selectedAgentNames, installedNames, opts)
+	if err == nil && len(selectedAgentNames) == 0 {
+		fmt.Fprintln(w, "To add agents again, run: entire agent add <name>")
+	}
+	return err
+}
+
+// applyAgentChanges computes added/removed agent sets from the selection and
+// installs or uninstalls hooks accordingly.
+func applyAgentChanges(ctx context.Context, w io.Writer, selectedAgentNames []string, installedNames []types.AgentName, opts EnableOptions) error {
+	installedSet := make(map[types.AgentName]struct{}, len(installedNames))
+	for _, name := range installedNames {
+		installedSet[name] = struct{}{}
+	}
+
+	selectedSet := make(map[string]struct{}, len(selectedAgentNames))
+	for _, name := range selectedAgentNames {
+		selectedSet[name] = struct{}{}
+	}
+
+	// Collect errors so partial successes are visible to the user.
+	var errs []error
+
+	var addedAgents []agent.Agent
+	var reinstalledAgents []agent.Agent
+	for _, name := range selectedAgentNames {
+		ag, err := agent.Get(types.AgentName(name))
+		if err != nil {
+			errs = append(errs, fmt.Errorf("failed to get agent %s: %w", name, err))
+			continue
+		}
+		if _, wasInstalled := installedSet[types.AgentName(name)]; wasInstalled {
+			if opts.ForceHooks {
+				reinstalledAgents = append(reinstalledAgents, ag)
+			}
+			continue
+		}
+		addedAgents = append(addedAgents, ag)
+	}
+
+	var removedAgents []agent.Agent
+	for _, name := range installedNames {
+		if _, stillSelected := selectedSet[string(name)]; stillSelected {
+			continue
+		}
+		ag, err := agent.Get(name)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("failed to load deselected agent %s: %w", name, err))
+			continue
+		}
+		removedAgents = append(removedAgents, ag)
+	}
+
+	if len(addedAgents) == 0 && len(reinstalledAgents) == 0 && len(removedAgents) == 0 && len(errs) == 0 {
+		targetFile, _ := settingsTargetFile(ctx, opts.UseLocalSettings, opts.UseProjectSettings)
+		changed, err := maybePromptVercelDeploymentDisable(ctx, w, targetFile, nil)
+		if err != nil {
+			return err
+		}
+		if !changed {
+			fmt.Fprintln(w, "No changes made.")
+		}
+		return nil
+	}
+	var successfullyAddedAgents []agent.Agent
+	for _, ag := range addedAgents {
+		if _, err := setupAgentHooks(ctx, w, ag, opts.LocalDev, opts.ForceHooks); err != nil {
+			errs = append(errs, fmt.Errorf("failed to setup %s hooks: %w", ag.Type(), err))
+		} else {
+			successfullyAddedAgents = append(successfullyAddedAgents, ag)
+		}
+	}
+
+	var successfullyReinstalledAgents []agent.Agent
+	for _, ag := range reinstalledAgents {
+		if _, err := setupAgentHooks(ctx, w, ag, opts.LocalDev, opts.ForceHooks); err != nil {
+			errs = append(errs, fmt.Errorf("failed to setup %s hooks: %w", ag.Type(), err))
+		} else {
+			successfullyReinstalledAgents = append(successfullyReinstalledAgents, ag)
+		}
+	}
+
+	var uninstalledAgents []agent.Agent
+	for _, ag := range removedAgents {
+		hookAgent, ok := agent.AsHookSupport(ag)
+		if !ok {
+			logging.Warn(ctx, "installed agent does not support hooks, skipping removal",
+				"agent", string(ag.Name()))
+			continue
+		}
+		if err := hookAgent.UninstallHooks(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("failed to remove %s hooks: %w", ag.Type(), err))
+		} else {
+			uninstalledAgents = append(uninstalledAgents, ag)
+		}
+	}
+
+	// Auto-enable external_agents setting if any new agent is external.
+	for _, ag := range append(successfullyAddedAgents, successfullyReinstalledAgents...) {
+		if external.IsExternal(ag) {
+			s, loadErr := LoadEntireSettings(ctx)
+			if loadErr != nil {
+				s = &EntireSettings{}
+			}
+			if !s.ExternalAgents {
+				s.ExternalAgents = true
+				var saveErr error
+				if opts.UseLocalSettings {
+					saveErr = SaveEntireSettingsLocal(ctx, s)
+				} else {
+					saveErr = SaveEntireSettings(ctx, s)
+				}
+				if saveErr != nil {
+					errs = append(errs, fmt.Errorf("failed to save external_agents setting: %w", saveErr))
+				}
+			}
+			break
+		}
+	}
+
+	// Print summary of what succeeded
+	if len(successfullyAddedAgents) > 0 {
+		names := make([]string, 0, len(successfullyAddedAgents))
+		for _, ag := range successfullyAddedAgents {
+			names = append(names, string(ag.Type()))
+		}
+		fmt.Fprintf(w, "✓ Added agents: %s\n", strings.Join(names, ", "))
+	}
+	if len(successfullyReinstalledAgents) > 0 {
+		names := make([]string, 0, len(successfullyReinstalledAgents))
+		for _, ag := range successfullyReinstalledAgents {
+			names = append(names, string(ag.Type()))
+		}
+		fmt.Fprintf(w, "✓ Reinstalled agents: %s\n", strings.Join(names, ", "))
+	}
+	if len(uninstalledAgents) > 0 {
+		if len(successfullyAddedAgents) == 0 && len(successfullyReinstalledAgents) == 0 && len(addedAgents) == 0 && len(removedAgents) == len(installedNames) {
+			fmt.Fprintln(w, "All agents have been removed.")
+		} else {
+			names := make([]string, 0, len(uninstalledAgents))
+			for _, ag := range uninstalledAgents {
+				names = append(names, string(ag.Type()))
+			}
+			fmt.Fprintf(w, "✓ Removed agents: %s\n", strings.Join(names, ", "))
+		}
+	}
+
+	vercelSettingsTarget, _ := settingsTargetFile(ctx, opts.UseLocalSettings, opts.UseProjectSettings)
+	if _, err := maybePromptVercelDeploymentDisable(ctx, w, vercelSettingsTarget, nil); err != nil {
+		errs = append(errs, err)
+	}
+
+	return errors.Join(errs...)
+}
+
+func newSetupCmd() *cobra.Command {
+	var opts EnableOptions
+	var summarizeProvider string
+	var summarizeModel string
 
 	cmd := &cobra.Command{
-		Use:   "enable",
-		Short: "Enable Entire in current project",
-		Long: `Enable Entire with session tracking for your AI agent workflows.
+		Use:   "configure",
+		Short: "Update Entire settings in the current repository",
+		Long: `Update non-agent Entire settings in the current repository.
 
-Uses the manual-commit strategy, which creates session checkpoints without
-modifying your active branch.`,
+Manages telemetry, git-hook installation mode, strategy options, and summary
+provider configuration. Agent installation is handled by 'entire agent'.
+
+Examples:
+  entire configure                                # Show this help
+  entire configure --telemetry=false              # Opt out of telemetry
+  entire configure --absolute-git-hook-path       # Reinstall git hook with absolute path
+  entire configure --force                        # Reinstall git hook
+  entire configure --checkpoint-remote github:org/checkpoints
+  entire configure --summarize-provider claude-code`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
-			// Check if we're in a git repository first - this is a prerequisite error,
-			// not a usage error, so we silence Cobra's output and use SilentError
-			// to prevent duplicate error output in main.go
+
 			if _, err := paths.WorktreeRoot(ctx); err != nil {
-				fmt.Fprintln(cmd.ErrOrStderr(), "Not a git repository. Please run 'entire enable' from within a git repository.")
+				cmd.SilenceUsage = true
+				fmt.Fprintln(cmd.ErrOrStderr(), "Not a git repository. Please run 'entire configure' from within a git repository.")
 				return NewSilentError(errors.New("not a git repository"))
 			}
 
-			if err := validateSetupFlags(useLocalSettings, useProjectSettings); err != nil {
+			if !hasConfigureSettingsFlags(cmd) {
+				if err := cmd.Help(); err != nil {
+					return fmt.Errorf("failed to render help: %w", err)
+				}
+				fmt.Fprintln(cmd.OutOrStdout(), "\nFor agent setup, use 'entire agent' (e.g. 'entire agent add claude-code').")
+				return nil
+			}
+
+			if !settings.IsSetUpAny(ctx) {
+				cmd.SilenceUsage = true
+				fmt.Fprintln(cmd.ErrOrStderr(), "Entire is not configured in this repository yet. Run 'entire enable' first.")
+				return NewSilentError(errors.New("entire not configured"))
+			}
+
+			if hasStrategyFlags(cmd) {
+				if err := updateStrategyOptions(ctx, cmd.OutOrStdout(), opts); err != nil {
+					return err
+				}
+			}
+			if hasSummaryProviderFlags(cmd) {
+				if err := updateSummaryGenerationSettings(ctx, cmd.OutOrStdout(), summarizeProvider, summarizeModel, opts); err != nil {
+					return err
+				}
+			}
+			if hasGlobalSettingsFlags(cmd) {
+				if err := updateGlobalSettings(ctx, cmd, cmd.OutOrStdout(), opts); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}
+
+	cmd.Flags().BoolVar(&opts.LocalDev, flagLocalDev, false, "Use go run instead of entire binary for hooks")
+	cmd.Flags().MarkHidden(flagLocalDev) //nolint:errcheck,gosec // flag is defined above
+	cmd.Flags().BoolVar(&opts.UseLocalSettings, "local", false, "Write settings to .entire/settings.local.json instead of .entire/settings.json")
+	cmd.Flags().BoolVar(&opts.UseProjectSettings, "project", false, "Write settings to .entire/settings.json even if it already exists")
+	cmd.Flags().BoolVarP(&opts.ForceHooks, flagForce, "f", false, "Reinstall the Entire git hook")
+	cmd.Flags().BoolVar(&opts.SkipPushSessions, flagSkipPushSessions, false, "Disable automatic pushing of session logs on git push")
+	cmd.Flags().StringVar(&opts.CheckpointRemote, flagCheckpointRemote, "", "Checkpoint remote in provider:owner/repo format (e.g., github:org/checkpoints-repo)")
+	cmd.Flags().StringVar(&summarizeProvider, flagSummarizeAgent, "", "Set the provider used by explain --generate (e.g., claude-code, codex, gemini, cursor, copilot-cli)")
+	cmd.Flags().StringVar(&summarizeModel, flagSummarizeModel, "", "Set the model hint used by explain --generate")
+	cmd.Flags().BoolVar(&opts.Telemetry, flagTelemetry, true, "Enable anonymous usage analytics")
+	cmd.Flags().BoolVar(&opts.AbsoluteGitHookPath, flagAbsoluteGitHookPath, false, "Embed full binary path in git hooks (for GUI git clients that don't source shell profiles)")
+
+	return cmd
+}
+
+func newEnableCmd() *cobra.Command {
+	var opts EnableOptions
+	var ignoreUntracked bool
+	var agentName string
+	var bootstrapOpts GitHubBootstrapOptions
+
+	cmd := &cobra.Command{
+		Use:   "enable",
+		Short: "Enable Entire in current repository",
+		Long: `Enable Entire with session tracking for your AI agent workflows.
+
+If Entire is not yet configured, this runs the full configuration flow.
+If Entire is already configured but disabled, this re-enables it.
+
+If the current directory is not a git repository, Entire can initialize one
+for you and (optionally) create a matching GitHub repository via the gh CLI.`,
+		RunE: func(cmd *cobra.Command, _ []string) (runErr error) {
+			ctx := cmd.Context()
+			// Check if we're in a git repository first. If not, offer to
+			// bootstrap one (git init + optional GitHub repo). If the user
+			// declines, fall back to the legacy prerequisite error.
+			//
+			// The bootstrap runs in two phases: phase 1 (git init + identity
+			// + gather GitHub choices) before agent setup, phase 2
+			// (initial commit + gh repo create + push) after agent setup so
+			// the initial commit captures the .entire/, .claude/, hooks, and
+			// settings files that setup writes.
+			var bootstrap *bootstrapState
+			if _, err := paths.WorktreeRoot(ctx); err != nil {
+				bootstrapOpts.Yes = opts.Yes
+				state, bootstrapErr := runGitHubBootstrapInit(ctx, cmd.OutOrStdout(), cmd.ErrOrStderr(), bootstrapOpts)
+				if errors.Is(bootstrapErr, errBootstrapDeclined) {
+					fmt.Fprintln(cmd.ErrOrStderr(), "Not a git repository. Please run 'entire enable' from within a git repository, or pass --init-repo to initialize one here.")
+					return NewSilentError(errors.New("not a git repository"))
+				}
+				if errors.Is(bootstrapErr, errBootstrapInterrupted) {
+					fmt.Fprintln(cmd.ErrOrStderr(), "Bootstrap cancelled. A local git repository has been initialized but setup didn't complete. Run `entire enable` again to continue.")
+					return NewSilentError(errors.New("bootstrap interrupted"))
+				}
+				if bootstrapErr != nil {
+					return bootstrapErr
+				}
+				bootstrap = state
+				// Let the enable flow know that we'll be handling the final
+				// "done" summary from the bootstrap finalize step.
+				opts.SuppressDoneMessage = true
+				// Re-check after bootstrap.
+				if _, err := paths.WorktreeRoot(ctx); err != nil {
+					return fmt.Errorf("bootstrap finished but no git repository detected: %w", err)
+				}
+				// Visual separator between bootstrap init and agent setup.
+				printBootstrapSection(cmd.OutOrStdout(), "Enabling Entire")
+				// On the way out (if setup succeeded), create the initial
+				// commit and push to the GitHub repo. If setup returned an
+				// error, skip the finalize — the user can fix the issue and
+				// re-run; any partial state is just untracked files.
+				defer func() {
+					if runErr != nil || bootstrap == nil {
+						return
+					}
+					if err := runGitHubBootstrapFinalize(ctx, cmd.OutOrStdout(), bootstrap); err != nil {
+						runErr = err
+					}
+				}()
+			}
+
+			if err := validateSetupFlags(opts.UseLocalSettings, opts.UseProjectSettings); err != nil {
 				return err
 			}
 
-			// Warn if repo has no commits yet
-			if repo, err := strategy.OpenRepository(ctx); err == nil && strategy.IsEmptyRepository(repo) {
-				fmt.Fprintln(cmd.OutOrStdout(), "Note: This repository has no commits yet. Entire will be configured, but")
-				fmt.Fprintln(cmd.OutOrStdout(), "session checkpoints won't work until you create your first commit.")
-				fmt.Fprintln(cmd.OutOrStdout())
-			}
+			// Discover external agent plugins early so --agent can find them.
+			// Use DiscoverAndRegisterAlways so that --agent works on fresh repos
+			// where the external_agents setting hasn't been persisted yet.
+			external.DiscoverAndRegisterAlways(ctx)
 
 			// Non-interactive mode if --agent flag is provided
-			if cmd.Flags().Changed("agent") && agentName == "" {
+			if cmd.Flags().Changed(agentFlagName) && agentName == "" {
 				printMissingAgentError(cmd.ErrOrStderr())
 				return NewSilentError(errors.New("missing agent name"))
 			}
@@ -80,41 +790,83 @@ modifying your active branch.`,
 				// --agent is a targeted operation: set up this specific agent without
 				// affecting other agents. Unlike the interactive path, it does not
 				// uninstall hooks for other previously-enabled agents.
-				return setupAgentHooksNonInteractive(ctx, cmd.OutOrStdout(), ag, localDev, forceHooks, skipPushSessions, telemetry)
-			}
-			// Detect or prompt for agents
-			agents, err := detectOrSelectAgent(ctx, cmd.OutOrStdout(), nil)
-			if err != nil {
-				return fmt.Errorf("agent selection failed: %w", err)
+				return setupAgentHooksNonInteractive(ctx, cmd.OutOrStdout(), ag, opts)
 			}
 
-			return runEnableInteractive(ctx, cmd.OutOrStdout(), agents, localDev, useLocalSettings, useProjectSettings, forceHooks, skipPushSessions, telemetry)
+			// Any setup-mutating flags should behave like `configure` on repos that
+			// are already set up. Bare `enable` remains the lightweight re-enable path.
+			if settings.IsSetUpAny(ctx) {
+				usedSetupFlow := enableUsesSetupFlow(cmd, agentName)
+				if usedSetupFlow {
+					if hasStrategyFlags(cmd) {
+						if err := updateStrategyOptions(ctx, cmd.OutOrStdout(), opts); err != nil {
+							return err
+						}
+					}
+					if enableNeedsAgentManagement(cmd) {
+						var selectFn func(available []string) ([]string, error)
+						if opts.Yes {
+							selectFn = selectAllAgents
+						}
+						if err := runManageAgents(ctx, cmd.OutOrStdout(), opts, selectFn); err != nil {
+							return err
+						}
+					}
+				}
+
+				enabled, err := IsEnabled(ctx)
+				if err == nil && enabled {
+					w := cmd.OutOrStdout()
+					if !usedSetupFlow {
+						fmt.Fprintln(w, "Entire is already enabled.")
+					}
+					printEnabledStatus(ctx, w)
+					return nil
+				}
+				return runEnable(ctx, cmd.OutOrStdout(), opts.UseProjectSettings)
+			}
+
+			// Fresh repo — run full setup flow
+			return runSetupFlow(ctx, cmd.OutOrStdout(), opts)
 		},
 	}
-	cmd.Flags().StringVar(&agentName, "agent", "", "Agent to set up hooks for (e.g., "+strings.Join(agent.StringList(), ", ")+"). Enables non-interactive mode.")
-	cmd.Flags().BoolVar(&localDev, "local-dev", false, "Use go run instead of entire binary for hooks")
-	cmd.Flags().MarkHidden("local-dev") //nolint:errcheck,gosec // flag is defined above
+
+	cmd.Flags().BoolVar(&opts.LocalDev, flagLocalDev, false, "Use go run instead of entire binary for hooks")
+	cmd.Flags().MarkHidden(flagLocalDev) //nolint:errcheck,gosec // flag is defined above
 	cmd.Flags().BoolVar(&ignoreUntracked, "ignore-untracked", false, "Commit all new files without tracking pre-existing untracked files")
 	cmd.Flags().MarkHidden("ignore-untracked") //nolint:errcheck,gosec // flag is defined above
-	cmd.Flags().BoolVar(&useLocalSettings, "local", false, "Write settings to .entire/settings.local.json instead of .entire/settings.json")
-	cmd.Flags().BoolVar(&useProjectSettings, "project", false, "Write settings to .entire/settings.json even if it already exists")
-	cmd.Flags().BoolVarP(&forceHooks, "force", "f", false, "Force reinstall hooks (removes existing Entire hooks first)")
-	cmd.Flags().BoolVar(&skipPushSessions, "skip-push-sessions", false, "Disable automatic pushing of session logs on git push")
-	cmd.Flags().BoolVar(&telemetry, "telemetry", true, "Enable anonymous usage analytics")
+	cmd.Flags().BoolVar(&opts.UseLocalSettings, "local", false, "Write settings to .entire/settings.local.json instead of .entire/settings.json")
+	cmd.Flags().BoolVar(&opts.UseProjectSettings, "project", false, "Write settings to .entire/settings.json even if it already exists")
+	cmd.Flags().StringVar(&agentName, agentFlagName, "", "Agent to set up hooks for (e.g., "+strings.Join(agent.StringList(), ", ")+"; external agents on $PATH are also available). Enables non-interactive mode.")
+	cmd.Flags().BoolVarP(&opts.ForceHooks, flagForce, "f", false, "Force reinstall hooks (removes existing Entire hooks first)")
+	cmd.Flags().BoolVar(&opts.SkipPushSessions, flagSkipPushSessions, false, "Disable automatic pushing of session logs on git push")
+	cmd.Flags().StringVar(&opts.CheckpointRemote, flagCheckpointRemote, "", "Checkpoint remote in provider:owner/repo format (e.g., github:org/checkpoints-repo)")
+	cmd.Flags().BoolVar(&opts.Telemetry, flagTelemetry, true, "Enable anonymous usage analytics")
+	cmd.Flags().BoolVar(&opts.AbsoluteGitHookPath, flagAbsoluteGitHookPath, false, "Embed full binary path in git hooks (for GUI git clients that don't source shell profiles)")
+	cmd.Flags().BoolVarP(&opts.Yes, "yes", "y", false, "Accept all defaults without prompting (in a non-repo directory: init git, create private GitHub repo, commit; then enable all agents and accept telemetry)")
+
+	// Bootstrap flags for non-git-repo folders.
+	cmd.Flags().BoolVar(&bootstrapOpts.InitRepo, "init-repo", false, "If not a git repo, initialize one non-interactively")
+	cmd.Flags().BoolVar(&bootstrapOpts.NoInitRepo, "no-init-repo", false, "If not a git repo, exit instead of prompting to initialize one")
+	cmd.Flags().StringVar(&bootstrapOpts.RepoName, "repo-name", "", "GitHub repository name for the new repo (used when bootstrapping)")
+	cmd.Flags().StringVar(&bootstrapOpts.RepoOwner, "repo-owner", "", "GitHub user or organization login for the new repo")
+	cmd.Flags().StringVar(&bootstrapOpts.RepoVisibility, "repo-visibility", "", "GitHub repository visibility: public, private, or internal")
+	cmd.Flags().BoolVar(&bootstrapOpts.NoGitHub, "no-github", false, "Initialize local git repo only; skip creating a GitHub remote")
+	cmd.Flags().StringVar(&bootstrapOpts.InitialCommitMessage, "initial-commit-message", "", "Commit message for the initial commit when bootstrapping a new repo")
+	cmd.Flags().BoolVar(&bootstrapOpts.SkipInitialCommit, "skip-initial-commit", false, "Don't create the initial commit when bootstrapping a new repo")
+	cmd.MarkFlagsMutuallyExclusive("init-repo", "no-init-repo")
+	cmd.MarkFlagsMutuallyExclusive("initial-commit-message", "skip-initial-commit")
 
 	// Provide a helpful error when --agent is used without a value
 	defaultFlagErr := cmd.FlagErrorFunc()
 	cmd.SetFlagErrorFunc(func(c *cobra.Command, err error) error {
 		var valErr *pflag.ValueRequiredError
-		if errors.As(err, &valErr) && valErr.GetSpecifiedName() == "agent" {
+		if errors.As(err, &valErr) && valErr.GetSpecifiedName() == agentFlagName {
 			printMissingAgentError(c.ErrOrStderr())
 			return NewSilentError(errors.New("missing agent name"))
 		}
 		return defaultFlagErr(c, err)
 	})
-
-	// Add subcommands for automation/testing
-	cmd.AddCommand(newSetupGitHookCmd())
 
 	return cmd
 }
@@ -126,8 +878,8 @@ func newDisableCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "disable",
-		Short: "Disable Entire in current project",
-		Long: `Disable Entire integrations in the current project.
+		Short: "Disable Entire in current repository",
+		Long: `Disable Entire integrations in the current repository.
 
 By default, this command will disable Entire. Hooks will exit silently and commands will
 show a disabled message.
@@ -156,7 +908,7 @@ To completely remove Entire integrations from this repository, use --uninstall:
 
 // runEnableInteractive runs the interactive enable flow.
 // agents must be provided by the caller (via detectOrSelectAgent).
-func runEnableInteractive(ctx context.Context, w io.Writer, agents []agent.Agent, localDev, useLocalSettings, useProjectSettings, forceHooks, skipPushSessions, telemetry bool) error {
+func runEnableInteractive(ctx context.Context, w io.Writer, agents []agent.Agent, opts EnableOptions) error {
 	// Uninstall hooks for agents that were previously active but are no longer selected
 	if err := uninstallDeselectedAgentHooks(ctx, w, agents); err != nil {
 		return fmt.Errorf("failed to clean up deselected agents: %w", err)
@@ -164,7 +916,7 @@ func runEnableInteractive(ctx context.Context, w io.Writer, agents []agent.Agent
 
 	// Setup agent hooks for all selected agents
 	for _, ag := range agents {
-		if _, err := setupAgentHooks(ctx, ag, localDev, forceHooks); err != nil {
+		if _, err := setupAgentHooks(ctx, w, ag, opts.LocalDev, opts.ForceHooks); err != nil {
 			return fmt.Errorf("failed to setup %s hooks: %w", ag.Type(), err)
 		}
 	}
@@ -181,16 +933,23 @@ func runEnableInteractive(ctx context.Context, w io.Writer, agents []agent.Agent
 		settings = &EntireSettings{}
 	}
 	// Update the specific fields
-	settings.LocalDev = localDev
 	settings.Enabled = true
-
-	// Set push_sessions option if --skip-push-sessions flag was provided
-	if skipPushSessions {
-		if settings.StrategyOptions == nil {
-			settings.StrategyOptions = make(map[string]interface{})
-		}
-		settings.StrategyOptions["push_sessions"] = false
+	if opts.LocalDev {
+		settings.LocalDev = true
 	}
+	if opts.AbsoluteGitHookPath {
+		settings.AbsoluteGitHookPath = true
+	}
+
+	// Auto-enable external_agents if any selected agent is external.
+	for _, ag := range agents {
+		if external.IsExternal(ag) {
+			settings.ExternalAgents = true
+			break
+		}
+	}
+
+	opts.applyStrategyOptions(settings)
 
 	// Determine which settings file to write to
 	// First run always creates settings.json (no prompt)
@@ -198,7 +957,7 @@ func runEnableInteractive(ctx context.Context, w io.Writer, agents []agent.Agent
 	if err != nil {
 		entireDirAbs = paths.EntireDir // Fallback to relative
 	}
-	shouldUseLocal, showNotification := determineSettingsTarget(entireDirAbs, useLocalSettings, useProjectSettings)
+	shouldUseLocal, showNotification := determineSettingsTarget(entireDirAbs, opts.UseLocalSettings, opts.UseProjectSettings)
 
 	if showNotification {
 		fmt.Fprintln(w, "Info: Project settings exist. Saving to settings.local.json instead.")
@@ -206,31 +965,52 @@ func runEnableInteractive(ctx context.Context, w io.Writer, agents []agent.Agent
 	}
 
 	// Save settings to the appropriate file.
+	targetFile := EntireSettingsFile
+	if shouldUseLocal {
+		targetFile = EntireSettingsLocalFile
+	}
 	saveSettings := func() error {
-		if shouldUseLocal {
-			return SaveEntireSettingsLocal(ctx, settings)
-		}
-		return SaveEntireSettings(ctx, settings)
+		return saveSettingsToTarget(ctx, settings, targetFile)
 	}
 	if err := saveSettings(); err != nil {
 		return fmt.Errorf("failed to save settings: %w", err)
 	}
 
-	if _, err := strategy.InstallGitHook(ctx, true, localDev); err != nil {
+	// Use settings values (merged from existing config + flags) for hook installation
+	// This ensures re-running `entire enable` without flags preserves existing settings
+	if _, err := strategy.InstallGitHook(ctx, true, settings.LocalDev, settings.AbsoluteGitHookPath); err != nil {
 		return fmt.Errorf("failed to install git hooks: %w", err)
 	}
-	strategy.CheckAndWarnHookManagers(ctx, w, localDev)
-	fmt.Fprintln(w, "✓ Hooks installed")
+	strategy.CheckAndWarnHookManagers(ctx, w, settings.LocalDev, settings.AbsoluteGitHookPath)
+	fmt.Fprintln(w, "  ✓ Installed hooks")
 
 	configDisplay := configDisplayProject
 	if shouldUseLocal {
 		configDisplay = configDisplayLocal
 	}
-	fmt.Fprintf(w, "✓ Project configured (%s)\n", configDisplay)
+	fmt.Fprintln(w, "  ✓ Configured project")
+	fmt.Fprintf(w, "    %s\n", configDisplay)
 
-	// Ask about telemetry consent (only if not already asked)
-	fmt.Fprintln(w)
-	if err := promptTelemetryConsent(settings, telemetry); err != nil {
+	var vercelPromptFn func() (bool, error)
+	if opts.Yes {
+		vercelPromptFn = func() (bool, error) { return true, nil }
+	}
+	if _, err := maybePromptVercelDeploymentDisable(ctx, w, targetFile, vercelPromptFn); err != nil {
+		return err
+	}
+
+	// Ask about telemetry consent (only if not already asked).
+	// --yes skips the interactive prompt but still respects --telemetry=false
+	// and ENTIRE_TELEMETRY_OPTOUT — it only auto-answers the interactive question.
+	if opts.Yes {
+		if !opts.Telemetry || os.Getenv("ENTIRE_TELEMETRY_OPTOUT") != "" {
+			f := false
+			settings.Telemetry = &f
+		} else if settings.Telemetry == nil {
+			t := true
+			settings.Telemetry = &t
+		}
+	} else if err := promptTelemetryConsent(settings, opts.Telemetry); err != nil {
 		return fmt.Errorf("telemetry consent: %w", err)
 	}
 	// Save again to persist telemetry choice
@@ -242,48 +1022,123 @@ func runEnableInteractive(ctx context.Context, w io.Writer, agents []agent.Agent
 		return fmt.Errorf("failed to setup strategy: %w", err)
 	}
 
+	if opts.SuppressDoneMessage {
+		// Bootstrap finalize will print its own completion summary after
+		// making the initial commit and pushing.
+		return nil
+	}
+
 	fmt.Fprintln(w, "\nReady.")
+
+	// Note about empty repos at the end, after setup is complete
+	if repo, err := strategy.OpenRepository(ctx); err == nil && strategy.IsEmptyRepository(repo) {
+		fmt.Fprintln(w)
+		fmt.Fprintln(w, "Note: Session checkpoints require at least one commit. To get started,")
+		fmt.Fprintln(w, "commit the configuration files (e.g. .entire/, .claude/).")
+	}
 
 	return nil
 }
 
-// runEnable is a simple enable that just sets the enabled flag (for programmatic use).
-func runEnable(ctx context.Context, w io.Writer) error {
-	settings, err := LoadEntireSettings(ctx)
+// printEnabledStatus prints agents and a hint about `entire agent`.
+func printEnabledStatus(ctx context.Context, w io.Writer) {
+	if displayNames := InstalledAgentDisplayNames(ctx); len(displayNames) > 0 {
+		fmt.Fprintf(w, "Agents: %s\n", strings.Join(displayNames, ", "))
+	}
+	fmt.Fprintln(w, "\nTo add more agents, run `entire agent add <name>`.")
+}
+
+// runEnable sets the enabled flag in settings.
+// Writes to the target file (local by default, project with --project),
+// and also updates the other file if it exists, so they can't get out of sync.
+func runEnable(ctx context.Context, w io.Writer, useProjectSettings bool) error {
+	s, err := LoadEntireSettings(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to load settings: %w", err)
 	}
 
-	settings.Enabled = true
-	if err := SaveEntireSettings(ctx, settings); err != nil {
-		return fmt.Errorf("failed to save settings: %w", err)
+	s.Enabled = true
+
+	if err := saveEnabledState(ctx, s, useProjectSettings); err != nil {
+		return err
 	}
 
 	fmt.Fprintln(w, "Entire is now enabled.")
+	printEnabledStatus(ctx, w)
 	return nil
 }
 
 func runDisable(ctx context.Context, w io.Writer, useProjectSettings bool) error {
-	settings, err := LoadEntireSettings(ctx)
+	s, err := LoadEntireSettings(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to load settings: %w", err)
 	}
 
-	settings.Enabled = false
+	s.Enabled = false
 
-	// If --project flag is specified, always write to project settings
-	if useProjectSettings {
-		if err := SaveEntireSettings(ctx, settings); err != nil {
-			return fmt.Errorf("failed to save settings: %w", err)
-		}
-	} else {
-		// Always write to local settings file (create if doesn't exist)
-		if err := SaveEntireSettingsLocal(ctx, settings); err != nil {
-			return fmt.Errorf("failed to save local settings: %w", err)
-		}
+	if err := saveEnabledState(ctx, s, useProjectSettings); err != nil {
+		return err
 	}
 
 	fmt.Fprintln(w, "Entire is now disabled.")
+	return nil
+}
+
+// saveEnabledState writes settings to the target file and also updates the
+// other settings file if it exists, preventing local/project from getting
+// out of sync on the enabled field.
+func saveEnabledState(ctx context.Context, s *EntireSettings, useProjectSettings bool) error {
+	if useProjectSettings {
+		if err := SaveEntireSettings(ctx, s); err != nil {
+			return fmt.Errorf("failed to save settings: %w", err)
+		}
+		// Also update local if it exists, so it doesn't override
+		if localExists(ctx) {
+			if err := SaveEntireSettingsLocal(ctx, s); err != nil {
+				return fmt.Errorf("failed to save local settings: %w", err)
+			}
+		}
+	} else {
+		if err := SaveEntireSettingsLocal(ctx, s); err != nil {
+			return fmt.Errorf("failed to save local settings: %w", err)
+		}
+	}
+	return nil
+}
+
+// localExists checks if settings.local.json exists.
+func localExists(ctx context.Context) bool {
+	localFile := settings.EntireSettingsLocalFile
+	if abs, err := paths.AbsPath(ctx, localFile); err == nil {
+		localFile = abs
+	}
+	_, err := os.Stat(localFile)
+	return err == nil
+}
+
+// runRemoveAgent removes hooks for a specific agent.
+func runRemoveAgent(ctx context.Context, w io.Writer, name string) error {
+	ag, err := agent.Get(types.AgentName(name))
+	if err != nil {
+		printWrongAgentError(w, name)
+		return NewSilentError(errors.New("wrong agent name"))
+	}
+
+	hookAgent, ok := agent.AsHookSupport(ag)
+	if !ok {
+		return fmt.Errorf("agent %s does not support hooks", name)
+	}
+
+	if !hookAgent.AreHooksInstalled(ctx) {
+		fmt.Fprintf(w, "%s hooks are not installed.\n", ag.Type())
+		return nil
+	}
+
+	if err := hookAgent.UninstallHooks(ctx); err != nil {
+		return fmt.Errorf("failed to remove %s hooks: %w", ag.Type(), err)
+	}
+
+	fmt.Fprintf(w, "Removed %s hooks.\n", ag.Type())
 	return nil
 }
 
@@ -329,7 +1184,7 @@ func uninstallDeselectedAgentHooks(ctx context.Context, w io.Writer, selectedAge
 		if err != nil {
 			continue
 		}
-		hookAgent, ok := ag.(agent.HookSupport)
+		hookAgent, ok := agent.AsHookSupport(ag)
 		if !ok {
 			continue
 		}
@@ -344,8 +1199,8 @@ func uninstallDeselectedAgentHooks(ctx context.Context, w io.Writer, selectedAge
 
 // setupAgentHooks sets up hooks for a given agent.
 // Returns the number of hooks installed (0 if already installed).
-func setupAgentHooks(ctx context.Context, ag agent.Agent, localDev, forceHooks bool) (int, error) {
-	hookAgent, ok := ag.(agent.HookSupport)
+func setupAgentHooks(ctx context.Context, w io.Writer, ag agent.Agent, localDev, forceHooks bool) (int, error) {
+	hookAgent, ok := agent.AsHookSupport(ag)
 	if !ok {
 		return 0, fmt.Errorf("agent %s does not support hooks", ag.Name())
 	}
@@ -355,6 +1210,12 @@ func setupAgentHooks(ctx context.Context, ag agent.Agent, localDev, forceHooks b
 		return 0, fmt.Errorf("failed to install %s hooks: %w", ag.Name(), err)
 	}
 
+	scaffoldResult, err := scaffoldSearchSubagent(ctx, ag)
+	if err != nil {
+		return 0, fmt.Errorf("failed to scaffold %s search subagent: %w", ag.Name(), err)
+	}
+	reportSearchSubagentScaffold(w, ag, scaffoldResult)
+
 	return count, nil
 }
 
@@ -362,7 +1223,8 @@ func setupAgentHooks(ctx context.Context, ag agent.Agent, localDev, forceHooks b
 // Returns the detected/selected agents and any error.
 //
 // On first run (no hooks installed):
-//   - Single detected agent: used automatically
+//   - Single detected built-in agent: used automatically
+//   - Single detected external agent: interactive multi-select prompt
 //   - Multiple/no detected agents: interactive multi-select prompt
 //
 // On re-run (hooks already installed):
@@ -383,8 +1245,14 @@ func detectOrSelectAgent(ctx context.Context, w io.Writer, selectFn func(availab
 	if !hasInstalledHooks {
 		switch {
 		case len(detected) == 1:
-			fmt.Fprintf(w, "Detected agent: %s\n\n", detected[0].Type())
-			return detected, nil
+			if isBuiltInAgent(detected[0]) {
+				// When a selectFn is provided (e.g. --yes), skip the single-agent
+				// shortcut so the caller's selection logic runs instead.
+				if selectFn == nil {
+					fmt.Fprintf(w, "Detected agent: %s\n\n", detected[0].Type())
+					return detected, nil
+				}
+			}
 
 		case len(detected) > 1:
 			agentTypes := make([]string, 0, len(detected))
@@ -396,8 +1264,9 @@ func detectOrSelectAgent(ctx context.Context, w io.Writer, selectFn func(availab
 		}
 	}
 
-	// Check if we can prompt interactively
-	if !canPromptInteractively() {
+	// When no selectFn is provided, check if we can prompt interactively.
+	// A selectFn (e.g. from --yes) bypasses the interactive prompt entirely.
+	if selectFn == nil && !interactive.CanPromptInteractively() {
 		if hasInstalledHooks {
 			// Re-run without TTY — keep currently installed agents
 			agents := make([]agent.Agent, 0, len(installedAgentNames))
@@ -421,15 +1290,9 @@ func detectOrSelectAgent(ctx context.Context, w io.Writer, selectFn func(availab
 		return []agent.Agent{defaultAgent}, nil
 	}
 
-	if !hasInstalledHooks && len(detected) == 0 {
-		fmt.Fprintln(w, "No agent configuration detected (e.g., "+strings.Join(agent.StringList(), ", ")+").")
-		fmt.Fprintln(w, "This is normal - some agents don't require a config directory.")
-		fmt.Fprintln(w)
-	}
-
 	// Build pre-selection set.
 	// On re-run: only pre-select agents with hooks installed (respect prior deselection).
-	// On first run: pre-select all detected agents.
+	// On first run: pre-select detected built-in agents only.
 	preSelectedSet := make(map[types.AgentName]struct{})
 	if hasInstalledHooks {
 		for _, name := range installedAgentNames {
@@ -437,7 +1300,9 @@ func detectOrSelectAgent(ctx context.Context, w io.Writer, selectFn func(availab
 		}
 	} else {
 		for _, ag := range detected {
-			preSelectedSet[ag.Name()] = struct{}{}
+			if isBuiltInAgent(ag) {
+				preSelectedSet[ag.Name()] = struct{}{}
+			}
 		}
 	}
 
@@ -450,7 +1315,11 @@ func detectOrSelectAgent(ctx context.Context, w io.Writer, selectFn func(availab
 			continue
 		}
 		// Only show agents that support hooks
-		if _, ok := ag.(agent.HookSupport); !ok {
+		if _, ok := agent.AsHookSupport(ag); !ok {
+			continue
+		}
+		// Skip test-only agents (e.g., Vogon canary)
+		if to, ok := ag.(agent.TestOnly); ok && to.IsTestOnly() {
 			continue
 		}
 		opt := huh.NewOption(string(ag.Type()), string(name))
@@ -484,7 +1353,7 @@ func detectOrSelectAgent(ctx context.Context, w io.Writer, selectFn func(availab
 		form := NewAccessibleForm(
 			huh.NewGroup(
 				huh.NewMultiSelect[string]().
-					Title("Which agents are you using?").
+					Title("Select the agents you want to use").
 					Description("Use space to select, enter to confirm.").
 					Options(options...).
 					Validate(func(selected []string) error {
@@ -514,25 +1383,12 @@ func detectOrSelectAgent(ctx context.Context, w io.Writer, selectFn func(availab
 	for _, ag := range selectedAgents {
 		agentTypes = append(agentTypes, string(ag.Type()))
 	}
-	fmt.Fprintf(w, "\nSelected agents: %s\n\n", strings.Join(agentTypes, ", "))
+	fmt.Fprintf(w, "  Selected agents: %s\n", strings.Join(agentTypes, ", "))
 	return selectedAgents, nil
 }
 
-// canPromptInteractively checks if we can show interactive prompts.
-// Returns false when running in CI, tests, or other non-interactive environments.
-func canPromptInteractively() bool {
-	// Check for test environment
-	if os.Getenv("ENTIRE_TEST_TTY") != "" {
-		return os.Getenv("ENTIRE_TEST_TTY") == "1"
-	}
-
-	// Check if /dev/tty is available
-	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
-	if err != nil {
-		return false
-	}
-	_ = tty.Close()
-	return true
+func isBuiltInAgent(ag agent.Agent) bool {
+	return !external.IsExternal(ag)
 }
 
 // printAgentError writes an error message followed by available agents and usage.
@@ -563,20 +1419,19 @@ func printWrongAgentError(w io.Writer, name string) {
 
 // setupAgentHooksNonInteractive sets up hooks for a specific agent non-interactively.
 // If strategyName is provided, it sets the strategy; otherwise uses default.
-func setupAgentHooksNonInteractive(ctx context.Context, w io.Writer, ag agent.Agent, localDev, forceHooks, skipPushSessions, telemetry bool) error {
+func setupAgentHooksNonInteractive(ctx context.Context, w io.Writer, ag agent.Agent, opts EnableOptions) error {
 	agentName := ag.Name()
 	// Check if agent supports hooks
-	hookAgent, ok := ag.(agent.HookSupport)
-	if !ok {
+	if _, ok := agent.AsHookSupport(ag); !ok {
 		return fmt.Errorf("agent %s does not support hooks", agentName)
 	}
 
-	fmt.Fprintf(w, "Agent: %s\n\n", ag.Type())
+	fmt.Fprintf(w, "  Agent: %s\n", ag.Type())
 
 	// Install agent hooks (agent hooks don't depend on settings)
-	installedHooks, err := hookAgent.InstallHooks(ctx, localDev, forceHooks)
+	installedHooks, err := setupAgentHooks(ctx, w, ag, opts.LocalDev, opts.ForceHooks)
 	if err != nil {
-		return fmt.Errorf("failed to install hooks for %s: %w", agentName, err)
+		return fmt.Errorf("failed to setup %s hooks: %w", agentName, err)
 	}
 
 	// Setup .entire directory
@@ -591,55 +1446,76 @@ func setupAgentHooksNonInteractive(ctx context.Context, w io.Writer, ag agent.Ag
 		settings = &EntireSettings{}
 	}
 	settings.Enabled = true
-	if localDev {
-		settings.LocalDev = localDev
+	if opts.LocalDev {
+		settings.LocalDev = true
+	}
+	if opts.AbsoluteGitHookPath {
+		settings.AbsoluteGitHookPath = true
 	}
 
-	// Set push_sessions option if --skip-push-sessions flag was provided
-	if skipPushSessions {
-		if settings.StrategyOptions == nil {
-			settings.StrategyOptions = make(map[string]interface{})
-		}
-		settings.StrategyOptions["push_sessions"] = false
+	// Auto-enable external_agents setting if the agent is external.
+	if external.IsExternal(ag) {
+		settings.ExternalAgents = true
 	}
+
+	opts.applyStrategyOptions(settings)
 
 	// Handle telemetry for non-interactive mode
 	// Note: if telemetry is nil (not configured), it defaults to disabled
-	if !telemetry || os.Getenv("ENTIRE_TELEMETRY_OPTOUT") != "" {
+	if !opts.Telemetry || os.Getenv("ENTIRE_TELEMETRY_OPTOUT") != "" {
 		f := false
 		settings.Telemetry = &f
 	}
 
-	if err := SaveEntireSettings(ctx, settings); err != nil {
+	targetFile, configDisplay := settingsTargetFile(ctx, opts.UseLocalSettings, opts.UseProjectSettings)
+	if err := saveSettingsToTarget(ctx, settings, targetFile); err != nil {
 		return fmt.Errorf("failed to save settings: %w", err)
 	}
 
-	if _, err := strategy.InstallGitHook(ctx, true, localDev); err != nil {
+	// Use settings values (merged from existing config + flags) for hook installation
+	// This ensures re-running `entire enable --agent X` without flags preserves existing settings
+	if _, err := strategy.InstallGitHook(ctx, true, settings.LocalDev, settings.AbsoluteGitHookPath); err != nil {
 		return fmt.Errorf("failed to install git hooks: %w", err)
 	}
-	strategy.CheckAndWarnHookManagers(ctx, w, localDev)
+	strategy.CheckAndWarnHookManagers(ctx, w, settings.LocalDev, settings.AbsoluteGitHookPath)
 
 	if installedHooks == 0 {
 		msg := fmt.Sprintf("Hooks for %s already installed", ag.Description())
 		if ag.IsPreview() {
 			msg += " (Preview)"
 		}
-		fmt.Fprintf(w, "%s\n", msg)
+		fmt.Fprintf(w, "  %s\n", msg)
 	} else {
 		msg := fmt.Sprintf("Installed %d hooks for %s", installedHooks, ag.Description())
 		if ag.IsPreview() {
 			msg += " (Preview)"
 		}
-		fmt.Fprintf(w, "%s\n", msg)
+		fmt.Fprintf(w, "  %s\n", msg)
 	}
 
-	fmt.Fprintf(w, "✓ Project configured (%s)\n", configDisplayProject)
+	fmt.Fprintln(w, "  ✓ Configured project")
+	fmt.Fprintf(w, "    %s\n", configDisplay)
+
+	if _, err := maybePromptVercelDeploymentDisable(ctx, w, targetFile, nil); err != nil {
+		return err
+	}
 
 	if err := strategy.EnsureSetup(ctx); err != nil {
 		return fmt.Errorf("failed to setup strategy: %w", err)
 	}
 
+	if opts.SuppressDoneMessage {
+		// Bootstrap finalize will print its own completion summary.
+		return nil
+	}
+
 	fmt.Fprintln(w, "\nReady.")
+
+	if repo, err := strategy.OpenRepository(ctx); err == nil && strategy.IsEmptyRepository(repo) {
+		fmt.Fprintln(w)
+		fmt.Fprintln(w, "Note: Session checkpoints require at least one commit. To get started,")
+		fmt.Fprintln(w, "commit the configuration files (e.g. .entire/, .claude/).")
+	}
 
 	return nil
 }
@@ -705,31 +1581,6 @@ func setupEntireDirectory(ctx context.Context) (bool, error) { //nolint:unparam 
 	}
 
 	return created, nil
-}
-
-// setupGitHook installs the prepare-commit-msg hook for context trailers.
-func setupGitHook(ctx context.Context) error {
-	s, err := settings.Load(ctx)
-	localDev := err == nil && s.LocalDev
-	if _, err := strategy.InstallGitHook(ctx, false, localDev); err != nil {
-		return fmt.Errorf("failed to install git hook: %w", err)
-	}
-	strategy.CheckAndWarnHookManagers(ctx, os.Stderr, localDev)
-	return nil
-}
-
-// newSetupGitHookCmd creates the standalone git-hook setup command
-func newSetupGitHookCmd() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:    "git-hook",
-		Short:  "Install git hook for session context trailers",
-		Hidden: true, // Hidden as it's mainly for testing
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			return setupGitHook(cmd.Context())
-		},
-	}
-
-	return cmd
 }
 
 func newCurlBashPostInstallCmd() *cobra.Command {
@@ -908,6 +1759,110 @@ func promptTelemetryConsent(settings *EntireSettings, telemetryFlag bool) error 
 	return nil
 }
 
+func maybePromptVercelDeploymentDisable(ctx context.Context, w io.Writer, targetFile string, promptFn func() (bool, error)) (bool, error) {
+	repoRoot, rootErr := paths.WorktreeRoot(ctx)
+	if rootErr == nil {
+		vercelJSONPath := filepath.Join(repoRoot, "vercel.json")
+		hasVercelJSON := false
+		if _, err := os.Stat(vercelJSONPath); err == nil {
+			hasVercelJSON = true
+		} else if !os.IsNotExist(err) {
+			fmt.Fprintf(w, "Note: Skipping Vercel deployment update: could not check vercel.json: %v\n", err)
+			return false, nil
+		}
+
+		hasVercelProject := hasVercelJSON
+		if !hasVercelProject {
+			for _, path := range []string{
+				filepath.Join(repoRoot, ".vercel"),
+				filepath.Join(repoRoot, "vercel.ts"),
+			} {
+				if _, err := os.Stat(path); err == nil {
+					hasVercelProject = true
+					break
+				} else if !os.IsNotExist(err) {
+					fmt.Fprintf(w, "Note: Skipping Vercel deployment update: could not check %s: %v\n", path, err)
+					return false, nil
+				}
+			}
+		}
+
+		if !hasVercelProject {
+			return false, nil
+		}
+
+		configDisplay := configDisplayProject
+		if targetFile == settings.EntireSettingsLocalFile {
+			configDisplay = configDisplayLocal
+		}
+
+		targetSettingsPath := filepath.Join(repoRoot, targetFile)
+		targetSettings, err := settings.LoadFromFile(targetSettingsPath)
+		if err != nil {
+			return false, fmt.Errorf("load settings: %w", err)
+		}
+		if targetSettings.Vercel {
+			return false, nil
+		}
+
+		if config, alreadyDisabled, loadErr := vercelconfig.Load(vercelJSONPath); loadErr == nil &&
+			config != nil && alreadyDisabled {
+			targetSettings.Vercel = true
+			if err := saveSettingsToTarget(ctx, targetSettings, targetFile); err != nil {
+				return false, fmt.Errorf("save settings: %w", err)
+			}
+			fmt.Fprintf(w, "✓ Updated %s to manage Vercel deployment blocking on `%s`\n", configDisplay, vercelconfig.BranchPattern)
+			return true, nil
+		}
+
+		if promptFn == nil {
+			if !interactive.CanPromptInteractively() {
+				fmt.Fprintf(w, "Note: Vercel detected. Run `entire configure` interactively to disable deployments for `%s` branches.\n", vercelconfig.BranchPattern)
+				return false, nil
+			}
+			promptFn = promptVercelDeploymentDisable
+		}
+
+		disableDeployments, err := promptFn()
+		if err != nil {
+			return false, fmt.Errorf("vercel prompt: %w", err)
+		}
+		if !disableDeployments {
+			return false, nil
+		}
+
+		targetSettings.Vercel = true
+		if err := saveSettingsToTarget(ctx, targetSettings, targetFile); err != nil {
+			return false, fmt.Errorf("save settings: %w", err)
+		}
+
+		fmt.Fprintf(w, "✓ Updated %s to block Vercel deploys of Entire metadata branch\n", configDisplay)
+		return true, nil
+	}
+
+	return false, nil
+}
+
+func promptVercelDeploymentDisable() (bool, error) {
+	disableDeployments := true
+	form := NewAccessibleForm(
+		huh.NewGroup(
+			huh.NewConfirm().
+				Title("Disable Vercel deployments for Entire metadata branch?").
+				Description("This automatically creates a vercel.json in the Entire metadata branch.").
+				Affirmative("Yes").
+				Negative("No").
+				Value(&disableDeployments),
+		),
+	)
+
+	if err := form.Run(); err != nil {
+		return false, fmt.Errorf("run vercel deployment disable form: %w", err)
+	}
+
+	return disableDeployments, nil
+}
+
 // runUninstall completely removes Entire from the repository.
 func runUninstall(ctx context.Context, w, errW io.Writer, force bool) error {
 	// Check if we're in a git repository
@@ -1059,7 +2014,7 @@ func removeAgentHooks(ctx context.Context, w io.Writer) error {
 		if err != nil {
 			continue
 		}
-		hs, ok := ag.(agent.HookSupport)
+		hs, ok := agent.AsHookSupport(ag)
 		if !ok {
 			continue
 		}

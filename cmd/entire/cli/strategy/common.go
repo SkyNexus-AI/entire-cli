@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -17,19 +19,25 @@ import (
 	"github.com/entireio/cli/cmd/entire/cli/agent/types"
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint"
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint/id"
+	"github.com/entireio/cli/cmd/entire/cli/logging"
 	"github.com/entireio/cli/cmd/entire/cli/paths"
+	"github.com/entireio/cli/cmd/entire/cli/settings"
 	"github.com/entireio/cli/cmd/entire/cli/trailers"
+	"github.com/entireio/cli/cmd/entire/cli/vercelconfig"
+	"github.com/entireio/cli/redact"
 
-	"github.com/go-git/go-git/v5"
-	"github.com/go-git/go-git/v5/plumbing"
-	"github.com/go-git/go-git/v5/plumbing/filemode"
-	"github.com/go-git/go-git/v5/plumbing/object"
+	"github.com/go-git/go-git/v6"
+	"github.com/go-git/go-git/v6/plumbing"
+	"github.com/go-git/go-git/v6/plumbing/filemode"
+	"github.com/go-git/go-git/v6/plumbing/object"
 )
 
 // Common branch name constants for default branch detection.
 const (
 	branchMain   = "main"
 	branchMaster = "master"
+	// originRemote is the default git remote name used for fetch/push fallbacks.
+	originRemote = "origin"
 	// Strategy name constants
 	StrategyNameManualCommit = "manual-commit"
 )
@@ -64,15 +72,84 @@ func EnsureSetup(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to open git repository: %w", err)
 	}
+	if err := vercelconfig.InitSettings(ctx); err != nil {
+		return fmt.Errorf("failed to initialize vercel settings: %w", err)
+	}
 	if err := EnsureMetadataBranch(repo); err != nil {
 		return fmt.Errorf("failed to ensure metadata branch: %w", err)
 	}
 
 	// Install generic hooks (they delegate to strategy at runtime)
 	if !IsGitHookInstalled(ctx) {
-		if _, err := InstallGitHook(ctx, true, isLocalDev(ctx)); err != nil {
+		localDev, absoluteHookPath := hookSettingsFromConfig(ctx)
+		if _, err := InstallGitHook(ctx, true, localDev, absoluteHookPath); err != nil {
 			return fmt.Errorf("failed to install git hooks: %w", err)
 		}
+	}
+	return nil
+}
+
+// FetchTmpRefPrefix is the namespace for temporary refs used by fetch helpers
+// to land a fetched hash before safely promoting it to a final ref (via
+// PromoteTmpRefSafely). Prefer using the named constants below when possible.
+const FetchTmpRefPrefix = "refs/entire-fetch-tmp/"
+
+// V2MainFetchTmpRef is the staging ref for fetches that target V2MainRefName.
+// Shared between the cli package's origin-based fetches and the strategy
+// package's checkpoint_remote URL-based fetch — those code paths never run
+// concurrently (they are sequenced in explain and resume), so reusing one
+// staging ref is safe and avoids divergent conventions.
+const V2MainFetchTmpRef = FetchTmpRefPrefix + "v2-main"
+
+// PromoteTmpRefSafely reads tmpRefName (the ref a fetch just landed into),
+// advances destRefName to its hash via SafelyAdvanceLocalRef, then removes
+// the tmp ref. The cleanup is deferred so the tmp ref is reaped even when
+// the advance fails.
+//
+// label is a short human-readable name used in error messages (e.g.
+// "v2 /main", "entire/checkpoints/v1"). Typical use:
+//
+//	// fetch with refspec "+<src>:<V2MainFetchTmpRef>"
+//	return PromoteTmpRefSafely(ctx, V2MainFetchTmpRef, paths.V2MainRefName, "v2 /main")
+func PromoteTmpRefSafely(ctx context.Context, tmpRefName, destRefName plumbing.ReferenceName, label string) error {
+	repo, err := OpenRepository(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to open repository for %s promote: %w", label, err)
+	}
+	defer func() { _ = repo.Storer.RemoveReference(tmpRefName) }() //nolint:errcheck // cleanup is best-effort
+
+	tmpRef, err := repo.Reference(tmpRefName, true)
+	if err != nil {
+		return fmt.Errorf("%s not found after fetch (tmp ref %s missing): %w", label, tmpRefName, err)
+	}
+	if err := SafelyAdvanceLocalRef(ctx, repo, destRefName, tmpRef.Hash()); err != nil {
+		return fmt.Errorf("failed to advance local %s: %w", label, err)
+	}
+	return nil
+}
+
+// SafelyAdvanceLocalRef updates localRefName to point at targetHash, except
+// when the existing local ref is already at or ahead of targetHash. In that
+// case it leaves the local ref unchanged to avoid rewinding locally-ahead
+// work. Otherwise (local missing, behind, or diverged) it updates the ref to
+// targetHash.
+//
+// The ancestry check walks from the local ref (which has full history), so
+// callers that fetched with --depth=1 do not break the check.
+func SafelyAdvanceLocalRef(ctx context.Context, repo *git.Repository, localRefName plumbing.ReferenceName, targetHash plumbing.Hash) error {
+	currentLocal, localErr := repo.Reference(localRefName, true)
+	if localErr == nil {
+		if currentLocal.Hash() == targetHash {
+			return nil
+		}
+		if IsAncestorOf(ctx, repo, targetHash, currentLocal.Hash()) {
+			return nil
+		}
+	}
+
+	newRef := plumbing.NewHashReference(localRefName, targetHash)
+	if err := repo.Storer.SetReference(newRef); err != nil {
+		return fmt.Errorf("failed to update local ref %s: %w", localRefName, err)
 	}
 	return nil
 }
@@ -118,6 +195,9 @@ func ListCheckpoints(ctx context.Context) ([]CheckpointInfo, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to open git repository: %w", err)
 	}
+
+	// Warn (once per process) if metadata branches are disconnected
+	WarnIfMetadataDisconnected()
 
 	refName := plumbing.NewBranchReferenceName(paths.MetadataBranchName)
 	ref, err := repo.Reference(refName, true)
@@ -178,38 +258,31 @@ func ListCheckpoints(ctx context.Context) ([]CheckpointInfo, error) {
 			}
 
 			// Get details from metadata file (CheckpointSummary format)
-			if metadataFile, fileErr := checkpointTree.File(paths.MetadataFileName); fileErr == nil {
-				if content, contentErr := metadataFile.Contents(); contentErr == nil {
-					var summary checkpoint.CheckpointSummary
-					if json.Unmarshal([]byte(content), &summary) == nil && len(summary.Sessions) > 0 {
-						info.CheckpointsCount = summary.CheckpointsCount
-						info.FilesTouched = summary.FilesTouched
-						info.SessionCount = len(summary.Sessions)
+			if summary, ok := decodeSummaryLiteFromTree(checkpointTree); ok {
+				info.CheckpointsCount = summary.CheckpointsCount
+				info.FilesTouched = summary.FilesTouched
+				info.SessionCount = len(summary.Sessions)
 
-						// Read session-level metadata for Agent, SessionID, CreatedAt, SessionIDs
-						for i, sessionPaths := range summary.Sessions {
-							if sessionPaths.Metadata != "" {
-								// SessionFilePaths now contains absolute paths with leading "/"
-								// Strip the leading "/" for tree.File() which expects paths without leading slash
-								sessionMetadataPath := strings.TrimPrefix(sessionPaths.Metadata, "/")
-								if sessionFile, sErr := tree.File(sessionMetadataPath); sErr == nil {
-									if sessionContent, scErr := sessionFile.Contents(); scErr == nil {
-										var sessionMetadata checkpoint.CommittedMetadata
-										if json.Unmarshal([]byte(sessionContent), &sessionMetadata) == nil {
-											info.SessionIDs = append(info.SessionIDs, sessionMetadata.SessionID)
-											// Use first session's metadata for Agent, SessionID, CreatedAt
-											if i == 0 {
-												info.Agent = sessionMetadata.Agent
-												info.SessionID = sessionMetadata.SessionID
-												info.CreatedAt = sessionMetadata.CreatedAt
-												info.IsTask = sessionMetadata.IsTask
-												info.ToolUseID = sessionMetadata.ToolUseID
-											}
-										}
-									}
-								}
-							}
-						}
+				// Read session-level metadata for Agent, SessionID, CreatedAt, SessionIDs
+				for i, sessionPaths := range summary.Sessions {
+					if sessionPaths.Metadata == "" {
+						continue
+					}
+					// SessionFilePaths contains absolute paths with leading "/"
+					// Strip the leading "/" for tree.File() which expects paths without leading slash
+					sessionMetadataPath := strings.TrimPrefix(sessionPaths.Metadata, "/")
+					sessionMeta, sErr := decodeSessionMetadataLite(tree, sessionMetadataPath)
+					if sErr != nil {
+						continue
+					}
+					info.SessionIDs = append(info.SessionIDs, sessionMeta.SessionID)
+					// Use first session's metadata for Agent, SessionID, CreatedAt
+					if i == 0 {
+						info.Agent = sessionMeta.Agent
+						info.SessionID = sessionMeta.SessionID
+						info.CreatedAt = sessionMeta.CreatedAt
+						info.IsTask = sessionMeta.IsTask
+						info.ToolUseID = sessionMeta.ToolUseID
 					}
 				}
 			}
@@ -239,7 +312,7 @@ const (
 // registered agent config directories.
 func isProtectedPath(relPath string) bool {
 	for _, dir := range protectedDirs() {
-		if relPath == dir || strings.HasPrefix(relPath, dir+string(filepath.Separator)) {
+		if paths.IsSubpath(dir, relPath) {
 			return true
 		}
 	}
@@ -268,6 +341,38 @@ var (
 	protectedDirsCache []string
 )
 
+var initRedactionOnce sync.Once
+
+// EnsureRedactionConfigured loads PII redaction settings and configures the
+// redact package. No-op if PII is not enabled in settings.
+// Must be called at each process entry point before checkpoint writes
+// (e.g., hook PersistentPreRunE, doctor PreRun).
+func EnsureRedactionConfigured() {
+	initRedactionOnce.Do(func() {
+		ctx := context.Background()
+		s, err := settings.Load(ctx)
+		if err != nil {
+			logCtx := logging.WithComponent(ctx, "redaction")
+			logging.Warn(logCtx, "failed to load settings for PII redaction", slog.String("error", err.Error()))
+			return
+		}
+		if s.Redaction == nil || s.Redaction.PII == nil || !s.Redaction.PII.Enabled {
+			return
+		}
+		pii := s.Redaction.PII
+		cfg := redact.PIIConfig{
+			Enabled:        true,
+			Categories:     make(map[redact.PIICategory]bool),
+			CustomPatterns: pii.CustomPatterns,
+		}
+		// Email and phone default to true when PII is enabled; address defaults to false.
+		cfg.Categories[redact.PIIEmail] = pii.Email == nil || *pii.Email
+		cfg.Categories[redact.PIIPhone] = pii.Phone == nil || *pii.Phone
+		cfg.Categories[redact.PIIAddress] = pii.Address != nil && *pii.Address
+		redact.ConfigurePII(cfg)
+	})
+}
+
 // resolveAgentType picks the best agent type from the context and existing state.
 // Priority: existing state > context value.
 func resolveAgentType(ctxAgentType types.AgentType, state *SessionState) types.AgentType {
@@ -277,15 +382,46 @@ func resolveAgentType(ctxAgentType types.AgentType, state *SessionState) types.A
 	return ctxAgentType
 }
 
-// EnsureMetadataBranch creates the local entire/checkpoints/v1 branch if it doesn't exist.
-// If the remote-tracking branch (origin/entire/checkpoints/v1) exists, creates the local
-// branch from it to preserve existing checkpoint data. Otherwise creates an empty orphan.
+// EnsureMetadataBranch creates or updates the local entire/checkpoints/v1 branch.
+// If the remote-tracking branch (origin/entire/checkpoints/v1) exists and the local
+// branch is missing or empty, creates/updates the local branch from it.
+// Otherwise creates an empty orphan.
 func EnsureMetadataBranch(repo *git.Repository) error {
 	refName := plumbing.NewBranchReferenceName(paths.MetadataBranchName)
 
+	// Check if remote-tracking branch exists (e.g., after clone/fetch)
+	remoteRefName := plumbing.NewRemoteReferenceName("origin", paths.MetadataBranchName)
+	remoteRef, remoteErr := repo.Reference(remoteRefName, true)
+	if remoteErr != nil && !errors.Is(remoteErr, plumbing.ErrReferenceNotFound) {
+		return fmt.Errorf("failed to check remote metadata branch: %w", remoteErr)
+	}
+
 	// Check if local branch already exists
-	_, err := repo.Reference(refName, true)
+	localRef, err := repo.Reference(refName, true)
 	if err == nil {
+		if remoteErr == nil && localRef.Hash() != remoteRef.Hash() {
+			// Local and remote exist but differ — determine relationship
+			isEmpty, checkErr := isEmptyMetadataBranch(repo, localRef)
+			if checkErr != nil {
+				return fmt.Errorf("failed to check metadata branch contents: %w", checkErr)
+			}
+			if isEmpty {
+				// Empty orphan — just point to remote
+				ref := plumbing.NewHashReference(refName, remoteRef.Hash())
+				if setErr := repo.Storer.SetReference(ref); setErr != nil {
+					return fmt.Errorf("failed to update metadata branch from remote: %w", setErr)
+				}
+				fmt.Fprintf(os.Stderr, "[entire] Updated local branch '%s' from origin\n", paths.MetadataBranchName)
+			} else {
+				// Local has real data and differs from remote — if disconnected
+				// (no common ancestor), reconciliation happens at pre-push time
+				// or via 'entire doctor'. Read paths warn but do not auto-fix.
+				logging.Debug(context.Background(), "metadata branch differs from remote, reconciliation deferred to read/write time",
+					"local_hash", localRef.Hash().String()[:7],
+					"remote_hash", remoteRef.Hash().String()[:7],
+				)
+			}
+		}
 		return nil
 	}
 	if !errors.Is(err, plumbing.ErrReferenceNotFound) {
@@ -293,11 +429,6 @@ func EnsureMetadataBranch(repo *git.Repository) error {
 	}
 
 	// Local branch doesn't exist — create from remote if available
-	remoteRefName := plumbing.NewRemoteReferenceName("origin", paths.MetadataBranchName)
-	remoteRef, remoteErr := repo.Reference(remoteRefName, true)
-	if remoteErr != nil && !errors.Is(remoteErr, plumbing.ErrReferenceNotFound) {
-		return fmt.Errorf("failed to check remote metadata branch: %w", remoteErr)
-	}
 	if remoteErr == nil {
 		ref := plumbing.NewHashReference(refName, remoteRef.Hash())
 		if err := repo.Storer.SetReference(ref); err != nil {
@@ -317,6 +448,10 @@ func EnsureMetadataBranch(repo *git.Repository) error {
 	if err != nil {
 		return fmt.Errorf("failed to store empty tree: %w", err)
 	}
+	emptyTreeHash, err = vercelconfig.MaybeMergeMetadataBranchConfig(repo, emptyTreeHash)
+	if err != nil {
+		return fmt.Errorf("failed to initialize metadata branch vercel config: %w", err)
+	}
 
 	// Create orphan commit (no parent)
 	now := time.Now()
@@ -335,6 +470,14 @@ func EnsureMetadataBranch(repo *git.Repository) error {
 	}
 	// Note: No ParentHashes - this is an orphan commit
 
+	// Sign the orphan commit when signing is enabled, matching the path used
+	// for every other metadata-branch commit (see metadata_reconcile.go and
+	// push_common.go). Without this, repos that enforce a "verified
+	// signatures" ruleset on entire/* refs reject the very first push of
+	// the metadata branch with GH013, even though every later commit on it
+	// is correctly signed.
+	checkpoint.SignCommitBestEffort(context.Background(), commit)
+
 	commitObj := repo.Storer.NewEncodedObject()
 	if err := commit.Encode(commitObj); err != nil {
 		return fmt.Errorf("failed to encode orphan commit: %w", err)
@@ -350,30 +493,149 @@ func EnsureMetadataBranch(repo *git.Repository) error {
 		return fmt.Errorf("failed to create metadata branch: %w", err)
 	}
 
-	fmt.Fprintf(os.Stderr, "✓ Created orphan branch '%s' for session metadata\n", paths.MetadataBranchName)
+	fmt.Fprintf(os.Stderr, "  ✓ Created orphan branch %s for session metadata\n", paths.MetadataBranchName)
 	return nil
 }
 
-// readCheckpointMetadata reads metadata.json from a checkpoint path on entire/checkpoints/v1.
+// isEmptyMetadataBranch returns true if the branch ref points to a commit with an empty tree.
+// Only checks the tip commit — if a data commit sits on top of an empty orphan, this returns
+// false, which is correct: the bug this detects creates a single empty orphan as the tip.
+func isEmptyMetadataBranch(repo *git.Repository, ref *plumbing.Reference) (bool, error) {
+	commit, err := repo.CommitObject(ref.Hash())
+	if err != nil {
+		return false, fmt.Errorf("failed to get commit: %w", err)
+	}
+	tree, err := commit.Tree()
+	if err != nil {
+		return false, fmt.Errorf("failed to get tree: %w", err)
+	}
+	return len(tree.Entries) == 0, nil
+}
+
+// sessionMetadataLite contains only the fields needed from session-level metadata.json.
+// Using a minimal struct avoids allocating large nested objects (Summary, InitialAttribution,
+// TokenUsage, etc.) that CommittedMetadata carries but callers never need here.
+type sessionMetadataLite struct {
+	SessionID string          `json:"session_id"`
+	Agent     types.AgentType `json:"agent,omitempty"`
+	CreatedAt time.Time       `json:"created_at"`
+	IsTask    bool            `json:"is_task,omitempty"`
+	ToolUseID string          `json:"tool_use_id,omitempty"`
+}
+
+// checkpointSummaryLite contains only the fields needed from the root metadata.json.
+// Avoids allocating TokenUsage and other heavy fields from CheckpointSummary.
+type checkpointSummaryLite struct {
+	CheckpointID     id.CheckpointID               `json:"checkpoint_id"`
+	CheckpointsCount int                           `json:"checkpoints_count"`
+	FilesTouched     []string                      `json:"files_touched"`
+	Sessions         []checkpoint.SessionFilePaths `json:"sessions"`
+}
+
+// decodeSessionMetadataLite reads a session metadata.json from the tree using a streaming
+// json.Decoder and a minimal struct to avoid allocating large unused fields.
+func decodeSessionMetadataLite(tree checkpoint.FileReader, metadataPath string) (*sessionMetadataLite, error) {
+	file, err := tree.File(metadataPath)
+	if err != nil {
+		return nil, fmt.Errorf("session metadata file %s: %w", metadataPath, err)
+	}
+	reader, err := file.Reader()
+	if err != nil {
+		return nil, fmt.Errorf("session metadata reader %s: %w", metadataPath, err)
+	}
+	defer reader.Close()
+
+	var meta sessionMetadataLite
+	if err := json.NewDecoder(reader).Decode(&meta); err != nil {
+		return nil, fmt.Errorf("decode session metadata %s: %w", metadataPath, err)
+	}
+	return &meta, nil
+}
+
+// decodeSummaryLiteFromTree reads and decodes metadata.json from a checkpoint tree
+// using a streaming decoder and minimal struct. Returns the decoded summary and true
+// if successful with at least one session, or zero value and false otherwise.
+func decodeSummaryLiteFromTree(checkpointTree checkpoint.FileReader) (checkpointSummaryLite, bool) {
+	metadataFile, fileErr := checkpointTree.File(paths.MetadataFileName)
+	if fileErr != nil {
+		return checkpointSummaryLite{}, false
+	}
+	reader, readerErr := metadataFile.Reader()
+	if readerErr != nil {
+		return checkpointSummaryLite{}, false
+	}
+	defer reader.Close()
+
+	var summary checkpointSummaryLite
+	if err := json.NewDecoder(reader).Decode(&summary); err != nil || len(summary.Sessions) == 0 {
+		return checkpointSummaryLite{}, false
+	}
+	return summary, true
+}
+
+// ReadCheckpointMetadata reads metadata.json from a checkpoint path on entire/checkpoints/v1.
 // With the new format, root metadata.json is a CheckpointSummary with Agents array.
 // This function reads the summary and extracts relevant fields into CheckpointInfo,
 // also reading session-level metadata for IsTask/ToolUseID fields.
-func ReadCheckpointMetadata(tree *object.Tree, checkpointPath string) (*CheckpointInfo, error) {
+//
+// Uses streaming json.Decoder and minimal structs to avoid loading large nested
+// objects (Summary, InitialAttribution, TokenUsage) into memory.
+func ReadCheckpointMetadata(tree checkpoint.FileReader, checkpointPath string) (*CheckpointInfo, error) {
 	metadataPath := checkpointPath + "/metadata.json"
 	file, err := tree.File(metadataPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to find metadata at %s: %w", metadataPath, err)
 	}
 
-	content, err := file.Contents()
+	// Session metadata paths in the summary are absolute (e.g., "/ca/b75de47439/0/metadata.json").
+	// For a full tree, strip the leading "/" to get tree-relative paths.
+	normalizePath := func(raw string) string {
+		return strings.TrimPrefix(raw, "/")
+	}
+	return decodeCheckpointInfo(file, tree, checkpointPath, normalizePath)
+}
+
+// ReadCheckpointMetadataFromSubtree reads checkpoint metadata from a tree that is
+// already rooted at the checkpoint directory (e.g., after tree.Tree(checkpointID.Path())).
+// checkpointPath is the original sharded path (e.g., "ca/b75de47439") and is used
+// to strip the prefix from absolute session metadata paths stored in the summary.
+func ReadCheckpointMetadataFromSubtree(tree checkpoint.FileReader, checkpointPath string) (*CheckpointInfo, error) {
+	file, err := tree.File(paths.MetadataFileName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to find %s in checkpoint subtree: %w", paths.MetadataFileName, err)
+	}
+
+	// Session metadata paths are absolute from the tree root (e.g., "/ca/b75de47439/0/metadata.json").
+	// Strip the checkpoint prefix to get paths relative to the subtree (e.g., "0/metadata.json").
+	prefix := "/" + checkpointPath + "/"
+	normalizePath := func(raw string) string {
+		return strings.TrimPrefix(raw, prefix)
+	}
+	return decodeCheckpointInfo(file, tree, checkpointPath, normalizePath)
+}
+
+// decodeCheckpointInfo is the shared implementation for ReadCheckpointMetadata and
+// ReadCheckpointMetadataFromSubtree. It decodes the root metadata.json, reads
+// per-session metadata, and populates a CheckpointInfo.
+//
+// normalizePath transforms absolute session metadata paths from the summary into
+// paths that are valid for tree.File() lookups (the transform differs depending on
+// whether tree is a full metadata branch tree or a checkpoint subtree).
+func decodeCheckpointInfo(
+	file checkpoint.FileOpener,
+	tree checkpoint.FileReader,
+	checkpointPath string,
+	normalizePath func(string) string,
+) (*CheckpointInfo, error) {
+	reader, err := file.Reader()
 	if err != nil {
 		return nil, fmt.Errorf("failed to read metadata: %w", err)
 	}
+	defer reader.Close()
 
-	// Try to parse as CheckpointSummary first (new format)
-	var summary checkpoint.CheckpointSummary
-	if err := json.Unmarshal([]byte(content), &summary); err == nil {
-		// If we have sessions array, this is the new format
+	// Try to parse as CheckpointSummary first (new format) using lite struct
+	var summary checkpointSummaryLite
+	if decodeErr := json.NewDecoder(reader).Decode(&summary); decodeErr == nil {
 		if len(summary.Sessions) > 0 {
 			info := &CheckpointInfo{
 				CheckpointID:     summary.CheckpointID,
@@ -385,40 +647,46 @@ func ReadCheckpointMetadata(tree *object.Tree, checkpointPath string) (*Checkpoi
 			// Read all sessions' metadata to populate SessionIDs and get other fields from first session
 			var sessionIDs []string
 			for i, sessionPaths := range summary.Sessions {
-				if sessionPaths.Metadata != "" {
-					// SessionFilePaths now contains absolute paths with leading "/"
-					// Strip the leading "/" for tree.File() which expects paths without leading slash
-					sessionMetadataPath := strings.TrimPrefix(sessionPaths.Metadata, "/")
-					if sessionFile, err := tree.File(sessionMetadataPath); err == nil {
-						if sessionContent, err := sessionFile.Contents(); err == nil {
-							var sessionMetadata checkpoint.CommittedMetadata
-							if json.Unmarshal([]byte(sessionContent), &sessionMetadata) == nil {
-								sessionIDs = append(sessionIDs, sessionMetadata.SessionID)
-								// Use first session for Agent, SessionID, CreatedAt, IsTask, ToolUseID
-								if i == 0 {
-									info.Agent = sessionMetadata.Agent
-									info.SessionID = sessionMetadata.SessionID
-									info.CreatedAt = sessionMetadata.CreatedAt
-									info.IsTask = sessionMetadata.IsTask
-									info.ToolUseID = sessionMetadata.ToolUseID
-								}
-							}
-						}
-					}
+				if sessionPaths.Metadata == "" {
+					continue
+				}
+				sessionMetadataPath := normalizePath(sessionPaths.Metadata)
+				sessionMeta, sErr := decodeSessionMetadataLite(tree, sessionMetadataPath)
+				if sErr != nil {
+					logging.Debug(context.Background(), "decodeCheckpointInfo: session metadata decode failed",
+						slog.Int("session_index", i),
+						slog.String("metadata_path", sessionMetadataPath),
+						slog.String("checkpoint_path", checkpointPath),
+						slog.String("error", sErr.Error()),
+					)
+					continue
+				}
+				sessionIDs = append(sessionIDs, sessionMeta.SessionID)
+				if i == 0 {
+					info.Agent = sessionMeta.Agent
+					info.SessionID = sessionMeta.SessionID
+					info.CreatedAt = sessionMeta.CreatedAt
+					info.IsTask = sessionMeta.IsTask
+					info.ToolUseID = sessionMeta.ToolUseID
 				}
 			}
 			info.SessionIDs = sessionIDs
-
 			return info, nil
 		}
 	}
 
-	// Fall back to parsing as CheckpointInfo (old format or direct info)
+	// Fall back to parsing as CheckpointInfo (old format or direct info).
+	// Re-read the file since the decoder consumed the reader.
+	fallbackReader, err := file.Reader()
+	if err != nil {
+		return nil, fmt.Errorf("failed to re-read metadata: %w", err)
+	}
+	defer fallbackReader.Close()
+
 	var metadata CheckpointInfo
-	if err := json.Unmarshal([]byte(content), &metadata); err != nil {
+	if err := json.NewDecoder(fallbackReader).Decode(&metadata); err != nil {
 		return nil, fmt.Errorf("failed to parse metadata: %w", err)
 	}
-
 	return &metadata, nil
 }
 
@@ -438,6 +706,28 @@ func GetMetadataBranchTree(repo *git.Repository) (*object.Tree, error) {
 	tree, err := commit.Tree()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get metadata branch tree: %w", err)
+	}
+	return tree, nil
+}
+
+// GetV2MetadataBranchTree returns the tree object at the tip of the v2 /main ref.
+// The v2 /main ref uses the same sharded checkpoint layout as v1, so
+// ReadLatestSessionPromptFromCommittedTree works with either tree.
+func GetV2MetadataBranchTree(repo *git.Repository) (*object.Tree, error) {
+	refName := plumbing.ReferenceName(paths.V2MainRefName)
+	ref, err := repo.Reference(refName, true)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get v2 /main reference: %w", err)
+	}
+
+	commit, err := repo.CommitObject(ref.Hash())
+	if err != nil {
+		return nil, fmt.Errorf("failed to get v2 /main commit: %w", err)
+	}
+
+	tree, err := commit.Tree()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get v2 /main tree: %w", err)
 	}
 	return tree, nil
 }
@@ -504,22 +794,45 @@ func ReadAgentTypeFromTree(tree *object.Tree, checkpointPath string) types.Agent
 		}
 	}
 
-	// Fall back to detecting agent from config files (shadow branches don't have metadata.json).
-	// Order: Gemini (most specific check), Claude (established default), OpenCode (newest/preview).
+	// Fall back to detecting agent from config markers (shadow branches don't have metadata.json).
+	// Multiple agent config markers may coexist when users configure multiple agents via
+	// `entire configure`. Only return a specific agent type when exactly one agent config
+	// marker (directory or file) is present; otherwise return Unknown since we can't
+	// determine which agent created the checkpoint.
+	var detected types.AgentType
+	detectedCount := 0
+
 	if _, err := tree.File(".gemini/settings.json"); err == nil {
-		return agent.AgentTypeGemini
+		detected = agent.AgentTypeGemini
+		detectedCount++
 	}
 	if _, err := tree.Tree(".claude"); err == nil {
-		return agent.AgentTypeClaudeCode
+		detected = agent.AgentTypeClaudeCode
+		detectedCount++
 	}
-	// OpenCode: .opencode directory or opencode.json config
 	if _, err := tree.Tree(".opencode"); err == nil {
-		return agent.AgentTypeOpenCode
+		detected = agent.AgentTypeOpenCode
+		detectedCount++
+	} else if _, err := tree.File("opencode.json"); err == nil {
+		detected = agent.AgentTypeOpenCode
+		detectedCount++
 	}
-	if _, err := tree.File("opencode.json"); err == nil {
-		return agent.AgentTypeOpenCode
+	if _, err := tree.Tree(".codex"); err == nil {
+		detected = agent.AgentTypeCodex
+		detectedCount++
+	}
+	if _, err := tree.Tree(".cursor"); err == nil {
+		detected = agent.AgentTypeCursor
+		detectedCount++
+	}
+	if _, err := tree.Tree(".factory"); err == nil {
+		detected = agent.AgentTypeFactoryAIDroid
+		detectedCount++
 	}
 
+	if detectedCount == 1 {
+		return detected
+	}
 	return agent.AgentTypeUnknown
 }
 
@@ -531,6 +844,52 @@ func isOnlySeparators(s string) bool {
 		}
 	}
 	return true
+}
+
+// ReadLatestSessionPromptFromCommittedTree reads the first prompt from a committed checkpoint's
+// latest session on the metadata branch tree. This navigates the sharded directory layout:
+// <cpID.Path()>/<latestSessionIndex>/prompt.txt
+//
+// Falls back through earlier sessions when the latest has no prompt.
+// Avoids reading full transcripts — only reads prompt.txt files.
+// sessionCount is the number of sessions in the checkpoint (from CommittedInfo.SessionCount).
+func ReadLatestSessionPromptFromCommittedTree(tree *object.Tree, cpID id.CheckpointID, sessionCount int) string {
+	cpPath := cpID.Path()
+	cpTree, err := tree.Tree(cpPath)
+	if err != nil {
+		return ""
+	}
+
+	// Find the latest session subdirectory with a prompt.
+	// Sessions use 0-based indexing: 0/, 1/, 2/, etc.
+	// Start from the latest and fall back through earlier sessions
+	// when the latest has no prompt (e.g. a test or empty session was
+	// condensed alongside a real one).
+	latestIndex := max(sessionCount-1, 0)
+
+	for i := latestIndex; i >= 0; i-- {
+		sessionPath := strconv.Itoa(i)
+		sessionTree, err := cpTree.Tree(sessionPath)
+		if err != nil {
+			continue
+		}
+
+		file, err := sessionTree.File(paths.PromptFileName)
+		if err != nil {
+			continue
+		}
+
+		content, err := file.Contents()
+		if err != nil {
+			continue
+		}
+
+		if prompt := ExtractFirstPrompt(content); prompt != "" {
+			return prompt
+		}
+	}
+
+	return ""
 }
 
 // ReadAllSessionPromptsFromTree reads the first prompt for all sessions in a multi-session checkpoint.
@@ -581,21 +940,9 @@ func GetRemoteMetadataBranchTree(repo *git.Repository) (*object.Tree, error) {
 	return tree, nil
 }
 
-// OpenRepository opens the git repository with linked worktree support enabled.
-// It uses git.PlainOpenWithOptions with EnableDotGitCommonDir set to true,
-// which is required for proper operation in git worktrees created via 'git worktree add'.
-//
-// Without EnableDotGitCommonDir, go-git operations in worktrees can silently fail:
-// - Commits appear to succeed but are not persisted
-// - Refs are written to incorrect locations
-// - The worktree's HEAD/index don't get updated properly
-//
-// This happens because worktrees use .git as a file (pointing to the main repo)
-// rather than a directory, and go-git needs to route paths correctly between
-// shared (.git/) and per-worktree (.git/worktrees/<name>/) locations.
-//
-// The function first uses 'git rev-parse --show-toplevel' to find the repository
-// root, which works correctly even when called from a subdirectory within the repo.
+// OpenRepository opens the git repository from the repo root.
+// It uses 'git rev-parse --show-toplevel' to find the repository root,
+// which works correctly even when called from a subdirectory or a linked worktree.
 func OpenRepository(ctx context.Context) (*git.Repository, error) {
 	repoRoot, err := paths.WorktreeRoot(ctx)
 	if err != nil {
@@ -604,9 +951,7 @@ func OpenRepository(ctx context.Context) (*git.Repository, error) {
 		repoRoot = "."
 	}
 
-	repo, err := git.PlainOpenWithOptions(repoRoot, &git.PlainOpenOptions{
-		EnableDotGitCommonDir: true,
-	})
+	repo, err := git.PlainOpen(repoRoot)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open repository: %w", err)
 	}
@@ -942,11 +1287,14 @@ func computeDiffStats(oldContent, newContent []byte) (added, removed int) {
 }
 
 // splitLines splits content into lines, preserving empty lines.
+// Handles both Unix (\n) and Windows (\r\n) line endings.
 func splitLines(content []byte) []string {
 	if len(content) == 0 {
 		return nil
 	}
 	s := string(content)
+	// Normalize Windows line endings to Unix
+	s = strings.ReplaceAll(s, "\r\n", "\n")
 	// Remove trailing newline to avoid empty last element
 	s = strings.TrimSuffix(s, "\n")
 	return strings.Split(s, "\n")
@@ -1050,6 +1398,12 @@ func getTaskTranscriptFromTree(ctx context.Context, point RewindPoint) ([]byte, 
 // ErrBranchNotFound is returned by DeleteBranchCLI when the branch does not exist.
 var ErrBranchNotFound = errors.New("branch not found")
 
+// ErrRefNotFound is returned by DeleteRefCLI when the ref does not exist.
+var ErrRefNotFound = errors.New("ref not found")
+
+// ErrRefChanged is returned by DeleteRefCLI when the ref no longer points to the expected OID.
+var ErrRefChanged = errors.New("ref changed since inspection")
+
 // DeleteBranchCLI deletes a git branch using the git CLI.
 // Uses `git branch -D` instead of go-git's RemoveReference because go-git v5
 // doesn't properly persist deletions when refs are packed (.git/packed-refs)
@@ -1078,6 +1432,72 @@ func DeleteBranchCLI(ctx context.Context, branchName string) error {
 		return fmt.Errorf("failed to delete branch %s: %s: %w", branchName, strings.TrimSpace(string(output)), err)
 	}
 	return nil
+}
+
+// DeleteRefCLI deletes an arbitrary ref using the git CLI.
+// Uses `git update-ref -d` instead of go-git's RemoveReference because go-git
+// ref deletion is unreliable with packed refs and worktrees.
+//
+// When expectedOID is non-empty, it is passed to `git update-ref -d <ref> <old-oid>`
+// as a compare-and-swap guard: git will refuse the deletion if the ref no longer
+// points to expectedOID, and ErrRefChanged is returned.
+//
+// Returns ErrRefNotFound if the ref does not exist, allowing callers to use
+// errors.Is for idempotent deletion patterns.
+func DeleteRefCLI(ctx context.Context, refName string, expectedOID string) error {
+	exists, _, err := refStateCLI(ctx, refName)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return fmt.Errorf("%w: %s", ErrRefNotFound, refName)
+	}
+
+	args := []string{"update-ref", "-d", refName}
+	if expectedOID != "" {
+		args = append(args, expectedOID)
+	}
+	cmd := exec.CommandContext(ctx, "git", args...)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return classifyDeleteRefFailure(ctx, refName, expectedOID, output, err)
+	}
+	return nil
+}
+
+func classifyDeleteRefFailure(ctx context.Context, refName string, expectedOID string, output []byte, updateErr error) error {
+	baseErr := fmt.Errorf("failed to delete ref %s: %s: %w", refName, strings.TrimSpace(string(output)), updateErr)
+
+	exists, currentOID, stateErr := refStateCLI(ctx, refName)
+	if stateErr != nil {
+		return baseErr
+	}
+	if !exists {
+		return fmt.Errorf("%w: %s", ErrRefNotFound, refName)
+	}
+	if expectedOID != "" && currentOID != expectedOID {
+		return fmt.Errorf("%w: %s (expected %s)", ErrRefChanged, refName, expectedOID)
+	}
+
+	return baseErr
+}
+
+func refStateCLI(ctx context.Context, refName string) (exists bool, oid string, err error) {
+	check := exec.CommandContext(ctx, "git", "show-ref", "--verify", "--quiet", refName)
+	if err := check.Run(); err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+			return false, "", nil
+		}
+		return false, "", fmt.Errorf("failed to check ref %s: %w", refName, err)
+	}
+
+	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--verify", refName)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return false, "", fmt.Errorf("failed to resolve ref %s: %s: %w", refName, strings.TrimSpace(string(output)), err)
+	}
+
+	return true, strings.TrimSpace(string(output)), nil
 }
 
 // branchExistsCLI checks if a branch exists using git CLI.
@@ -1174,47 +1594,13 @@ func ExtractSessionIDFromCommit(commit *object.Commit) string {
 //
 // See push_common.go and session_test.go for usage examples.
 
-// createCommit creates a commit object
-func createCommit(repo *git.Repository, treeHash, parentHash plumbing.Hash, message, authorName, authorEmail string) (plumbing.Hash, error) { //nolint:unparam // already present in codebase
-	now := time.Now()
-	sig := object.Signature{
-		Name:  authorName,
-		Email: authorEmail,
-		When:  now,
-	}
-
-	commit := &object.Commit{
-		TreeHash:  treeHash,
-		Author:    sig,
-		Committer: sig,
-		Message:   message,
-	}
-
-	// Add parent if not a new branch
-	if parentHash != plumbing.ZeroHash {
-		commit.ParentHashes = []plumbing.Hash{parentHash}
-	}
-
-	obj := repo.Storer.NewEncodedObject()
-	if err := commit.Encode(obj); err != nil {
-		return plumbing.ZeroHash, fmt.Errorf("failed to encode commit: %w", err)
-	}
-
-	hash, err := repo.Storer.SetEncodedObject(obj)
-	if err != nil {
-		return plumbing.ZeroHash, fmt.Errorf("failed to store commit: %w", err)
-	}
-
-	return hash, nil
-}
-
-// getSessionDescriptionFromTree reads the first line of prompt.txt or context.md from a git tree.
+// getSessionDescriptionFromTree reads the first line of prompt.txt from a git tree.
 // This is the tree-based equivalent of getSessionDescription (which reads from filesystem).
 //
-// If metadataDir is provided, looks for files at metadataDir/prompt.txt or metadataDir/context.md.
+// If metadataDir is provided, looks for files at metadataDir/prompt.txt.
 // If metadataDir is empty, first tries the root of the tree (for when the tree is already
 // the session directory), then falls back to
-// searching for .entire/metadata/*/prompt.txt or context.md (for full worktree trees).
+// searching for .entire/metadata/*/prompt.txt (for full worktree trees).
 func getSessionDescriptionFromTree(tree *object.Tree, metadataDir string) string {
 	// Helper to read first line from a file in tree
 	readFirstLine := func(path string) string {
@@ -1228,9 +1614,7 @@ func getSessionDescriptionFromTree(tree *object.Tree, metadataDir string) string
 		}
 		lines := strings.SplitN(content, "\n", 2)
 		if len(lines) > 0 && lines[0] != "" {
-			desc := strings.TrimSpace(lines[0])
-			// Remove markdown header prefix if present
-			return strings.TrimPrefix(desc, "# ")
+			return strings.TrimSpace(lines[0])
 		}
 		return ""
 	}
@@ -1238,9 +1622,6 @@ func getSessionDescriptionFromTree(tree *object.Tree, metadataDir string) string
 	// If metadataDir is provided, look there directly
 	if metadataDir != "" {
 		if desc := readFirstLine(metadataDir + "/" + paths.PromptFileName); desc != "" {
-			return desc
-		}
-		if desc := readFirstLine(metadataDir + "/" + paths.ContextFileName); desc != "" {
 			return desc
 		}
 		return NoDescription
@@ -1251,11 +1632,8 @@ func getSessionDescriptionFromTree(tree *object.Tree, metadataDir string) string
 	if desc := readFirstLine(paths.PromptFileName); desc != "" {
 		return desc
 	}
-	if desc := readFirstLine(paths.ContextFileName); desc != "" {
-		return desc
-	}
 
-	// Fall back to searching for .entire/metadata/*/prompt.txt or context.md
+	// Fall back to searching for .entire/metadata/*/prompt.txt
 	// (used when the tree is the full worktree)
 	var desc string
 	//nolint:errcheck // We ignore errors here as we're just searching for a description
@@ -1264,17 +1642,14 @@ func getSessionDescriptionFromTree(tree *object.Tree, metadataDir string) string
 			return nil // Already found description
 		}
 		name := f.Name
-		if strings.Contains(name, ".entire/metadata/") {
-			if strings.HasSuffix(name, "/"+paths.PromptFileName) || strings.HasSuffix(name, "/"+paths.ContextFileName) {
-				content, err := f.Contents()
-				if err != nil {
-					return nil //nolint:nilerr // Skip files we can't read, continue searching
-				}
-				lines := strings.SplitN(content, "\n", 2)
-				if len(lines) > 0 && lines[0] != "" {
-					desc = strings.TrimSpace(lines[0])
-					desc = strings.TrimPrefix(desc, "# ")
-				}
+		if strings.Contains(name, ".entire/metadata/") && strings.HasSuffix(name, "/"+paths.PromptFileName) {
+			content, err := f.Contents()
+			if err != nil {
+				return nil //nolint:nilerr // Skip files we can't read, continue searching
+			}
+			lines := strings.SplitN(content, "\n", 2)
+			if len(lines) > 0 && lines[0] != "" {
+				desc = strings.TrimSpace(lines[0])
 			}
 		}
 		return nil
@@ -1379,6 +1754,26 @@ func IsOnDefaultBranch(repo *git.Repository) (bool, string) {
 	return currentBranch == defaultBranch, currentBranch
 }
 
+// prepareTranscriptForState ensures the transcript is up-to-date for the given session.
+// Only prepares for ACTIVE sessions — IDLE/ENDED sessions are already flushed.
+// Resolves the agent from state.AgentType internally. Multiple calls are safe but
+// not free — callers should avoid redundant calls for performance.
+func prepareTranscriptForState(ctx context.Context, state *SessionState) {
+	if !state.Phase.IsActive() || state.TranscriptPath == "" || state.AgentType == "" {
+		return
+	}
+	ag, err := agent.GetByAgentType(state.AgentType)
+	if err != nil {
+		logging.Debug(ctx, "prepareTranscriptForState: unknown agent type",
+			slog.String("session_id", state.SessionID),
+			slog.String("agent_type", string(state.AgentType)),
+			slog.Any("error", err),
+		)
+		return
+	}
+	prepareTranscriptIfNeeded(ctx, ag, state.TranscriptPath)
+}
+
 // prepareTranscriptIfNeeded calls PrepareTranscript for agents that implement
 // the TranscriptPreparer interface. This ensures transcript files exist before
 // they are read (e.g., OpenCode creates its transcript lazily via `opencode export`).
@@ -1387,7 +1782,7 @@ func prepareTranscriptIfNeeded(ctx context.Context, ag agent.Agent, transcriptPa
 	if ag == nil || transcriptPath == "" {
 		return
 	}
-	if preparer, ok := ag.(agent.TranscriptPreparer); ok {
+	if preparer, ok := agent.AsTranscriptPreparer(ag); ok {
 		// Best-effort: callers handle missing files gracefully.
 		// Transcript may not be available yet (e.g., agent not installed).
 		_ = preparer.PrepareTranscript(ctx, transcriptPath) //nolint:errcheck // Best-effort in hook path

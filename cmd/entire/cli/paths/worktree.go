@@ -38,9 +38,16 @@ func GetWorktreeID(worktreePath string) (string, error) {
 	gitdir := strings.TrimPrefix(line, "gitdir: ")
 
 	// Extract worktree name from path like /repo/.git/worktrees/<name>
-	// The path after ".git/worktrees/" is the worktree identifier
-	const marker = ".git/worktrees/"
-	_, worktreeID, found := strings.Cut(gitdir, marker)
+	// or /repo/.bare/worktrees/<name> (bare repo + worktree layout).
+	// The path after the marker is the worktree identifier.
+	var worktreeID string
+	var found bool
+	for _, marker := range []string{".git/worktrees/", ".bare/worktrees/"} {
+		_, worktreeID, found = strings.Cut(gitdir, marker)
+		if found {
+			break
+		}
+	}
 	if !found {
 		return "", fmt.Errorf("unexpected gitdir format (no worktrees): %s", gitdir)
 	}

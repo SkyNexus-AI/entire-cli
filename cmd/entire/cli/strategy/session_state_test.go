@@ -4,12 +4,16 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/entireio/cli/cmd/entire/cli/agent"
+	"github.com/entireio/cli/cmd/entire/cli/agent/types"
 	"github.com/entireio/cli/cmd/entire/cli/paths"
 	"github.com/entireio/cli/cmd/entire/cli/session"
-	"github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v6"
+	"github.com/stretchr/testify/require"
 )
 
 // TestLoadSessionState_PackageLevel tests the package-level LoadSessionState function.
@@ -96,9 +100,7 @@ func TestLoadSessionState_WithEndedAt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadSessionState() error = %v", err)
 	}
-	if loaded == nil {
-		t.Fatal("LoadSessionState() returned nil")
-	}
+	require.NotNil(t, loaded, "LoadSessionState() returned nil")
 
 	// Verify EndedAt was preserved
 	if loaded.EndedAt == nil {
@@ -126,9 +128,7 @@ func TestLoadSessionState_WithEndedAt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadSessionState() error = %v", err)
 	}
-	if loadedActive == nil {
-		t.Fatal("LoadSessionState() returned nil")
-	}
+	require.NotNil(t, loadedActive, "LoadSessionState() returned nil")
 
 	// Verify EndedAt remains nil
 	if loadedActive.EndedAt != nil {
@@ -165,9 +165,7 @@ func TestLoadSessionState_WithLastInteractionTime(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadSessionState() error = %v", err)
 	}
-	if loaded == nil {
-		t.Fatal("LoadSessionState() returned nil")
-	}
+	require.NotNil(t, loaded, "LoadSessionState() returned nil")
 
 	// Verify LastInteractionTime was preserved
 	if loaded.LastInteractionTime == nil {
@@ -195,9 +193,7 @@ func TestLoadSessionState_WithLastInteractionTime(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadSessionState() error = %v", err)
 	}
-	if loadedOld == nil {
-		t.Fatal("LoadSessionState() returned nil")
-	}
+	require.NotNil(t, loadedOld, "LoadSessionState() returned nil")
 
 	// Verify LastInteractionTime remains nil
 	if loadedOld.LastInteractionTime != nil {
@@ -252,9 +248,7 @@ func TestManualCommitStrategy_SessionState_UsesPackageFunctions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ManualCommitStrategy.loadSessionState() error = %v", err)
 	}
-	if loaded == nil {
-		t.Fatal("ManualCommitStrategy.loadSessionState() returned nil")
-	}
+	require.NotNil(t, loaded, "ManualCommitStrategy.loadSessionState() returned nil")
 
 	// Verify via helper (loaded guaranteed non-nil after Fatal above)
 
@@ -278,9 +272,7 @@ func TestManualCommitStrategy_SessionState_UsesPackageFunctions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadSessionState() error = %v", err)
 	}
-	if loaded2 == nil {
-		t.Fatal("LoadSessionState() returned nil")
-	}
+	require.NotNil(t, loaded2, "LoadSessionState() returned nil")
 
 	// Verify via direct comparison (loaded2 guaranteed non-nil after Fatal above)
 
@@ -465,5 +457,361 @@ func TestLoadSessionState_DeletesStaleSession(t *testing.T) {
 	// File should be deleted from disk
 	if _, err := os.Stat(stateFile); !os.IsNotExist(err) {
 		t.Error("stale session file should be deleted after LoadSessionState()")
+	}
+}
+
+// --- Model hint file tests ---
+
+func TestStoreModelHint_RoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	_, err := git.PlainInit(dir, false)
+	if err != nil {
+		t.Fatalf("failed to init git repo: %v", err)
+	}
+	t.Chdir(dir)
+
+	ctx := context.Background()
+	sessionID := "2026-01-01-hint-roundtrip"
+
+	err = StoreModelHint(ctx, sessionID, "claude-sonnet-4-20250514")
+	if err != nil {
+		t.Fatalf("StoreModelHint() error = %v", err)
+	}
+
+	got := LoadModelHint(ctx, sessionID)
+	if got != "claude-sonnet-4-20250514" {
+		t.Errorf("LoadModelHint() = %q, want %q", got, "claude-sonnet-4-20250514")
+	}
+}
+
+func TestStoreModelHint_EmptyModel_NoOp(t *testing.T) {
+	dir := t.TempDir()
+	_, err := git.PlainInit(dir, false)
+	if err != nil {
+		t.Fatalf("failed to init git repo: %v", err)
+	}
+	t.Chdir(dir)
+
+	ctx := context.Background()
+	sessionID := "2026-01-01-hint-empty"
+
+	err = StoreModelHint(ctx, sessionID, "")
+	if err != nil {
+		t.Fatalf("StoreModelHint() error = %v", err)
+	}
+
+	// No file should have been created
+	stateDir, sdErr := getSessionStateDir(ctx)
+	if sdErr != nil {
+		t.Fatalf("getSessionStateDir() error = %v", sdErr)
+	}
+	hintPath := stateDir + "/" + sessionID + ".model"
+	if _, statErr := os.Stat(hintPath); !os.IsNotExist(statErr) {
+		t.Error("StoreModelHint with empty model should not create a file")
+	}
+}
+
+func TestLoadModelHint_NoFile_ReturnsEmpty(t *testing.T) {
+	dir := t.TempDir()
+	_, err := git.PlainInit(dir, false)
+	if err != nil {
+		t.Fatalf("failed to init git repo: %v", err)
+	}
+	t.Chdir(dir)
+
+	got := LoadModelHint(context.Background(), "2026-01-01-nonexistent")
+	if got != "" {
+		t.Errorf("LoadModelHint() = %q, want empty string for missing file", got)
+	}
+}
+
+func TestStoreModelHint_InvalidSessionID_ReturnsError(t *testing.T) {
+	dir := t.TempDir()
+	_, err := git.PlainInit(dir, false)
+	if err != nil {
+		t.Fatalf("failed to init git repo: %v", err)
+	}
+	t.Chdir(dir)
+
+	err = StoreModelHint(context.Background(), "../../../etc/passwd", "model")
+	if err == nil {
+		t.Error("StoreModelHint() should return error for invalid session ID")
+	}
+}
+
+func TestLoadModelHint_InvalidSessionID_ReturnsEmpty(t *testing.T) {
+	dir := t.TempDir()
+	_, err := git.PlainInit(dir, false)
+	if err != nil {
+		t.Fatalf("failed to init git repo: %v", err)
+	}
+	t.Chdir(dir)
+
+	got := LoadModelHint(context.Background(), "../../../etc/passwd")
+	if got != "" {
+		t.Errorf("LoadModelHint() = %q, want empty for invalid session ID", got)
+	}
+}
+
+func TestLoadModelHint_TrimsWhitespace(t *testing.T) {
+	dir := t.TempDir()
+	_, err := git.PlainInit(dir, false)
+	if err != nil {
+		t.Fatalf("failed to init git repo: %v", err)
+	}
+	t.Chdir(dir)
+
+	ctx := context.Background()
+	sessionID := "2026-01-01-hint-whitespace"
+
+	// Write hint with trailing newline (simulating manual edit)
+	stateDir, sdErr := getSessionStateDir(ctx)
+	if sdErr != nil {
+		t.Fatalf("getSessionStateDir() error = %v", sdErr)
+	}
+	if mkErr := os.MkdirAll(stateDir, 0o750); mkErr != nil {
+		t.Fatalf("MkdirAll() error = %v", mkErr)
+	}
+	hintPath := stateDir + "/" + sessionID + ".model"
+	if wErr := os.WriteFile(hintPath, []byte("claude-opus-4-6\n"), 0o600); wErr != nil {
+		t.Fatalf("WriteFile() error = %v", wErr)
+	}
+
+	got := LoadModelHint(ctx, sessionID)
+	if got != "claude-opus-4-6" {
+		t.Errorf("LoadModelHint() = %q, want %q (should trim whitespace)", got, "claude-opus-4-6")
+	}
+}
+
+// --- Agent type hint file tests ---
+
+func TestStoreAgentTypeHint_RoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	_, err := git.PlainInit(dir, false)
+	require.NoError(t, err)
+	t.Chdir(dir)
+
+	ctx := context.Background()
+	sessionID := "2026-01-01-agent-roundtrip"
+
+	created, err := StoreAgentTypeHint(ctx, sessionID, agent.AgentTypeCursor)
+	require.NoError(t, err)
+	require.True(t, created, "first call must report it created the hint")
+
+	got := LoadAgentTypeHint(ctx, sessionID)
+	require.Equal(t, agent.AgentTypeCursor, got)
+}
+
+func TestStoreAgentTypeHint_FirstWriterWins(t *testing.T) {
+	dir := t.TempDir()
+	_, err := git.PlainInit(dir, false)
+	require.NoError(t, err)
+	t.Chdir(dir)
+
+	ctx := context.Background()
+	sessionID := "2026-01-01-agent-firstwriter"
+
+	// Cursor claims the session first.
+	created, err := StoreAgentTypeHint(ctx, sessionID, agent.AgentTypeCursor)
+	require.NoError(t, err)
+	require.True(t, created)
+
+	// Claude Code's hook fires next (concurrent forwarded-hook scenario).
+	// Should be a no-op — does not overwrite the existing hint.
+	created, err = StoreAgentTypeHint(ctx, sessionID, agent.AgentTypeClaudeCode)
+	require.NoError(t, err)
+	require.False(t, created, "second call must report it did not create the hint")
+
+	got := LoadAgentTypeHint(ctx, sessionID)
+	require.Equal(t, agent.AgentTypeCursor, got, "first writer's hint must persist")
+}
+
+func TestStoreAgentTypeHint_EmptyOrUnknown_NoOp(t *testing.T) {
+	dir := t.TempDir()
+	_, err := git.PlainInit(dir, false)
+	require.NoError(t, err)
+	t.Chdir(dir)
+
+	ctx := context.Background()
+
+	for _, tc := range []struct {
+		sid string
+		at  types.AgentType
+	}{
+		{"2026-01-01-empty", ""},
+		{"2026-01-01-unknown", agent.AgentTypeUnknown},
+	} {
+		created, hErr := StoreAgentTypeHint(ctx, tc.sid, tc.at)
+		require.NoError(t, hErr)
+		require.False(t, created, "empty/Unknown must report created=false")
+	}
+
+	stateDir, sdErr := getSessionStateDir(ctx)
+	require.NoError(t, sdErr)
+
+	for _, sid := range []string{"2026-01-01-empty", "2026-01-01-unknown"} {
+		hintPath := filepath.Join(stateDir, sid+".agent")
+		_, statErr := os.Stat(hintPath)
+		require.True(t, os.IsNotExist(statErr), "no hint file should be created for empty/Unknown agent type")
+	}
+}
+
+func TestLoadAgentTypeHint_NoFile_ReturnsEmpty(t *testing.T) {
+	dir := t.TempDir()
+	_, err := git.PlainInit(dir, false)
+	require.NoError(t, err)
+	t.Chdir(dir)
+
+	got := LoadAgentTypeHint(context.Background(), "2026-01-01-nonexistent")
+	require.Empty(t, string(got))
+}
+
+func TestStoreAgentTypeHint_InvalidSessionID_ReturnsError(t *testing.T) {
+	dir := t.TempDir()
+	_, err := git.PlainInit(dir, false)
+	require.NoError(t, err)
+	t.Chdir(dir)
+
+	_, err = StoreAgentTypeHint(context.Background(), "../../../etc/passwd", agent.AgentTypeCursor)
+	require.Error(t, err)
+}
+
+func TestClaimSessionStartBanner_FirstWriterWins(t *testing.T) {
+	dir := t.TempDir()
+	_, err := git.PlainInit(dir, false)
+	require.NoError(t, err)
+	t.Chdir(dir)
+
+	ctx := context.Background()
+	sessionID := "2026-01-01-banner-claim"
+
+	claimed, err := ClaimSessionStartBanner(ctx, sessionID)
+	require.NoError(t, err)
+	require.True(t, claimed, "first call must win the banner claim")
+
+	claimed, err = ClaimSessionStartBanner(ctx, sessionID)
+	require.NoError(t, err)
+	require.False(t, claimed, "subsequent calls must report the banner already claimed")
+}
+
+func TestClaimSessionStartBanner_InvalidSessionID_ReturnsError(t *testing.T) {
+	dir := t.TempDir()
+	_, err := git.PlainInit(dir, false)
+	require.NoError(t, err)
+	t.Chdir(dir)
+
+	_, err = ClaimSessionStartBanner(context.Background(), "../../../etc/passwd")
+	require.Error(t, err)
+}
+
+func TestClearSessionState_RemovesBannerMarker(t *testing.T) {
+	dir := t.TempDir()
+	_, err := git.PlainInit(dir, false)
+	require.NoError(t, err)
+	t.Chdir(dir)
+
+	ctx := context.Background()
+	sessionID := "2026-01-01-clear-banner"
+
+	_, err = ClaimSessionStartBanner(ctx, sessionID)
+	require.NoError(t, err)
+	require.NoError(t, ClearSessionState(ctx, sessionID))
+
+	// After clear, the marker is gone — the next claim wins again.
+	claimed, err := ClaimSessionStartBanner(ctx, sessionID)
+	require.NoError(t, err)
+	require.True(t, claimed, "ClearSessionState should remove the banner marker")
+}
+
+func TestClearSessionState_RemovesAgentHint(t *testing.T) {
+	dir := t.TempDir()
+	_, err := git.PlainInit(dir, false)
+	require.NoError(t, err)
+	t.Chdir(dir)
+
+	ctx := context.Background()
+	sessionID := "2026-01-01-clear-agent-hint"
+
+	_, err = StoreAgentTypeHint(ctx, sessionID, agent.AgentTypeCursor)
+	require.NoError(t, err)
+	require.NoError(t, ClearSessionState(ctx, sessionID))
+
+	got := LoadAgentTypeHint(ctx, sessionID)
+	require.Empty(t, string(got))
+}
+
+func TestClearSessionState_RemovesHintFile(t *testing.T) {
+	dir := t.TempDir()
+	_, err := git.PlainInit(dir, false)
+	if err != nil {
+		t.Fatalf("failed to init git repo: %v", err)
+	}
+	t.Chdir(dir)
+
+	ctx := context.Background()
+	sessionID := "2026-01-01-clear-hint"
+
+	// Create both state and hint files
+	state := &SessionState{
+		SessionID:  sessionID,
+		BaseCommit: "abc123",
+		StartedAt:  time.Now(),
+	}
+	if sErr := SaveSessionState(ctx, state); sErr != nil {
+		t.Fatalf("SaveSessionState() error = %v", sErr)
+	}
+	if sErr := StoreModelHint(ctx, sessionID, "some-model"); sErr != nil {
+		t.Fatalf("StoreModelHint() error = %v", sErr)
+	}
+
+	// Clear should remove both
+	if cErr := ClearSessionState(ctx, sessionID); cErr != nil {
+		t.Fatalf("ClearSessionState() error = %v", cErr)
+	}
+
+	stateDir, sdErr := getSessionStateDir(ctx)
+	if sdErr != nil {
+		t.Fatalf("getSessionStateDir() error = %v", sdErr)
+	}
+	matches, err := filepath.Glob(filepath.Join(stateDir, sessionID+".*"))
+	if err != nil {
+		t.Fatalf("filepath.Glob() error = %v", err)
+	}
+	if len(matches) != 0 {
+		t.Errorf("expected no files for session after clear, found: %v", matches)
+	}
+}
+
+func TestClearSessionState_RemovesOrphanedHintFile(t *testing.T) {
+	dir := t.TempDir()
+	_, err := git.PlainInit(dir, false)
+	if err != nil {
+		t.Fatalf("failed to init git repo: %v", err)
+	}
+	t.Chdir(dir)
+
+	ctx := context.Background()
+	sessionID := "2026-01-01-orphan-hint"
+
+	// Only create hint file (no state file)
+	if sErr := StoreModelHint(ctx, sessionID, "orphan-model"); sErr != nil {
+		t.Fatalf("StoreModelHint() error = %v", sErr)
+	}
+
+	// Clear should succeed and remove the hint file
+	if cErr := ClearSessionState(ctx, sessionID); cErr != nil {
+		t.Fatalf("ClearSessionState() error = %v", cErr)
+	}
+
+	stateDir, sdErr := getSessionStateDir(ctx)
+	if sdErr != nil {
+		t.Fatalf("getSessionStateDir() error = %v", sdErr)
+	}
+	matches, err := filepath.Glob(filepath.Join(stateDir, sessionID+".*"))
+	if err != nil {
+		t.Fatalf("filepath.Glob() error = %v", err)
+	}
+	if len(matches) != 0 {
+		t.Errorf("expected no files for session after clear, found: %v", matches)
 	}
 }

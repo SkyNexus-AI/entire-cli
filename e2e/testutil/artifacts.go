@@ -49,14 +49,15 @@ func artifactDir(t *testing.T) string {
 func CaptureArtifacts(t *testing.T, s *RepoState) {
 	t.Helper()
 	dir := s.ArtifactDir
+	checkpointRef := checkpointReadRef()
 
 	writeArtifact(t, dir, "git-log.txt",
 		gitOutputSafe(s.Dir, "log", "--decorate", "--graph", "--all"))
 
 	writeArtifact(t, dir, "git-tree.txt",
 		gitOutputSafe(s.Dir, "ls-tree", "-r", "HEAD")+
-			"\n--- entire/checkpoints/v1 ---\n"+
-			gitOutputSafe(s.Dir, "ls-tree", "-r", "entire/checkpoints/v1"))
+			"\n--- "+checkpointRef+" ---\n"+
+			gitOutputSafe(s.Dir, "ls-tree", "-r", checkpointRef))
 
 	// console.log is written incrementally to disk via s.ConsoleLog (*os.File),
 	// so it already exists in the artifact dir and survives global timeouts.
@@ -81,9 +82,8 @@ func CaptureArtifacts(t *testing.T, s *RepoState) {
 	captureEntireLogs(t, s.Dir, dir)
 
 	if os.Getenv("E2E_KEEP_REPOS") != "" {
-		link := filepath.Join(dir, "repo")
-		if err := os.Symlink(s.Dir, link); err != nil {
-			t.Logf("warning: failed to symlink repo: %v", err)
+		if err := linkRepo(s.Dir, dir); err != nil {
+			t.Logf("warning: failed to link repo: %v", err)
 		}
 	}
 }

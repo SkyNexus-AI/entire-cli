@@ -7,10 +7,10 @@ import (
 	"strings"
 	"testing"
 
-	gogit "github.com/go-git/go-git/v5"
-	"github.com/go-git/go-git/v5/plumbing"
-	"github.com/go-git/go-git/v5/plumbing/filemode"
-	"github.com/go-git/go-git/v5/plumbing/object"
+	gogit "github.com/go-git/go-git/v6"
+	"github.com/go-git/go-git/v6/plumbing"
+	"github.com/go-git/go-git/v6/plumbing/filemode"
+	"github.com/go-git/go-git/v6/plumbing/object"
 )
 
 // TestBuildTreeWithChanges_EquivalenceWithFlattenRebuild verifies that
@@ -272,7 +272,7 @@ func flattenRebuildTree(
 		}
 	}
 
-	hash, err := BuildTreeFromEntries(repo, entries)
+	hash, err := BuildTreeFromEntries(context.Background(), repo, entries)
 	if err != nil {
 		t.Fatalf("build tree: %v", err)
 	}
@@ -318,7 +318,7 @@ func flattenRebuildTaskMetadata(
 		Hash: blobHash,
 	}
 
-	hash, err := BuildTreeFromEntries(repo, entries)
+	hash, err := BuildTreeFromEntries(context.Background(), repo, entries)
 	if err != nil {
 		t.Fatalf("build tree: %v", err)
 	}

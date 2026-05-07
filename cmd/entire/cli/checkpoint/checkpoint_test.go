@@ -16,13 +16,18 @@ import (
 	"github.com/entireio/cli/cmd/entire/cli/agent"
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint/id"
 	"github.com/entireio/cli/cmd/entire/cli/paths"
+	"github.com/entireio/cli/cmd/entire/cli/testutil"
 	"github.com/entireio/cli/cmd/entire/cli/trailers"
+	"github.com/entireio/cli/cmd/entire/cli/vercelconfig"
 	"github.com/entireio/cli/cmd/entire/cli/versioninfo"
+	"github.com/entireio/cli/redact"
+	"github.com/stretchr/testify/require"
 
-	"github.com/go-git/go-git/v5"
-	"github.com/go-git/go-git/v5/config"
-	"github.com/go-git/go-git/v5/plumbing"
-	"github.com/go-git/go-git/v5/plumbing/object"
+	"github.com/go-git/go-git/v6"
+	"github.com/go-git/go-git/v6/config"
+	"github.com/go-git/go-git/v6/plumbing"
+	"github.com/go-git/go-git/v6/plumbing/filemode"
+	"github.com/go-git/go-git/v6/plumbing/object"
 )
 
 func TestCheckpointType_Values(t *testing.T) {
@@ -140,7 +145,7 @@ func TestWriteCommitted_AgentField(t *testing.T) {
 		SessionID:    sessionID,
 		Strategy:     "manual-commit",
 		Agent:        agentType,
-		Transcript:   []byte("test transcript content"),
+		Transcript:   redact.AlreadyRedacted([]byte("test transcript content")),
 		AuthorName:   "Test Author",
 		AuthorEmail:  "test@example.com",
 	})
@@ -445,6 +450,166 @@ func setupBranchTestRepo(t *testing.T) (*git.Repository, plumbing.Hash) {
 	return repo, commitHash
 }
 
+func TestEnsureSessionsBranch_WritesVercelConfigWhenEnabled(t *testing.T) {
+	vercelconfig.ResetSettingsCache()
+	t.Cleanup(vercelconfig.ResetSettingsCache)
+
+	repo, _ := setupBranchTestRepo(t)
+	worktree, err := repo.Worktree()
+	if err != nil {
+		t.Fatalf("repo.Worktree() error = %v", err)
+	}
+	t.Chdir(worktree.Filesystem.Root())
+
+	entireDir := filepath.Join(worktree.Filesystem.Root(), ".entire")
+	if err := os.MkdirAll(entireDir, 0o755); err != nil {
+		t.Fatalf("mkdir .entire: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(entireDir, "settings.json"), []byte(`{"enabled":true,"vercel":true}`), 0o644); err != nil {
+		t.Fatalf("write settings.json: %v", err)
+	}
+
+	store := NewGitStore(repo)
+	if err := store.ensureSessionsBranch(context.Background()); err != nil {
+		t.Fatalf("ensureSessionsBranch() error = %v", err)
+	}
+
+	ref, err := repo.Reference(plumbing.NewBranchReferenceName(paths.MetadataBranchName), true)
+	if err != nil {
+		t.Fatalf("metadata branch ref: %v", err)
+	}
+	commit, err := repo.CommitObject(ref.Hash())
+	if err != nil {
+		t.Fatalf("metadata commit: %v", err)
+	}
+	tree, err := commit.Tree()
+	if err != nil {
+		t.Fatalf("metadata tree: %v", err)
+	}
+	file, err := tree.File(vercelconfig.FileName)
+	if err != nil {
+		t.Fatalf("expected %s on metadata branch: %v", vercelconfig.FileName, err)
+	}
+	content, err := file.Contents()
+	if err != nil {
+		t.Fatalf("read %s: %v", vercelconfig.FileName, err)
+	}
+
+	var config map[string]any
+	if err := json.Unmarshal([]byte(content), &config); err != nil {
+		t.Fatalf("parse %s: %v", vercelconfig.FileName, err)
+	}
+	if !vercelconfig.DeploymentDisabled(config) {
+		t.Fatalf("expected %s to disable %s, got %s", vercelconfig.FileName, vercelconfig.BranchPattern, content)
+	}
+}
+
+func TestWriteCommitted_MergesVercelConfigOnMetadataBranch(t *testing.T) {
+	vercelconfig.ResetSettingsCache()
+	t.Cleanup(vercelconfig.ResetSettingsCache)
+
+	repo, _ := setupBranchTestRepo(t)
+	worktree, err := repo.Worktree()
+	if err != nil {
+		t.Fatalf("repo.Worktree() error = %v", err)
+	}
+	repoRoot := worktree.Filesystem.Root()
+	t.Chdir(repoRoot)
+
+	entireDir := filepath.Join(repoRoot, ".entire")
+	if err := os.MkdirAll(entireDir, 0o755); err != nil {
+		t.Fatalf("mkdir .entire: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(entireDir, "settings.json"), []byte(`{"enabled":true,"vercel":true}`), 0o644); err != nil {
+		t.Fatalf("write settings.json: %v", err)
+	}
+
+	initialConfig := []byte(`{
+  "cleanUrls": true,
+  "git": {
+    "deploymentEnabled": {
+      "main": true
+    }
+  }
+}
+`)
+	blobHash, err := CreateBlobFromContent(repo, initialConfig)
+	if err != nil {
+		t.Fatalf("CreateBlobFromContent() error = %v", err)
+	}
+	treeHash, err := BuildTreeFromEntries(context.Background(), repo, map[string]object.TreeEntry{
+		vercelconfig.FileName: {Name: vercelconfig.FileName, Mode: filemode.Regular, Hash: blobHash},
+	})
+	if err != nil {
+		t.Fatalf("BuildTreeFromEntries() error = %v", err)
+	}
+
+	store := NewGitStore(repo)
+	commitHash, err := store.createCommit(context.Background(), treeHash, plumbing.ZeroHash, "Initialize metadata branch", "Test", "test@test.com")
+	if err != nil {
+		t.Fatalf("createCommit() error = %v", err)
+	}
+	if err := repo.Storer.SetReference(plumbing.NewHashReference(plumbing.NewBranchReferenceName(paths.MetadataBranchName), commitHash)); err != nil {
+		t.Fatalf("set metadata branch ref: %v", err)
+	}
+
+	cpID := id.MustCheckpointID("abcdef123456")
+	err = store.WriteCommitted(context.Background(), WriteCommittedOptions{
+		CheckpointID: cpID,
+		SessionID:    "test-session-id",
+		Strategy:     "manual-commit",
+		Transcript:   redact.AlreadyRedacted([]byte(`{"test": true}`)),
+		AuthorName:   "Test",
+		AuthorEmail:  "test@test.com",
+	})
+	if err != nil {
+		t.Fatalf("WriteCommitted() error = %v", err)
+	}
+
+	ref, err := repo.Reference(plumbing.NewBranchReferenceName(paths.MetadataBranchName), true)
+	if err != nil {
+		t.Fatalf("metadata branch ref: %v", err)
+	}
+	commit, err := repo.CommitObject(ref.Hash())
+	if err != nil {
+		t.Fatalf("metadata commit: %v", err)
+	}
+	tree, err := commit.Tree()
+	if err != nil {
+		t.Fatalf("metadata tree: %v", err)
+	}
+	file, err := tree.File(vercelconfig.FileName)
+	if err != nil {
+		t.Fatalf("expected %s on metadata branch: %v", vercelconfig.FileName, err)
+	}
+	content, err := file.Contents()
+	if err != nil {
+		t.Fatalf("read %s: %v", vercelconfig.FileName, err)
+	}
+
+	var config map[string]any
+	if err := json.Unmarshal([]byte(content), &config); err != nil {
+		t.Fatalf("parse %s: %v", vercelconfig.FileName, err)
+	}
+	if config["cleanUrls"] != true {
+		t.Fatalf("expected cleanUrls to be preserved, got %#v", config["cleanUrls"])
+	}
+	gitConfig, ok := config["git"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected git object, got %#v", config["git"])
+	}
+	deploymentEnabled, ok := gitConfig["deploymentEnabled"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected deploymentEnabled object, got %#v", gitConfig["deploymentEnabled"])
+	}
+	if deploymentEnabled["main"] != true {
+		t.Fatalf("expected main rule to be preserved, got %#v", deploymentEnabled["main"])
+	}
+	if deploymentEnabled[vercelconfig.BranchPattern] != false {
+		t.Fatalf("expected %s to be disabled, got %#v", vercelconfig.BranchPattern, deploymentEnabled[vercelconfig.BranchPattern])
+	}
+}
+
 // verifyBranchInMetadata reads and verifies the branch field in metadata.json.
 func verifyBranchInMetadata(t *testing.T, repo *git.Repository, checkpointID id.CheckpointID, expectedBranch string, shouldOmit bool) {
 	t.Helper()
@@ -527,7 +692,7 @@ func TestWriteCommitted_BranchField(t *testing.T) {
 			SessionID:    "test-session-123",
 			Strategy:     "manual-commit",
 			Branch:       currentBranch,
-			Transcript:   []byte("test transcript content"),
+			Transcript:   redact.AlreadyRedacted([]byte("test transcript content")),
 			AuthorName:   "Test Author",
 			AuthorEmail:  "test@example.com",
 		})
@@ -567,7 +732,7 @@ func TestWriteCommitted_BranchField(t *testing.T) {
 			SessionID:    "test-session-456",
 			Strategy:     "manual-commit",
 			Branch:       "", // Empty when in detached HEAD
-			Transcript:   []byte("test transcript content"),
+			Transcript:   redact.AlreadyRedacted([]byte("test transcript content")),
 			AuthorName:   "Test Author",
 			AuthorEmail:  "test@example.com",
 		})
@@ -591,7 +756,7 @@ func TestUpdateSummary(t *testing.T) {
 		CheckpointID: checkpointID,
 		SessionID:    "test-session-summary",
 		Strategy:     "manual-commit",
-		Transcript:   []byte("test transcript content"),
+		Transcript:   redact.AlreadyRedacted([]byte("test transcript content")),
 		FilesTouched: []string{"file1.go", "file2.go"},
 		AuthorName:   "Test Author",
 		AuthorEmail:  "test@example.com",
@@ -658,7 +823,7 @@ func TestUpdateSummary_NotFound(t *testing.T) {
 	store := NewGitStore(repo)
 
 	// Ensure sessions branch exists
-	err := store.ensureSessionsBranch()
+	err := store.ensureSessionsBranch(context.Background())
 	if err != nil {
 		t.Fatalf("ensureSessionsBranch() error = %v", err)
 	}
@@ -711,7 +876,7 @@ func TestListCommitted_FallsBackToRemote(t *testing.T) {
 		CheckpointID: cpID,
 		SessionID:    "test-session-id",
 		Strategy:     "manual-commit",
-		Transcript:   []byte(`{"test": true}`),
+		Transcript:   redact.AlreadyRedacted([]byte(`{"test": true}`)),
 		AuthorName:   "Test",
 		AuthorEmail:  "test@test.com",
 	})
@@ -721,7 +886,7 @@ func TestListCommitted_FallsBackToRemote(t *testing.T) {
 
 	// Clone the repo (this clones main, but not entire/checkpoints/v1 by default)
 	localDir := t.TempDir()
-	localRepo, err := git.PlainClone(localDir, false, &git.CloneOptions{
+	localRepo, err := git.PlainClone(localDir, &git.CloneOptions{
 		URL: remoteDir,
 	})
 	if err != nil {
@@ -780,7 +945,7 @@ func TestGetCheckpointAuthor(t *testing.T) {
 		CheckpointID: checkpointID,
 		SessionID:    "test-session-author",
 		Strategy:     "manual-commit",
-		Transcript:   []byte("test transcript"),
+		Transcript:   redact.AlreadyRedacted([]byte("test transcript")),
 		FilesTouched: []string{"main.go"},
 		AuthorName:   authorName,
 		AuthorEmail:  authorEmail,
@@ -864,7 +1029,7 @@ func TestWriteCommitted_MultipleSessionsSameCheckpoint(t *testing.T) {
 		CheckpointID:     checkpointID,
 		SessionID:        "session-one",
 		Strategy:         "manual-commit",
-		Transcript:       []byte(`{"message": "first session"}`),
+		Transcript:       redact.AlreadyRedacted([]byte(`{"message": "first session"}`)),
 		Prompts:          []string{"First prompt"},
 		FilesTouched:     []string{"file1.go"},
 		CheckpointsCount: 3,
@@ -880,7 +1045,7 @@ func TestWriteCommitted_MultipleSessionsSameCheckpoint(t *testing.T) {
 		CheckpointID:     checkpointID,
 		SessionID:        "session-two",
 		Strategy:         "manual-commit",
-		Transcript:       []byte(`{"message": "second session"}`),
+		Transcript:       redact.AlreadyRedacted([]byte(`{"message": "second session"}`)),
 		Prompts:          []string{"Second prompt"},
 		FilesTouched:     []string{"file2.go"},
 		CheckpointsCount: 2,
@@ -945,7 +1110,7 @@ func TestWriteCommitted_Aggregation(t *testing.T) {
 		CheckpointID:     checkpointID,
 		SessionID:        "session-one",
 		Strategy:         "manual-commit",
-		Transcript:       []byte(`{"message": "first"}`),
+		Transcript:       redact.AlreadyRedacted([]byte(`{"message": "first"}`)),
 		FilesTouched:     []string{"a.go", "b.go"},
 		CheckpointsCount: 3,
 		TokenUsage: &agent.TokenUsage{
@@ -965,7 +1130,7 @@ func TestWriteCommitted_Aggregation(t *testing.T) {
 		CheckpointID:     checkpointID,
 		SessionID:        "session-two",
 		Strategy:         "manual-commit",
-		Transcript:       []byte(`{"message": "second"}`),
+		Transcript:       redact.AlreadyRedacted([]byte(`{"message": "second"}`)),
 		FilesTouched:     []string{"b.go", "c.go"}, // b.go overlaps
 		CheckpointsCount: 2,
 		TokenUsage: &agent.TokenUsage{
@@ -1037,9 +1202,8 @@ func TestReadCommitted_ReturnsCheckpointSummary(t *testing.T) {
 			CheckpointID:     checkpointID,
 			SessionID:        sessionID,
 			Strategy:         "manual-commit",
-			Transcript:       []byte(fmt.Sprintf(`{"session": %d}`, i)),
+			Transcript:       redact.AlreadyRedacted([]byte(fmt.Sprintf(`{"session": %d}`, i))),
 			Prompts:          []string{fmt.Sprintf("Prompt %d", i)},
-			Context:          []byte(fmt.Sprintf("Context %d", i)),
 			FilesTouched:     []string{fmt.Sprintf("file%d.go", i)},
 			CheckpointsCount: i + 1,
 			AuthorName:       "Test Author",
@@ -1107,7 +1271,7 @@ func TestReadSessionContent_ByIndex(t *testing.T) {
 			CheckpointID:     checkpointID,
 			SessionID:        s.id,
 			Strategy:         "manual-commit",
-			Transcript:       []byte(s.transcript),
+			Transcript:       redact.AlreadyRedacted([]byte(s.transcript)),
 			Prompts:          []string{s.prompt},
 			CheckpointsCount: 1,
 			AuthorName:       "Test Author",
@@ -1158,7 +1322,7 @@ func writeSingleSession(t *testing.T, cpIDStr, sessionID, transcript string) (*G
 		CheckpointID:     checkpointID,
 		SessionID:        sessionID,
 		Strategy:         "manual-commit",
-		Transcript:       []byte(transcript),
+		Transcript:       redact.AlreadyRedacted([]byte(transcript)),
 		CheckpointsCount: 1,
 		AuthorName:       "Test Author",
 		AuthorEmail:      "test@example.com",
@@ -1167,6 +1331,39 @@ func writeSingleSession(t *testing.T, cpIDStr, sessionID, transcript string) (*G
 		t.Fatalf("WriteCommitted() error = %v", err)
 	}
 	return store, checkpointID
+}
+
+func TestWriteCommitted_CodexSanitizesPortableTranscript(t *testing.T) {
+	repo, _ := setupBranchTestRepo(t)
+	store := NewGitStore(repo)
+	checkpointID := id.MustCheckpointID("c0de1234beef")
+
+	transcript := `{"timestamp":"2026-03-25T11:31:11.754Z","type":"response_item","payload":{"type":"reasoning","summary":[{"text":"brief"}],"encrypted_content":"REDACTED"}}
+{"timestamp":"2026-03-25T11:31:11.755Z","type":"response_item","payload":{"type":"compaction","encrypted_content":"REDACTED"}}
+{"timestamp":"2026-03-25T11:31:11.756Z","type":"compacted","payload":{"message":"","replacement_history":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]},{"type":"reasoning","summary":[{"text":"nested"}],"encrypted_content":"REDACTED"},{"type":"compaction","encrypted_content":"REDACTED"},{"type":"compaction_summary","encrypted_content":"REDACTED"}]}}
+`
+
+	err := store.WriteCommitted(context.Background(), WriteCommittedOptions{
+		CheckpointID:     checkpointID,
+		SessionID:        "codex-session",
+		Strategy:         "manual-commit",
+		Agent:            agent.AgentTypeCodex,
+		Transcript:       redact.AlreadyRedacted([]byte(transcript)),
+		CheckpointsCount: 1,
+		AuthorName:       "Test Author",
+		AuthorEmail:      "test@example.com",
+	})
+	require.NoError(t, err)
+
+	content, err := store.ReadLatestSessionContent(context.Background(), checkpointID)
+	require.NoError(t, err)
+
+	got := string(content.Transcript)
+	require.NotContains(t, got, `"encrypted_content":"REDACTED"`)
+	require.NotContains(t, got, `"type":"compaction"`)
+	require.NotContains(t, got, `"type":"compaction_summary"`)
+	require.Contains(t, got, `"summary":[{"text":"brief"}]`)
+	require.Contains(t, got, `"summary":[{"text":"nested"}]`)
 }
 
 // TestReadSessionContent_InvalidIndex verifies that ReadSessionContent returns
@@ -1181,6 +1378,9 @@ func TestReadSessionContent_InvalidIndex(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "session 1 not found") {
 		t.Errorf("error should mention session not found, got: %v", err)
+	}
+	if !errors.Is(err, ErrCheckpointNotFound) {
+		t.Errorf("ReadSessionContent(1) error = %v, want ErrCheckpointNotFound", err)
 	}
 }
 
@@ -1197,7 +1397,7 @@ func TestReadLatestSessionContent(t *testing.T) {
 			CheckpointID:     checkpointID,
 			SessionID:        fmt.Sprintf("session-%d", i),
 			Strategy:         "manual-commit",
-			Transcript:       []byte(fmt.Sprintf(`{"index": %d}`, i)),
+			Transcript:       redact.AlreadyRedacted([]byte(fmt.Sprintf(`{"index": %d}`, i))),
 			CheckpointsCount: 1,
 			AuthorName:       "Test Author",
 			AuthorEmail:      "test@example.com",
@@ -1236,7 +1436,7 @@ func TestReadSessionContentByID(t *testing.T) {
 			CheckpointID:     checkpointID,
 			SessionID:        sid,
 			Strategy:         "manual-commit",
-			Transcript:       []byte(fmt.Sprintf(`{"session_name": "%s"}`, sid)),
+			Transcript:       redact.AlreadyRedacted([]byte(fmt.Sprintf(`{"session_name": "%s"}`, sid))),
 			CheckpointsCount: 1,
 			AuthorName:       "Test Author",
 			AuthorEmail:      "test@example.com",
@@ -1289,7 +1489,7 @@ func TestListCommitted_MultiSessionInfo(t *testing.T) {
 			SessionID:        sid,
 			Strategy:         "manual-commit",
 			Agent:            agent.AgentTypeClaudeCode,
-			Transcript:       []byte(fmt.Sprintf(`{"i": %d}`, i)),
+			Transcript:       redact.AlreadyRedacted([]byte(fmt.Sprintf(`{"i": %d}`, i))),
 			FilesTouched:     []string{fmt.Sprintf("file%d.go", i)},
 			CheckpointsCount: i + 1,
 			AuthorName:       "Test Author",
@@ -1347,9 +1547,8 @@ func TestWriteCommitted_SessionWithNoPrompts(t *testing.T) {
 		CheckpointID:     checkpointID,
 		SessionID:        "no-prompts-session",
 		Strategy:         "manual-commit",
-		Transcript:       []byte(`{"no_prompts": true}`),
+		Transcript:       redact.AlreadyRedacted([]byte(`{"no_prompts": true}`)),
 		Prompts:          nil, // No prompts
-		Context:          []byte("Some context"),
 		CheckpointsCount: 1,
 		AuthorName:       "Test Author",
 		AuthorEmail:      "test@example.com",
@@ -1378,11 +1577,6 @@ func TestWriteCommitted_SessionWithNoPrompts(t *testing.T) {
 	if content.Prompts != "" {
 		t.Errorf("Prompts should be empty, got %q", content.Prompts)
 	}
-
-	// Verify context is present
-	if content.Context != "Some context" {
-		t.Errorf("Context = %q, want %q", content.Context, "Some context")
-	}
 }
 
 // TestWriteCommitted_SessionWithSummary verifies that a non-nil Summary
@@ -1402,7 +1596,7 @@ func TestWriteCommitted_SessionWithSummary(t *testing.T) {
 		CheckpointID:     checkpointID,
 		SessionID:        "summary-session",
 		Strategy:         "manual-commit",
-		Transcript:       []byte(`{"test": true}`),
+		Transcript:       redact.AlreadyRedacted([]byte(`{"test": true}`)),
 		CheckpointsCount: 1,
 		AuthorName:       "Test Author",
 		AuthorEmail:      "test@example.com",
@@ -1428,56 +1622,6 @@ func TestWriteCommitted_SessionWithSummary(t *testing.T) {
 	}
 }
 
-// TestWriteCommitted_SessionWithNoContext verifies that a session can be
-// written without context and still be read correctly.
-func TestWriteCommitted_SessionWithNoContext(t *testing.T) {
-	repo, _ := setupBranchTestRepo(t)
-	store := NewGitStore(repo)
-	checkpointID := id.MustCheckpointID("414243444546")
-
-	// Write session without context
-	err := store.WriteCommitted(context.Background(), WriteCommittedOptions{
-		CheckpointID:     checkpointID,
-		SessionID:        "no-context-session",
-		Strategy:         "manual-commit",
-		Transcript:       []byte(`{"no_context": true}`),
-		Prompts:          []string{"A prompt"},
-		Context:          nil, // No context
-		CheckpointsCount: 1,
-		AuthorName:       "Test Author",
-		AuthorEmail:      "test@example.com",
-	})
-	if err != nil {
-		t.Fatalf("WriteCommitted() error = %v", err)
-	}
-
-	// Read the session content
-	content, err := store.ReadSessionContent(context.Background(), checkpointID, 0)
-	if err != nil {
-		t.Fatalf("ReadSessionContent() error = %v", err)
-	}
-
-	// Verify session metadata is correct
-	if content.Metadata.SessionID != "no-context-session" {
-		t.Errorf("SessionID = %q, want %q", content.Metadata.SessionID, "no-context-session")
-	}
-
-	// Verify transcript is present
-	if len(content.Transcript) == 0 {
-		t.Error("Transcript should not be empty")
-	}
-
-	// Verify prompts is present
-	if !strings.Contains(content.Prompts, "A prompt") {
-		t.Errorf("Prompts should contain 'A prompt', got %q", content.Prompts)
-	}
-
-	// Verify context is empty
-	if content.Context != "" {
-		t.Errorf("Context should be empty, got %q", content.Context)
-	}
-}
-
 // TestWriteCommitted_ThreeSessions verifies the structure with three sessions
 // to ensure the 0-based indexing works correctly throughout.
 func TestWriteCommitted_ThreeSessions(t *testing.T) {
@@ -1491,7 +1635,7 @@ func TestWriteCommitted_ThreeSessions(t *testing.T) {
 			CheckpointID:     checkpointID,
 			SessionID:        fmt.Sprintf("three-session-%d", i),
 			Strategy:         "manual-commit",
-			Transcript:       []byte(fmt.Sprintf(`{"session_number": %d}`, i)),
+			Transcript:       redact.AlreadyRedacted([]byte(fmt.Sprintf(`{"session_number": %d}`, i))),
 			FilesTouched:     []string{fmt.Sprintf("s%d.go", i)},
 			CheckpointsCount: i + 1,
 			TokenUsage: &agent.TokenUsage{
@@ -1556,7 +1700,7 @@ func TestReadCommitted_NonexistentCheckpoint(t *testing.T) {
 	store := NewGitStore(repo)
 
 	// Ensure sessions branch exists
-	err := store.ensureSessionsBranch()
+	err := store.ensureSessionsBranch(context.Background())
 	if err != nil {
 		t.Fatalf("ensureSessionsBranch() error = %v", err)
 	}
@@ -1579,7 +1723,7 @@ func TestReadSessionContent_NonexistentCheckpoint(t *testing.T) {
 	store := NewGitStore(repo)
 
 	// Ensure sessions branch exists
-	err := store.ensureSessionsBranch()
+	err := store.ensureSessionsBranch(context.Background())
 	if err != nil {
 		t.Fatalf("ensureSessionsBranch() error = %v", err)
 	}
@@ -1691,6 +1835,135 @@ func TestWriteTemporary_FirstCheckpoint_CapturesModifiedTrackedFiles(t *testing.
 
 	if content != modifiedContent {
 		t.Errorf("checkpoint should contain modified content\ngot:\n%s\nwant:\n%s", content, modifiedContent)
+	}
+}
+
+// TestWriteTemporary_PathNormalizationAndSkipping verifies that shadow branch writes
+// normalize absolute in-repo paths back to repo-relative tree entries and skip invalid
+// paths rather than encoding them into git trees.
+func TestWriteTemporary_PathNormalizationAndSkipping(t *testing.T) {
+	tests := []struct {
+		name          string
+		modifiedFiles func(repoRoot, mainFile string) []string
+		wantUpdated   bool
+	}{
+		{
+			name: "absolute in repo path is normalized",
+			modifiedFiles: func(_, mainFile string) []string {
+				return []string{mainFile}
+			},
+			wantUpdated: true,
+		},
+		{
+			name: "absolute outside repo path is skipped",
+			modifiedFiles: func(_, _ string) []string {
+				return []string{"C:/Users/rober/Vaults/Flowsign/main.go"}
+			},
+			wantUpdated: false,
+		},
+		{
+			name: "empty segment path is skipped",
+			modifiedFiles: func(_, _ string) []string {
+				return []string{"dir//main.go"}
+			},
+			wantUpdated: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tempDir := t.TempDir()
+			// Resolve symlinks so absolute paths match git's resolved repo root.
+			// On macOS, t.TempDir() returns /var/... but git resolves to /private/var/...
+			tempDir, err := filepath.EvalSymlinks(tempDir)
+			if err != nil {
+				t.Fatalf("failed to resolve symlinks: %v", err)
+			}
+
+			repo, err := git.PlainInit(tempDir, false)
+			if err != nil {
+				t.Fatalf("failed to init git repo: %v", err)
+			}
+
+			worktree, err := repo.Worktree()
+			if err != nil {
+				t.Fatalf("failed to get worktree: %v", err)
+			}
+
+			mainFile := filepath.Join(tempDir, "main.go")
+			if err := os.WriteFile(mainFile, []byte("package main\n"), 0o644); err != nil {
+				t.Fatalf("failed to write main.go: %v", err)
+			}
+			if _, err := worktree.Add("main.go"); err != nil {
+				t.Fatalf("failed to add main.go: %v", err)
+			}
+			initialCommit, err := worktree.Commit("Initial commit", &git.CommitOptions{
+				Author: &object.Signature{Name: "Test", Email: "test@test.com"},
+			})
+			if err != nil {
+				t.Fatalf("failed to commit: %v", err)
+			}
+
+			updatedContent := "package main\n\nfunc main() {}\n"
+			if err := os.WriteFile(mainFile, []byte(updatedContent), 0o644); err != nil {
+				t.Fatalf("failed to update main.go: %v", err)
+			}
+
+			t.Chdir(tempDir)
+
+			metadataDir := filepath.Join(tempDir, ".entire", "metadata", "test-session")
+			if err := os.MkdirAll(metadataDir, 0o755); err != nil {
+				t.Fatalf("failed to create metadata dir: %v", err)
+			}
+			if err := os.WriteFile(filepath.Join(metadataDir, "full.jsonl"), []byte(`{"test": true}`), 0o644); err != nil {
+				t.Fatalf("failed to write transcript: %v", err)
+			}
+
+			store := NewGitStore(repo)
+			result, err := store.WriteTemporary(context.Background(), WriteTemporaryOptions{
+				SessionID:      "test-session",
+				BaseCommit:     initialCommit.String(),
+				ModifiedFiles:  tt.modifiedFiles(tempDir, mainFile),
+				MetadataDir:    ".entire/metadata/test-session",
+				MetadataDirAbs: metadataDir,
+				CommitMessage:  "Checkpoint with path normalization",
+				AuthorName:     "Test",
+				AuthorEmail:    "test@test.com",
+			})
+			if err != nil {
+				t.Fatalf("WriteTemporary() error = %v", err)
+			}
+
+			commit, err := repo.CommitObject(result.CommitHash)
+			if err != nil {
+				t.Fatalf("failed to get commit object: %v", err)
+			}
+
+			tree, err := commit.Tree()
+			if err != nil {
+				t.Fatalf("failed to get tree: %v", err)
+			}
+
+			assertNoEmptyEntryNames(t, repo, commit.TreeHash, "")
+
+			file, err := tree.File("main.go")
+			if err != nil {
+				t.Fatalf("main.go not found in checkpoint tree: %v", err)
+			}
+
+			content, err := file.Contents()
+			if err != nil {
+				t.Fatalf("failed to read main.go content: %v", err)
+			}
+
+			wantContent := "package main\n"
+			if tt.wantUpdated {
+				wantContent = updatedContent
+			}
+			if content != wantContent {
+				t.Errorf("unexpected main.go content\ngot:\n%s\nwant:\n%s", content, wantContent)
+			}
+		})
 	}
 }
 
@@ -1889,6 +2162,360 @@ func TestWriteTemporary_FirstCheckpoint_ExcludesGitIgnoredFiles(t *testing.T) {
 		t.Error("gitignored file node_modules/some-package.js should NOT be in checkpoint tree")
 	} else if !errors.Is(err, object.ErrFileNotFound) && !errors.Is(err, object.ErrEntryNotFound) {
 		t.Fatalf("expected node_modules/some-package.js to be absent (ErrFileNotFound/ErrEntryNotFound), got: %v", err)
+	}
+}
+
+// TestWriteTemporary_SubsequentCheckpoint_ExcludesGitIgnoredModifiedFiles verifies that
+// subsequent checkpoints (IsFirstCheckpoint=false) filter out gitignored files from
+// ModifiedFiles. This is a security-critical test: if an agent modifies a .env file
+// and reports it in its transcript, the .env file must NOT leak into the shadow branch.
+// See: https://techstackups.com/guides/entire-io-hands-on-what-it-actually-captures/#what-leaks-into-checkpoints
+func TestWriteTemporary_SubsequentCheckpoint_ExcludesGitIgnoredModifiedFiles(t *testing.T) {
+	tempDir := t.TempDir()
+
+	testutil.InitRepo(t, tempDir)
+	repo, err := git.PlainOpen(tempDir)
+	require.NoError(t, err)
+
+	worktree, err := repo.Worktree()
+	if err != nil {
+		t.Fatalf("failed to get worktree: %v", err)
+	}
+
+	// Create .gitignore that ignores .env files
+	gitignoreContent := ".env\n*.secret\nnode_modules/\n"
+	if err := os.WriteFile(filepath.Join(tempDir, ".gitignore"), []byte(gitignoreContent), 0o644); err != nil {
+		t.Fatalf("failed to write .gitignore: %v", err)
+	}
+	if _, err := worktree.Add(".gitignore"); err != nil {
+		t.Fatalf("failed to add .gitignore: %v", err)
+	}
+
+	// Create and commit a tracked file
+	if err := os.WriteFile(filepath.Join(tempDir, "main.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatalf("failed to write main.go: %v", err)
+	}
+	if _, err := worktree.Add("main.go"); err != nil {
+		t.Fatalf("failed to add main.go: %v", err)
+	}
+	testutil.GitCommit(t, tempDir, "Initial commit")
+	headRef, err := repo.Head()
+	require.NoError(t, err)
+	initialCommit := headRef.Hash()
+
+	// Create gitignored files on disk (simulating an agent creating/modifying them)
+	if err := os.WriteFile(filepath.Join(tempDir, ".env"), []byte("API_KEY=sk-secret-1234\n"), 0o644); err != nil {
+		t.Fatalf("failed to write .env: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tempDir, "db.secret"), []byte("password=hunter2\n"), 0o644); err != nil {
+		t.Fatalf("failed to write db.secret: %v", err)
+	}
+
+	// Also modify a tracked file (this SHOULD be captured)
+	if err := os.WriteFile(filepath.Join(tempDir, "main.go"), []byte("package main\n\nfunc main() {}\n"), 0o644); err != nil {
+		t.Fatalf("failed to modify main.go: %v", err)
+	}
+
+	t.Chdir(tempDir)
+
+	// Create metadata directory
+	metadataDir := filepath.Join(tempDir, ".entire", "metadata", "test-session")
+	if err := os.MkdirAll(metadataDir, 0o755); err != nil {
+		t.Fatalf("failed to create metadata dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(metadataDir, "full.jsonl"), []byte(`{"test": true}`), 0o644); err != nil {
+		t.Fatalf("failed to write transcript: %v", err)
+	}
+
+	store := NewGitStore(repo)
+	baseCommit := initialCommit.String()
+
+	// Write first checkpoint to establish the shadow branch
+	firstResult, err := store.WriteTemporary(context.Background(), WriteTemporaryOptions{
+		SessionID:         "test-session",
+		BaseCommit:        baseCommit,
+		ModifiedFiles:     []string{},
+		MetadataDir:       ".entire/metadata/test-session",
+		MetadataDirAbs:    metadataDir,
+		CommitMessage:     "First checkpoint",
+		AuthorName:        "Test",
+		AuthorEmail:       "test@test.com",
+		IsFirstCheckpoint: true,
+	})
+	if err != nil {
+		t.Fatalf("first WriteTemporary() error = %v", err)
+	}
+	require.False(t, firstResult.Skipped)
+
+	// Now write a subsequent checkpoint where the agent reports .env and db.secret
+	// as modified files (e.g., agent touched them during its turn).
+	// These gitignored files must NOT appear in the checkpoint tree.
+	result, err := store.WriteTemporary(context.Background(), WriteTemporaryOptions{
+		SessionID:         "test-session",
+		BaseCommit:        baseCommit,
+		ModifiedFiles:     []string{"main.go", ".env", "db.secret"}, // Agent reports these
+		NewFiles:          []string{},
+		DeletedFiles:      []string{},
+		MetadataDir:       ".entire/metadata/test-session",
+		MetadataDirAbs:    metadataDir,
+		CommitMessage:     "Second checkpoint",
+		AuthorName:        "Test",
+		AuthorEmail:       "test@test.com",
+		IsFirstCheckpoint: false,
+	})
+	if err != nil {
+		t.Fatalf("second WriteTemporary() error = %v", err)
+	}
+
+	// Verify the checkpoint tree (use returned commit hash — works whether skipped or not)
+	commit, err := repo.CommitObject(result.CommitHash)
+	if err != nil {
+		t.Fatalf("failed to get commit object: %v", err)
+	}
+
+	tree, err := commit.Tree()
+	if err != nil {
+		t.Fatalf("failed to get tree: %v", err)
+	}
+
+	// main.go SHOULD be in the tree (tracked file, legitimately modified)
+	_, err = tree.File("main.go")
+	if err != nil {
+		t.Errorf("main.go should be in checkpoint tree: %v", err)
+	}
+
+	// .env MUST NOT be in the tree (gitignored — contains API key)
+	_, err = tree.File(".env")
+	if err == nil {
+		t.Error("SECURITY: gitignored file .env leaked into checkpoint tree — API keys exposed on shadow branch")
+	}
+
+	// db.secret MUST NOT be in the tree (gitignored)
+	_, err = tree.File("db.secret")
+	if err == nil {
+		t.Error("SECURITY: gitignored file db.secret leaked into checkpoint tree — secrets exposed on shadow branch")
+	}
+}
+
+// TestWriteTemporary_SubsequentCheckpoint_ExcludesGitIgnoredNewFiles verifies that
+// subsequent checkpoints filter out gitignored files from NewFiles.
+func TestWriteTemporary_SubsequentCheckpoint_ExcludesGitIgnoredNewFiles(t *testing.T) {
+	tempDir := t.TempDir()
+
+	testutil.InitRepo(t, tempDir)
+	repo, err := git.PlainOpen(tempDir)
+	require.NoError(t, err)
+
+	worktree, err := repo.Worktree()
+	if err != nil {
+		t.Fatalf("failed to get worktree: %v", err)
+	}
+
+	// Create .gitignore
+	if err := os.WriteFile(filepath.Join(tempDir, ".gitignore"), []byte(".env\n"), 0o644); err != nil {
+		t.Fatalf("failed to write .gitignore: %v", err)
+	}
+	if _, err := worktree.Add(".gitignore"); err != nil {
+		t.Fatalf("failed to add .gitignore: %v", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(tempDir, "README.md"), []byte("# Test\n"), 0o644); err != nil {
+		t.Fatalf("failed to write README: %v", err)
+	}
+	if _, err := worktree.Add("README.md"); err != nil {
+		t.Fatalf("failed to add README: %v", err)
+	}
+	testutil.GitCommit(t, tempDir, "Initial commit")
+	headRef, err := repo.Head()
+	require.NoError(t, err)
+	initialCommit := headRef.Hash()
+
+	// Create the gitignored file and a legitimate new file on disk
+	if err := os.WriteFile(filepath.Join(tempDir, ".env"), []byte("SECRET=abc123\n"), 0o644); err != nil {
+		t.Fatalf("failed to write .env: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tempDir, "config.go"), []byte("package config\n"), 0o644); err != nil {
+		t.Fatalf("failed to write config.go: %v", err)
+	}
+
+	t.Chdir(tempDir)
+
+	metadataDir := filepath.Join(tempDir, ".entire", "metadata", "test-session")
+	if err := os.MkdirAll(metadataDir, 0o755); err != nil {
+		t.Fatalf("failed to create metadata dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(metadataDir, "full.jsonl"), []byte(`{}`), 0o644); err != nil {
+		t.Fatalf("failed to write transcript: %v", err)
+	}
+
+	store := NewGitStore(repo)
+	baseCommit := initialCommit.String()
+
+	// First checkpoint
+	firstResult, err := store.WriteTemporary(context.Background(), WriteTemporaryOptions{
+		SessionID:         "test-session",
+		BaseCommit:        baseCommit,
+		MetadataDir:       ".entire/metadata/test-session",
+		MetadataDirAbs:    metadataDir,
+		CommitMessage:     "First checkpoint",
+		AuthorName:        "Test",
+		AuthorEmail:       "test@test.com",
+		IsFirstCheckpoint: true,
+	})
+	if err != nil {
+		t.Fatalf("first WriteTemporary() error = %v", err)
+	}
+	require.False(t, firstResult.Skipped)
+
+	// Subsequent checkpoint with .env reported as a new file
+	result, err := store.WriteTemporary(context.Background(), WriteTemporaryOptions{
+		SessionID:         "test-session",
+		BaseCommit:        baseCommit,
+		ModifiedFiles:     []string{},
+		NewFiles:          []string{"config.go", ".env"}, // Agent created both
+		DeletedFiles:      []string{},
+		MetadataDir:       ".entire/metadata/test-session",
+		MetadataDirAbs:    metadataDir,
+		CommitMessage:     "Second checkpoint",
+		AuthorName:        "Test",
+		AuthorEmail:       "test@test.com",
+		IsFirstCheckpoint: false,
+	})
+	if err != nil {
+		t.Fatalf("second WriteTemporary() error = %v", err)
+	}
+
+	commit, err := repo.CommitObject(result.CommitHash)
+	if err != nil {
+		t.Fatalf("failed to get commit object: %v", err)
+	}
+
+	tree, err := commit.Tree()
+	if err != nil {
+		t.Fatalf("failed to get tree: %v", err)
+	}
+
+	// config.go SHOULD be in the tree
+	_, err = tree.File("config.go")
+	if err != nil {
+		t.Errorf("config.go should be in checkpoint tree: %v", err)
+	}
+
+	// .env MUST NOT be in the tree
+	_, err = tree.File(".env")
+	if err == nil {
+		t.Error("SECURITY: gitignored file .env leaked into checkpoint tree via NewFiles")
+	}
+}
+
+// TestWriteTemporary_SubsequentCheckpoint_ExcludesNestedGitIgnoredFiles verifies that
+// gitignore patterns with directory wildcards (e.g., node_modules/) work for
+// subsequent checkpoints, not just the first checkpoint.
+func TestWriteTemporary_SubsequentCheckpoint_ExcludesNestedGitIgnoredFiles(t *testing.T) {
+	tempDir := t.TempDir()
+
+	testutil.InitRepo(t, tempDir)
+	repo, err := git.PlainOpen(tempDir)
+	require.NoError(t, err)
+
+	worktree, err := repo.Worktree()
+	if err != nil {
+		t.Fatalf("failed to get worktree: %v", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(tempDir, ".gitignore"), []byte("node_modules/\n"), 0o644); err != nil {
+		t.Fatalf("failed to write .gitignore: %v", err)
+	}
+	if _, err := worktree.Add(".gitignore"); err != nil {
+		t.Fatalf("failed to add .gitignore: %v", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(tempDir, "index.js"), []byte("console.log('hello')\n"), 0o644); err != nil {
+		t.Fatalf("failed to write index.js: %v", err)
+	}
+	if _, err := worktree.Add("index.js"); err != nil {
+		t.Fatalf("failed to add index.js: %v", err)
+	}
+	testutil.GitCommit(t, tempDir, "Initial commit")
+	headRef, err := repo.Head()
+	require.NoError(t, err)
+	initialCommit := headRef.Hash()
+
+	// Create node_modules file on disk
+	if err := os.MkdirAll(filepath.Join(tempDir, "node_modules", "pkg"), 0o755); err != nil {
+		t.Fatalf("failed to create node_modules: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tempDir, "node_modules", "pkg", "index.js"), []byte("module.exports = {}"), 0o644); err != nil {
+		t.Fatalf("failed to write node_modules file: %v", err)
+	}
+
+	t.Chdir(tempDir)
+
+	metadataDir := filepath.Join(tempDir, ".entire", "metadata", "test-session")
+	if err := os.MkdirAll(metadataDir, 0o755); err != nil {
+		t.Fatalf("failed to create metadata dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(metadataDir, "full.jsonl"), []byte(`{}`), 0o644); err != nil {
+		t.Fatalf("failed to write transcript: %v", err)
+	}
+
+	store := NewGitStore(repo)
+	baseCommit := initialCommit.String()
+
+	// First checkpoint
+	firstResult, err := store.WriteTemporary(context.Background(), WriteTemporaryOptions{
+		SessionID:         "test-session",
+		BaseCommit:        baseCommit,
+		MetadataDir:       ".entire/metadata/test-session",
+		MetadataDirAbs:    metadataDir,
+		CommitMessage:     "First checkpoint",
+		AuthorName:        "Test",
+		AuthorEmail:       "test@test.com",
+		IsFirstCheckpoint: true,
+	})
+	if err != nil {
+		t.Fatalf("first WriteTemporary() error = %v", err)
+	}
+	require.False(t, firstResult.Skipped)
+
+	// Subsequent checkpoint with node_modules file reported as modified
+	result, err := store.WriteTemporary(context.Background(), WriteTemporaryOptions{
+		SessionID:         "test-session",
+		BaseCommit:        baseCommit,
+		ModifiedFiles:     []string{"index.js", "node_modules/pkg/index.js"},
+		NewFiles:          []string{},
+		DeletedFiles:      []string{},
+		MetadataDir:       ".entire/metadata/test-session",
+		MetadataDirAbs:    metadataDir,
+		CommitMessage:     "Second checkpoint",
+		AuthorName:        "Test",
+		AuthorEmail:       "test@test.com",
+		IsFirstCheckpoint: false,
+	})
+	if err != nil {
+		t.Fatalf("second WriteTemporary() error = %v", err)
+	}
+
+	commit, err := repo.CommitObject(result.CommitHash)
+	if err != nil {
+		t.Fatalf("failed to get commit object: %v", err)
+	}
+
+	tree, err := commit.Tree()
+	if err != nil {
+		t.Fatalf("failed to get tree: %v", err)
+	}
+
+	// index.js SHOULD be in the tree
+	_, err = tree.File("index.js")
+	if err != nil {
+		t.Errorf("index.js should be in checkpoint tree: %v", err)
+	}
+
+	// node_modules/pkg/index.js MUST NOT be in the tree
+	_, err = tree.File("node_modules/pkg/index.js")
+	if err == nil {
+		t.Error("SECURITY: gitignored file node_modules/pkg/index.js leaked into checkpoint tree")
 	}
 }
 
@@ -2318,7 +2945,7 @@ func TestWriteCommitted_DuplicateSessionIDUpdatesInPlace(t *testing.T) {
 		CheckpointID:     checkpointID,
 		SessionID:        "session-X",
 		Strategy:         "manual-commit",
-		Transcript:       []byte(`{"message": "session X v1"}`),
+		Transcript:       redact.AlreadyRedacted([]byte(`{"message": "session X v1"}`)),
 		FilesTouched:     []string{"a.go"},
 		CheckpointsCount: 3,
 		TokenUsage: &agent.TokenUsage{
@@ -2338,7 +2965,7 @@ func TestWriteCommitted_DuplicateSessionIDUpdatesInPlace(t *testing.T) {
 		CheckpointID:     checkpointID,
 		SessionID:        "session-Y",
 		Strategy:         "manual-commit",
-		Transcript:       []byte(`{"message": "session Y"}`),
+		Transcript:       redact.AlreadyRedacted([]byte(`{"message": "session Y"}`)),
 		FilesTouched:     []string{"b.go"},
 		CheckpointsCount: 2,
 		TokenUsage: &agent.TokenUsage{
@@ -2358,7 +2985,7 @@ func TestWriteCommitted_DuplicateSessionIDUpdatesInPlace(t *testing.T) {
 		CheckpointID:     checkpointID,
 		SessionID:        "session-X",
 		Strategy:         "manual-commit",
-		Transcript:       []byte(`{"message": "session X v2"}`),
+		Transcript:       redact.AlreadyRedacted([]byte(`{"message": "session X v2"}`)),
 		FilesTouched:     []string{"a.go", "c.go"},
 		CheckpointsCount: 5,
 		TokenUsage: &agent.TokenUsage{
@@ -2378,9 +3005,7 @@ func TestWriteCommitted_DuplicateSessionIDUpdatesInPlace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadCommitted() error = %v", err)
 	}
-	if summary == nil {
-		t.Fatal("ReadCommitted() returned nil summary")
-	}
+	require.NotNil(t, summary, "ReadCommitted() returned nil summary")
 
 	// Should have 2 sessions, not 3
 	if len(summary.Sessions) != 2 {
@@ -2455,7 +3080,7 @@ func TestWriteCommitted_DuplicateSessionIDSingleSession(t *testing.T) {
 		CheckpointID:     checkpointID,
 		SessionID:        "session-X",
 		Strategy:         "manual-commit",
-		Transcript:       []byte(`{"message": "v1"}`),
+		Transcript:       redact.AlreadyRedacted([]byte(`{"message": "v1"}`)),
 		FilesTouched:     []string{"old.go"},
 		CheckpointsCount: 1,
 		AuthorName:       "Test Author",
@@ -2470,7 +3095,7 @@ func TestWriteCommitted_DuplicateSessionIDSingleSession(t *testing.T) {
 		CheckpointID:     checkpointID,
 		SessionID:        "session-X",
 		Strategy:         "manual-commit",
-		Transcript:       []byte(`{"message": "v2"}`),
+		Transcript:       redact.AlreadyRedacted([]byte(`{"message": "v2"}`)),
 		FilesTouched:     []string{"new.go"},
 		CheckpointsCount: 5,
 		AuthorName:       "Test Author",
@@ -2485,9 +3110,7 @@ func TestWriteCommitted_DuplicateSessionIDSingleSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadCommitted() error = %v", err)
 	}
-	if summary == nil {
-		t.Fatal("ReadCommitted() returned nil summary")
-	}
+	require.NotNil(t, summary, "ReadCommitted() returned nil summary")
 
 	// Should have 1 session, not 2
 	if len(summary.Sessions) != 1 {
@@ -2533,7 +3156,7 @@ func TestWriteCommitted_DuplicateSessionIDReusesIndex(t *testing.T) {
 		CheckpointID:     checkpointID,
 		SessionID:        "session-A",
 		Strategy:         "manual-commit",
-		Transcript:       []byte(`{"v": 1}`),
+		Transcript:       redact.AlreadyRedacted([]byte(`{"v": 1}`)),
 		CheckpointsCount: 1,
 		AuthorName:       "Test",
 		AuthorEmail:      "test@example.com",
@@ -2547,7 +3170,7 @@ func TestWriteCommitted_DuplicateSessionIDReusesIndex(t *testing.T) {
 		CheckpointID:     checkpointID,
 		SessionID:        "session-B",
 		Strategy:         "manual-commit",
-		Transcript:       []byte(`{"v": 2}`),
+		Transcript:       redact.AlreadyRedacted([]byte(`{"v": 2}`)),
 		CheckpointsCount: 1,
 		AuthorName:       "Test",
 		AuthorEmail:      "test@example.com",
@@ -2561,7 +3184,7 @@ func TestWriteCommitted_DuplicateSessionIDReusesIndex(t *testing.T) {
 		CheckpointID:     checkpointID,
 		SessionID:        "session-A",
 		Strategy:         "manual-commit",
-		Transcript:       []byte(`{"v": 3}`),
+		Transcript:       redact.AlreadyRedacted([]byte(`{"v": 3}`)),
 		CheckpointsCount: 2,
 		AuthorName:       "Test",
 		AuthorEmail:      "test@example.com",
@@ -2617,9 +3240,8 @@ func TestWriteCommitted_DuplicateSessionIDClearsStaleFiles(t *testing.T) {
 		CheckpointID:     checkpointID,
 		SessionID:        "session-A",
 		Strategy:         "manual-commit",
-		Transcript:       []byte(`{"v": 1}`),
+		Transcript:       redact.AlreadyRedacted([]byte(`{"v": 1}`)),
 		Prompts:          []string{"original prompt"},
-		Context:          []byte("original context"),
 		CheckpointsCount: 1,
 		AuthorName:       "Test",
 		AuthorEmail:      "test@example.com",
@@ -2628,14 +3250,13 @@ func TestWriteCommitted_DuplicateSessionIDClearsStaleFiles(t *testing.T) {
 		t.Fatalf("WriteCommitted() A v1 error = %v", err)
 	}
 
-	// Write session B with prompts and context
+	// Write session B with prompts
 	err = store.WriteCommitted(context.Background(), WriteCommittedOptions{
 		CheckpointID:     checkpointID,
 		SessionID:        "session-B",
 		Strategy:         "manual-commit",
-		Transcript:       []byte(`{"session": "B"}`),
+		Transcript:       redact.AlreadyRedacted([]byte(`{"session": "B"}`)),
 		Prompts:          []string{"B prompt"},
-		Context:          []byte("B context"),
 		CheckpointsCount: 1,
 		AuthorName:       "Test",
 		AuthorEmail:      "test@example.com",
@@ -2644,14 +3265,13 @@ func TestWriteCommitted_DuplicateSessionIDClearsStaleFiles(t *testing.T) {
 		t.Fatalf("WriteCommitted() B error = %v", err)
 	}
 
-	// Overwrite session A WITHOUT prompts or context
+	// Overwrite session A WITHOUT prompts
 	err = store.WriteCommitted(context.Background(), WriteCommittedOptions{
 		CheckpointID:     checkpointID,
 		SessionID:        "session-A",
 		Strategy:         "manual-commit",
-		Transcript:       []byte(`{"v": 2}`),
+		Transcript:       redact.AlreadyRedacted([]byte(`{"v": 2}`)),
 		Prompts:          nil,
-		Context:          nil,
 		CheckpointsCount: 2,
 		AuthorName:       "Test",
 		AuthorEmail:      "test@example.com",
@@ -2660,16 +3280,13 @@ func TestWriteCommitted_DuplicateSessionIDClearsStaleFiles(t *testing.T) {
 		t.Fatalf("WriteCommitted() A v2 error = %v", err)
 	}
 
-	// Session A: stale prompts and context should be cleared
+	// Session A: stale prompts should be cleared
 	contentA, err := store.ReadSessionContent(context.Background(), checkpointID, 0)
 	if err != nil {
 		t.Fatalf("ReadSessionContent(0) error = %v", err)
 	}
 	if contentA.Prompts != "" {
 		t.Errorf("session A stale prompts should be cleared, got %q", contentA.Prompts)
-	}
-	if contentA.Context != "" {
-		t.Errorf("session A stale context should be cleared, got %q", contentA.Context)
 	}
 	if !strings.Contains(string(contentA.Transcript), `"v": 2`) {
 		t.Errorf("session A transcript should be updated, got %s", string(contentA.Transcript))
@@ -2686,26 +3303,28 @@ func TestWriteCommitted_DuplicateSessionIDClearsStaleFiles(t *testing.T) {
 	if !strings.Contains(contentB.Prompts, "B prompt") {
 		t.Errorf("session B prompts should be preserved, got %q", contentB.Prompts)
 	}
-	if !strings.Contains(contentB.Context, "B context") {
-		t.Errorf("session B context should be preserved, got %q", contentB.Context)
-	}
 }
 
 // highEntropySecret is a string with Shannon entropy > 4.5 that will trigger redaction.
 const highEntropySecret = "sk-ant-api03-xK9mZ2vL8nQ5rT1wY4bC7dF0gH3jE6pA"
 
-func TestWriteCommitted_RedactsTranscriptSecrets(t *testing.T) {
+func TestWriteCommitted_PreservesRedactedTranscript(t *testing.T) {
 	repo, _ := setupBranchTestRepo(t)
 	store := NewGitStore(repo)
 	checkpointID := id.MustCheckpointID("aabbccddeef1")
 
-	transcript := []byte(`{"role":"assistant","content":"Here is your key: ` + highEntropySecret + `"}` + "\n")
+	// Callers redact before passing to WriteCommitted; the store persists as-is.
+	rawTranscript := []byte(`{"role":"assistant","content":"Here is your key: ` + highEntropySecret + `"}` + "\n")
+	redactedTranscript, err := redact.JSONLBytes(rawTranscript)
+	if err != nil {
+		t.Fatalf("redact.JSONLBytes() error = %v", err)
+	}
 
-	err := store.WriteCommitted(context.Background(), WriteCommittedOptions{
+	err = store.WriteCommitted(context.Background(), WriteCommittedOptions{
 		CheckpointID:     checkpointID,
 		SessionID:        "redact-transcript-session",
 		Strategy:         "manual-commit",
-		Transcript:       transcript,
+		Transcript:       redactedTranscript,
 		CheckpointsCount: 1,
 		AuthorName:       "Test Author",
 		AuthorEmail:      "test@example.com",
@@ -2736,7 +3355,7 @@ func TestWriteCommitted_RedactsPromptSecrets(t *testing.T) {
 		CheckpointID:     checkpointID,
 		SessionID:        "redact-prompt-session",
 		Strategy:         "manual-commit",
-		Transcript:       []byte(`{"msg":"safe"}`),
+		Transcript:       redact.AlreadyRedacted([]byte(`{"msg":"safe"}`)),
 		Prompts:          []string{"Set API_KEY=" + highEntropySecret},
 		CheckpointsCount: 1,
 		AuthorName:       "Test Author",
@@ -2756,38 +3375,6 @@ func TestWriteCommitted_RedactsPromptSecrets(t *testing.T) {
 	}
 	if !strings.Contains(content.Prompts, "REDACTED") {
 		t.Error("prompts should contain REDACTED placeholder")
-	}
-}
-
-func TestWriteCommitted_RedactsContextSecrets(t *testing.T) {
-	repo, _ := setupBranchTestRepo(t)
-	store := NewGitStore(repo)
-	checkpointID := id.MustCheckpointID("aabbccddeef3")
-
-	err := store.WriteCommitted(context.Background(), WriteCommittedOptions{
-		CheckpointID:     checkpointID,
-		SessionID:        "redact-context-session",
-		Strategy:         "manual-commit",
-		Transcript:       []byte(`{"msg":"safe"}`),
-		Context:          []byte("DB_PASSWORD=" + highEntropySecret),
-		CheckpointsCount: 1,
-		AuthorName:       "Test Author",
-		AuthorEmail:      "test@example.com",
-	})
-	if err != nil {
-		t.Fatalf("WriteCommitted() error = %v", err)
-	}
-
-	content, err := store.ReadSessionContent(context.Background(), checkpointID, 0)
-	if err != nil {
-		t.Fatalf("ReadSessionContent() error = %v", err)
-	}
-
-	if strings.Contains(content.Context, highEntropySecret) {
-		t.Error("context should not contain the secret after redaction")
-	}
-	if !strings.Contains(content.Context, "REDACTED") {
-		t.Error("context should contain REDACTED placeholder")
 	}
 }
 
@@ -2897,7 +3484,7 @@ func TestWriteCommitted_CLIVersionField(t *testing.T) {
 		SessionID:    sessionID,
 		Strategy:     "manual-commit",
 		Agent:        agent.AgentTypeClaudeCode,
-		Transcript:   []byte("test transcript"),
+		Transcript:   redact.AlreadyRedacted([]byte("test transcript")),
 		AuthorName:   "Test Author",
 		AuthorEmail:  "test@example.com",
 	})
@@ -2969,6 +3556,89 @@ func TestWriteCommitted_CLIVersionField(t *testing.T) {
 
 	if sessionMetadata.CLIVersion != versioninfo.Version {
 		t.Errorf("CommittedMetadata.CLIVersion = %q, want %q", sessionMetadata.CLIVersion, versioninfo.Version)
+	}
+}
+
+func TestWriteCommitted_ModelFieldAlwaysPresent(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+
+	repo, err := git.PlainInit(tempDir, false)
+	if err != nil {
+		t.Fatalf("failed to init git repo: %v", err)
+	}
+
+	worktree, err := repo.Worktree()
+	if err != nil {
+		t.Fatalf("failed to get worktree: %v", err)
+	}
+
+	readmeFile := filepath.Join(tempDir, "README.md")
+	if err := os.WriteFile(readmeFile, []byte("# Test"), 0o644); err != nil {
+		t.Fatalf("failed to write README: %v", err)
+	}
+	if _, err := worktree.Add("README.md"); err != nil {
+		t.Fatalf("failed to add README: %v", err)
+	}
+	if _, err := worktree.Commit("Initial commit", &git.CommitOptions{
+		Author: &object.Signature{Name: "Test", Email: "test@test.com"},
+	}); err != nil {
+		t.Fatalf("failed to commit: %v", err)
+	}
+
+	store := NewGitStore(repo)
+
+	checkpointID := id.MustCheckpointID("c1d2e3f4a5b6")
+	err = store.WriteCommitted(context.Background(), WriteCommittedOptions{
+		CheckpointID: checkpointID,
+		SessionID:    "test-session-model",
+		Strategy:     "manual-commit",
+		Agent:        agent.AgentTypeClaudeCode,
+		Transcript:   redact.AlreadyRedacted([]byte("test transcript")),
+		AuthorName:   "Test Author",
+		AuthorEmail:  "test@example.com",
+	})
+	if err != nil {
+		t.Fatalf("WriteCommitted() error = %v", err)
+	}
+
+	ref, err := repo.Reference(plumbing.NewBranchReferenceName(paths.MetadataBranchName), true)
+	if err != nil {
+		t.Fatalf("failed to get metadata branch reference: %v", err)
+	}
+
+	commit, err := repo.CommitObject(ref.Hash())
+	if err != nil {
+		t.Fatalf("failed to get commit object: %v", err)
+	}
+
+	tree, err := commit.Tree()
+	if err != nil {
+		t.Fatalf("failed to get tree: %v", err)
+	}
+
+	sessionMetadataPath := checkpointID.Path() + "/0/" + paths.MetadataFileName
+	sessionMetadataFile, err := tree.File(sessionMetadataPath)
+	if err != nil {
+		t.Fatalf("failed to find session metadata.json at %s: %v", sessionMetadataPath, err)
+	}
+
+	sessionContent, err := sessionMetadataFile.Contents()
+	if err != nil {
+		t.Fatalf("failed to read session metadata.json: %v", err)
+	}
+
+	var sessionMetadata CommittedMetadata
+	if err := json.Unmarshal([]byte(sessionContent), &sessionMetadata); err != nil {
+		t.Fatalf("failed to parse session metadata.json: %v", err)
+	}
+
+	if sessionMetadata.Model != "" {
+		t.Errorf("CommittedMetadata.Model = %q, want empty string", sessionMetadata.Model)
+	}
+	if !strings.Contains(sessionContent, `"model": ""`) {
+		t.Errorf("session metadata.json should contain an explicit empty model field, got:\n%s", sessionContent)
 	}
 }
 
@@ -3142,7 +3812,7 @@ func TestWriteCommitted_RedactsSummarySecrets(t *testing.T) {
 		CheckpointID:     checkpointID,
 		SessionID:        "redact-summary-session",
 		Strategy:         "manual-commit",
-		Transcript:       []byte(`{"msg":"safe"}` + "\n"),
+		Transcript:       redact.AlreadyRedacted([]byte(`{"msg":"safe"}` + "\n")),
 		CheckpointsCount: 1,
 		AuthorName:       "Test Author",
 		AuthorEmail:      "test@example.com",
@@ -3185,7 +3855,7 @@ func TestUpdateSummary_RedactsSecrets(t *testing.T) {
 		CheckpointID:     checkpointID,
 		SessionID:        "update-summary-session",
 		Strategy:         "manual-commit",
-		Transcript:       []byte(`{"msg":"safe"}` + "\n"),
+		Transcript:       redact.AlreadyRedacted([]byte(`{"msg":"safe"}` + "\n")),
 		CheckpointsCount: 1,
 		AuthorName:       "Test Author",
 		AuthorEmail:      "test@example.com",
@@ -3237,7 +3907,7 @@ func TestWriteCommitted_SubagentTranscript_JSONLFallback(t *testing.T) {
 		CheckpointID:           checkpointID,
 		SessionID:              "jsonl-fallback-session",
 		Strategy:               "manual-commit",
-		Transcript:             []byte(`{"msg":"safe"}` + "\n"),
+		Transcript:             redact.AlreadyRedacted([]byte(`{"msg":"safe"}` + "\n")),
 		CheckpointsCount:       1,
 		AuthorName:             "Test Author",
 		AuthorEmail:            "test@example.com",
@@ -3520,5 +4190,175 @@ func TestAddDirectoryToEntries_SkipsSymlinkedDirectories(t *testing.T) {
 
 	if len(entries) != 1 {
 		t.Errorf("expected 1 entry (regular.txt only), got %d: %v", len(entries), entries)
+	}
+}
+
+// TestWriteTemporaryTask_ExcludesGitIgnoredFiles verifies that task (subagent)
+// checkpoints also filter out gitignored files. This is the same vulnerability as
+// the WriteTemporary path — a subagent that touches .env must not leak it into the
+// shadow branch.
+func TestWriteTemporaryTask_ExcludesGitIgnoredFiles(t *testing.T) {
+	tempDir := t.TempDir()
+
+	repo, err := git.PlainInit(tempDir, false)
+	if err != nil {
+		t.Fatalf("failed to init git repo: %v", err)
+	}
+
+	worktree, err := repo.Worktree()
+	if err != nil {
+		t.Fatalf("failed to get worktree: %v", err)
+	}
+
+	// Create .gitignore that ignores .env
+	if err := os.WriteFile(filepath.Join(tempDir, ".gitignore"), []byte(".env\n"), 0o644); err != nil {
+		t.Fatalf("failed to write .gitignore: %v", err)
+	}
+	if _, err := worktree.Add(".gitignore"); err != nil {
+		t.Fatalf("failed to add .gitignore: %v", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(tempDir, "main.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatalf("failed to write main.go: %v", err)
+	}
+	if _, err := worktree.Add("main.go"); err != nil {
+		t.Fatalf("failed to add main.go: %v", err)
+	}
+	initialCommit, err := worktree.Commit("Initial commit", &git.CommitOptions{
+		Author: &object.Signature{Name: "Test", Email: "test@test.com"},
+	})
+	if err != nil {
+		t.Fatalf("failed to commit: %v", err)
+	}
+
+	// Create gitignored .env file and a legitimate file on disk
+	if err := os.WriteFile(filepath.Join(tempDir, ".env"), []byte("API_KEY=sk-secret-1234\n"), 0o644); err != nil {
+		t.Fatalf("failed to write .env: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tempDir, "handler.go"), []byte("package main\n\nfunc handler() {}\n"), 0o644); err != nil {
+		t.Fatalf("failed to write handler.go: %v", err)
+	}
+
+	t.Chdir(tempDir)
+
+	// Create subagent transcript file
+	transcriptPath := filepath.Join(tempDir, "agent-transcript.jsonl")
+	if err := os.WriteFile(transcriptPath, []byte(`{"role":"assistant","content":"done"}`+"\n"), 0o644); err != nil {
+		t.Fatalf("failed to write transcript: %v", err)
+	}
+
+	store := NewGitStore(repo)
+	baseCommit := initialCommit.String()
+
+	// Write task checkpoint where subagent reports .env as modified
+	commitHash, err := store.WriteTemporaryTask(context.Background(), WriteTemporaryTaskOptions{
+		SessionID:              "test-session",
+		BaseCommit:             baseCommit,
+		ToolUseID:              "toolu_test789",
+		AgentID:                "agent1",
+		ModifiedFiles:          []string{"handler.go", ".env"}, // Subagent reports both
+		NewFiles:               []string{},
+		DeletedFiles:           []string{},
+		SubagentTranscriptPath: transcriptPath,
+		CheckpointUUID:         "test-uuid",
+		CommitMessage:          "Task checkpoint",
+		AuthorName:             "Test",
+		AuthorEmail:            "test@test.com",
+	})
+	if err != nil {
+		t.Fatalf("WriteTemporaryTask() error = %v", err)
+	}
+
+	commit, err := repo.CommitObject(commitHash)
+	if err != nil {
+		t.Fatalf("failed to get commit object: %v", err)
+	}
+
+	tree, err := commit.Tree()
+	if err != nil {
+		t.Fatalf("failed to get tree: %v", err)
+	}
+
+	// handler.go SHOULD be in the tree
+	_, err = tree.File("handler.go")
+	if err != nil {
+		t.Errorf("handler.go should be in task checkpoint tree: %v", err)
+	}
+
+	// .env MUST NOT be in the tree
+	_, err = tree.File(".env")
+	if err == nil {
+		t.Error("SECURITY: gitignored file .env leaked into task checkpoint tree — secrets exposed on shadow branch via subagent")
+	}
+}
+
+// TestCommittedMetadata_ReviewFields pins the JSON wire format for review
+// fields on CommittedMetadata. Any refactor that silently drops or renames
+// these JSON tags would break the entire/checkpoints/v1 branch format. We
+// assert on the actual marshalled JSON keys (not just round-trip identity)
+// because a coordinated rename of struct field + tag would otherwise pass
+// the round-trip but break on-disk readers of older checkpoints.
+func TestCommittedMetadata_ReviewFields(t *testing.T) {
+	t.Parallel()
+	m := CommittedMetadata{
+		Kind:         "agent_review",
+		ReviewSkills: []string{"/skill1", "/skill2"},
+		ReviewPrompt: "Review this branch.",
+	}
+	b, err := json.Marshal(m)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	// Inspect the marshalled JSON to confirm field names match the on-disk
+	// contract. A map round-trip surfaces the actual key strings that any
+	// older entire/checkpoints/v1 reader expects.
+	var raw map[string]any
+	if err := json.Unmarshal(b, &raw); err != nil {
+		t.Fatalf("unmarshal to map: %v", err)
+	}
+	if got, ok := raw["kind"].(string); !ok || got != "agent_review" {
+		t.Errorf(`expected "kind":"agent_review", got %v (raw: %s)`, raw["kind"], string(b))
+	}
+	skills, ok := raw["review_skills"].([]any)
+	if !ok {
+		t.Errorf(`expected "review_skills" key holding []any, got %T (raw: %s)`, raw["review_skills"], string(b))
+	} else if len(skills) != 2 || skills[0] != "/skill1" || skills[1] != "/skill2" {
+		t.Errorf(`expected review_skills=["/skill1","/skill2"], got %v`, skills)
+	}
+	if got, ok := raw["review_prompt"].(string); !ok || got != "Review this branch." {
+		t.Errorf(`expected "review_prompt":"Review this branch.", got %v (raw: %s)`, raw["review_prompt"], string(b))
+	}
+}
+
+// TestCheckpointSummary_HasReview pins the JSON wire format for the HasReview
+// umbrella flag on CheckpointSummary. Callers such as the re-run guard in
+// `entire review` and `entire status` depend on the on-disk shape, so we
+// assert on the actual marshalled key (not a self-consistent round-trip).
+func TestCheckpointSummary_HasReview(t *testing.T) {
+	t.Parallel()
+
+	// True case: the key must marshal as "has_review": true.
+	bTrue, err := json.Marshal(CheckpointSummary{HasReview: true})
+	if err != nil {
+		t.Fatalf("marshal true: %v", err)
+	}
+	var rawTrue map[string]any
+	if err := json.Unmarshal(bTrue, &rawTrue); err != nil {
+		t.Fatalf("unmarshal true: %v", err)
+	}
+	if got, ok := rawTrue["has_review"].(bool); !ok || !got {
+		t.Errorf(`expected "has_review":true, got %v (raw: %s)`, rawTrue["has_review"], string(bTrue))
+	}
+
+	// Zero-value case: HasReview has the omitempty tag, so a freshly-zeroed
+	// summary must NOT include the key (older checkpoints shouldn't be made
+	// to look like they have a review when they don't).
+	bZero, err := json.Marshal(CheckpointSummary{})
+	if err != nil {
+		t.Fatalf("marshal zero: %v", err)
+	}
+	if strings.Contains(string(bZero), "has_review") {
+		t.Errorf(`expected zero-value summary to omit "has_review" key, got %s`, string(bZero))
 	}
 }

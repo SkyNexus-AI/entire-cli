@@ -2,10 +2,13 @@ package geminicli
 
 import (
 	"context"
+	"io"
+	"os"
 	"strings"
 	"testing"
 
 	"github.com/entireio/cli/cmd/entire/cli/agent"
+	"github.com/stretchr/testify/require"
 )
 
 func TestParseHookEvent_SessionStart(t *testing.T) {
@@ -19,9 +22,7 @@ func TestParseHookEvent_SessionStart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if event == nil {
-		t.Fatal("expected event, got nil")
-	}
+	require.NotNil(t, event, "expected event, got nil")
 	if event.Type != agent.SessionStart {
 		t.Errorf("expected event type %v, got %v", agent.SessionStart, event.Type)
 	}
@@ -54,9 +55,7 @@ func TestParseHookEvent_TurnStart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if event == nil {
-		t.Fatal("expected event, got nil")
-	}
+	require.NotNil(t, event, "expected event, got nil")
 	if event.Type != agent.TurnStart {
 		t.Errorf("expected event type %v, got %v", agent.TurnStart, event.Type)
 	}
@@ -85,9 +84,7 @@ func TestParseHookEvent_TurnEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if event == nil {
-		t.Fatal("expected event, got nil")
-	}
+	require.NotNil(t, event, "expected event, got nil")
 	if event.Type != agent.TurnEnd {
 		t.Errorf("expected event type %v, got %v", agent.TurnEnd, event.Type)
 	}
@@ -111,9 +108,7 @@ func TestParseHookEvent_SessionEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if event == nil {
-		t.Fatal("expected event, got nil")
-	}
+	require.NotNil(t, event, "expected event, got nil")
 	if event.Type != agent.SessionEnd {
 		t.Errorf("expected event type %v, got %v", agent.SessionEnd, event.Type)
 	}
@@ -137,14 +132,59 @@ func TestParseHookEvent_Compaction(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if event == nil {
-		t.Fatal("expected event, got nil")
-	}
+	require.NotNil(t, event, "expected event, got nil")
 	if event.Type != agent.Compaction {
 		t.Errorf("expected event type %v, got %v", agent.Compaction, event.Type)
 	}
 	if event.SessionID != "compress-session" {
 		t.Errorf("expected session_id 'compress-session', got %q", event.SessionID)
+	}
+}
+
+func TestParseHookEvent_BeforeModel_ReturnsModelUpdate(t *testing.T) {
+	t.Parallel()
+
+	ag := &GeminiCLIAgent{}
+	input := `{
+		"session_id": "model-sess",
+		"transcript_path": "/tmp/t.json",
+		"llm_request": {"model": "gemini-2.5-pro"}
+	}`
+
+	event, err := ag.ParseHookEvent(context.Background(), HookNameBeforeModel, strings.NewReader(input))
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	require.NotNil(t, event, "expected event, got nil")
+	if event.Type != agent.ModelUpdate {
+		t.Errorf("expected ModelUpdate, got %v", event.Type)
+	}
+	if event.SessionID != "model-sess" {
+		t.Errorf("expected session_id 'model-sess', got %q", event.SessionID)
+	}
+	if event.Model != "gemini-2.5-pro" {
+		t.Errorf("expected model 'gemini-2.5-pro', got %q", event.Model)
+	}
+}
+
+func TestParseHookEvent_BeforeModel_EmptyModel_ReturnsNil(t *testing.T) {
+	t.Parallel()
+
+	ag := &GeminiCLIAgent{}
+	input := `{
+		"session_id": "no-model-sess",
+		"transcript_path": "/tmp/t.json",
+		"llm_request": {"model": ""}
+	}`
+
+	event, err := ag.ParseHookEvent(context.Background(), HookNameBeforeModel, strings.NewReader(input))
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if event != nil {
+		t.Errorf("expected nil event for empty model, got %+v", event)
 	}
 }
 
@@ -154,7 +194,6 @@ func TestParseHookEvent_PassThroughHooks_ReturnNil(t *testing.T) {
 	passThroughHooks := []string{
 		HookNameBeforeTool,
 		HookNameAfterTool,
-		HookNameBeforeModel,
 		HookNameAfterModel,
 		HookNameBeforeToolSelection,
 		HookNameNotification,
@@ -272,8 +311,8 @@ func TestParseHookEvent_AllLifecycleHooks(t *testing.T) {
 		},
 		{
 			hookName:      HookNameBeforeModel,
-			expectNil:     true,
-			inputTemplate: `{"session_id": "s8", "transcript_path": "/t"}`,
+			expectedType:  agent.ModelUpdate,
+			inputTemplate: `{"session_id": "s8", "transcript_path": "/t", "llm_request": {"model": "gemini-2.5-pro"}}`,
 		},
 		{
 			hookName:      HookNameAfterModel,
@@ -310,9 +349,7 @@ func TestParseHookEvent_AllLifecycleHooks(t *testing.T) {
 				return
 			}
 
-			if event == nil {
-				t.Fatal("expected event, got nil")
-			}
+			require.NotNil(t, event, "expected event, got nil")
 			if event.Type != tc.expectedType {
 				t.Errorf("expected event type %v, got %v", tc.expectedType, event.Type)
 			}
@@ -336,9 +373,7 @@ func TestReadAndParse_ValidInput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if result == nil {
-		t.Fatal("expected result, got nil")
-	}
+	require.NotNil(t, result, "expected result, got nil")
 	if result.SessionID != "test-123" {
 		t.Errorf("expected session_id 'test-123', got %q", result.SessionID)
 	}
@@ -437,4 +472,51 @@ func TestReadAndParse_AgentHookInput(t *testing.T) {
 	if result.HookEventName != "before-agent" {
 		t.Errorf("expected hook_event_name 'before-agent', got %q", result.HookEventName)
 	}
+}
+
+// captureStdout swaps os.Stdout for a pipe, runs fn, and returns what was
+// written. Sequential (no t.Parallel) because os.Stdout is process-global.
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	require.NoError(t, err)
+
+	original := os.Stdout
+	os.Stdout = w
+
+	done := make(chan []byte, 1)
+	go func() {
+		data, _ := io.ReadAll(r) //nolint:errcheck // best-effort drain
+		done <- data
+	}()
+
+	fn()
+	require.NoError(t, w.Close())
+	os.Stdout = original
+	got := <-done
+	require.NoError(t, r.Close())
+	return string(got)
+}
+
+// TestWriteHookResponse_PlainText_NoJSON verifies the response is emitted as
+// plain text (not JSON). Gemini CLI v0.40.0 double-displays JSON systemMessage
+// (once with the [hookName] tag, once without) — plain text takes only the
+// non-tagged path so the user sees the banner once.
+func TestWriteHookResponse_PlainText_NoJSON(t *testing.T) {
+	ag := &GeminiCLIAgent{}
+	out := captureStdout(t, func() {
+		require.NoError(t, ag.WriteHookResponse("hello banner"))
+	})
+
+	require.Equal(t, "hello banner\n", out, "expected exact plain-text output (no JSON envelope)")
+	require.False(t, strings.HasPrefix(strings.TrimSpace(out), "{"),
+		"output must not start with '{' — gemini's JSON parser would route it through the duplicate-display path")
+}
+
+func TestWriteHookResponse_EmptyMessage_WritesNothing(t *testing.T) {
+	ag := &GeminiCLIAgent{}
+	out := captureStdout(t, func() {
+		require.NoError(t, ag.WriteHookResponse(""))
+	})
+	require.Empty(t, out, "empty message should produce no output")
 }

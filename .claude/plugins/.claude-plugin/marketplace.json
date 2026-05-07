@@ -1,0 +1,18 @@
+{
+  "name": "entire-dev-tools",
+  "owner": {
+    "name": "Entire Team"
+  },
+  "plugins": [
+    {
+      "name": "e2e",
+      "source": "./e2e",
+      "description": "E2E test triage, debugging, and fix implementation toolkit"
+    },
+    {
+      "name": "agent-integration",
+      "source": "./agent-integration",
+      "description": "Multi-phase toolkit for integrating a new AI coding agent with the Entire CLI"
+    }
+  ]
+}

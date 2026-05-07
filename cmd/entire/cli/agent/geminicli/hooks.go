@@ -1,14 +1,17 @@
 package geminicli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/entireio/cli/cmd/entire/cli/agent"
+	"github.com/entireio/cli/cmd/entire/cli/jsonutil"
+	"github.com/entireio/cli/cmd/entire/cli/logging"
 	"github.com/entireio/cli/cmd/entire/cli/paths"
 )
 
@@ -36,7 +39,7 @@ const GeminiSettingsFileName = "settings.json"
 // entireHookPrefixes are command prefixes that identify Entire hooks
 var entireHookPrefixes = []string{
 	"entire ",
-	"go run ${GEMINI_PROJECT_DIR}/cmd/entire/main.go ",
+	`go run "$(git rev-parse --show-toplevel)"/cmd/entire/main.go `,
 }
 
 // InstallHooks installs Gemini CLI hooks in .gemini/settings.json.
@@ -87,6 +90,11 @@ func (g *GeminiCLIAgent) InstallHooks(ctx context.Context, localDev bool, force 
 		rawHooks = make(map[string]json.RawMessage)
 	}
 
+	// Strip non-array values from hooks (removes legacy fields like "enabled": true
+	// that old Entire versions wrote directly into hooks, which Gemini CLI 0.33+
+	// rejects because hooks.additionalProperties requires arrays).
+	cleanupDone := stripNonArrayHookFields(ctx, rawHooks)
+
 	// Enable hooks via hooksConfig
 	// hooksConfig.Enabled must be true for Gemini CLI to execute hooks
 	hooksConfig.Enabled = true
@@ -94,7 +102,7 @@ func (g *GeminiCLIAgent) InstallHooks(ctx context.Context, localDev bool, force 
 	// Define hook commands based on localDev mode
 	var cmdPrefix string
 	if localDev {
-		cmdPrefix = "go run ${GEMINI_PROJECT_DIR}/cmd/entire/main.go hooks gemini "
+		cmdPrefix = `go run "$(git rev-parse --show-toplevel)"/cmd/entire/main.go hooks gemini `
 	} else {
 		cmdPrefix = "entire hooks gemini "
 	}
@@ -115,13 +123,23 @@ func (g *GeminiCLIAgent) InstallHooks(ctx context.Context, localDev bool, force 
 	parseGeminiHookType(rawHooks, "PreCompress", &preCompress)
 	parseGeminiHookType(rawHooks, "Notification", &notification)
 
-	// Check for idempotency BEFORE removing hooks
-	// If the exact same hook command already exists, return 0 (no changes needed)
+	// Check for idempotency BEFORE removing hooks.
+	// If the exact same hook command already exists, hooks are already installed.
+	// When cleanupDone, we still need to write the file to persist the cleanup,
+	// but we return 0 (not 12) so callers know no hooks were added.
 	if !force {
 		existingCmd := getFirstEntireHookCommand(sessionStart)
 		expectedCmd := cmdPrefix + "session-start"
+		if !localDev {
+			expectedCmd = agent.WrapProductionJSONWarningHookCommand(expectedCmd, agent.WarningFormatSingleLine)
+		}
 		if existingCmd == expectedCmd {
-			return 0, nil // Already installed with same mode
+			if !cleanupDone {
+				return 0, nil // Already installed with same mode, nothing to write
+			}
+			// Cleanup needed but hooks already installed — write cleaned rawHooks
+			// without running the full remove+add cycle.
+			return 0, writeGeminiSettingsFile(rawSettings, rawHooks, hooksConfig, settingsPath)
 		}
 	}
 
@@ -140,31 +158,59 @@ func (g *GeminiCLIAgent) InstallHooks(ctx context.Context, localDev bool, force 
 
 	// Install all hooks
 	// Session lifecycle hooks
-	sessionStart = addGeminiHook(sessionStart, "", "entire-session-start", cmdPrefix+"session-start")
+	sessionStartCmd := cmdPrefix + "session-start"
+	if !localDev {
+		sessionStartCmd = agent.WrapProductionJSONWarningHookCommand(sessionStartCmd, agent.WarningFormatSingleLine)
+	}
+	sessionStart = addGeminiHook(sessionStart, "", "entire-session-start", sessionStartCmd)
 	// SessionEnd fires on both "exit" and "logout" - install hooks for both matchers
-	sessionEnd = addGeminiHook(sessionEnd, "exit", "entire-session-end-exit", cmdPrefix+"session-end")
-	sessionEnd = addGeminiHook(sessionEnd, "logout", "entire-session-end-logout", cmdPrefix+"session-end")
+	sessionEndCmd := cmdPrefix + "session-end"
+	if !localDev {
+		sessionEndCmd = agent.WrapProductionSilentHookCommand(sessionEndCmd)
+	}
+	sessionEnd = addGeminiHook(sessionEnd, "exit", "entire-session-end-exit", sessionEndCmd)
+	sessionEnd = addGeminiHook(sessionEnd, "logout", "entire-session-end-logout", sessionEndCmd)
 
 	// Agent hooks (user prompt and response)
-	beforeAgent = addGeminiHook(beforeAgent, "", "entire-before-agent", cmdPrefix+"before-agent")
-	afterAgent = addGeminiHook(afterAgent, "", "entire-after-agent", cmdPrefix+"after-agent")
+	beforeAgentCmd := cmdPrefix + "before-agent"
+	afterAgentCmd := cmdPrefix + "after-agent"
+	beforeModelCmd := cmdPrefix + "before-model"
+	afterModelCmd := cmdPrefix + "after-model"
+	beforeToolSelectionCmd := cmdPrefix + "before-tool-selection"
+	beforeToolCmd := cmdPrefix + "before-tool"
+	afterToolCmd := cmdPrefix + "after-tool"
+	preCompressCmd := cmdPrefix + "pre-compress"
+	notificationCmd := cmdPrefix + "notification"
+	if !localDev {
+		beforeAgentCmd = agent.WrapProductionSilentHookCommand(beforeAgentCmd)
+		afterAgentCmd = agent.WrapProductionSilentHookCommand(afterAgentCmd)
+		beforeModelCmd = agent.WrapProductionSilentHookCommand(beforeModelCmd)
+		afterModelCmd = agent.WrapProductionSilentHookCommand(afterModelCmd)
+		beforeToolSelectionCmd = agent.WrapProductionSilentHookCommand(beforeToolSelectionCmd)
+		beforeToolCmd = agent.WrapProductionSilentHookCommand(beforeToolCmd)
+		afterToolCmd = agent.WrapProductionSilentHookCommand(afterToolCmd)
+		preCompressCmd = agent.WrapProductionSilentHookCommand(preCompressCmd)
+		notificationCmd = agent.WrapProductionSilentHookCommand(notificationCmd)
+	}
+	beforeAgent = addGeminiHook(beforeAgent, "", "entire-before-agent", beforeAgentCmd)
+	afterAgent = addGeminiHook(afterAgent, "", "entire-after-agent", afterAgentCmd)
 
 	// Model hooks (LLM request/response - fires on every LLM call)
-	beforeModel = addGeminiHook(beforeModel, "", "entire-before-model", cmdPrefix+"before-model")
-	afterModel = addGeminiHook(afterModel, "", "entire-after-model", cmdPrefix+"after-model")
+	beforeModel = addGeminiHook(beforeModel, "", "entire-before-model", beforeModelCmd)
+	afterModel = addGeminiHook(afterModel, "", "entire-after-model", afterModelCmd)
 
 	// Tool selection hook (before planner selects tools)
-	beforeToolSelection = addGeminiHook(beforeToolSelection, "", "entire-before-tool-selection", cmdPrefix+"before-tool-selection")
+	beforeToolSelection = addGeminiHook(beforeToolSelection, "", "entire-before-tool-selection", beforeToolSelectionCmd)
 
 	// Tool hooks (before/after tool execution)
-	beforeTool = addGeminiHook(beforeTool, "*", "entire-before-tool", cmdPrefix+"before-tool")
-	afterTool = addGeminiHook(afterTool, "*", "entire-after-tool", cmdPrefix+"after-tool")
+	beforeTool = addGeminiHook(beforeTool, "*", "entire-before-tool", beforeToolCmd)
+	afterTool = addGeminiHook(afterTool, "*", "entire-after-tool", afterToolCmd)
 
 	// Compression hook (before chat history compression)
-	preCompress = addGeminiHook(preCompress, "", "entire-pre-compress", cmdPrefix+"pre-compress")
+	preCompress = addGeminiHook(preCompress, "", "entire-pre-compress", preCompressCmd)
 
 	// Notification hook (errors, warnings, info)
-	notification = addGeminiHook(notification, "", "entire-notification", cmdPrefix+"notification")
+	notification = addGeminiHook(notification, "", "entire-notification", notificationCmd)
 
 	// 12 hooks total:
 	// - session-start (1)
@@ -190,35 +236,56 @@ func (g *GeminiCLIAgent) InstallHooks(ctx context.Context, localDev bool, force 
 	marshalGeminiHookType(rawHooks, "PreCompress", preCompress)
 	marshalGeminiHookType(rawHooks, "Notification", notification)
 
-	// Marshal hooksConfig back to raw settings
-	hooksConfigJSON, err := json.Marshal(hooksConfig)
+	if err := writeGeminiSettingsFile(rawSettings, rawHooks, hooksConfig, settingsPath); err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
+// stripNonArrayHookFields removes non-array values from rawHooks (e.g., legacy
+// "enabled": true that old Entire versions wrote directly into hooks, which
+// Gemini CLI 0.33+ rejects because hooks.additionalProperties requires arrays).
+// Returns true if any fields were removed.
+func stripNonArrayHookFields(ctx context.Context, rawHooks map[string]json.RawMessage) bool {
+	var cleaned bool
+	for key, val := range rawHooks {
+		trimmed := bytes.TrimSpace(val)
+		if len(trimmed) == 0 || trimmed[0] != '[' {
+			delete(rawHooks, key)
+			logging.Debug(ctx, "removed non-array field from hooks", slog.String("key", key))
+			cleaned = true
+		}
+	}
+	return cleaned
+}
+
+// writeGeminiSettingsFile marshals rawHooks and hooksConfig back into rawSettings and writes to disk.
+func writeGeminiSettingsFile(rawSettings map[string]json.RawMessage, rawHooks map[string]json.RawMessage, hooksConfig GeminiHooksConfig, settingsPath string) error {
+	hooksConfigJSON, err := jsonutil.MarshalWithNoHTMLEscape(hooksConfig)
 	if err != nil {
-		return 0, fmt.Errorf("failed to marshal hooksConfig: %w", err)
+		return fmt.Errorf("failed to marshal hooksConfig: %w", err)
 	}
 	rawSettings["hooksConfig"] = hooksConfigJSON
 
-	// Marshal hooks back to raw settings (preserving unknown hook types)
-	hooksJSON, err := json.Marshal(rawHooks)
+	hooksJSON, err := jsonutil.MarshalWithNoHTMLEscape(rawHooks)
 	if err != nil {
-		return 0, fmt.Errorf("failed to marshal hooks: %w", err)
+		return fmt.Errorf("failed to marshal hooks: %w", err)
 	}
 	rawSettings["hooks"] = hooksJSON
 
-	// Write back to file
 	if err := os.MkdirAll(filepath.Dir(settingsPath), 0o750); err != nil {
-		return 0, fmt.Errorf("failed to create .gemini directory: %w", err)
+		return fmt.Errorf("failed to create .gemini directory: %w", err)
 	}
 
-	output, err := json.MarshalIndent(rawSettings, "", "  ")
+	output, err := jsonutil.MarshalIndentWithNewline(rawSettings, "", "  ")
 	if err != nil {
-		return 0, fmt.Errorf("failed to marshal settings: %w", err)
+		return fmt.Errorf("failed to marshal settings: %w", err)
 	}
 
 	if err := os.WriteFile(settingsPath, output, 0o600); err != nil {
-		return 0, fmt.Errorf("failed to write settings.json: %w", err)
+		return fmt.Errorf("failed to write settings.json: %w", err)
 	}
-
-	return count, nil
+	return nil
 }
 
 // parseGeminiHookType parses a specific hook type from rawHooks into the target slice.
@@ -237,7 +304,7 @@ func marshalGeminiHookType(rawHooks map[string]json.RawMessage, hookType string,
 		delete(rawHooks, hookType)
 		return
 	}
-	data, err := json.Marshal(matchers)
+	data, err := jsonutil.MarshalWithNoHTMLEscape(matchers)
 	if err != nil {
 		return // Silently ignore marshal errors (shouldn't happen)
 	}
@@ -272,6 +339,9 @@ func (g *GeminiCLIAgent) UninstallHooks(ctx context.Context) error {
 	if rawHooks == nil {
 		rawHooks = make(map[string]json.RawMessage)
 	}
+
+	// Strip non-array values from hooks (same migration as InstallHooks)
+	stripNonArrayHookFields(ctx, rawHooks)
 
 	// Parse only the hook types we need to modify
 	var sessionStart, sessionEnd, beforeAgent, afterAgent []GeminiHookMatcher
@@ -317,7 +387,7 @@ func (g *GeminiCLIAgent) UninstallHooks(ctx context.Context) error {
 
 	// Marshal hooks back (preserving unknown hook types)
 	if len(rawHooks) > 0 {
-		hooksJSON, err := json.Marshal(rawHooks)
+		hooksJSON, err := jsonutil.MarshalWithNoHTMLEscape(rawHooks)
 		if err != nil {
 			return fmt.Errorf("failed to marshal hooks: %w", err)
 		}
@@ -327,7 +397,7 @@ func (g *GeminiCLIAgent) UninstallHooks(ctx context.Context) error {
 	}
 
 	// Write back
-	output, err := json.MarshalIndent(rawSettings, "", "  ")
+	output, err := jsonutil.MarshalIndentWithNewline(rawSettings, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal settings: %w", err)
 	}
@@ -401,12 +471,7 @@ func addGeminiHook(matchers []GeminiHookMatcher, matcherName, hookName, command 
 
 // isEntireHook checks if a command is an Entire hook
 func isEntireHook(command string) bool {
-	for _, prefix := range entireHookPrefixes {
-		if strings.HasPrefix(command, prefix) {
-			return true
-		}
-	}
-	return false
+	return agent.IsManagedHookCommand(command, entireHookPrefixes)
 }
 
 // hasEntireHook checks if any hook in the matchers is an Entire hook
