@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -30,6 +31,20 @@ func TestPluginParentDir_HonorsOverride(t *testing.T) { //nolint:paralleltest //
 	}
 	if got != dir {
 		t.Errorf("pluginParentDir = %q, want %q", got, dir)
+	}
+}
+
+func TestPluginParentDir_RejectsRelativeOverride(t *testing.T) { //nolint:paralleltest // mutates env
+	// A relative ENTIRE_PLUGIN_DIR would resolve against startup CWD —
+	// typically inside the user's repo. Reject rather than silently
+	// fall through to the platform default.
+	t.Setenv(pluginEnvPluginDir, "plugins-relative")
+	if _, err := pluginParentDir(); err == nil {
+		t.Errorf("pluginParentDir with relative override = nil error; want error")
+	}
+	t.Setenv(pluginEnvPluginDir, ".")
+	if _, err := pluginParentDir(); err == nil {
+		t.Errorf("pluginParentDir with '.' override = nil error; want error")
 	}
 }
 
@@ -91,7 +106,7 @@ func TestPrependPluginBinDirToPATH(t *testing.T) { //nolint:paralleltest // muta
 	root := withPluginDir(t)
 	original := "/usr/bin:/bin"
 	t.Setenv("PATH", original)
-	restore := PrependPluginBinDirToPATH()
+	restore := PrependPluginBinDirToPATH(context.Background())
 	bin := filepath.Join(root, "bin")
 	got := os.Getenv("PATH")
 	if !strings.HasPrefix(got, bin+string(os.PathListSeparator)) {
@@ -99,7 +114,7 @@ func TestPrependPluginBinDirToPATH(t *testing.T) { //nolint:paralleltest // muta
 	}
 	// Idempotent: a second call returns a no-op restore and does not
 	// double-prepend.
-	noop := PrependPluginBinDirToPATH()
+	noop := PrependPluginBinDirToPATH(context.Background())
 	if strings.Count(os.Getenv("PATH"), bin) != 1 {
 		t.Errorf("PATH contains managed bin dir %d times after second prepend; want 1: %q", strings.Count(os.Getenv("PATH"), bin), os.Getenv("PATH"))
 	}

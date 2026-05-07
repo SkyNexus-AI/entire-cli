@@ -41,7 +41,7 @@ func main() {
 	// inherit the prepended dir. When a plugin runs, we skip the restore
 	// — the os.Exit ends the process, and the plugin child intentionally
 	// inherits the prepended PATH so it can spawn sibling managed plugins.
-	restorePATH := cli.PrependPluginBinDirToPATH()
+	restorePATH := cli.PrependPluginBinDirToPATH(ctx)
 
 	if handled, code := cli.MaybeRunPlugin(ctx, rootCmd, os.Args[1:]); handled {
 		cancel()

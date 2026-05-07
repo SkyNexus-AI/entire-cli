@@ -1,11 +1,13 @@
 package cli
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -13,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/entireio/cli/cmd/entire/cli/agent/external"
+	"github.com/entireio/cli/cmd/entire/cli/logging"
 )
 
 // Managed plugin storage. The kubectl-style dispatcher in plugin.go resolves
@@ -58,7 +61,16 @@ const (
 // degenerate environment with $LOCALAPPDATA or $XDG_DATA_HOME but no home
 // still returns a usable path.
 func pluginParentDir() (string, error) {
+	// ENTIRE_PLUGIN_DIR must be absolute. A relative value would resolve
+	// against the user's CWD at startup — typically inside their repo —
+	// which is the wrong place for managed plugin storage. Reject loudly
+	// rather than silently falling through to the platform default, since
+	// a misconfigured override is almost certainly a user error worth
+	// surfacing.
 	if v := os.Getenv(pluginEnvPluginDir); v != "" {
+		if !filepath.IsAbs(v) {
+			return "", fmt.Errorf("%s must be an absolute path, got %q", pluginEnvPluginDir, v)
+		}
 		return v, nil
 	}
 	if runtime.GOOS == windowsGOOS {
@@ -159,16 +171,23 @@ func EnsurePluginBinDir() (string, error) {
 // prepended PATH so it can spawn sibling managed plugins.
 //
 // Errors and no-op cases (already-prepended, lookup failure) return a
-// no-op restore so callers always have a safe func to call.
-func PrependPluginBinDirToPATH() func() {
+// no-op restore so callers always have a safe func to call. Failures are
+// emitted at debug level — the surface symptom ("my managed plugin
+// doesn't run") is otherwise silent and hard to diagnose; a debug log
+// surfaces the cause for users who flip log_level=DEBUG.
+func PrependPluginBinDirToPATH(ctx context.Context) func() {
 	dir, err := PluginBinDir()
 	if err != nil || dir == "" {
+		if err != nil {
+			logging.Debug(ctx, "skip prepend managed plugin bin dir to PATH: resolve failed", slog.String("error", err.Error()))
+		}
 		return func() {}
 	}
 	prev := os.Getenv("PATH")
 	sep := string(os.PathListSeparator)
 	if prev == "" {
 		if err := os.Setenv("PATH", dir); err != nil {
+			logging.Debug(ctx, "skip prepend managed plugin bin dir to PATH: setenv failed", slog.String("error", err.Error()))
 			return func() {}
 		}
 		return func() { _ = os.Setenv("PATH", "") }
@@ -185,6 +204,7 @@ func PrependPluginBinDirToPATH() func() {
 		return func() {}
 	}
 	if err := os.Setenv("PATH", dir+sep+prev); err != nil {
+		logging.Debug(ctx, "skip prepend managed plugin bin dir to PATH: setenv failed", slog.String("error", err.Error()))
 		return func() {}
 	}
 	return func() { _ = os.Setenv("PATH", prev) }
