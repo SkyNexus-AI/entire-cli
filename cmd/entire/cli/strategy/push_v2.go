@@ -46,6 +46,10 @@ type v2RefPushResult struct {
 }
 
 func tryPushV2Refs(ctx context.Context, target string, refs []plumbing.ReferenceName) []v2RefPushResult {
+	if len(refs) == 0 {
+		return nil
+	}
+
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 

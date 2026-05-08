@@ -368,8 +368,13 @@ func TestPushV2Refs_PushesPendingArchivePublicationsWithoutActiveRefs(t *testing
 	testutil.WriteFile(t, tmpDir, "f.txt", "init")
 	testutil.GitAdd(t, tmpDir, "f.txt")
 	testutil.GitCommit(t, tmpDir, "init")
+	configCmd := exec.CommandContext(ctx, "git", "config", "push.default", "current")
+	configCmd.Dir = tmpDir
+	require.NoError(t, configCmd.Run())
 
 	repo, err := git.PlainOpen(tmpDir)
+	require.NoError(t, err)
+	headRef, err := repo.Head()
 	require.NoError(t, err)
 	store := checkpoint.NewV2GitStore(repo, "origin")
 
@@ -396,6 +401,8 @@ func TestPushV2Refs_PushesPendingArchivePublicationsWithoutActiveRefs(t *testing
 	require.NoError(t, err)
 	_, err = bareRepo.Reference(archiveRef, true)
 	require.NoError(t, err, "pending archived generation should be pushed even without active refs")
+	_, err = bareRepo.Reference(headRef.Name(), true)
+	require.Error(t, err, "empty active-ref push must not push the current branch")
 
 	remaining, err := store.ReadPendingFullGenerationPublications(ctx)
 	require.NoError(t, err)
