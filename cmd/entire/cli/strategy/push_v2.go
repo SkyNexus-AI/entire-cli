@@ -728,12 +728,16 @@ func updateGenerationTimestamps(repo *git.Repository, genBlobHash plumbing.Hash,
 // handled separately before /full/current recovery.
 func pushV2Refs(ctx context.Context, target string) {
 	refs := v2RefsToPush(ctx)
-	if len(refs) == 0 {
+	if len(refs) == 0 && !hasPendingV2FullGenerationPublications(ctx, target) {
 		return
 	}
 
 	fmt.Fprintln(os.Stderr, "[entire] Syncing and pushing v2 checkpoints...")
-	fmt.Fprintf(os.Stderr, "[entire] Pushing %s...\n", strings.Join(shortRefNames(refs), ", "))
+	pushNames := shortRefNames(refs)
+	if len(pushNames) == 0 {
+		pushNames = []string{"pending v2/full generations"}
+	}
+	fmt.Fprintf(os.Stderr, "[entire] Pushing %s...\n", strings.Join(pushNames, ", "))
 
 	results := pushV2RefsWithRecovery(ctx, target, refs)
 	var failures []error
@@ -765,6 +769,16 @@ func pushV2Refs(ctx context.Context, target string) {
 		printSettingsCommitHint(ctx, target)
 	}
 	printCheckpointsV2MigrationHint(ctx)
+}
+
+func hasPendingV2FullGenerationPublications(ctx context.Context, target string) bool {
+	repo, err := OpenRepository(ctx)
+	if err != nil {
+		return false
+	}
+	store := checkpoint.NewV2GitStore(repo, target)
+	publications, err := store.ReadPendingFullGenerationPublications(ctx)
+	return err != nil || len(publications) > 0
 }
 
 func printV2PartialPushResult(w io.Writer, successfulRefs []plumbing.ReferenceName, failures []error) {

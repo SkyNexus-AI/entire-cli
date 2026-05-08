@@ -355,6 +355,53 @@ func TestPushV2Refs_PushesPendingArchivePublications(t *testing.T) {
 	assert.Empty(t, remaining, "pending archive publications should be cleared after push")
 }
 
+// TestPushV2Refs_PushesPendingArchivePublicationsWithoutActiveRefs verifies a
+// pending archive publication is still honored when there is no /main or
+// /full/current ref to include in the normal active-ref push set.
+//
+// Not parallel: uses t.Chdir()
+func TestPushV2Refs_PushesPendingArchivePublicationsWithoutActiveRefs(t *testing.T) {
+	ctx := context.Background()
+
+	tmpDir := t.TempDir()
+	testutil.InitRepo(t, tmpDir)
+	testutil.WriteFile(t, tmpDir, "f.txt", "init")
+	testutil.GitAdd(t, tmpDir, "f.txt")
+	testutil.GitCommit(t, tmpDir, "init")
+
+	repo, err := git.PlainOpen(tmpDir)
+	require.NoError(t, err)
+	store := checkpoint.NewV2GitStore(repo, "origin")
+
+	archiveRef := plumbing.ReferenceName(paths.V2FullRefPrefix + "0000000000001")
+	archiveCommitHash := writeV2ArchiveRef(t, repo, archiveRef, "pending archive")
+	require.NoError(t, store.AppendPendingFullGenerationPublication(ctx, checkpoint.PendingV2FullGenerationPublication{
+		ArchiveRefName:    archiveRef.String(),
+		ArchiveCommitHash: archiveCommitHash.String(),
+	}))
+
+	t.Chdir(tmpDir)
+
+	bareDir := t.TempDir()
+	initCmd := exec.CommandContext(ctx, "git", "init", "--bare")
+	initCmd.Dir = bareDir
+	initCmd.Env = testutil.GitIsolatedEnv()
+	require.NoError(t, initCmd.Run())
+
+	restore := captureStderr(t)
+	pushV2Refs(ctx, bareDir)
+	_ = restore()
+
+	bareRepo, err := git.PlainOpen(bareDir)
+	require.NoError(t, err)
+	_, err = bareRepo.Reference(archiveRef, true)
+	require.NoError(t, err, "pending archived generation should be pushed even without active refs")
+
+	remaining, err := store.ReadPendingFullGenerationPublications(ctx)
+	require.NoError(t, err)
+	assert.Empty(t, remaining, "pending archive publication should be cleared after push")
+}
+
 // TestPushV2Refs_LocalRotationDoesNotRehydrateArchivedCurrent verifies that
 // publishing a locally rotated generation does not merge the remote old
 // /full/current tree back into the fresh local /full/current.
