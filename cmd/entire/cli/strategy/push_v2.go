@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -45,6 +46,11 @@ type v2RefPushResult struct {
 	err     error
 }
 
+type pendingV2FullGenerationPublicationResult struct {
+	successfulRefs          []plumbing.ReferenceName
+	fullCurrentResetHandled bool
+}
+
 func tryPushV2Refs(ctx context.Context, target string, refs []plumbing.ReferenceName) []v2RefPushResult {
 	if len(refs) == 0 {
 		return nil
@@ -60,15 +66,7 @@ func tryPushV2Refs(ctx context.Context, target string, refs []plumbing.Reference
 	return parsePushRefResults(ctx, result.Output, refs, err)
 }
 
-func pushV2RefsWithRecovery(ctx context.Context, target string, refs []plumbing.ReferenceName, publications []checkpoint.PendingV2FullGenerationPublication, publicationsErr error) []v2RefPushResult {
-	publishedCurrentReset, pendingErr := publishPendingV2FullGenerationPublications(ctx, target, publications, publicationsErr)
-	if pendingErr != nil {
-		return []v2RefPushResult{{
-			refName: plumbing.ReferenceName(paths.V2FullCurrentRefName),
-			err:     fmt.Errorf("couldn't publish pending v2 full generation refs: %w", pendingErr),
-		}}
-	}
-
+func pushV2RefsWithRecovery(ctx context.Context, target string, refs []plumbing.ReferenceName) []v2RefPushResult {
 	resultsByRef := make(map[plumbing.ReferenceName]v2RefPushResult, len(refs))
 	var retryRefs []plumbing.ReferenceName
 
@@ -79,13 +77,6 @@ func pushV2RefsWithRecovery(ctx context.Context, target string, refs []plumbing.
 		}
 		if !errors.Is(result.err, errNonFastForward) {
 			resultsByRef[result.refName] = result
-			continue
-		}
-		if publishedCurrentReset && result.refName == plumbing.ReferenceName(paths.V2FullCurrentRefName) {
-			resultsByRef[result.refName] = v2RefPushResult{
-				refName: result.refName,
-				err:     fmt.Errorf("failed to push %s after publishing pending current reset: %w", shortRefName(result.refName), result.err),
-			}
 			continue
 		}
 
@@ -123,55 +114,62 @@ func pushV2RefsWithRecovery(ctx context.Context, target string, refs []plumbing.
 	return results
 }
 
-func publishPendingV2FullGenerationPublications(ctx context.Context, target string, publications []checkpoint.PendingV2FullGenerationPublication, publicationsErr error) (bool, error) {
-	if publicationsErr != nil {
-		return false, publicationsErr
-	}
+func publishPendingV2FullGenerationPublications(ctx context.Context, target string, publications []checkpoint.PendingV2FullGenerationPublication) (pendingV2FullGenerationPublicationResult, error) {
+	var result pendingV2FullGenerationPublicationResult
 	if len(publications) == 0 {
-		return false, nil
+		return result, nil
 	}
 	repo, err := OpenRepository(ctx)
 	if err != nil {
-		return false, fmt.Errorf("open repository: %w", err)
+		return result, fmt.Errorf("open repository: %w", err)
 	}
 	store := checkpoint.NewV2GitStore(repo, target)
 
 	archiveRefs := pendingFullArchiveRefs(publications)
 	if len(archiveRefs) > 0 {
-		for _, result := range tryPushV2Refs(ctx, target, archiveRefs) {
-			if result.err != nil {
-				return true, fmt.Errorf("push pending archive %s: %w", shortRefName(result.refName), result.err)
+		var archivePushErr error
+		for _, pushResult := range tryPushV2Refs(ctx, target, archiveRefs) {
+			if pushResult.err != nil {
+				if archivePushErr == nil {
+					archivePushErr = fmt.Errorf("push pending archive %s: %w", shortRefName(pushResult.refName), pushResult.err)
+				}
+				continue
 			}
+			result.successfulRefs = append(result.successfulRefs, pushResult.refName)
+		}
+		if archivePushErr != nil {
+			return result, archivePushErr
 		}
 	}
 
 	resetPublications := pendingFullCurrentResetPublications(publications)
 	if len(resetPublications) == 0 {
 		if err := store.RemovePendingFullGenerationPublications(ctx, publications); err != nil {
-			return false, fmt.Errorf("clear pending v2 full generation publications: %w", err)
+			return result, fmt.Errorf("clear pending v2 full generation publications: %w", err)
 		}
-		return false, nil
+		return result, nil
 	}
 
 	currentRefName := plumbing.ReferenceName(paths.V2FullCurrentRefName)
 	localCurrentRef, err := repo.Reference(currentRefName, true)
 	if err != nil {
-		return true, fmt.Errorf("read local %s: %w", shortRefName(currentRefName), err)
+		return result, fmt.Errorf("read local %s: %w", shortRefName(currentRefName), err)
 	}
 
 	remoteCurrentHash, remoteCurrentFound, err := lsRemoteRefHash(ctx, target, currentRefName)
 	if err != nil {
-		return true, fmt.Errorf("read remote %s: %w", shortRefName(currentRefName), err)
+		return result, fmt.Errorf("read remote %s: %w", shortRefName(currentRefName), err)
 	}
 	if remoteCurrentFound && remoteCurrentHash == localCurrentRef.Hash() {
 		if err := store.RemovePendingFullGenerationPublications(ctx, publications); err != nil {
-			return true, fmt.Errorf("clear pending v2 full generation publications: %w", err)
+			return result, fmt.Errorf("clear pending v2 full generation publications: %w", err)
 		}
-		return true, nil
+		result.fullCurrentResetHandled = true
+		return result, nil
 	}
 
 	if remoteCurrentFound && !pendingResetPublicationsContainAncestor(ctx, repo, resetPublications, remoteCurrentHash) {
-		return true, fmt.Errorf("remote %s at %s is not covered by pending local archives", shortRefName(currentRefName), remoteCurrentHash)
+		return result, fmt.Errorf("remote %s at %s is not covered by pending local archives", shortRefName(currentRefName), remoteCurrentHash)
 	}
 
 	expectedRemoteHash := ""
@@ -180,13 +178,15 @@ func publishPendingV2FullGenerationPublications(ctx context.Context, target stri
 	}
 	currentRefSpec := fmt.Sprintf("%s:%s", currentRefName, currentRefName)
 	if err := pushWithLease(ctx, target, currentRefSpec, currentRefName.String(), expectedRemoteHash, "push rotated "+shortRefName(currentRefName)); err != nil {
-		return true, fmt.Errorf("push rotated %s: %w", shortRefName(currentRefName), err)
+		return result, fmt.Errorf("push rotated %s: %w", shortRefName(currentRefName), err)
 	}
+	result.successfulRefs = append(result.successfulRefs, currentRefName)
+	result.fullCurrentResetHandled = true
 
 	if err := store.RemovePendingFullGenerationPublications(ctx, publications); err != nil {
-		return true, fmt.Errorf("clear pending v2 full generation publications: %w", err)
+		return result, fmt.Errorf("clear pending v2 full generation publications: %w", err)
 	}
-	return true, nil
+	return result, nil
 }
 
 func pendingFullArchiveRefs(publications []checkpoint.PendingV2FullGenerationPublication) []plumbing.ReferenceName {
@@ -757,8 +757,13 @@ func updateGenerationTimestamps(repo *git.Repository, genBlobHash plumbing.Hash,
 // handled separately before /full/current recovery.
 func pushV2Refs(ctx context.Context, target string) {
 	refs := v2RefsToPush(ctx)
-	publications, publicationsErr := readPendingV2FullGenerationPublications(ctx, target)
-	if len(refs) == 0 && len(publications) == 0 && publicationsErr == nil {
+	pendingPublications, pendingReadErr := readPendingV2FullGenerationPublications(ctx, target)
+	if pendingReadErr != nil {
+		printV2PushFailures(ctx, target, nil, []error{pendingReadErr}, false)
+		return
+	}
+
+	if len(refs) == 0 && len(pendingPublications) == 0 {
 		return
 	}
 
@@ -769,28 +774,38 @@ func pushV2Refs(ctx context.Context, target string) {
 	}
 	fmt.Fprintf(os.Stderr, "[entire] Pushing %s...\n", strings.Join(pushNames, ", "))
 
-	results := pushV2RefsWithRecovery(ctx, target, refs, publications, publicationsErr)
 	var failures []error
 	var successfulRefs []plumbing.ReferenceName
 	pushedContent := false
+
+	pendingPublicationResult, pendingPublishErr := publishPendingV2FullGenerationPublications(ctx, target, pendingPublications)
+	successfulRefs = append(successfulRefs, pendingPublicationResult.successfulRefs...)
+	if len(pendingPublicationResult.successfulRefs) > 0 {
+		pushedContent = true
+	}
+	if pendingPublishErr != nil {
+		failures = append(failures, fmt.Errorf("couldn't publish pending v2 full generation refs: %w", pendingPublishErr))
+		printV2PushFailures(ctx, target, successfulRefs, failures, pushedContent)
+		return
+	}
+	if pendingPublicationResult.fullCurrentResetHandled {
+		refs = removeRef(refs, plumbing.ReferenceName(paths.V2FullCurrentRefName))
+	}
+
+	results := pushV2RefsWithRecovery(ctx, target, refs)
 	for _, result := range results {
 		if result.err != nil {
 			failures = append(failures, result.err)
 			continue
 		}
-		successfulRefs = append(successfulRefs, result.refName)
+		successfulRefs = appendUniqueRef(successfulRefs, result.refName)
 		if !result.result.upToDate {
 			pushedContent = true
 		}
 	}
 
 	if len(failures) > 0 {
-		printV2PartialPushResult(os.Stderr, successfulRefs, failures)
-		printCheckpointRemoteHint(target)
-		if pushedContent {
-			printSettingsCommitHint(ctx, target)
-		}
-		printCheckpointsV2MigrationHint(ctx)
+		printV2PushFailures(ctx, target, successfulRefs, failures, pushedContent)
 		return
 	}
 
@@ -823,6 +838,15 @@ func printV2PartialPushResult(w io.Writer, successfulRefs []plumbing.ReferenceNa
 	}
 }
 
+func printV2PushFailures(ctx context.Context, target string, successfulRefs []plumbing.ReferenceName, failures []error, pushedContent bool) {
+	printV2PartialPushResult(os.Stderr, successfulRefs, failures)
+	printCheckpointRemoteHint(target)
+	if pushedContent {
+		printSettingsCommitHint(ctx, target)
+	}
+	printCheckpointsV2MigrationHint(ctx)
+}
+
 func v2RefsToPush(ctx context.Context) []plumbing.ReferenceName {
 	repo, err := OpenRepository(ctx)
 	if err != nil {
@@ -848,6 +872,19 @@ func shortRefNames(refs []plumbing.ReferenceName) []string {
 		names = append(names, shortRefName(refName))
 	}
 	return names
+}
+
+func appendUniqueRef(refs []plumbing.ReferenceName, refName plumbing.ReferenceName) []plumbing.ReferenceName {
+	if slices.Contains(refs, refName) {
+		return refs
+	}
+	return append(refs, refName)
+}
+
+func removeRef(refs []plumbing.ReferenceName, refToRemove plumbing.ReferenceName) []plumbing.ReferenceName {
+	return slices.DeleteFunc(refs, func(refName plumbing.ReferenceName) bool {
+		return refName == refToRemove
+	})
 }
 
 // shortRefName returns a human-readable short form of a ref name for log output.

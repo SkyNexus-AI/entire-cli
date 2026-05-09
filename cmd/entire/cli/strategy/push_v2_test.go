@@ -431,6 +431,44 @@ func TestPushV2Refs_PushesPendingArchivePublicationsWithoutActiveRefs(t *testing
 	assert.Empty(t, remaining, "pending archive publication should be cleared after push")
 }
 
+// TestPushV2Refs_PendingPublicationReadErrorDoesNotReportActiveRefFailures
+// verifies that a pending-publication failure is reported as such. Active refs
+// have not been pushed at that point, so they must not be reported as failed
+// ref pushes.
+//
+// Not parallel: uses t.Chdir() and os.Stderr redirection.
+func TestPushV2Refs_PendingPublicationReadErrorDoesNotReportActiveRefFailures(t *testing.T) {
+	ctx := context.Background()
+
+	tmpDir := setupRepoWithV2Ref(t)
+	pendingDir := filepath.Join(tmpDir, ".git", "entire-v2-rotations")
+	require.NoError(t, os.MkdirAll(pendingDir, 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(pendingDir, "pending.json"), []byte("{"), 0o600))
+
+	t.Chdir(tmpDir)
+
+	bareDir := t.TempDir()
+	initCmd := exec.CommandContext(ctx, "git", "init", "--bare")
+	initCmd.Dir = bareDir
+	initCmd.Env = testutil.GitIsolatedEnv()
+	require.NoError(t, initCmd.Run())
+
+	restore := captureStderr(t)
+	pushV2Refs(ctx, bareDir)
+	output := restore()
+
+	assert.Contains(t, output, "[entire] Warning: read pending v2 full generation publications:")
+	assert.NotContains(t, output, "failed to push v2/main")
+	assert.NotContains(t, output, "failed to push v2/full/current")
+
+	bareRepo, err := git.PlainOpen(bareDir)
+	require.NoError(t, err)
+	_, err = bareRepo.Reference(plumbing.ReferenceName(paths.V2MainRefName), true)
+	require.Error(t, err, "/main should not be pushed after pending-publication read failure")
+	_, err = bareRepo.Reference(plumbing.ReferenceName(paths.V2FullCurrentRefName), true)
+	require.Error(t, err, "/full/current should not be pushed after pending-publication read failure")
+}
+
 // TestPushV2Refs_LocalRotationDoesNotRehydrateArchivedCurrent verifies that
 // publishing a locally rotated generation does not merge the remote old
 // /full/current tree back into the fresh local /full/current.
