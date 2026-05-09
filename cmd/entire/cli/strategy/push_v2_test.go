@@ -1096,6 +1096,11 @@ func TestFetchAndMergeRef_RemoteRotatedMultipleTimesUsesRelatedArchive(t *testin
 
 	localRepo, err = git.PlainOpen(localDir)
 	require.NoError(t, err)
+	_, err = localRepo.Reference(archiveTmpRefName("0000000000001"), true)
+	require.Error(t, err, "selected archive temp ref should be removed after rotation recovery")
+	_, err = localRepo.Reference(archiveTmpRefName("0000000000002"), true)
+	require.Error(t, err, "unselected archive temp ref should be removed after rotation recovery")
+
 	assert.True(t, refContainsV2Checkpoint(t, localRepo, archive1Ref, localOnlyCP),
 		"local checkpoint from the first generation should be merged into archive 1")
 	assert.True(t, refContainsV2Checkpoint(t, localRepo, archive1Ref, sharedCP),
