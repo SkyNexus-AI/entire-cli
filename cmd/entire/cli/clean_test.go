@@ -349,7 +349,7 @@ func createRemoteOnlyArchivedGenerationRefFromSeparateRepo(
 	generation string,
 	oldest time.Time,
 	newest time.Time,
-) string {
+) {
 	t.Helper()
 
 	gen := checkpoint.GenerationMetadata{
@@ -361,7 +361,7 @@ func createRemoteOnlyArchivedGenerationRefFromSeparateRepo(
 		t.Fatalf("failed to marshal generation metadata: %v", err)
 	}
 
-	return createRemoteOnlyArchivedGenerationRefFromSeparateRepoWithMetadata(t, remoteDir, generation, genJSON)
+	createRemoteOnlyArchivedGenerationRefFromSeparateRepoWithMetadata(t, remoteDir, generation, genJSON)
 }
 
 func createRemoteOnlyArchivedGenerationRefFromSeparateRepoWithMetadata(
@@ -369,7 +369,7 @@ func createRemoteOnlyArchivedGenerationRefFromSeparateRepoWithMetadata(
 	remoteDir string,
 	generation string,
 	generationJSON []byte,
-) string {
+) {
 	t.Helper()
 
 	producerDir := filepath.Join(t.TempDir(), "producer")
@@ -395,11 +395,9 @@ func createRemoteOnlyArchivedGenerationRefFromSeparateRepoWithMetadata(
 
 	runCleanGit(t, producerDir, "add", ".")
 	runCleanGit(t, producerDir, "commit", "--no-gpg-sign", "-m", "archived generation")
-	commitHash := strings.TrimSpace(runCleanGit(t, producerDir, "rev-parse", "HEAD"))
 
 	refName := paths.V2FullRefPrefix + generation
 	runCleanGit(t, producerDir, "push", remoteDir, "HEAD:"+refName)
-	return commitHash
 }
 
 func createV2MainMetadataRef(t *testing.T, repo *git.Repository, cpID id.CheckpointID, createdAt time.Time) {
