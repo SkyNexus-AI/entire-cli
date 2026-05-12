@@ -700,6 +700,50 @@ func TestShellQuote(t *testing.T) {
 	}
 }
 
+func TestGitHookCommand_MissingWarningIsNonFatal(t *testing.T) {
+	t.Parallel()
+
+	command := gitHookCommand("entire", `commit-msg "$1" || exit 1`, true)
+	if !strings.Contains(command, ">&2 || :") {
+		t.Fatalf("missing-entire warning should be explicitly non-fatal, got:\n%s", command)
+	}
+}
+
+func TestGitHookCommandAvailableTest_WindowsAbsolutePath(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		cmdPrefix string
+		want      string
+	}{
+		{
+			name:      "backslash path",
+			cmdPrefix: shellQuote(`C:\Program Files\Entire\entire.exe`),
+			want:      `[ -f 'C:\Program Files\Entire\entire.exe' ]`,
+		},
+		{
+			name:      "slash path",
+			cmdPrefix: shellQuote(`z:/tools/entire.exe`),
+			want:      `[ -f 'z:/tools/entire.exe' ]`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, ok := gitHookCommandAvailableTest(tt.cmdPrefix)
+			if !ok {
+				t.Fatalf("gitHookCommandAvailableTest(%q) ok = false, want true", tt.cmdPrefix)
+			}
+			if got != tt.want {
+				t.Fatalf("gitHookCommandAvailableTest(%q) = %q, want %q", tt.cmdPrefix, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestInstallGitHook_CoreHooksPathRelative(t *testing.T) {
 	tmpDir, _ := initHooksTestRepo(t)
 	ctx := context.Background()

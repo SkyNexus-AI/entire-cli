@@ -226,7 +226,7 @@ func gitHookCommand(cmdPrefix, args string, warnMissing bool) string {
 
 	missingAction := ":"
 	if warnMissing {
-		missingAction = fmt.Sprintf("printf '%%s\\n' %s >&2", shellQuote(missingEntireGitHookWarning))
+		missingAction = fmt.Sprintf("printf '%%s\\n' %s >&2 || :", shellQuote(missingEntireGitHookWarning))
 	}
 	return fmt.Sprintf("if %s; then %s; else %s; fi", availableTest, invocation, missingAction)
 }
@@ -235,10 +235,25 @@ func gitHookCommandAvailableTest(cmdPrefix string) (string, bool) {
 	if cmdPrefix == "entire" {
 		return "command -v entire >/dev/null 2>&1", true
 	}
+	if isWindowsAbsoluteHookCommand(cmdPrefix) {
+		return fmt.Sprintf("[ -f %s ]", cmdPrefix), true
+	}
 	if strings.HasPrefix(cmdPrefix, "/") || strings.HasPrefix(cmdPrefix, "'/") {
 		return fmt.Sprintf("[ -x %s ]", cmdPrefix), true
 	}
 	return "", false
+}
+
+func isWindowsAbsoluteHookCommand(cmdPrefix string) bool {
+	path := strings.TrimPrefix(cmdPrefix, "'")
+	if len(path) < len("C:\\") || path[1] != ':' {
+		return false
+	}
+	driveLetter := path[0]
+	if (driveLetter < 'A' || driveLetter > 'Z') && (driveLetter < 'a' || driveLetter > 'z') {
+		return false
+	}
+	return path[2] == '\\' || path[2] == '/'
 }
 
 // InstallGitHook installs generic git hooks that delegate to `entire hook` commands.
