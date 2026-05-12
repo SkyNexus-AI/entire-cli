@@ -1216,7 +1216,11 @@ func TestCleanCmd_All_DryRunContinuesAfterInvalidGitMaterializedGenerationMetada
 	}
 }
 
-func TestCleanCmd_All_UsesRawTranscriptTimeForV2GenerationRetention(t *testing.T) {
+func TestCleanCmd_All_PrefersGenerationJSONOverRawTranscript(t *testing.T) {
+	// generation.json says "now" while raw transcripts say 15–20 days ago.
+	// Cleanup trusts generation.json (written at archive time, repaired by
+	// generation_repair.go) so it can skip the expensive per-checkpoint tree
+	// walk in the common case. See cleanup.go for the rationale.
 	repo, _ := setupCleanTestRepo(t)
 
 	wt, err := repo.Worktree()
@@ -1244,11 +1248,8 @@ func TestCleanCmd_All_UsesRawTranscriptTimeForV2GenerationRetention(t *testing.T
 	}
 
 	output := stdout.String()
-	if !strings.Contains(output, "Archived v2 generations (1):") {
-		t.Fatalf("expected archived v2 generation section, got: %s", output)
-	}
-	if !strings.Contains(output, "0000000000005") {
-		t.Fatalf("expected generation to be eligible by raw transcript timestamps, got: %s", output)
+	if strings.Contains(output, "0000000000005") {
+		t.Fatalf("expected generation to be skipped because generation.json is within retention, got: %s", output)
 	}
 }
 
