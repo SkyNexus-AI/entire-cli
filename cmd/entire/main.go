@@ -28,9 +28,8 @@ func main() {
 	go func() {
 		<-sigChan
 		cancel()
-		// Second signal forces exit. Some long-running operations (e.g.
-		// go-git tree walks) don't honor context cancellation, so cancel()
-		// alone may not stop the process. Give the user an escape hatch.
+		// Some long-running operations (e.g. go-git tree walks) don't honor
+		// context cancellation; a second signal forces exit.
 		<-sigChan
 		os.Exit(130)
 	}()
