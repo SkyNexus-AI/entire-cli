@@ -100,11 +100,16 @@ func (s *GitStore) WriteTemporary(ctx context.Context, opts WriteTemporaryOption
 
 	commitMsg := trailers.FormatShadowCommit(opts.CommitMessage, opts.MetadataDir, opts.SessionID)
 
+	repoRoot, commonDir, err := s.repoDirs(ctx)
+	if err != nil {
+		return WriteTemporaryResult{}, fmt.Errorf("failed to resolve repo dirs: %w", err)
+	}
+
 	var result WriteTemporaryResult
 	// withShadowBranchFlock serializes all writers targeting this shadow
 	// branch — across goroutines and across processes — so the inner CAS
 	// only sees contention from external `git update-ref` callers (rare).
-	err := withShadowBranchFlock(ctx, shadowBranchName, func() error {
+	err = withShadowBranchFlock(commonDir, shadowBranchName, func() error {
 		// Tiny CAS retry budget: with the flock held, races against our own
 		// code are impossible. Retries cover the pathological case of an
 		// external writer (a user invoking `git update-ref` manually, etc.).
@@ -141,7 +146,7 @@ func (s *GitStore) WriteTemporary(ctx context.Context, opts WriteTemporaryOption
 				return fmt.Errorf("failed to create commit: %w", cErr)
 			}
 
-			refErr := casUpdateShadowBranchRef(ctx, shadowBranchName, commitHash, parentHash)
+			refErr := casUpdateShadowBranchRef(ctx, repoRoot, shadowBranchName, commitHash, parentHash)
 			if refErr == nil {
 				result = WriteTemporaryResult{
 					CommitHash: commitHash,
@@ -152,10 +157,21 @@ func (s *GitStore) WriteTemporary(ctx context.Context, opts WriteTemporaryOption
 			if !errors.Is(refErr, ErrShadowRefBusy) {
 				return fmt.Errorf("failed to update shadow branch reference: %w", refErr)
 			}
+			// Our commit is now dangling — best-effort remove it so we don't
+			// leak loose objects across many losing attempts.
+			tryDeleteLooseObject(commonDir, commitHash)
 			if bErr := shadowRefBackoff(ctx, attempt); bErr != nil {
 				return bErr
 			}
 		}
+		// Retry budget exhausted. With the flock held this means an external
+		// writer beat us shadowRefMaxRetries times in a row — surface it in
+		// .entire/logs/ so operators can see a stuck shadow branch.
+		logging.Warn(logging.WithComponent(ctx, "checkpoint"),
+			"shadow branch CAS retry budget exhausted",
+			slog.String("shadow_branch", shadowBranchName),
+			slog.Int("retries", shadowRefMaxRetries),
+		)
 		return fmt.Errorf("failed to update shadow branch reference after %d CAS retries: %w", shadowRefMaxRetries, ErrShadowRefBusy)
 	})
 	if err != nil {
@@ -285,8 +301,13 @@ func (s *GitStore) WriteTemporaryTask(ctx context.Context, opts WriteTemporaryTa
 	candidateFiles = append(candidateFiles, opts.NewFiles...)
 	allFiles := filterGitIgnoredFiles(ctx, s.repo, candidateFiles)
 
+	repoRoot, commonDir, err := s.repoDirs(ctx)
+	if err != nil {
+		return plumbing.ZeroHash, fmt.Errorf("failed to resolve repo dirs: %w", err)
+	}
+
 	var resultHash plumbing.Hash
-	err := withShadowBranchFlock(ctx, shadowBranchName, func() error {
+	err = withShadowBranchFlock(commonDir, shadowBranchName, func() error {
 		for attempt := range shadowRefMaxRetries {
 			parentHash, baseTreeHash, gErr := s.getOrCreateShadowBranch(shadowBranchName)
 			if gErr != nil {
@@ -308,7 +329,7 @@ func (s *GitStore) WriteTemporaryTask(ctx context.Context, opts WriteTemporaryTa
 				return fmt.Errorf("failed to create commit: %w", cErr)
 			}
 
-			refErr := casUpdateShadowBranchRef(ctx, shadowBranchName, commitHash, parentHash)
+			refErr := casUpdateShadowBranchRef(ctx, repoRoot, shadowBranchName, commitHash, parentHash)
 			if refErr == nil {
 				resultHash = commitHash
 				return nil
@@ -316,10 +337,16 @@ func (s *GitStore) WriteTemporaryTask(ctx context.Context, opts WriteTemporaryTa
 			if !errors.Is(refErr, ErrShadowRefBusy) {
 				return fmt.Errorf("failed to update shadow branch reference: %w", refErr)
 			}
+			tryDeleteLooseObject(commonDir, commitHash)
 			if bErr := shadowRefBackoff(ctx, attempt); bErr != nil {
 				return bErr
 			}
 		}
+		logging.Warn(logging.WithComponent(ctx, "checkpoint"),
+			"shadow branch CAS retry budget exhausted (task checkpoint)",
+			slog.String("shadow_branch", shadowBranchName),
+			slog.Int("retries", shadowRefMaxRetries),
+		)
 		return fmt.Errorf("failed to update shadow branch reference after %d CAS retries: %w", shadowRefMaxRetries, ErrShadowRefBusy)
 	})
 	if err != nil {

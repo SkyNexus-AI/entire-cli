@@ -27,12 +27,23 @@ import (
 // Multiple sessions in the same worktree on the same base commit all hash to the
 // same shadow branch name. SaveStep is serialized per-session-ID via
 // acquireSessionGate but there is no shadow-branch-wide lock, so the ref update
-// at the end of WriteTemporary races. The assertion is twofold:
+// at the end of WriteTemporary races.
 //
+// Each goroutine writes to a unique agent-XX.txt file with unique content per
+// step, so every checkpoint produces a distinct tree hash — i.e. the dedup
+// short-circuit in WriteTemporary never fires. That invariant is what lets us
+// assert per-session StepCount == checkpointsPerWorker below; if a future
+// change ever lands two identical checkpoints in a row, the StepCount
+// assertion (not just the commit-count check) will catch it.
+//
+// Assertions:
 //   - no SaveStep returns an error
-//   - the resulting shadow branch is internally consistent: every commit reachable
-//     from the ref has a tree where every directory entry resolves (no
-//     "object not found" anywhere in the chain)
+//   - every session's persisted StepCount equals checkpointsPerWorker (no
+//     checkpoint was skipped or lost)
+//   - the resulting shadow branch is internally consistent: every commit
+//     reachable from the ref has a tree where every directory entry resolves
+//     (no "object not found" anywhere in the chain)
+//   - the shadow branch commit count equals numSessions * checkpointsPerWorker
 func TestSaveStep_ConcurrentSessionsSameShadowBranch(t *testing.T) {
 	const (
 		numSessions          = 8
@@ -96,13 +107,13 @@ func TestSaveStep_ConcurrentSessionsSameShadowBranch(t *testing.T) {
 
 			for step := range checkpointsPerWorker {
 				content := fmt.Sprintf("session=%s step=%d\n", sess.id, step)
-				if err := writeFile(filepath.Join(dir, sess.file), content); err != nil {
+				if err := writeFileForRaceTest(filepath.Join(dir, sess.file), content); err != nil {
 					errCh <- goroutineErr{session: sess.id, step: step, err: fmt.Errorf("write worker file: %w", err)}
 					return
 				}
 				transcriptLine := fmt.Sprintf("{\"type\":\"assistant\",\"step\":%d}\n", step)
 				transcriptPath := filepath.Join(sess.metadataDirAbs, paths.TranscriptFileName)
-				if err := writeFile(transcriptPath, transcriptLine); err != nil {
+				if err := writeFileForRaceTest(transcriptPath, transcriptLine); err != nil {
 					errCh <- goroutineErr{session: sess.id, step: step, err: fmt.Errorf("write transcript: %w", err)}
 					return
 				}
@@ -143,6 +154,28 @@ func TestSaveStep_ConcurrentSessionsSameShadowBranch(t *testing.T) {
 		return
 	}
 
+	// Per-session invariant: every SaveStep call should have landed a
+	// checkpoint (no skips from the dedup short-circuit). StepCount is
+	// incremented in SaveStep only when WriteTemporary returns Skipped=false,
+	// so this catches a future test change that accidentally writes
+	// duplicate-content checkpoints — which would surface as a misleading
+	// "commits were lost" message in the commit-count check below.
+	stateStrategy := NewManualCommitStrategy()
+	for _, sess := range sessions {
+		state, err := stateStrategy.loadSessionState(context.Background(), sess.id)
+		if err != nil {
+			t.Errorf("load state for %s: %v", sess.id, err)
+			continue
+		}
+		if state == nil {
+			t.Errorf("missing state for %s", sess.id)
+			continue
+		}
+		if state.StepCount != checkpointsPerWorker {
+			t.Errorf("session %s StepCount = %d, want %d", sess.id, state.StepCount, checkpointsPerWorker)
+		}
+	}
+
 	// Verify the shadow branch is internally consistent.
 	repo, err := git.PlainOpen(dir)
 	if err != nil {
@@ -163,20 +196,18 @@ func TestSaveStep_ConcurrentSessionsSameShadowBranch(t *testing.T) {
 
 	commits := walkShadowBranchAssertConsistent(t, repo, shadowBranches[0])
 
-	// Best-effort sanity check: in a fully-serial world every SaveStep would
-	// append one commit, so the chain should have numSessions*checkpointsPerWorker
-	// commits. Last-writer-wins on SetReference makes the actual count smaller
-	// when the race fires. We log the gap so a passing run still surfaces how
-	// much serialization is being lost.
-	expectedMax := numSessions * checkpointsPerWorker
+	// Commit-count check: every distinct checkpoint we issued should have
+	// landed on the shadow branch. See the test-level comment for why dedup
+	// can't quietly defeat this assertion.
+	expected := numSessions * checkpointsPerWorker
 	switch {
-	case commits > expectedMax:
-		t.Errorf("walked %d commits, more than the %d SaveStep calls — accounting bug", commits, expectedMax)
-	case commits < expectedMax:
+	case commits > expected:
+		t.Errorf("walked %d commits, more than the %d SaveStep calls — accounting bug", commits, expected)
+	case commits < expected:
 		t.Errorf("walked %d commits but issued %d SaveStep calls — %d commits were lost",
-			commits, expectedMax, expectedMax-commits)
+			commits, expected, expected-commits)
 	default:
-		t.Logf("walked %d commits matching %d SaveStep calls — no checkpoints lost", commits, expectedMax)
+		t.Logf("walked %d commits matching %d SaveStep calls — no checkpoints lost", commits, expected)
 	}
 }
 
@@ -242,13 +273,14 @@ func walkTreeAssertConsistent(t *testing.T, repo *git.Repository, hash plumbing.
 	}
 }
 
-// writeFile is a goroutine-safe alternative to testutil.WriteFile.
-// testutil.WriteFile calls t.Fatalf, which doesn't fail the test cleanly from
-// a sub-goroutine.
-func writeFile(absPath, content string) error {
+// writeFileForRaceTest is a goroutine-safe alternative to testutil.WriteFile,
+// scoped to this test file. testutil.WriteFile calls t.Fatalf, which doesn't
+// fail the test cleanly from a sub-goroutine. Name kept long and specific so
+// it can't accidentally shadow a more general helper added to the package
+// later.
+func writeFileForRaceTest(absPath, content string) error {
 	if err := os.MkdirAll(filepath.Dir(absPath), 0o755); err != nil {
 		return fmt.Errorf("mkdir: %w", err)
 	}
-
 	return os.WriteFile(absPath, []byte(content), 0o644)
 }
