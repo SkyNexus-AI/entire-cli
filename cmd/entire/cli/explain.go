@@ -886,6 +886,12 @@ type v2MainContentReader interface {
 	ReadSessionMetadataAndPrompts(ctx context.Context, checkpointID id.CheckpointID, sessionIndex int) (*checkpoint.SessionContent, error)
 }
 
+// readCheckpointContentForExplain reads session content for display. When
+// preferMain is true (default display modes that don't need the raw
+// transcript) it tries the v2 /main ref first — cheaper, and the /full/*
+// refs holding the raw transcript may not be fetched locally. It still
+// falls back to ReadLatestSessionContent on ErrCheckpointNotFound so
+// v1-only checkpoints work in dual-read mode.
 func readCheckpointContentForExplain(ctx context.Context, reader checkpoint.CommittedReader, checkpointID id.CheckpointID, summary *checkpoint.CheckpointSummary, preferMain bool) (*checkpoint.SessionContent, error) {
 	if preferMain {
 		if mainReader, ok := reader.(v2MainContentReader); ok {
@@ -898,7 +904,11 @@ func readCheckpointContentForExplain(ctx context.Context, reader checkpoint.Comm
 			}
 		}
 	}
-	return checkpoint.ReadLatestSessionContent(ctx, reader, checkpointID, summary)
+	content, err := checkpoint.ReadLatestSessionContent(ctx, reader, checkpointID, summary)
+	if err != nil {
+		return nil, fmt.Errorf("read latest session content: %w", err)
+	}
+	return content, nil
 }
 
 // readV2ContentFromMain reads session content from the v2 /main ref only —
