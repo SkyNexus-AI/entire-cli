@@ -187,9 +187,16 @@ func resumeFromCurrentBranch(ctx context.Context, w, errW io.Writer, branchName 
 	checkpointID := result.checkpointIDs[0]
 	var metadata *strategy.CheckpointInfo
 
+	store, err := checkpoint.NewCommittedReader(ctx, repo, checkpoint.CommittedReaderOptions{
+		BlobFetcher: FetchBlobsByHash,
+	})
+	if err != nil {
+		return fmt.Errorf("prepare checkpoint store: %w", err)
+	}
+
 	// Multiple checkpoints (squash merge): resolve latest by CreatedAt timestamp.
 	if len(result.checkpointIDs) > 1 {
-		latestMetadata, err := resolveLatestCheckpoint(ctx, result.checkpointIDs)
+		latestMetadata, err := resolveLatestCheckpoint(ctx, repo, store, result.checkpointIDs)
 		if err != nil {
 			// No metadata available — nothing to resume from
 			logging.Warn(logCtx, "resolveLatestCheckpoint failed",
@@ -208,8 +215,21 @@ func resumeFromCurrentBranch(ctx context.Context, w, errW io.Writer, branchName 
 	}
 
 	if metadata == nil {
-		var err error
-		metadata, err = readResumeCheckpointInfo(ctx, checkpointID)
+		storeInfo, storeErr := readCheckpointInfoFromStore(ctx, store, checkpointID)
+		if storeErr == nil {
+			metadata = storeInfo
+		} else {
+			logging.Debug(ctx, "checkpoint store metadata read failed, trying local metadata trees",
+				slog.String("checkpoint_id", checkpointID.String()),
+				slog.String("error", storeErr.Error()),
+			)
+			localInfo, localErr := readCheckpointInfoFromLocalTrees(ctx, repo, checkpointID)
+			if localErr == nil {
+				metadata = localInfo
+			} else {
+				err = errors.Join(storeErr, localErr)
+			}
+		}
 		if err != nil {
 			logging.Warn(logCtx, "checkpoint metadata read failed, checking remote",
 				slog.String("checkpoint_id", checkpointID.String()),
@@ -230,21 +250,17 @@ func resumeFromCurrentBranch(ctx context.Context, w, errW io.Writer, branchName 
 
 // resolveLatestCheckpoint reads metadata for each checkpoint ID and returns
 // the checkpoint with the latest CreatedAt.
-func resolveLatestCheckpoint(ctx context.Context, checkpointIDs []id.CheckpointID) (*strategy.CheckpointInfo, error) {
-	repo, err := openRepository(ctx)
-	if err != nil {
-		return nil, err
-	}
-	store, err := checkpoint.NewCommittedReader(ctx, repo, checkpoint.CommittedReaderOptions{
-		BlobFetcher: FetchBlobsByHash,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("prepare checkpoint store: %w", err)
-	}
-
+func resolveLatestCheckpoint(ctx context.Context, repo *git.Repository, store checkpoint.CommittedListReader, checkpointIDs []id.CheckpointID) (*strategy.CheckpointInfo, error) {
 	infoMap := make(map[id.CheckpointID]strategy.CheckpointInfo, len(checkpointIDs))
 	for _, cpID := range checkpointIDs {
-		metadata, readErr := readCheckpointInfoForResume(ctx, repo, store, cpID)
+		metadata, readErr := readCheckpointInfoFromStore(ctx, store, cpID)
+		if readErr != nil {
+			logging.Debug(ctx, "checkpoint store metadata read failed, trying local metadata trees",
+				slog.String("checkpoint_id", cpID.String()),
+				slog.String("error", readErr.Error()),
+			)
+			metadata, readErr = readCheckpointInfoFromLocalTrees(ctx, repo, cpID)
+		}
 		if readErr != nil {
 			logging.Debug(ctx, "resolveLatestCheckpoint: checkpoint metadata read failed",
 				slog.String("checkpoint_id", cpID.String()),
@@ -259,36 +275,6 @@ func resolveLatestCheckpoint(ctx context.Context, checkpointIDs []id.CheckpointI
 		return nil, errors.New("no checkpoint metadata found")
 	}
 	return &latest, nil
-}
-
-func readResumeCheckpointInfo(ctx context.Context, checkpointID id.CheckpointID) (*strategy.CheckpointInfo, error) {
-	repo, err := openRepository(ctx)
-	if err != nil {
-		return nil, err
-	}
-	store, err := checkpoint.NewCommittedReader(ctx, repo, checkpoint.CommittedReaderOptions{
-		BlobFetcher: FetchBlobsByHash,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("prepare checkpoint store: %w", err)
-	}
-	return readCheckpointInfoForResume(ctx, repo, store, checkpointID)
-}
-
-func readCheckpointInfoForResume(ctx context.Context, repo *git.Repository, store checkpoint.CommittedListReader, checkpointID id.CheckpointID) (*strategy.CheckpointInfo, error) {
-	info, err := readCheckpointInfoFromStore(ctx, store, checkpointID)
-	if err == nil {
-		return info, nil
-	}
-	logging.Debug(ctx, "checkpoint store metadata read failed, trying local metadata trees",
-		slog.String("checkpoint_id", checkpointID.String()),
-		slog.String("error", err.Error()),
-	)
-	legacyInfo, legacyErr := readCheckpointInfoFromLocalTrees(ctx, repo, checkpointID)
-	if legacyErr == nil {
-		return legacyInfo, nil
-	}
-	return nil, errors.Join(err, legacyErr)
 }
 
 func readCheckpointInfoFromStore(ctx context.Context, store checkpoint.CommittedListReader, checkpointID id.CheckpointID) (*strategy.CheckpointInfo, error) {

@@ -517,7 +517,8 @@ func TestResolveLatestCheckpoint(t *testing.T) {
 	// Pass checkpoint IDs in reverse chronological order (newest first),
 	// simulating git CLI squash merge trailer order.
 	reverseOrderIDs := []id.CheckpointID{cpID3, cpID2, cpID1}
-	latest, err := resolveLatestCheckpoint(context.Background(), reverseOrderIDs)
+	reader := checkpoint.NewGitStore(repo)
+	latest, err := resolveLatestCheckpoint(context.Background(), repo, reader, reverseOrderIDs)
 	if err != nil {
 		t.Fatalf("resolveLatestCheckpoint() error = %v", err)
 	}
@@ -529,7 +530,7 @@ func TestResolveLatestCheckpoint(t *testing.T) {
 
 	// Also verify with chronological order
 	chronologicalIDs := []id.CheckpointID{cpID1, cpID2, cpID3}
-	latest2, err := resolveLatestCheckpoint(context.Background(), chronologicalIDs)
+	latest2, err := resolveLatestCheckpoint(context.Background(), repo, reader, chronologicalIDs)
 	if err != nil {
 		t.Fatalf("resolveLatestCheckpoint() error = %v", err)
 	}
@@ -557,7 +558,7 @@ func TestResolveLatestCheckpointUsesLocalV2WhenSettingsDisabled(t *testing.T) {
 		t.Fatalf("WriteCommitted() error = %v", err)
 	}
 
-	latest, err := resolveLatestCheckpoint(context.Background(), []id.CheckpointID{cpID})
+	latest, err := resolveLatestCheckpoint(context.Background(), repo, v2Store, []id.CheckpointID{cpID})
 	if err != nil {
 		t.Fatalf("resolveLatestCheckpoint() error = %v", err)
 	}
@@ -593,7 +594,7 @@ func TestResolveLatestCheckpointFallsBackToV1WhenLocalV2MissesCheckpoint(t *test
 		time.Date(2025, 1, 1, 10, 0, 0, 0, time.UTC),
 	)
 
-	latest, err := resolveLatestCheckpoint(context.Background(), []id.CheckpointID{targetID})
+	latest, err := resolveLatestCheckpoint(context.Background(), repo, v2Store, []id.CheckpointID{targetID})
 	if err != nil {
 		t.Fatalf("resolveLatestCheckpoint() error = %v", err)
 	}
