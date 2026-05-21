@@ -1,4 +1,4 @@
-//go:build integration
+//go:build integration && unix
 
 package integration
 
@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/creack/pty"
+	"github.com/entireio/cli/cmd/entire/cli/testutil"
 )
 
 // RunCommandInteractive executes a CLI command with a pty, allowing interactive
@@ -22,10 +23,12 @@ func (env *TestEnv) RunCommandInteractive(args []string, respond func(ptyFile *o
 
 	cmd := exec.Command(getTestBinary(), args...)
 	cmd.Dir = env.RepoDir
-	cmd.Env = append(gitIsolatedEnv(),
+	cmd.Env = append(testutil.GitIsolatedEnv(),
 		"ENTIRE_TEST_CLAUDE_PROJECT_DIR="+env.ClaudeProjectDir,
+		"ENTIRE_TEST_TTY=1",
 		"TERM=xterm",
-		"ACCESSIBLE=1", // Required: makes huh read from stdin instead of /dev/tty
+		"ACCESSIBLE=1",      // Required: makes huh read from stdin instead of /dev/tty
+		"ENTIRE_TEST_TTY=1", // Force CanPromptInteractively()=true: the subprocess has a real pty but may inherit CI=true from the runner, which would otherwise short-circuit the interactive gate.
 	)
 
 	// Start command with a pty

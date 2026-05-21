@@ -1,4 +1,16 @@
 {
+  "extraKnownMarketplaces": {
+    "entire-dev-tools": {
+      "source": {
+        "source": "directory",
+        "path": "./.claude/plugins"
+      }
+    }
+  },
+  "enabledPlugins": {
+    "e2e@entire-dev-tools": true,
+    "agent-integration@entire-dev-tools": true
+  },
   "hooks": {
     "SessionStart": [
       {

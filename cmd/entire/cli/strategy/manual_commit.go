@@ -26,6 +26,10 @@ type ManualCommitStrategy struct {
 	checkpointStoreOnce sync.Once
 	// checkpointStoreErr captures any error during initialization
 	checkpointStoreErr error
+
+	// blobFetcher, when set, is passed to the checkpoint store to enable
+	// on-demand blob fetching after treeless fetches. Set via SetBlobFetcher.
+	blobFetcher checkpoint.BlobFetchFunc
 }
 
 // getStateStore returns the session state store, initializing it lazily if needed.
@@ -51,14 +55,47 @@ func (s *ManualCommitStrategy) getCheckpointStore() (*checkpoint.GitStore, error
 			s.checkpointStoreErr = fmt.Errorf("failed to open repository: %w", err)
 			return
 		}
-		s.checkpointStore = checkpoint.NewGitStore(repo)
+		WarnIfMetadataDisconnected()
+		store := checkpoint.NewGitStore(repo)
+		if s.blobFetcher != nil {
+			store.SetBlobFetcher(s.blobFetcher)
+		}
+		s.checkpointStore = store
 	})
 	return s.checkpointStore, s.checkpointStoreErr
+}
+
+func (s *ManualCommitStrategy) committedCheckpointStore(ctx context.Context) (checkpoint.CommittedListReader, error) { //nolint:ireturn // Strategy callers need the selected v1, v2, or dual store implementation.
+	repo, err := OpenRepository(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	WarnIfMetadataDisconnected()
+	store, err := checkpoint.NewCommittedReader(ctx, repo, checkpoint.CommittedReaderOptions{
+		BlobFetcher: s.blobFetcher,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("prepare checkpoint store: %w", err)
+	}
+	return store, nil
 }
 
 // NewManualCommitStrategy creates a new manual-commit strategy instance.
 func NewManualCommitStrategy() *ManualCommitStrategy {
 	return &ManualCommitStrategy{}
+}
+
+// SetBlobFetcher configures on-demand blob fetching for the checkpoint store.
+// Must be called before the first checkpoint store access (e.g., before RestoreLogsOnly).
+func (s *ManualCommitStrategy) SetBlobFetcher(f checkpoint.BlobFetchFunc) {
+	s.blobFetcher = f
+}
+
+// HasBlobFetcher reports whether a blob fetcher is configured.
+// Used in tests to verify the strategy is properly wired for treeless fetch support.
+func (s *ManualCommitStrategy) HasBlobFetcher() bool {
+	return s.blobFetcher != nil
 }
 
 // ValidateRepository validates that the repository is suitable for this strategy.

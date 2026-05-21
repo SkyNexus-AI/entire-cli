@@ -14,14 +14,14 @@ const (
 	// logsOnlyScanLimit is the maximum number of commits to scan for logs-only points.
 	logsOnlyScanLimit = 50
 
-	// maxFirstPromptRunes is the maximum rune length for FirstPrompt stored in session state.
-	maxFirstPromptRunes = 100
+	// maxLastPromptRunes is the maximum rune length for LastPrompt stored in session state.
+	maxLastPromptRunes = 100
 )
 
 // truncatePromptForStorage collapses whitespace and truncates a user prompt
-// for storage in FirstPrompt fields.
+// for storage in LastPrompt.
 func truncatePromptForStorage(prompt string) string {
-	return stringutil.TruncateRunes(stringutil.CollapseWhitespace(prompt), maxFirstPromptRunes, "...")
+	return stringutil.TruncateRunes(stringutil.CollapseWhitespace(prompt), maxLastPromptRunes, "...")
 }
 
 // SessionState is an alias for session.State.
@@ -48,19 +48,22 @@ type CheckpointInfo struct {
 
 // CondenseResult contains the result of a session condensation operation.
 type CondenseResult struct {
-	CheckpointID         id.CheckpointID // 12-hex-char from Entire-Checkpoint trailer, used as directory path
-	SessionID            string
-	CheckpointsCount     int
-	FilesTouched         []string
-	TotalTranscriptLines int // Total lines in transcript after this condensation
+	CheckpointID           id.CheckpointID // 12-hex-char from Entire-Checkpoint trailer, used as directory path
+	SessionID              string
+	CheckpointsCount       int
+	FilesTouched           []string
+	Prompts                []string // User prompts from the condensed session
+	TotalTranscriptLines   int      // Total transcript units after this condensation (JSONL line count or message count by agent format)
+	CompactTranscriptLines int      // New compact transcript lines added by this checkpoint (0 if v2 disabled); used to advance CompactTranscriptStart
+	Transcript             []byte   // Raw transcript bytes for downstream consumers (trail title generation)
+	Skipped                bool     // True if condensation was skipped (no transcript or files to condense)
 }
 
 // ExtractedSessionData contains data extracted from a shadow branch.
 type ExtractedSessionData struct {
 	Transcript          []byte   // Full transcript content for the session
 	FullTranscriptLines int      // Total line count in full transcript
-	Prompts             []string // All user prompts from this portion
-	Context             []byte   // Generated context.md content
+	Prompts             []string // User prompts from the current checkpoint portion
 	FilesTouched        []string
 	TokenUsage          *agent.TokenUsage // Token usage calculated from transcript (since CheckpointTranscriptStart)
 }

@@ -9,7 +9,7 @@
           {
             "name": "entire-session-start",
             "type": "command",
-            "command": "go run ${GEMINI_PROJECT_DIR}/cmd/entire/main.go hooks gemini session-start"
+            "command": "go run \"$(git rev-parse --show-toplevel)\"/cmd/entire/main.go hooks gemini session-start"
           }
         ]
       }
@@ -21,7 +21,7 @@
           {
             "name": "entire-session-end-exit",
             "type": "command",
-            "command": "go run ${GEMINI_PROJECT_DIR}/cmd/entire/main.go hooks gemini session-end"
+            "command": "go run \"$(git rev-parse --show-toplevel)\"/cmd/entire/main.go hooks gemini session-end"
           }
         ]
       },
@@ -31,7 +31,7 @@
           {
             "name": "entire-session-end-logout",
             "type": "command",
-            "command": "go run ${GEMINI_PROJECT_DIR}/cmd/entire/main.go hooks gemini session-end"
+            "command": "go run \"$(git rev-parse --show-toplevel)\"/cmd/entire/main.go hooks gemini session-end"
           }
         ]
       }
@@ -42,7 +42,7 @@
           {
             "name": "entire-before-agent",
             "type": "command",
-            "command": "go run ${GEMINI_PROJECT_DIR}/cmd/entire/main.go hooks gemini before-agent"
+            "command": "go run \"$(git rev-parse --show-toplevel)\"/cmd/entire/main.go hooks gemini before-agent"
           }
         ]
       }
@@ -53,7 +53,7 @@
           {
             "name": "entire-after-agent",
             "type": "command",
-            "command": "go run ${GEMINI_PROJECT_DIR}/cmd/entire/main.go hooks gemini after-agent"
+            "command": "go run \"$(git rev-parse --show-toplevel)\"/cmd/entire/main.go hooks gemini after-agent"
           }
         ]
       }
@@ -64,7 +64,7 @@
           {
             "name": "entire-before-model",
             "type": "command",
-            "command": "go run ${GEMINI_PROJECT_DIR}/cmd/entire/main.go hooks gemini before-model"
+            "command": "go run \"$(git rev-parse --show-toplevel)\"/cmd/entire/main.go hooks gemini before-model"
           }
         ]
       }
@@ -75,7 +75,7 @@
           {
             "name": "entire-after-model",
             "type": "command",
-            "command": "go run ${GEMINI_PROJECT_DIR}/cmd/entire/main.go hooks gemini after-model"
+            "command": "go run \"$(git rev-parse --show-toplevel)\"/cmd/entire/main.go hooks gemini after-model"
           }
         ]
       }
@@ -86,7 +86,7 @@
           {
             "name": "entire-before-tool-selection",
             "type": "command",
-            "command": "go run ${GEMINI_PROJECT_DIR}/cmd/entire/main.go hooks gemini before-tool-selection"
+            "command": "go run \"$(git rev-parse --show-toplevel)\"/cmd/entire/main.go hooks gemini before-tool-selection"
           }
         ]
       }
@@ -98,7 +98,7 @@
           {
             "name": "entire-before-tool",
             "type": "command",
-            "command": "go run ${GEMINI_PROJECT_DIR}/cmd/entire/main.go hooks gemini before-tool"
+            "command": "go run \"$(git rev-parse --show-toplevel)\"/cmd/entire/main.go hooks gemini before-tool"
           }
         ]
       }
@@ -110,7 +110,7 @@
           {
             "name": "entire-after-tool",
             "type": "command",
-            "command": "go run ${GEMINI_PROJECT_DIR}/cmd/entire/main.go hooks gemini after-tool"
+            "command": "go run \"$(git rev-parse --show-toplevel)\"/cmd/entire/main.go hooks gemini after-tool"
           }
         ]
       }
@@ -121,7 +121,7 @@
           {
             "name": "entire-pre-compress",
             "type": "command",
-            "command": "go run ${GEMINI_PROJECT_DIR}/cmd/entire/main.go hooks gemini pre-compress"
+            "command": "go run \"$(git rev-parse --show-toplevel)\"/cmd/entire/main.go hooks gemini pre-compress"
           }
         ]
       }
@@ -132,7 +132,7 @@
           {
             "name": "entire-notification",
             "type": "command",
-            "command": "go run ${GEMINI_PROJECT_DIR}/cmd/entire/main.go hooks gemini notification"
+            "command": "go run \"$(git rev-parse --show-toplevel)\"/cmd/entire/main.go hooks gemini notification"
           }
         ]
       }

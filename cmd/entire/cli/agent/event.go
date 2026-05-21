@@ -34,6 +34,19 @@ const (
 
 	// SubagentEnd indicates a subagent (task) has completed.
 	SubagentEnd
+
+	// ModelUpdate indicates the agent reported the LLM model being used.
+	// This fires on hooks that carry model info but have no other lifecycle action
+	// (e.g., Gemini CLI's BeforeModel). The framework stores the model as a hint
+	// for subsequent TurnStart/TurnEnd events in the same session.
+	ModelUpdate
+
+	// ToolUse indicates the agent ran a tool that touched files mid-turn.
+	// Carries ModifiedFiles/NewFiles/DeletedFiles so the framework can populate
+	// state.FilesTouched incrementally — without this, agents like Codex that
+	// commit mid-turn (before TurnEnd fires) have no per-tool file accounting,
+	// and the carry-forward path falls back to whole-transcript extraction.
+	ToolUse
 )
 
 // String returns a human-readable name for the event type.
@@ -53,6 +66,10 @@ func (e EventType) String() string {
 		return "SubagentStart"
 	case SubagentEnd:
 		return "SubagentEnd"
+	case ModelUpdate:
+		return "ModelUpdate"
+	case ToolUse:
+		return "ToolUse"
 	default:
 		return "Unknown"
 	}
@@ -77,6 +94,11 @@ type Event struct {
 	// Prompt is the user's prompt text (populated on TurnStart events).
 	Prompt string
 
+	// Model is the LLM model identifier (e.g., "claude-sonnet-4-20250514").
+	// Populated on SessionStart (Claude Code), ModelUpdate (Gemini CLI BeforeModel),
+	// and TurnStart/TurnEnd events when the agent provides model info.
+	Model string
+
 	// Timestamp is when the event occurred.
 	Timestamp time.Time
 
@@ -96,8 +118,29 @@ type Event struct {
 	SubagentType    string
 	TaskDescription string
 
+	// ModifiedFiles is the list of file paths modified by a subagent (SubagentEnd)
+	// or a tool call (ToolUse). Paths may be absolute, cwd-relative, or
+	// repo-relative; lifecycle handlers normalize against the worktree root.
+	ModifiedFiles []string
+
+	// NewFiles and DeletedFiles carry create/delete paths for ToolUse events,
+	// kept separate from ModifiedFiles so consumers can reason about agent intent.
+	NewFiles     []string
+	DeletedFiles []string
+
+	// CWD is the working directory the agent was running in when the event fired.
+	// Set on ToolUse so cwd-relative payload paths can be resolved before
+	// repo-root normalization.
+	CWD string
+
 	// ResponseMessage is an optional message to display to the user via the agent.
 	ResponseMessage string
+
+	// Hook-provided session metrics (populated by agents that report these via hooks).
+	DurationMs        int64 // Session duration from agent hook (e.g., Cursor SessionEnd)
+	TurnCount         int   // Number of agent turns/loops (e.g., Cursor Stop hook)
+	ContextTokens     int   // Context window tokens used (e.g., Cursor PreCompact hook)
+	ContextWindowSize int   // Total context window size (e.g., Cursor PreCompact hook)
 
 	// Metadata holds agent-specific state that the framework stores and makes available
 	// on subsequent events. Examples: Pi's activeLeafId, Cursor's is_background_agent.

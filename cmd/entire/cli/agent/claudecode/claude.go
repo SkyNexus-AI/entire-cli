@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"time"
@@ -27,11 +28,13 @@ func init() {
 // ClaudeCodeAgent implements the Agent interface for Claude Code.
 //
 //nolint:revive // ClaudeCodeAgent is clearer than Agent in this context
-type ClaudeCodeAgent struct{}
+type ClaudeCodeAgent struct {
+	CommandRunner func(ctx context.Context, name string, args ...string) *exec.Cmd
+}
 
 // NewClaudeCodeAgent creates a new Claude Code agent instance.
 func NewClaudeCodeAgent() agent.Agent {
-	return &ClaudeCodeAgent{}
+	return &ClaudeCodeAgent{CommandRunner: exec.CommandContext}
 }
 
 // Name returns the agent registry key.
@@ -104,6 +107,17 @@ func (c *ClaudeCodeAgent) GetSessionDir(repoPath string) (string, error) {
 	return filepath.Join(homeDir, ".claude", "projects", projectDir), nil
 }
 
+// GetSessionBaseDir returns the base directory containing per-project session subdirectories.
+// Unlike GetSessionDir, this does NOT use ENTIRE_TEST_CLAUDE_PROJECT_DIR because the
+// test override points to a specific project dir, not the base containing all projects.
+func (c *ClaudeCodeAgent) GetSessionBaseDir() (string, error) {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("failed to get home directory: %w", err)
+	}
+	return filepath.Join(homeDir, ".claude", "projects"), nil
+}
+
 // ReadSession reads a session from Claude's storage (JSONL transcript file).
 // The session data is stored in NativeData as raw JSONL bytes.
 // ModifiedFiles is computed by parsing the transcript.
@@ -169,21 +183,6 @@ func (c *ClaudeCodeAgent) FormatResumeCommand(sessionID string) string {
 }
 
 // Session helper methods - work on AgentSession with Claude's native JSONL data
-
-// GetLastUserPrompt extracts the last user prompt from the session.
-// Requires NativeData to be populated (call ReadSession first).
-func (c *ClaudeCodeAgent) GetLastUserPrompt(session *agent.AgentSession) string {
-	if session == nil || len(session.NativeData) == 0 {
-		return ""
-	}
-
-	lines, err := transcript.ParseFromBytes(session.NativeData)
-	if err != nil {
-		return ""
-	}
-
-	return ExtractLastUserPrompt(lines)
-}
 
 // TruncateAtUUID returns a new session truncated at the given UUID (inclusive).
 // This is used for rewind operations to restore transcript state.
@@ -371,4 +370,21 @@ func (c *ClaudeCodeAgent) ChunkTranscript(_ context.Context, content []byte, max
 
 func (c *ClaudeCodeAgent) ReassembleTranscript(chunks [][]byte) ([]byte, error) {
 	return agent.ReassembleJSONL(chunks), nil
+}
+
+// LaunchCmd builds an exec.Cmd for `claude "<initialPrompt>"`. Stdio is wired
+// to the caller's TTY so the agent runs foreground and the user interacts
+// normally. The call site is expected to Run() and wait. Hooks inherit the
+// parent environment.
+func (c *ClaudeCodeAgent) LaunchCmd(ctx context.Context, initialPrompt string) (*exec.Cmd, error) {
+	bin, err := exec.LookPath("claude")
+	if err != nil {
+		return nil, fmt.Errorf("claude binary not on PATH: %w", err)
+	}
+	cmd := exec.CommandContext(ctx, bin, initialPrompt)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Env = os.Environ()
+	return cmd, nil
 }

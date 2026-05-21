@@ -4,13 +4,18 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/entireio/cli/cmd/entire/cli/agent"
+	"github.com/stretchr/testify/require"
 )
+
+const testModel = "gpt-4o"
 
 func TestParseHookEvent_SessionStart(t *testing.T) {
 	t.Parallel()
@@ -23,9 +28,7 @@ func TestParseHookEvent_SessionStart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if event == nil {
-		t.Fatal("expected event, got nil")
-	}
+	require.NotNil(t, event, "expected event, got nil")
 	if event.Type != agent.SessionStart {
 		t.Errorf("expected event type %v, got %v", agent.SessionStart, event.Type)
 	}
@@ -40,6 +43,40 @@ func TestParseHookEvent_SessionStart(t *testing.T) {
 	}
 }
 
+func TestParseHookEvent_SessionStart_IncludesModel(t *testing.T) {
+	t.Parallel()
+
+	ag := &CursorAgent{}
+	input := `{"conversation_id": "sess-model", "transcript_path": "/tmp/t.jsonl", "model": "` + testModel + `"}`
+
+	event, err := ag.ParseHookEvent(context.Background(), HookNameSessionStart, strings.NewReader(input))
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	require.NotNil(t, event, "expected event, got nil")
+	if event.Model != testModel {
+		t.Errorf("expected model %q, got %q", testModel, event.Model)
+	}
+}
+
+func TestParseHookEvent_SessionStart_EmptyModel(t *testing.T) {
+	t.Parallel()
+
+	ag := &CursorAgent{}
+	input := `{"conversation_id": "sess-no-model", "transcript_path": "/tmp/t.jsonl"}`
+
+	event, err := ag.ParseHookEvent(context.Background(), HookNameSessionStart, strings.NewReader(input))
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	require.NotNil(t, event, "expected event, got nil")
+	if event.Model != "" {
+		t.Errorf("expected empty model, got %q", event.Model)
+	}
+}
+
 func TestParseHookEvent_TurnStart(t *testing.T) {
 	t.Parallel()
 
@@ -51,9 +88,7 @@ func TestParseHookEvent_TurnStart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if event == nil {
-		t.Fatal("expected event, got nil")
-	}
+	require.NotNil(t, event, "expected event, got nil")
 	if event.Type != agent.TurnStart {
 		t.Errorf("expected event type %v, got %v", agent.TurnStart, event.Type)
 	}
@@ -62,6 +97,38 @@ func TestParseHookEvent_TurnStart(t *testing.T) {
 	}
 	if event.Prompt != "Hello world" {
 		t.Errorf("expected prompt 'Hello world', got %q", event.Prompt)
+	}
+}
+
+func TestParseHookEvent_TurnStart_IncludesModel(t *testing.T) {
+	t.Parallel()
+
+	ag := &CursorAgent{}
+	input := `{"conversation_id": "sess-m", "transcript_path": "/tmp/t.jsonl", "prompt": "hi", "model": "` + testModel + `"}`
+
+	event, err := ag.ParseHookEvent(context.Background(), HookNameBeforeSubmitPrompt, strings.NewReader(input))
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if event.Model != testModel {
+		t.Errorf("expected model %q, got %q", testModel, event.Model)
+	}
+}
+
+func TestParseHookEvent_TurnStart_EmptyModel(t *testing.T) {
+	t.Parallel()
+
+	ag := &CursorAgent{}
+	input := `{"conversation_id": "sess-nm", "transcript_path": "/tmp/t.jsonl", "prompt": "hi"}`
+
+	event, err := ag.ParseHookEvent(context.Background(), HookNameBeforeSubmitPrompt, strings.NewReader(input))
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if event.Model != "" {
+		t.Errorf("expected empty model, got %q", event.Model)
 	}
 }
 
@@ -83,9 +150,7 @@ func TestParseHookEvent_TurnStart_CLINoTranscriptPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if event == nil {
-		t.Fatal("expected event, got nil")
-	}
+	require.NotNil(t, event, "expected event, got nil")
 	if event.Type != agent.TurnStart {
 		t.Errorf("expected event type %v, got %v", agent.TurnStart, event.Type)
 	}
@@ -109,9 +174,7 @@ func TestParseHookEvent_TurnEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if event == nil {
-		t.Fatal("expected event, got nil")
-	}
+	require.NotNil(t, event, "expected event, got nil")
 	if event.Type != agent.TurnEnd {
 		t.Errorf("expected event type %v, got %v", agent.TurnEnd, event.Type)
 	}
@@ -131,14 +194,29 @@ func TestParseHookEvent_SessionEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if event == nil {
-		t.Fatal("expected event, got nil")
-	}
+	require.NotNil(t, event, "expected event, got nil")
 	if event.Type != agent.SessionEnd {
 		t.Errorf("expected event type %v, got %v", agent.SessionEnd, event.Type)
 	}
 	if event.SessionID != "ending-session" {
 		t.Errorf("expected conversation_id 'ending-session', got %q", event.SessionID)
+	}
+}
+
+func TestParseHookEvent_SessionEnd_IncludesModel(t *testing.T) {
+	t.Parallel()
+
+	ag := &CursorAgent{}
+	input := `{"conversation_id": "end-model", "transcript_path": "/tmp/end.jsonl", "model": "` + testModel + `"}`
+
+	event, err := ag.ParseHookEvent(context.Background(), HookNameSessionEnd, strings.NewReader(input))
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	require.NotNil(t, event, "expected event, got nil")
+	if event.Model != testModel {
+		t.Errorf("expected model %q, got %q", testModel, event.Model)
 	}
 }
 
@@ -164,9 +242,7 @@ func TestParseHookEvent_TurnEnd_CLINoTranscriptPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if event == nil {
-		t.Fatal("expected event, got nil")
-	}
+	require.NotNil(t, event, "expected event, got nil")
 	if event.Type != agent.TurnEnd {
 		t.Errorf("expected event type %v, got %v", agent.TurnEnd, event.Type)
 	}
@@ -175,6 +251,9 @@ func TestParseHookEvent_TurnEnd_CLINoTranscriptPath(t *testing.T) {
 	}
 	if event.SessionRef != transcriptFile {
 		t.Errorf("expected computed session_ref %q, got %q", transcriptFile, event.SessionRef)
+	}
+	if event.TurnCount != 3 {
+		t.Errorf("expected TurnCount 3, got %d", event.TurnCount)
 	}
 }
 
@@ -200,9 +279,7 @@ func TestParseHookEvent_SessionEnd_CLINoTranscriptPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if event == nil {
-		t.Fatal("expected event, got nil")
-	}
+	require.NotNil(t, event, "expected event, got nil")
 	if event.Type != agent.SessionEnd {
 		t.Errorf("expected event type %v, got %v", agent.SessionEnd, event.Type)
 	}
@@ -211,6 +288,9 @@ func TestParseHookEvent_SessionEnd_CLINoTranscriptPath(t *testing.T) {
 	}
 	if event.SessionRef != transcriptFile {
 		t.Errorf("expected computed session_ref %q, got %q", transcriptFile, event.SessionRef)
+	}
+	if event.DurationMs != 45000 {
+		t.Errorf("expected DurationMs 45000, got %d", event.DurationMs)
 	}
 }
 
@@ -226,9 +306,7 @@ func TestParseHookEvent_TurnEnd_IDEWithTranscriptPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if event == nil {
-		t.Fatal("expected event, got nil")
-	}
+	require.NotNil(t, event, "expected event, got nil")
 	if event.SessionRef != "/home/user/.cursor/projects/proj/agent-transcripts/ide-session/ide-session.jsonl" {
 		t.Errorf("expected IDE-provided session_ref, got %q", event.SessionRef)
 	}
@@ -254,9 +332,7 @@ func TestParseHookEvent_SubagentStart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if event == nil {
-		t.Fatal("expected event, got nil")
-	}
+	require.NotNil(t, event, "expected event, got nil")
 	if event.Type != agent.SubagentStart {
 		t.Errorf("expected event type %v, got %v", agent.SubagentStart, event.Type)
 	}
@@ -277,6 +353,7 @@ func TestParseHookEvent_SubagentEnd(t *testing.T) {
 		"transcript_path": "/tmp/main.jsonl",
 		"subagent_id":     "sub_xyz789",
 		"task":            "task done",
+		"modified_files":  []string{"src/foo.ts", "src/bar.ts"},
 	}
 	inputBytes, marshalErr := json.Marshal(inputData)
 	if marshalErr != nil {
@@ -288,14 +365,44 @@ func TestParseHookEvent_SubagentEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if event == nil {
-		t.Fatal("expected event, got nil")
-	}
+	require.NotNil(t, event, "expected event, got nil")
 	if event.Type != agent.SubagentEnd {
 		t.Errorf("expected event type %v, got %v", agent.SubagentEnd, event.Type)
 	}
 	if event.ToolUseID != "sub_xyz789" {
 		t.Errorf("expected tool_use_id 'sub_xyz789', got %q", event.ToolUseID)
+	}
+	if len(event.ModifiedFiles) != 2 {
+		t.Fatalf("expected 2 modified files, got %d", len(event.ModifiedFiles))
+	}
+	if event.ModifiedFiles[0] != "src/foo.ts" || event.ModifiedFiles[1] != "src/bar.ts" {
+		t.Errorf("expected modified files [src/foo.ts, src/bar.ts], got %v", event.ModifiedFiles)
+	}
+}
+
+func TestParseHookEvent_PreCompact(t *testing.T) {
+	t.Parallel()
+
+	ag := &CursorAgent{}
+	input := `{"conversation_id": "compact-session", "transcript_path": "/tmp/compact.jsonl", "context_tokens": 8500, "context_window_size": 16000}`
+
+	event, err := ag.ParseHookEvent(context.Background(), HookNamePreCompact, strings.NewReader(input))
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	require.NotNil(t, event, "expected event, got nil")
+	if event.Type != agent.Compaction {
+		t.Errorf("expected event type %v, got %v", agent.Compaction, event.Type)
+	}
+	if event.SessionID != "compact-session" {
+		t.Errorf("expected session_id 'compact-session', got %q", event.SessionID)
+	}
+	if event.ContextTokens != 8500 {
+		t.Errorf("expected ContextTokens 8500, got %d", event.ContextTokens)
+	}
+	if event.ContextWindowSize != 16000 {
+		t.Errorf("expected ContextWindowSize 16000, got %d", event.ContextWindowSize)
 	}
 }
 
@@ -463,9 +570,7 @@ func TestParseHookEvent_AllHookTypes(t *testing.T) {
 				return
 			}
 
-			if event == nil {
-				t.Fatal("expected event, got nil")
-			}
+			require.NotNil(t, event, "expected event, got nil")
 			if event.Type != tc.expectedType {
 				t.Errorf("expected event type %v, got %v", tc.expectedType, event.Type)
 			}
@@ -532,5 +637,104 @@ func TestReadTranscript_MatchesReadSession(t *testing.T) {
 
 	if !bytes.Equal(transcriptData, session.NativeData) {
 		t.Error("ReadTranscript() and ReadSession().NativeData should return identical bytes")
+	}
+}
+
+// --- PrepareTranscript ---
+
+func TestPrepareTranscript_FileExistsWithContent(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "transcript.jsonl")
+	if err := os.WriteFile(path, []byte(`{"role":"user"}`+"\n"), 0o644); err != nil {
+		t.Fatalf("write test file: %v", err)
+	}
+
+	ag := &CursorAgent{}
+	err := ag.PrepareTranscript(context.Background(), path)
+	if err != nil {
+		t.Fatalf("expected nil error for existing non-empty file, got: %v", err)
+	}
+}
+
+func TestPrepareTranscript_NonTransientStatError(t *testing.T) {
+	t.Parallel()
+
+	// A path through a regular file (not a directory) causes os.Stat to
+	// return ENOTDIR, which is not IsNotExist — a non-transient error.
+	tmpDir := t.TempDir()
+	blocker := filepath.Join(tmpDir, "not-a-dir")
+	if err := os.WriteFile(blocker, []byte("x"), 0o644); err != nil {
+		t.Fatalf("write blocker file: %v", err)
+	}
+	path := filepath.Join(blocker, "transcript.jsonl")
+
+	ag := &CursorAgent{}
+	err := ag.PrepareTranscript(context.Background(), path)
+	if err == nil {
+		t.Fatal("expected error for non-transient stat failure, got nil")
+	}
+	if !strings.Contains(err.Error(), "failed to stat transcript") {
+		t.Errorf("expected 'failed to stat transcript' error, got: %v", err)
+	}
+}
+
+func TestPrepareTranscript_FileAppearsAfterDelay(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "delayed.jsonl")
+
+	// Create the file after a short delay, simulating async flush.
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		_ = os.WriteFile(path, []byte(`{"role":"assistant"}`+"\n"), 0o644) //nolint:errcheck // test helper in goroutine
+	}()
+
+	ag := &CursorAgent{}
+	err := ag.PrepareTranscript(context.Background(), path)
+	if err != nil {
+		t.Fatalf("expected nil error when file appears during polling, got: %v", err)
+	}
+}
+
+func TestPrepareTranscript_EmptyFileGrowsDuringPolling(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "empty-then-filled.jsonl")
+
+	// Create empty file immediately.
+	if err := os.WriteFile(path, nil, 0o644); err != nil {
+		t.Fatalf("write empty file: %v", err)
+	}
+
+	// Write content after a short delay.
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		_ = os.WriteFile(path, []byte(`{"role":"user"}`+"\n"), 0o644) //nolint:errcheck // test helper in goroutine
+	}()
+
+	ag := &CursorAgent{}
+	err := ag.PrepareTranscript(context.Background(), path)
+	if err != nil {
+		t.Fatalf("expected nil error when empty file grows during polling, got: %v", err)
+	}
+}
+
+func TestPrepareTranscript_ContextCanceled(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "missing.jsonl")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	ag := &CursorAgent{}
+	err := ag.PrepareTranscript(ctx, path)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got: %v", err)
 	}
 }

@@ -11,7 +11,7 @@ import (
 	"sort"
 	"strings"
 
-	"golang.org/x/term"
+	"github.com/entireio/cli/cmd/entire/cli/interactive"
 )
 
 type TestEvent struct {
@@ -41,7 +41,7 @@ func main() {
 	outputFile := flag.String("o", "", "Write output to file (ANSI + .nocolor.txt)")
 	flag.Parse()
 
-	useColor := *colorFlag || term.IsTerminal(int(os.Stdout.Fd()))
+	useColor := *colorFlag || interactive.IsTerminalWriter(os.Stdout)
 
 	r, err := openInput(flag.Arg(0))
 	if err != nil {
@@ -214,6 +214,31 @@ func renderReport(parents []*parentTest, color bool) string {
 			}
 		}
 
+		b.WriteString("\n")
+	}
+
+	// Rerun commands for failed tests
+	if failed > 0 {
+		b.WriteString("Rerun failed tests:\n")
+		for _, p := range parents {
+			if p.action != "fail" {
+				continue
+			}
+			var failedAgents []string
+			for _, c := range p.children {
+				if c.action == "fail" {
+					failedAgents = append(failedAgents, c.name)
+				}
+			}
+			if len(failedAgents) > 0 {
+				for _, agent := range failedAgents {
+					fmt.Fprintf(&b, "  mise run test:e2e --agent %s %s\n", agent, p.name)
+				}
+			} else {
+				// Standalone test with no subtests
+				fmt.Fprintf(&b, "  mise run test:e2e %s\n", p.name)
+			}
+		}
 		b.WriteString("\n")
 	}
 

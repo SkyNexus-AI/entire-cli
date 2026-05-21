@@ -3,19 +3,21 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
 	"github.com/entireio/cli/cmd/entire/cli/agent"
 	"github.com/entireio/cli/cmd/entire/cli/agent/types"
 	"github.com/entireio/cli/cmd/entire/cli/session"
+	"github.com/entireio/cli/cmd/entire/cli/testutil"
 
-	"github.com/go-git/go-git/v5"
-	"github.com/go-git/go-git/v5/plumbing/object"
+	"github.com/go-git/go-git/v6"
+	"github.com/go-git/go-git/v6/plumbing/object"
 )
 
 func TestResolveWorktreeBranch_RegularRepo(t *testing.T) {
@@ -198,7 +200,7 @@ func TestRunStatus_Enabled(t *testing.T) {
 	writeSettings(t, testSettingsEnabled)
 
 	var stdout bytes.Buffer
-	if err := runStatus(context.Background(), &stdout, false); err != nil {
+	if err := runStatus(context.Background(), &stdout, false, false); err != nil {
 		t.Fatalf("runStatus() error = %v", err)
 	}
 
@@ -212,7 +214,7 @@ func TestRunStatus_Disabled(t *testing.T) {
 	writeSettings(t, testSettingsDisabled)
 
 	var stdout bytes.Buffer
-	if err := runStatus(context.Background(), &stdout, false); err != nil {
+	if err := runStatus(context.Background(), &stdout, false, false); err != nil {
 		t.Fatalf("runStatus() error = %v", err)
 	}
 
@@ -225,7 +227,7 @@ func TestRunStatus_NotSetUp(t *testing.T) {
 	setupTestRepo(t)
 
 	var stdout bytes.Buffer
-	if err := runStatus(context.Background(), &stdout, false); err != nil {
+	if err := runStatus(context.Background(), &stdout, false, false); err != nil {
 		t.Fatalf("runStatus() error = %v", err)
 	}
 
@@ -242,7 +244,7 @@ func TestRunStatus_NotGitRepository(t *testing.T) {
 	setupTestDir(t) // No git init
 
 	var stdout bytes.Buffer
-	if err := runStatus(context.Background(), &stdout, false); err != nil {
+	if err := runStatus(context.Background(), &stdout, false, false); err != nil {
 		t.Fatalf("runStatus() error = %v", err)
 	}
 
@@ -256,7 +258,7 @@ func TestRunStatus_LocalSettingsOnly(t *testing.T) {
 	writeLocalSettings(t, `{"enabled": true}`)
 
 	var stdout bytes.Buffer
-	if err := runStatus(context.Background(), &stdout, true); err != nil {
+	if err := runStatus(context.Background(), &stdout, true, false); err != nil {
 		t.Fatalf("runStatus() error = %v", err)
 	}
 
@@ -283,7 +285,7 @@ func TestRunStatus_BothProjectAndLocal(t *testing.T) {
 	writeLocalSettings(t, `{"enabled": false}`)
 
 	var stdout bytes.Buffer
-	if err := runStatus(context.Background(), &stdout, true); err != nil {
+	if err := runStatus(context.Background(), &stdout, true, false); err != nil {
 		t.Fatalf("runStatus() error = %v", err)
 	}
 
@@ -310,7 +312,7 @@ func TestRunStatus_BothProjectAndLocal_Short(t *testing.T) {
 	writeLocalSettings(t, `{"enabled": false}`)
 
 	var stdout bytes.Buffer
-	if err := runStatus(context.Background(), &stdout, false); err != nil {
+	if err := runStatus(context.Background(), &stdout, false, false); err != nil {
 		t.Fatalf("runStatus() error = %v", err)
 	}
 
@@ -326,7 +328,7 @@ func TestRunStatus_ShowsManualCommitStrategy(t *testing.T) {
 	writeSettings(t, `{"enabled": false}`)
 
 	var stdout bytes.Buffer
-	if err := runStatus(context.Background(), &stdout, true); err != nil {
+	if err := runStatus(context.Background(), &stdout, true, false); err != nil {
 		t.Fatalf("runStatus() error = %v", err)
 	}
 
@@ -388,7 +390,7 @@ func TestWriteActiveSessions(t *testing.T) {
 			WorktreePath:        "/Users/test/repo",
 			StartedAt:           now.Add(-2 * time.Hour),
 			LastInteractionTime: &recentInteraction,
-			FirstPrompt:         "Fix auth bug in login flow",
+			LastPrompt:          "Fix auth bug in login flow",
 			AgentType:           types.AgentType("Claude Code"),
 			TokenUsage: &agent.TokenUsage{
 				InputTokens:  800,
@@ -399,7 +401,7 @@ func TestWriteActiveSessions(t *testing.T) {
 			SessionID:    "def-5678-session",
 			WorktreePath: "/Users/test/repo",
 			StartedAt:    now.Add(-15 * time.Minute),
-			FirstPrompt:  "Add dark mode support for the entire application and all components",
+			LastPrompt:   "Add dark mode support for the entire application and all components",
 			AgentType:    agent.AgentTypeCursor,
 			TokenUsage: &agent.TokenUsage{
 				InputTokens:  500,
@@ -442,9 +444,15 @@ func TestWriteActiveSessions(t *testing.T) {
 		t.Errorf("Expected '%s' for missing agent type, got: %s", unknownPlaceholder, output)
 	}
 
-	// Should contain truncated session IDs
-	if !strings.Contains(output, "abc-123") {
-		t.Errorf("Expected truncated session ID 'abc-123', got: %s", output)
+	// Should contain full session IDs
+	if !strings.Contains(output, "abc-1234-session") {
+		t.Errorf("Expected full session ID 'abc-1234-session', got: %s", output)
+	}
+	if !strings.Contains(output, "def-5678-session") {
+		t.Errorf("Expected full session ID 'def-5678-session', got: %s", output)
+	}
+	if !strings.Contains(output, "ghi-9012-session") {
+		t.Errorf("Expected full session ID 'ghi-9012-session', got: %s", output)
 	}
 
 	// Should contain first prompts with chevron
@@ -452,10 +460,10 @@ func TestWriteActiveSessions(t *testing.T) {
 		t.Errorf("Expected first prompt with chevron, got: %s", output)
 	}
 
-	// Session without FirstPrompt should NOT show a prompt line
+	// Session without LastPrompt should NOT show a prompt line
 	lines := strings.Split(output, "\n")
 	for _, line := range lines {
-		if strings.Contains(line, "ghi-901") {
+		if strings.Contains(line, "ghi-9012-session") {
 			if strings.Contains(line, "\"") {
 				t.Errorf("Session without prompt should not show quoted text on first line, got: %s", line)
 			}
@@ -515,7 +523,7 @@ func TestWriteActiveSessions_ActiveTimeOmittedWhenClose(t *testing.T) {
 		WorktreePath:        "/Users/test/repo",
 		StartedAt:           startedAt,
 		LastInteractionTime: &lastInteraction,
-		FirstPrompt:         "test prompt",
+		LastPrompt:          "test prompt",
 		AgentType:           types.AgentType("Claude Code"),
 	}
 
@@ -575,6 +583,196 @@ func TestWriteActiveSessions_EndedSessionsExcluded(t *testing.T) {
 	// Should produce no output when all sessions are ended
 	if buf.Len() != 0 {
 		t.Errorf("Expected empty output with only ended sessions, got: %s", buf.String())
+	}
+}
+
+func TestWriteActiveSessions_ShowsDivergenceWarningWhenBaseCommitStale(t *testing.T) {
+	setupTestRepo(t)
+
+	repoDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd() error = %v", err)
+	}
+
+	// Create two commits: the session tracks the first, HEAD is the second
+	testutil.WriteFile(t, repoDir, "tracked.txt", "base")
+	testutil.GitAdd(t, repoDir, "tracked.txt")
+	testutil.GitCommit(t, repoDir, "base commit")
+	baseCommit := testutil.GetHeadHash(t, repoDir)
+
+	testutil.WriteFile(t, repoDir, "tracked.txt", "base\nnew")
+	testutil.GitAdd(t, repoDir, "tracked.txt")
+	testutil.GitCommit(t, repoDir, "second commit")
+
+	store, err := session.NewStateStore(context.Background())
+	if err != nil {
+		t.Fatalf("NewStateStore() error = %v", err)
+	}
+
+	now := time.Now()
+	state := &session.State{
+		SessionID:             "stale-base-session",
+		WorktreePath:          repoDir,
+		StartedAt:             now.Add(-10 * time.Minute),
+		BaseCommit:            baseCommit,
+		AttributionBaseCommit: baseCommit,
+	}
+	if err := store.Save(context.Background(), state); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	var buf bytes.Buffer
+	sty := newStatusStyles(&buf)
+	writeActiveSessions(context.Background(), &buf, sty)
+
+	output := buf.String()
+	if !strings.Contains(output, "tracking diverged from current HEAD") {
+		t.Fatalf("expected divergence warning when BaseCommit != HEAD, got: %s", output)
+	}
+
+	// Verify session state was NOT mutated (read-only)
+	reloaded, err := store.Load(context.Background(), state.SessionID)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if reloaded.BaseCommit != baseCommit {
+		t.Fatalf("BaseCommit was mutated: got %q, want %q", reloaded.BaseCommit, baseCommit)
+	}
+	if reloaded.AttributionBaseCommit != baseCommit {
+		t.Fatalf("AttributionBaseCommit was mutated: got %q, want %q", reloaded.AttributionBaseCommit, baseCommit)
+	}
+}
+
+func TestWriteActiveSessions_NoWarningWhenReconciled(t *testing.T) {
+	setupTestRepo(t)
+
+	repoDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd() error = %v", err)
+	}
+
+	testutil.WriteFile(t, repoDir, "tracked.txt", "content")
+	testutil.GitAdd(t, repoDir, "tracked.txt")
+	testutil.GitCommit(t, repoDir, "initial commit")
+	headCommit := testutil.GetHeadHash(t, repoDir)
+
+	store, err := session.NewStateStore(context.Background())
+	if err != nil {
+		t.Fatalf("NewStateStore() error = %v", err)
+	}
+
+	now := time.Now()
+	state := &session.State{
+		SessionID:             "reconciled-session",
+		WorktreePath:          repoDir,
+		StartedAt:             now.Add(-10 * time.Minute),
+		BaseCommit:            headCommit,
+		AttributionBaseCommit: headCommit,
+	}
+	if err := store.Save(context.Background(), state); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	var buf bytes.Buffer
+	sty := newStatusStyles(&buf)
+	writeActiveSessions(context.Background(), &buf, sty)
+
+	output := buf.String()
+	if strings.Contains(output, "diverged") || strings.Contains(output, "attribution") {
+		t.Fatalf("expected no divergence or attribution warning when BaseCommit == HEAD and AttributionBaseCommit == BaseCommit, got: %s", output)
+	}
+}
+
+func TestWriteActiveSessions_ShowsSoftWarningWhenAttributionDiverged(t *testing.T) {
+	setupTestRepo(t)
+
+	repoDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd() error = %v", err)
+	}
+
+	testutil.WriteFile(t, repoDir, "tracked.txt", "content")
+	testutil.GitAdd(t, repoDir, "tracked.txt")
+	testutil.GitCommit(t, repoDir, "initial commit")
+	headCommit := testutil.GetHeadHash(t, repoDir)
+
+	// Simulate: hooks already reconciled BaseCommit to HEAD, but
+	// AttributionBaseCommit is still pointing at the old commit (stale).
+	oldBaseCommit := strings.Repeat("a", 40)
+
+	store, err := session.NewStateStore(context.Background())
+	if err != nil {
+		t.Fatalf("NewStateStore() error = %v", err)
+	}
+
+	now := time.Now()
+	state := &session.State{
+		SessionID:             "attribution-diverged-session",
+		WorktreePath:          repoDir,
+		StartedAt:             now.Add(-10 * time.Minute),
+		BaseCommit:            headCommit,
+		AttributionBaseCommit: oldBaseCommit,
+	}
+	if err := store.Save(context.Background(), state); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	var buf bytes.Buffer
+	sty := newStatusStyles(&buf)
+	writeActiveSessions(context.Background(), &buf, sty)
+
+	output := buf.String()
+	if !strings.Contains(output, "attribution") {
+		t.Fatalf("expected attribution warning when AttributionBaseCommit != BaseCommit, got: %s", output)
+	}
+
+	// Verify session state was NOT mutated (read-only)
+	reloaded, err := store.Load(context.Background(), state.SessionID)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if reloaded.BaseCommit != headCommit {
+		t.Fatalf("BaseCommit was mutated: got %q, want %q", reloaded.BaseCommit, headCommit)
+	}
+	if reloaded.AttributionBaseCommit != oldBaseCommit {
+		t.Fatalf("AttributionBaseCommit was mutated: got %q, want %q", reloaded.AttributionBaseCommit, oldBaseCommit)
+	}
+}
+
+// TestComputeSessionDivergenceWarnings_EmptyBaseCommit_EmitsLinkageWarning verifies
+// that a partially-initialized session (BaseCommit == "") produces an explicit
+// "linkage incomplete" warning rather than silently disappearing from status.
+// Silently skipping such sessions was flagged as an observability regression:
+// operators lose the clearest signal that the session cannot be migrated or
+// attributed until reinitialization.
+func TestComputeSessionDivergenceWarnings_EmptyBaseCommit_EmitsLinkageWarning(t *testing.T) {
+	t.Parallel()
+
+	repoRoot := t.TempDir()
+	head := headLinkage{commitHash: strings.Repeat("e", 40)}
+
+	active := []*session.State{
+		{
+			SessionID:             "partially-initialized",
+			WorktreePath:          repoRoot,
+			BaseCommit:            "",
+			AttributionBaseCommit: strings.Repeat("a", 40),
+		},
+	}
+
+	warnings := computeSessionDivergenceWarnings(repoRoot, active, head)
+
+	msg, ok := warnings["partially-initialized"]
+	if !ok {
+		t.Fatal("expected a linkage-incomplete warning for session with empty BaseCommit, got none")
+	}
+	if !strings.Contains(msg, "linkage incomplete") {
+		t.Fatalf("expected warning to mention linkage incomplete, got %q", msg)
+	}
+	// Must NOT be the attribution-divergence message — that would be misleading
+	// since the session isn't diverged; it's un-initialized.
+	if strings.Contains(msg, "attribution base diverged") {
+		t.Fatalf("empty-BaseCommit session should not produce attribution-divergence wording, got %q", msg)
 	}
 }
 
@@ -1002,6 +1200,177 @@ func TestFormatSettingsStatusShort_Disabled(t *testing.T) {
 	}
 }
 
+func TestRunStatus_ShowsEnabledAgents(t *testing.T) {
+	setupTestRepo(t)
+	writeSettings(t, testSettingsEnabled)
+	writeClaudeHooksFixture(t)
+
+	var stdout bytes.Buffer
+	if err := runStatus(context.Background(), &stdout, false, false); err != nil {
+		t.Fatalf("runStatus() error = %v", err)
+	}
+
+	output := stdout.String()
+	if !strings.Contains(output, "Agents ·") {
+		t.Errorf("Expected 'Agents ·' in output, got: %s", output)
+	}
+	if !strings.Contains(output, "Claude Code") {
+		t.Errorf("Expected 'Claude Code' in output, got: %s", output)
+	}
+}
+
+func TestRunStatus_EnabledNoAgentsHidesHooksLine(t *testing.T) {
+	setupTestRepo(t)
+	writeSettings(t, testSettingsEnabled)
+	// No agent hooks installed
+
+	var stdout bytes.Buffer
+	if err := runStatus(context.Background(), &stdout, false, false); err != nil {
+		t.Fatalf("runStatus() error = %v", err)
+	}
+
+	output := stdout.String()
+	if strings.Contains(output, "Agents ·") {
+		t.Errorf("Should not show hooks line when no agents installed, got: %s", output)
+	}
+}
+
+func TestRunStatus_DetailedShowsEnabledAgents(t *testing.T) {
+	setupTestRepo(t)
+	writeSettings(t, testSettingsEnabled)
+	writeClaudeHooksFixture(t)
+
+	var stdout bytes.Buffer
+	if err := runStatus(context.Background(), &stdout, true, false); err != nil {
+		t.Fatalf("runStatus() error = %v", err)
+	}
+
+	output := stdout.String()
+	if !strings.Contains(output, "Agents ·") {
+		t.Errorf("Expected 'Agents ·' in detailed output, got: %s", output)
+	}
+	if !strings.Contains(output, "Claude Code") {
+		t.Errorf("Expected 'Claude Code' in detailed output, got: %s", output)
+	}
+}
+
+func TestWriteActiveSessions_OmitsTokensWhenNoTokenData(t *testing.T) {
+	setupTestRepo(t)
+
+	store, err := session.NewStateStore(context.Background())
+	if err != nil {
+		t.Fatalf("NewStateStore() error = %v", err)
+	}
+
+	now := time.Now()
+	recentInteraction := now.Add(-5 * time.Minute)
+
+	states := []*session.State{
+		{
+			SessionID:           "no-token-session",
+			WorktreePath:        "/Users/test/repo",
+			StartedAt:           now.Add(-30 * time.Minute),
+			LastInteractionTime: &recentInteraction,
+			Phase:               session.PhaseActive,
+			LastPrompt:          "explain this code",
+			AgentType:           "Claude Code",
+		},
+	}
+
+	for _, s := range states {
+		if err := store.Save(context.Background(), s); err != nil {
+			t.Fatalf("Save() error = %v", err)
+		}
+	}
+
+	var buf bytes.Buffer
+	sty := newStatusStyles(&buf)
+	writeActiveSessions(context.Background(), &buf, sty)
+
+	output := buf.String()
+
+	if strings.Contains(output, "tokens") {
+		t.Errorf("Session with no token data should NOT show tokens, got: %s", output)
+	}
+}
+
+func TestWriteActiveSessions_ShowsTokensWithCheckpoints(t *testing.T) {
+	setupTestRepo(t)
+
+	store, err := session.NewStateStore(context.Background())
+	if err != nil {
+		t.Fatalf("NewStateStore() error = %v", err)
+	}
+
+	now := time.Now()
+	recentInteraction := now.Add(-5 * time.Minute)
+
+	states := []*session.State{
+		{
+			SessionID:           "has-checkpoint-session",
+			WorktreePath:        "/Users/test/repo",
+			StartedAt:           now.Add(-30 * time.Minute),
+			LastInteractionTime: &recentInteraction,
+			Phase:               session.PhaseActive,
+			LastPrompt:          "fix the bug",
+			AgentType:           "Claude Code",
+			StepCount:           2,
+			TokenUsage: &agent.TokenUsage{
+				InputTokens:  800,
+				OutputTokens: 400,
+			},
+		},
+	}
+
+	for _, s := range states {
+		if err := store.Save(context.Background(), s); err != nil {
+			t.Fatalf("Save() error = %v", err)
+		}
+	}
+
+	var buf bytes.Buffer
+	sty := newStatusStyles(&buf)
+	writeActiveSessions(context.Background(), &buf, sty)
+
+	output := buf.String()
+
+	if !strings.Contains(output, "tokens 1.2k") {
+		t.Errorf("Session with checkpoints should show tokens, got: %s", output)
+	}
+}
+
+func TestRunStatus_DetailedDisabledDoesNotShowAgents(t *testing.T) {
+	setupTestRepo(t)
+	writeSettings(t, testSettingsDisabled)
+	writeClaudeHooksFixture(t)
+
+	var stdout bytes.Buffer
+	if err := runStatus(context.Background(), &stdout, true, false); err != nil {
+		t.Fatalf("runStatus() error = %v", err)
+	}
+
+	output := stdout.String()
+	if strings.Contains(output, "Agents ·") {
+		t.Errorf("Disabled detailed status should not show agents, got: %s", output)
+	}
+}
+
+func TestRunStatus_DisabledDoesNotShowAgents(t *testing.T) {
+	setupTestRepo(t)
+	writeSettings(t, testSettingsDisabled)
+	writeClaudeHooksFixture(t)
+
+	var stdout bytes.Buffer
+	if err := runStatus(context.Background(), &stdout, false, false); err != nil {
+		t.Fatalf("runStatus() error = %v", err)
+	}
+
+	output := stdout.String()
+	if strings.Contains(output, "Agents ·") {
+		t.Errorf("Disabled status should not show agents, got: %s", output)
+	}
+}
+
 func TestFormatSettingsStatus_Project(t *testing.T) {
 	t.Parallel()
 
@@ -1046,6 +1415,227 @@ func TestFormatSettingsStatus_LocalDisabled(t *testing.T) {
 	}
 }
 
+func TestWriteActiveSessions_StaleIndicator(t *testing.T) {
+	setupTestRepo(t)
+
+	store, err := session.NewStateStore(context.Background())
+	if err != nil {
+		t.Fatalf("NewStateStore() error = %v", err)
+	}
+
+	now := time.Now()
+	staleInteraction := now.Add(-2 * time.Hour) // well past 1hr threshold
+
+	states := []*session.State{
+		{
+			SessionID:           "stale-session-1",
+			WorktreePath:        "/Users/test/repo",
+			StartedAt:           now.Add(-3 * time.Hour),
+			LastInteractionTime: &staleInteraction,
+			Phase:               session.PhaseActive,
+			LastPrompt:          "fix the bug",
+			AgentType:           "Claude Code",
+		},
+	}
+
+	for _, s := range states {
+		if err := store.Save(context.Background(), s); err != nil {
+			t.Fatalf("Save() error = %v", err)
+		}
+	}
+
+	var buf bytes.Buffer
+	sty := newStatusStyles(&buf)
+	writeActiveSessions(context.Background(), &buf, sty)
+
+	output := buf.String()
+
+	if !strings.Contains(output, "stale") {
+		t.Errorf("Expected 'stale' indicator for session with interaction >1hr ago, got: %s", output)
+	}
+	if !strings.Contains(output, "entire doctor") {
+		t.Errorf("Expected 'entire doctor' hint in stale indicator, got: %s", output)
+	}
+}
+
+func TestIsStuckActiveSession(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	recent := now.Add(-5 * time.Minute)
+	stale := now.Add(-2 * time.Hour)
+	brandNew := now.Add(-10 * time.Second)
+
+	tests := []struct {
+		name  string
+		state *session.State
+		want  bool
+	}{
+		{
+			name:  "active with stale interaction",
+			state: &session.State{Phase: session.PhaseActive, LastInteractionTime: &stale},
+			want:  true,
+		},
+		{
+			name:  "active with nil interaction and old start",
+			state: &session.State{Phase: session.PhaseActive, LastInteractionTime: nil, StartedAt: now.Add(-2 * time.Hour)},
+			want:  true,
+		},
+		{
+			name:  "active with nil interaction and recent start",
+			state: &session.State{Phase: session.PhaseActive, LastInteractionTime: nil, StartedAt: brandNew},
+			want:  false,
+		},
+		{
+			name:  "active with recent interaction",
+			state: &session.State{Phase: session.PhaseActive, LastInteractionTime: &recent},
+			want:  false,
+		},
+		{
+			name:  "idle with stale interaction",
+			state: &session.State{Phase: session.PhaseIdle, LastInteractionTime: &stale},
+			want:  false,
+		},
+		{
+			name:  "ended with stale interaction",
+			state: &session.State{Phase: session.PhaseEnded, LastInteractionTime: &stale},
+			want:  false,
+		},
+		{
+			name:  "empty phase with stale interaction",
+			state: &session.State{Phase: "", LastInteractionTime: &stale},
+			want:  false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := tt.state.IsStuckActive(); got != tt.want {
+				t.Errorf("IsStuckActive() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestWriteActiveSessions_StaleWithNilInteractionOldStart(t *testing.T) {
+	setupTestRepo(t)
+
+	store, err := session.NewStateStore(context.Background())
+	if err != nil {
+		t.Fatalf("NewStateStore() error = %v", err)
+	}
+
+	now := time.Now()
+
+	states := []*session.State{
+		{
+			SessionID:           "old-nil-interaction-session",
+			WorktreePath:        "/Users/test/repo",
+			StartedAt:           now.Add(-2 * time.Hour),
+			LastInteractionTime: nil,
+			Phase:               session.PhaseActive,
+			LastPrompt:          "do something",
+			AgentType:           "Claude Code",
+		},
+	}
+
+	for _, s := range states {
+		if err := store.Save(context.Background(), s); err != nil {
+			t.Fatalf("Save() error = %v", err)
+		}
+	}
+
+	var buf bytes.Buffer
+	sty := newStatusStyles(&buf)
+	writeActiveSessions(context.Background(), &buf, sty)
+
+	output := buf.String()
+
+	if !strings.Contains(output, "stale") {
+		t.Errorf("Old session with nil LastInteractionTime should show stale indicator, got: %s", output)
+	}
+}
+
+func TestWriteActiveSessions_NotStaleWhenBrandNew(t *testing.T) {
+	setupTestRepo(t)
+
+	store, err := session.NewStateStore(context.Background())
+	if err != nil {
+		t.Fatalf("NewStateStore() error = %v", err)
+	}
+
+	now := time.Now()
+
+	states := []*session.State{
+		{
+			SessionID:           "brand-new-session",
+			WorktreePath:        "/Users/test/repo",
+			StartedAt:           now.Add(-10 * time.Second),
+			LastInteractionTime: nil,
+			Phase:               session.PhaseActive,
+			LastPrompt:          "hello",
+			AgentType:           "Claude Code",
+		},
+	}
+
+	for _, s := range states {
+		if err := store.Save(context.Background(), s); err != nil {
+			t.Fatalf("Save() error = %v", err)
+		}
+	}
+
+	var buf bytes.Buffer
+	sty := newStatusStyles(&buf)
+	writeActiveSessions(context.Background(), &buf, sty)
+
+	output := buf.String()
+
+	if strings.Contains(output, "stale") {
+		t.Errorf("Brand-new session should NOT show stale indicator, got: %s", output)
+	}
+}
+
+func TestWriteActiveSessions_NotStaleWhenRecent(t *testing.T) {
+	setupTestRepo(t)
+
+	store, err := session.NewStateStore(context.Background())
+	if err != nil {
+		t.Fatalf("NewStateStore() error = %v", err)
+	}
+
+	now := time.Now()
+	recentInteraction := now.Add(-5 * time.Minute)
+
+	states := []*session.State{
+		{
+			SessionID:           "fresh-session-1",
+			WorktreePath:        "/Users/test/repo",
+			StartedAt:           now.Add(-30 * time.Minute),
+			LastInteractionTime: &recentInteraction,
+			Phase:               session.PhaseActive,
+			LastPrompt:          "add feature",
+			AgentType:           "Claude Code",
+		},
+	}
+
+	for _, s := range states {
+		if err := store.Save(context.Background(), s); err != nil {
+			t.Fatalf("Save() error = %v", err)
+		}
+	}
+
+	var buf bytes.Buffer
+	sty := newStatusStyles(&buf)
+	writeActiveSessions(context.Background(), &buf, sty)
+
+	output := buf.String()
+
+	if strings.Contains(output, "stale") {
+		t.Errorf("Session with recent interaction should NOT show stale indicator, got: %s", output)
+	}
+}
+
 func TestFormatSettingsStatus_Separators(t *testing.T) {
 	t.Parallel()
 
@@ -1060,5 +1650,211 @@ func TestFormatSettingsStatus_Separators(t *testing.T) {
 	// Should use · as separator (plain text, no ANSI)
 	if !strings.Contains(result, "·") {
 		t.Errorf("Expected '·' separators in output, got: %q", result)
+	}
+}
+
+func TestRunStatusJSON_Enabled(t *testing.T) {
+	setupTestRepo(t)
+	writeSettings(t, testSettingsEnabled)
+	writeClaudeHooksFixture(t)
+
+	var stdout bytes.Buffer
+	if err := runStatus(context.Background(), &stdout, false, true); err != nil {
+		t.Fatalf("runStatus() error = %v", err)
+	}
+
+	var result statusJSON
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+
+	if !result.Enabled {
+		t.Error("Expected enabled=true")
+	}
+	found := false
+	for _, a := range result.Agents {
+		if a == "Claude Code" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("Expected agents to contain 'Claude Code', got %v", result.Agents)
+	}
+	if result.Error != "" {
+		t.Errorf("Expected no error, got %q", result.Error)
+	}
+}
+
+func TestRunStatusJSON_Disabled(t *testing.T) {
+	setupTestRepo(t)
+	writeSettings(t, testSettingsDisabled)
+
+	var stdout bytes.Buffer
+	if err := runStatus(context.Background(), &stdout, false, true); err != nil {
+		t.Fatalf("runStatus() error = %v", err)
+	}
+
+	var result statusJSON
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+
+	if result.Enabled {
+		t.Error("Expected enabled=false")
+	}
+}
+
+func TestRunStatusJSON_NotSetUp(t *testing.T) {
+	setupTestRepo(t)
+
+	var stdout bytes.Buffer
+	if err := runStatus(context.Background(), &stdout, false, true); err != nil {
+		t.Fatalf("runStatus() error = %v", err)
+	}
+
+	var result statusJSON
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+
+	if result.Enabled {
+		t.Error("Expected enabled=false")
+	}
+	if result.Error != "not set up" {
+		t.Errorf("Expected error='not set up', got %q", result.Error)
+	}
+}
+
+func TestRunStatusJSON_NotGitRepo(t *testing.T) {
+	setupTestDir(t)
+
+	var stdout bytes.Buffer
+	if err := runStatus(context.Background(), &stdout, false, true); err != nil {
+		t.Fatalf("runStatus() error = %v", err)
+	}
+
+	var result statusJSON
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+
+	if result.Enabled {
+		t.Error("Expected enabled=false")
+	}
+	if result.Error != "not a git repository" {
+		t.Errorf("Expected error='not a git repository', got %q", result.Error)
+	}
+}
+
+func TestRunStatusJSON_WithActiveSessions(t *testing.T) {
+	setupTestRepo(t)
+	writeSettings(t, testSettingsEnabled)
+	writeClaudeHooksFixture(t)
+
+	store, err := session.NewStateStore(context.Background())
+	if err != nil {
+		t.Fatalf("NewStateStore() error = %v", err)
+	}
+
+	state := &session.State{
+		SessionID:    "test-json-session",
+		WorktreePath: "/test/repo",
+		StartedAt:    time.Now(),
+		Phase:        session.PhaseActive,
+		AgentType:    "Claude Code",
+		ModelName:    "sonnet-4.1",
+	}
+	if err := store.Save(context.Background(), state); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	var stdout bytes.Buffer
+	if err := runStatus(context.Background(), &stdout, false, true); err != nil {
+		t.Fatalf("runStatus() error = %v", err)
+	}
+
+	var result statusJSON
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+
+	if len(result.ActiveSessions) != 1 {
+		t.Fatalf("Expected 1 active session, got %d", len(result.ActiveSessions))
+	}
+	s := result.ActiveSessions[0]
+	if s.Agent != "Claude Code" {
+		t.Errorf("Expected agent='Claude Code', got %q", s.Agent)
+	}
+	if s.Model != "sonnet-4.1" {
+		t.Errorf("Expected model='sonnet-4.1', got %q", s.Model)
+	}
+	if s.Status != "active" {
+		t.Errorf("Expected status='active', got %q", s.Status)
+	}
+}
+
+func TestRunStatusJSON_DeduplicatesSessions(t *testing.T) {
+	setupTestRepo(t)
+	writeSettings(t, testSettingsEnabled)
+
+	store, err := session.NewStateStore(context.Background())
+	if err != nil {
+		t.Fatalf("NewStateStore() error = %v", err)
+	}
+
+	now := time.Now()
+	states := []*session.State{
+		{
+			SessionID:    "codex-idle-1",
+			WorktreePath: "/test/repo",
+			StartedAt:    now.Add(-30 * time.Minute),
+			Phase:        session.PhaseIdle,
+			AgentType:    "Codex",
+		},
+		{
+			SessionID:    "codex-idle-2",
+			WorktreePath: "/test/repo",
+			StartedAt:    now.Add(-20 * time.Minute),
+			Phase:        session.PhaseIdle,
+			AgentType:    "Codex",
+		},
+		{
+			SessionID:    "codex-active",
+			WorktreePath: "/test/repo",
+			StartedAt:    now.Add(-5 * time.Minute),
+			Phase:        session.PhaseActive,
+			AgentType:    "Codex",
+			ModelName:    "codex-mini",
+		},
+	}
+	for _, s := range states {
+		if err := store.Save(context.Background(), s); err != nil {
+			t.Fatalf("Save() error = %v", err)
+		}
+	}
+
+	var stdout bytes.Buffer
+	if err := runStatus(context.Background(), &stdout, false, true); err != nil {
+		t.Fatalf("runStatus() error = %v", err)
+	}
+
+	var result statusJSON
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+
+	if len(result.ActiveSessions) != 1 {
+		t.Fatalf("Expected 1 deduplicated session, got %d", len(result.ActiveSessions))
+	}
+	s := result.ActiveSessions[0]
+	if s.Agent != "Codex" {
+		t.Errorf("Expected agent='Codex', got %q", s.Agent)
+	}
+	if s.Status != "active" {
+		t.Errorf("Expected status='active' (active wins over idle), got %q", s.Status)
+	}
+	if s.Model != "codex-mini" {
+		t.Errorf("Expected model='codex-mini' from active session, got %q", s.Model)
 	}
 }

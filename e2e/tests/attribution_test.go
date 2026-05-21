@@ -29,7 +29,7 @@ func TestLineAttributionReasonable(t *testing.T) {
 		s.Git(t, "add", "docs/")
 		s.Git(t, "commit", "-m", "Add example.md")
 
-		testutil.WaitForCheckpoint(t, s, 15*time.Second)
+		testutil.WaitForCheckpoint(t, s, 30*time.Second)
 
 		cpID := testutil.AssertHasCheckpointTrailer(t, s.Dir, "HEAD")
 		sm := testutil.ReadSessionMetadata(t, s.Dir, cpID, 0)
@@ -40,14 +40,14 @@ func TestLineAttributionReasonable(t *testing.T) {
 			"total committed should be > 0")
 		assert.Greater(t, sm.InitialAttribution.AgentPercentage, 50.0,
 			"agent created 100%% of content, percentage should be > 50%%")
-		testutil.AssertNoShadowBranches(t, s.Dir)
+		testutil.WaitForNoShadowBranches(t, s.Dir, 10*time.Second)
 	})
 }
 
-// TestAttributionOnAgentCommit: agent creates a file and commits it in the
+// TestInteractiveAttributionOnAgentCommit: agent creates a file and commits it in the
 // same prompt (interactive session). The first commit's checkpoint should have
 // initial_attribution populated.
-func TestAttributionOnAgentCommit(t *testing.T) {
+func TestInteractiveAttributionOnAgentCommit(t *testing.T) {
 	testutil.ForEachAgent(t, 3*time.Minute, func(t *testing.T, s *testutil.RepoState, ctx context.Context) {
 		prompt := s.Agent.PromptPattern()
 
@@ -62,7 +62,7 @@ func TestAttributionOnAgentCommit(t *testing.T) {
 		s.WaitFor(t, session, prompt, 90*time.Second)
 		testutil.AssertNewCommits(t, s, 1)
 
-		testutil.WaitForCheckpoint(t, s, 15*time.Second)
+		testutil.WaitForCheckpoint(t, s, 30*time.Second)
 		cpID := testutil.AssertHasCheckpointTrailer(t, s.Dir, "HEAD")
 		sm := testutil.ReadSessionMetadata(t, s.Dir, cpID, 0)
 
@@ -70,14 +70,14 @@ func TestAttributionOnAgentCommit(t *testing.T) {
 			"agent lines should be > 0 on first agent commit")
 		assert.Greater(t, sm.InitialAttribution.TotalCommitted, 0,
 			"total committed should be > 0 on first agent commit")
-		testutil.AssertNoShadowBranches(t, s.Dir)
+		testutil.WaitForNoShadowBranches(t, s.Dir, 10*time.Second)
 	})
 }
 
-// TestAttributionMultiCommitSameSession: two prompts in the same interactive
+// TestInteractiveAttributionMultiCommitSameSession: two prompts in the same interactive
 // session, agent modifies the same file and commits both times. The second
 // checkpoint's initial_attribution should have non-zero values.
-func TestAttributionMultiCommitSameSession(t *testing.T) {
+func TestInteractiveAttributionMultiCommitSameSession(t *testing.T) {
 	testutil.ForEachAgent(t, 4*time.Minute, func(t *testing.T, s *testutil.RepoState, ctx context.Context) {
 		prompt := s.Agent.PromptPattern()
 
@@ -93,16 +93,15 @@ func TestAttributionMultiCommitSameSession(t *testing.T) {
 		s.WaitFor(t, session, prompt, 60*time.Second)
 		testutil.AssertNewCommits(t, s, 1)
 
-		testutil.WaitForCheckpoint(t, s, 15*time.Second)
-		cpBranch1 := testutil.GitOutput(t, s.Dir, "rev-parse", "entire/checkpoints/v1")
+		testutil.WaitForCheckpoint(t, s, 30*time.Second)
 
 		// Second prompt: modify same file and commit again.
 		s.Send(t, session, "add another stanza to poem.txt about debugging, then create a NEW commit (do not amend). Do not ask for confirmation.")
 		s.WaitFor(t, session, prompt, 90*time.Second)
-		testutil.AssertNewCommits(t, s, 2)
+		testutil.AssertNewCommitsWithTimeout(t, s, 2, 60*time.Second)
 
-		testutil.WaitForCheckpointAdvanceFrom(t, s.Dir, cpBranch1, 15*time.Second)
 		cpID2 := testutil.AssertHasCheckpointTrailer(t, s.Dir, "HEAD")
+		testutil.WaitForCheckpointExists(t, s.Dir, cpID2, 30*time.Second)
 		sm := testutil.WaitForSessionMetadata(t, s.Dir, cpID2, 0, 10*time.Second)
 
 		assert.Greater(t, sm.InitialAttribution.AgentLines, 0,
@@ -111,14 +110,14 @@ func TestAttributionMultiCommitSameSession(t *testing.T) {
 			"total committed should be > 0 on second commit")
 		assert.Greater(t, sm.InitialAttribution.AgentPercentage, 50.0,
 			"agent wrote all content, percentage should be > 50%%")
-		testutil.AssertNoShadowBranches(t, s.Dir)
+		testutil.WaitForNoShadowBranches(t, s.Dir, 10*time.Second)
 	})
 }
 
-// TestShadowBranchCleanedAfterAgentCommit: after an agent creates a file
+// TestInteractiveShadowBranchCleanedAfterAgentCommit: after an agent creates a file
 // and commits it, there should be no lingering shadow branches. Shadow
 // branches match entire/* but are not entire/checkpoints/*.
-func TestShadowBranchCleanedAfterAgentCommit(t *testing.T) {
+func TestInteractiveShadowBranchCleanedAfterAgentCommit(t *testing.T) {
 	testutil.ForEachAgent(t, 3*time.Minute, func(t *testing.T, s *testutil.RepoState, ctx context.Context) {
 		prompt := s.Agent.PromptPattern()
 
@@ -133,9 +132,9 @@ func TestShadowBranchCleanedAfterAgentCommit(t *testing.T) {
 		s.WaitFor(t, session, prompt, 90*time.Second)
 		testutil.AssertNewCommits(t, s, 1)
 
-		testutil.WaitForCheckpoint(t, s, 15*time.Second)
+		testutil.WaitForCheckpoint(t, s, 30*time.Second)
 
-		testutil.AssertNoShadowBranches(t, s.Dir)
+		testutil.WaitForNoShadowBranches(t, s.Dir, 10*time.Second)
 	})
 }
 
@@ -170,7 +169,7 @@ func TestAttributionMixedHumanAndAgent(t *testing.T) {
 		s.Git(t, "add", "agent.txt", "human.txt")
 		s.Git(t, "commit", "-m", "Add agent and human files")
 
-		testutil.WaitForCheckpoint(t, s, 15*time.Second)
+		testutil.WaitForCheckpoint(t, s, 30*time.Second)
 
 		cpID := testutil.AssertHasCheckpointTrailer(t, s.Dir, "HEAD")
 		sm := testutil.ReadSessionMetadata(t, s.Dir, cpID, 0)

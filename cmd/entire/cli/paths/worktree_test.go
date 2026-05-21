@@ -55,6 +55,22 @@ func TestGetWorktreeID(t *testing.T) {
 			errContain: "invalid .git file format",
 		},
 		{
+			name: "bare repo worktree simple name",
+			setupFunc: func(dir string) error {
+				content := "gitdir: /some/repo/.bare/worktrees/main\n"
+				return os.WriteFile(filepath.Join(dir, ".git"), []byte(content), 0o644)
+			},
+			wantID: "main",
+		},
+		{
+			name: "bare repo worktree with subdirectory name",
+			setupFunc: func(dir string) error {
+				content := "gitdir: /repo/.bare/worktrees/feature/login\n"
+				return os.WriteFile(filepath.Join(dir, ".git"), []byte(content), 0o644)
+			},
+			wantID: "feature/login",
+		},
+		{
 			name: "gitdir without worktrees path",
 			setupFunc: func(dir string) error {
 				content := "gitdir: /some/repo/.git\n"

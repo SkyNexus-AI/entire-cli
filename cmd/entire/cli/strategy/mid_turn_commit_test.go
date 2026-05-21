@@ -12,8 +12,8 @@ import (
 	"github.com/entireio/cli/cmd/entire/cli/paths"
 	"github.com/entireio/cli/cmd/entire/cli/session"
 
-	"github.com/go-git/go-git/v5"
-	"github.com/go-git/go-git/v5/plumbing/object"
+	"github.com/go-git/go-git/v6"
+	"github.com/go-git/go-git/v6/plumbing/object"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -61,6 +61,9 @@ func TestSessionHasNewContentFromLiveTranscript_NormalizesAbsolutePaths(t *testi
 `
 	transcriptPath := filepath.Join(dir, "transcript.jsonl")
 	require.NoError(t, os.WriteFile(transcriptPath, []byte(transcriptContent), 0o644))
+	// Backdate so waitForTranscriptFlush treats it as stale and skips the 3s poll.
+	stale := time.Now().Add(-3 * time.Minute)
+	require.NoError(t, os.Chtimes(transcriptPath, stale, stale))
 
 	// Create session state: no shadow branch (it was deleted after last condensation),
 	// transcript path points to the file, agent type is Claude Code
@@ -84,8 +87,10 @@ func TestSessionHasNewContentFromLiveTranscript_NormalizesAbsolutePaths(t *testi
 	require.NoError(t, s.saveSessionState(context.Background(), state))
 
 	// Call sessionHasNewContent — should fall through to live transcript check
-	// since there's no shadow branch
-	hasNew, err := s.sessionHasNewContent(context.Background(), repo, state)
+	// since there's no shadow branch. Pass staged files via contentCheckOpts.
+	stagedFiles, err := getStagedFiles(context.Background())
+	require.NoError(t, err)
+	hasNew, err := s.sessionHasNewContent(context.Background(), repo, state, contentCheckOpts{stagedFiles: stagedFiles})
 	require.NoError(t, err)
 	assert.True(t, hasNew,
 		"sessionHasNewContent should return true when transcript has absolute paths "+
@@ -139,6 +144,9 @@ func TestSessionHasNewContentFromLiveTranscript_IncludesSubagentFiles(t *testing
 `
 	transcriptPath := filepath.Join(transcriptDir, "transcript.jsonl")
 	require.NoError(t, os.WriteFile(transcriptPath, []byte(mainTranscript), 0o644))
+	// Backdate so waitForTranscriptFlush treats it as stale and skips the 3s poll.
+	staleTime := time.Now().Add(-3 * time.Minute)
+	require.NoError(t, os.Chtimes(transcriptPath, staleTime, staleTime))
 
 	// Create the subagent transcript with a Write tool_use targeting the staged file.
 	// Path: <transcriptDir>/<modelSessionID>/subagents/agent-sub123.jsonl
@@ -174,8 +182,11 @@ func TestSessionHasNewContentFromLiveTranscript_IncludesSubagentFiles(t *testing
 	require.NoError(t, s.saveSessionState(context.Background(), state))
 
 	// Call sessionHasNewContent — should fall through to live transcript check
-	// since there's no shadow branch, and should detect subagent file modifications
-	hasNew, err := s.sessionHasNewContent(context.Background(), repo, state)
+	// since there's no shadow branch, and should detect subagent file modifications.
+	// Pass staged files via contentCheckOpts.
+	stagedFiles, err := getStagedFiles(context.Background())
+	require.NoError(t, err)
+	hasNew, err := s.sessionHasNewContent(context.Background(), repo, state, contentCheckOpts{stagedFiles: stagedFiles})
 	require.NoError(t, err)
 	assert.True(t, hasNew,
 		"sessionHasNewContent should return true when subagent transcript "+

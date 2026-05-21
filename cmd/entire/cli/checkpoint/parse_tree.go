@@ -1,15 +1,22 @@
 package checkpoint
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"log/slog"
+	"os/exec"
+	"path/filepath"
 	"strings"
 
+	"github.com/entireio/cli/cmd/entire/cli/checkpoint/id"
+	"github.com/entireio/cli/cmd/entire/cli/logging"
 	"github.com/entireio/cli/cmd/entire/cli/paths"
 
-	"github.com/go-git/go-git/v5"
-	"github.com/go-git/go-git/v5/plumbing"
-	"github.com/go-git/go-git/v5/plumbing/filemode"
-	"github.com/go-git/go-git/v5/plumbing/object"
+	"github.com/go-git/go-git/v6"
+	"github.com/go-git/go-git/v6/plumbing"
+	"github.com/go-git/go-git/v6/plumbing/filemode"
+	"github.com/go-git/go-git/v6/plumbing/object"
 )
 
 // TreeChange represents a single file change within a tree.
@@ -195,6 +202,7 @@ func storeTree(repo *git.Repository, entries []object.TreeEntry) (plumbing.Hash,
 // Unchanged subdirectories retain their hashes — this is the key optimization
 // over FlattenTree + BuildTreeFromEntries for sparse changes.
 func ApplyTreeChanges(
+	ctx context.Context,
 	repo *git.Repository,
 	rootTreeHash plumbing.Hash,
 	changes []TreeChange,
@@ -203,15 +211,23 @@ func ApplyTreeChanges(
 		return rootTreeHash, nil
 	}
 
-	// Read the current root tree
 	var currentEntries []object.TreeEntry
 	if rootTreeHash != plumbing.ZeroHash {
 		tree, err := repo.TreeObject(rootTreeHash)
 		if err != nil {
-			return plumbing.ZeroHash, fmt.Errorf("failed to read tree: %w", err)
+			cliEntries, cliErr := readTreeEntriesViaCLI(ctx, rootTreeHash)
+			if cliErr != nil {
+				return plumbing.ZeroHash, fmt.Errorf("failed to read tree: %w", errors.Join(err, cliErr))
+			}
+			logging.Warn(ctx, "ApplyTreeChanges: go-git tree read failed, used git ls-tree fallback",
+				slog.String("tree", rootTreeHash.String()[:12]),
+				slog.String("gogit_error", err.Error()),
+			)
+			currentEntries = cliEntries
+		} else {
+			currentEntries = make([]object.TreeEntry, len(tree.Entries))
+			copy(currentEntries, tree.Entries)
 		}
-		currentEntries = make([]object.TreeEntry, len(tree.Entries))
-		copy(currentEntries, tree.Entries)
 	}
 
 	// Group changes by first path segment
@@ -223,12 +239,19 @@ func ApplyTreeChanges(
 
 	for i := range changes {
 		c := changes[i]
-		first, rest := splitFirstSegment(c.Path)
+		normalizedPath, err := normalizeGitTreePath(c.Path)
+		if err != nil {
+			logInvalidGitTreePath(ctx, "apply tree change", c.Path, err)
+			continue
+		}
+
+		first, rest := splitFirstSegment(normalizedPath)
 		if grouped[first] == nil {
 			grouped[first] = &dirChanges{}
 		}
 		if rest == "" {
 			cc := c
+			cc.Path = normalizedPath
 			grouped[first].fileChange = &cc
 		} else {
 			grouped[first].subChanges = append(grouped[first].subChanges, TreeChange{
@@ -262,7 +285,7 @@ func ApplyTreeChanges(
 			if existing, ok := entryMap[name]; ok && existing.Mode == filemode.Dir {
 				existingHash = existing.Hash
 			}
-			newSubHash, err := ApplyTreeChanges(repo, existingHash, dc.subChanges)
+			newSubHash, err := ApplyTreeChanges(ctx, repo, existingHash, dc.subChanges)
 			if err != nil {
 				return plumbing.ZeroHash, fmt.Errorf("failed to apply changes in %s: %w", name, err)
 			}
@@ -280,6 +303,133 @@ func ApplyTreeChanges(
 	}
 	sortTreeEntries(result)
 	return storeTree(repo, result)
+}
+
+// readTreeEntriesViaCLI parses `git ls-tree <hash>` into go-git TreeEntry
+// values. Fallback for go-git tree reads that fail in partial-clone repos
+// where the storer's packfile index has gone stale — analogous to the
+// blob-side workaround in FetchingTree.blobOnDisk.
+func readTreeEntriesViaCLI(ctx context.Context, hash plumbing.Hash) ([]object.TreeEntry, error) {
+	short := hash.String()[:12]
+	cmd := exec.CommandContext(ctx, "git", "ls-tree", hash.String())
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("git ls-tree %s: %w", short, err)
+	}
+	trimmed := strings.TrimRight(string(output), "\n")
+	if trimmed == "" {
+		return nil, nil
+	}
+	lines := strings.Split(trimmed, "\n")
+	entries := make([]object.TreeEntry, 0, len(lines))
+	for _, line := range lines {
+		// Format: "<mode> <type> <hash>\t<name>"
+		tab := strings.IndexByte(line, '\t')
+		if tab < 0 {
+			return nil, fmt.Errorf("git ls-tree %s: malformed line %q", short, line)
+		}
+		name := line[tab+1:]
+		fields := strings.Fields(line[:tab])
+		if len(fields) != 3 {
+			return nil, fmt.Errorf("git ls-tree %s: malformed entry %q", short, line)
+		}
+		mode, modeErr := filemode.New(fields[0])
+		if modeErr != nil {
+			return nil, fmt.Errorf("git ls-tree %s: invalid mode %q: %w", short, fields[0], modeErr)
+		}
+		entries = append(entries, object.TreeEntry{
+			Name: name,
+			Mode: mode,
+			Hash: plumbing.NewHash(fields[2]),
+		})
+	}
+	return entries, nil
+}
+
+// WalkCheckpointShards iterates over the two-level shard structure (<id[:2]>/<id[2:]>/)
+// in a checkpoint tree, calling fn for each checkpoint found. Skips non-directory entries
+// at both levels (e.g., generation.json at the root). The callback receives the parsed
+// checkpoint ID and the tree hash of the checkpoint subtree.
+func WalkCheckpointShards(ctx context.Context, repo *git.Repository, tree *object.Tree, fn func(cpID id.CheckpointID, cpTreeHash plumbing.Hash) error) error {
+	for _, bucketEntry := range tree.Entries {
+		if err := ctx.Err(); err != nil {
+			return err //nolint:wrapcheck // propagate context cancellation unwrapped
+		}
+		if bucketEntry.Mode != filemode.Dir {
+			continue
+		}
+		if len(bucketEntry.Name) != 2 {
+			continue
+		}
+
+		bucketTree, err := repo.TreeObject(bucketEntry.Hash)
+		if err != nil {
+			continue
+		}
+
+		if err := ctx.Err(); err != nil {
+			return err //nolint:wrapcheck // propagate context cancellation unwrapped
+		}
+		for _, cpEntry := range bucketTree.Entries {
+			if cpEntry.Mode != filemode.Dir {
+				continue
+			}
+
+			cpID, err := id.NewCheckpointID(bucketEntry.Name + cpEntry.Name)
+			if err != nil {
+				continue
+			}
+
+			if err := fn(cpID, cpEntry.Hash); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func normalizeGitTreePath(path string) (string, error) {
+	if path == "" {
+		return "", errors.New("path is empty")
+	}
+
+	path = filepath.ToSlash(path)
+	if isAbsoluteGitTreePath(path) {
+		return "", errors.New("path must be relative")
+	}
+
+	parts := strings.Split(path, "/")
+	for _, part := range parts {
+		if part == "" {
+			return "", errors.New("path contains empty segment")
+		}
+		if part == "." || part == ".." {
+			return "", fmt.Errorf("path contains invalid segment %q", part)
+		}
+	}
+
+	return path, nil
+}
+
+func isAbsoluteGitTreePath(path string) bool {
+	if filepath.IsAbs(path) {
+		return true
+	}
+
+	if len(path) >= 3 && path[1] == ':' && path[2] == '/' {
+		drive := path[0]
+		return (drive >= 'a' && drive <= 'z') || (drive >= 'A' && drive <= 'Z')
+	}
+
+	return false
+}
+
+func logInvalidGitTreePath(ctx context.Context, operation, path string, err error) {
+	logging.Warn(ctx, "skipping invalid git tree path",
+		slog.String("operation", operation),
+		slog.String("path", path),
+		slog.String("error", err.Error()),
+	)
 }
 
 // splitFirstSegment splits "a/b/c" into ("a", "b/c"), and "file.txt" into ("file.txt", "").

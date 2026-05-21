@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 
 	"github.com/entireio/cli/cmd/entire/cli/jsonutil"
+	"github.com/entireio/cli/cmd/entire/cli/osroot"
 	"github.com/entireio/cli/cmd/entire/cli/paths"
 )
 
@@ -26,8 +27,9 @@ func TaskMetadataDir(sessionMetadataDir, toolUseID string) string {
 
 // WriteTaskCheckpoint writes the checkpoint.json file to the task metadata directory.
 // Creates the directory if it doesn't exist.
+// Uses os.Root for traversal-resistant file writes within the metadata directory.
 func WriteTaskCheckpoint(taskMetadataDir string, checkpoint *TaskCheckpoint) error {
-	// Create directory if it doesn't exist
+	// Create directory if it doesn't exist (MkdirAll not available on os.Root)
 	if err := os.MkdirAll(taskMetadataDir, 0o750); err != nil {
 		return fmt.Errorf("failed to create task metadata directory: %w", err)
 	}
@@ -37,8 +39,14 @@ func WriteTaskCheckpoint(taskMetadataDir string, checkpoint *TaskCheckpoint) err
 		return fmt.Errorf("failed to marshal checkpoint: %w", err)
 	}
 
-	checkpointFile := filepath.Join(taskMetadataDir, paths.CheckpointFileName)
-	if err := os.WriteFile(checkpointFile, data, 0o600); err != nil {
+	// Use os.Root scoped to the metadata directory for traversal-resistant write
+	root, err := os.OpenRoot(taskMetadataDir)
+	if err != nil {
+		return fmt.Errorf("failed to open task metadata directory: %w", err)
+	}
+	defer root.Close()
+
+	if err := osroot.WriteFile(root, paths.CheckpointFileName, data, 0o600); err != nil {
 		return fmt.Errorf("failed to write checkpoint file: %w", err)
 	}
 
@@ -46,10 +54,15 @@ func WriteTaskCheckpoint(taskMetadataDir string, checkpoint *TaskCheckpoint) err
 }
 
 // ReadTaskCheckpoint reads the checkpoint file from the task metadata directory.
+// Uses os.Root for traversal-resistant file reads within the metadata directory.
 func ReadTaskCheckpoint(taskMetadataDir string) (*TaskCheckpoint, error) {
-	checkpointFile := filepath.Join(taskMetadataDir, paths.CheckpointFileName)
+	root, err := os.OpenRoot(taskMetadataDir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open task metadata directory: %w", err)
+	}
+	defer root.Close()
 
-	data, err := os.ReadFile(checkpointFile) //nolint:gosec // Reading from controlled git metadata path
+	data, err := osroot.ReadFile(root, paths.CheckpointFileName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read checkpoint file: %w", err)
 	}
@@ -63,9 +76,15 @@ func ReadTaskCheckpoint(taskMetadataDir string) (*TaskCheckpoint, error) {
 }
 
 // WriteTaskPrompt writes the task prompt to the task metadata directory.
+// Uses os.Root for traversal-resistant file writes within the metadata directory.
 func WriteTaskPrompt(taskMetadataDir, prompt string) error {
-	promptFile := filepath.Join(taskMetadataDir, paths.PromptFileName)
-	if err := os.WriteFile(promptFile, []byte(prompt), 0o600); err != nil {
+	root, err := os.OpenRoot(taskMetadataDir)
+	if err != nil {
+		return fmt.Errorf("failed to open task metadata directory: %w", err)
+	}
+	defer root.Close()
+
+	if err := osroot.WriteFile(root, paths.PromptFileName, []byte(prompt), 0o600); err != nil {
 		return fmt.Errorf("failed to write prompt file: %w", err)
 	}
 	return nil

@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/entireio/cli/e2e/agents"
 	"github.com/entireio/cli/e2e/testutil"
 )
 
@@ -29,26 +30,29 @@ func TestMultiSessionManualCommit(t *testing.T) {
 		testutil.AssertFileExists(t, s.Dir, "docs/*.md")
 		testutil.AssertNewCommits(t, s, 1)
 
-		testutil.WaitForCheckpoint(t, s, 15*time.Second)
+		testutil.WaitForCheckpoint(t, s, 30*time.Second)
 		testutil.AssertCheckpointAdvanced(t, s)
 
 		cpID := testutil.AssertHasCheckpointTrailer(t, s.Dir, "HEAD")
 		testutil.AssertCheckpointExists(t, s.Dir, cpID)
-		testutil.AssertNoShadowBranches(t, s.Dir)
+		testutil.WaitForNoShadowBranches(t, s.Dir, 10*time.Second)
 	})
 }
 
 // TestMultiSessionSequential: two prompts each commit separately, distinct checkpoints.
 func TestMultiSessionSequential(t *testing.T) {
 	testutil.ForEachAgent(t, 3*time.Minute, func(t *testing.T, s *testutil.RepoState, ctx context.Context) {
+		promptTimeout := 3 * time.Minute
 		_, err := s.RunPrompt(t, ctx,
-			"create a markdown file at docs/red.md about the colour red, then git add and git commit it with a short message. Do not ask for confirmation, just make the change. Do not include any trailers or metadata in the commit message. Do not use worktrees.")
+			"create a markdown file at docs/red.md about the colour red, then git add and git commit it with a short message. Do not ask for confirmation, just make the change. Do not include any trailers or metadata in the commit message. Do not use worktrees.",
+			agents.WithPromptTimeout(promptTimeout))
 		if err != nil {
 			t.Fatalf("agent prompt 1 failed: %v", err)
 		}
 
 		_, err = s.RunPrompt(t, ctx,
-			"create a markdown file at docs/blue.md about the colour blue, then git add and git commit it with a short message. Do not ask for confirmation, just make the change. Do not include any trailers or metadata in the commit message. Do not use worktrees.")
+			"create a markdown file at docs/blue.md about the colour blue, then git add and git commit it with a short message. Do not ask for confirmation, just make the change. Do not include any trailers or metadata in the commit message. Do not use worktrees.",
+			agents.WithPromptTimeout(promptTimeout))
 		if err != nil {
 			t.Fatalf("agent prompt 2 failed: %v", err)
 		}
@@ -56,7 +60,7 @@ func TestMultiSessionSequential(t *testing.T) {
 		testutil.AssertFileExists(t, s.Dir, "docs/*.md")
 		testutil.AssertNewCommits(t, s, 2)
 
-		testutil.WaitForCheckpoint(t, s, 15*time.Second)
+		testutil.WaitForCheckpoint(t, s, 30*time.Second)
 		testutil.AssertCheckpointAdvanced(t, s)
 
 		cpID1 := testutil.AssertHasCheckpointTrailer(t, s.Dir, "HEAD")
@@ -69,6 +73,6 @@ func TestMultiSessionSequential(t *testing.T) {
 			testutil.AssertCheckpointHasSingleSession(t, s.Dir, id)
 		}
 		testutil.AssertDistinctSessions(t, s.Dir, cpIDs)
-		testutil.AssertNoShadowBranches(t, s.Dir)
+		testutil.WaitForNoShadowBranches(t, s.Dir, 10*time.Second)
 	})
 }

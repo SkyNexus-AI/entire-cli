@@ -5,14 +5,19 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/entireio/cli/cmd/entire/cli/agent"
+	"github.com/entireio/cli/cmd/entire/cli/logging"
 	"github.com/entireio/cli/cmd/entire/cli/paths"
+	"github.com/entireio/cli/cmd/entire/cli/validation"
 )
+
+var runOpenCodeExportToFileFn = runOpenCodeExportToFile
 
 // Hook name constants — these become CLI subcommands under `entire hooks opencode`.
 const (
@@ -53,35 +58,34 @@ func (a *OpenCodeAgent) ParseHookEvent(ctx context.Context, hookName string, std
 		if err != nil {
 			return nil, err
 		}
-		// Get the temp file path for this session (may not exist yet, but needed for pre-prompt state).
-		repoRoot, err := paths.WorktreeRoot(ctx)
+		transcriptPath, err := sessionTranscriptPath(ctx, raw.SessionID)
 		if err != nil {
-			repoRoot = "."
+			return nil, err
 		}
-		tmpDir := filepath.Join(repoRoot, paths.EntireTmpDir)
-		transcriptPath := filepath.Join(tmpDir, raw.SessionID+".json")
 		return &agent.Event{
 			Type:       agent.TurnStart,
 			SessionID:  raw.SessionID,
 			SessionRef: transcriptPath,
 			Prompt:     raw.Prompt,
+			Model:      raw.Model,
 			Timestamp:  time.Now(),
 		}, nil
 
 	case HookNameTurnEnd:
-		raw, err := agent.ReadAndParseHookInput[sessionInfoRaw](stdin)
+		raw, err := agent.ReadAndParseHookInput[turnEndRaw](stdin)
 		if err != nil {
 			return nil, err
 		}
-		// Call `opencode export` to get the transcript and write to temp file
-		transcriptPath, exportErr := a.fetchAndCacheExport(ctx, raw.SessionID)
-		if exportErr != nil {
-			return nil, fmt.Errorf("failed to export session: %w", exportErr)
+		// Export is deferred to PrepareTranscript; we just compute the path here.
+		transcriptPath, err := sessionTranscriptPath(ctx, raw.SessionID)
+		if err != nil {
+			return nil, err
 		}
 		return &agent.Event{
 			Type:       agent.TurnEnd,
 			SessionID:  raw.SessionID,
 			SessionRef: transcriptPath,
+			Model:      raw.Model,
 			Timestamp:  time.Now(),
 		}, nil
 
@@ -141,6 +145,18 @@ func (a *OpenCodeAgent) PrepareTranscript(ctx context.Context, sessionRef string
 	return err
 }
 
+// sessionTranscriptPath validates the session ID and returns the expected transcript path.
+func sessionTranscriptPath(ctx context.Context, sessionID string) (string, error) {
+	if err := validation.ValidateSessionID(sessionID); err != nil {
+		return "", fmt.Errorf("invalid session ID for transcript path: %w", err)
+	}
+	repoRoot, err := paths.WorktreeRoot(ctx)
+	if err != nil {
+		repoRoot = "."
+	}
+	return filepath.Join(repoRoot, paths.EntireTmpDir, sessionID+".json"), nil
+}
+
 // fetchAndCacheExport calls `opencode export <sessionID>` and writes the result
 // to a temporary file. Returns the path to the temp file.
 //
@@ -149,6 +165,10 @@ func (a *OpenCodeAgent) PrepareTranscript(ctx context.Context, sessionRef string
 // pre-write the transcript file to .entire/tmp/<sessionID>.json before
 // triggering the hook. See integration_test/hooks.go:SimulateOpenCodeTurnEnd.
 func (a *OpenCodeAgent) fetchAndCacheExport(ctx context.Context, sessionID string) (string, error) {
+	if err := validation.ValidateSessionID(sessionID); err != nil {
+		return "", fmt.Errorf("invalid session ID for export: %w", err)
+	}
+
 	// Get worktree root for the temp directory
 	repoRoot, err := paths.WorktreeRoot(ctx)
 	if err != nil {
@@ -166,24 +186,29 @@ func (a *OpenCodeAgent) fetchAndCacheExport(ctx context.Context, sessionID strin
 		return "", fmt.Errorf("mock export file not found: %s (ENTIRE_TEST_OPENCODE_MOCK_EXPORT is set)", tmpFile)
 	}
 
-	// Call opencode export to get the transcript (always refresh on each turn)
-	data, err := runOpenCodeExport(ctx, sessionID)
-	if err != nil {
-		return "", fmt.Errorf("opencode export failed: %w", err)
-	}
-
-	// Validate output is valid JSON before caching
-	if !json.Valid(data) {
-		return "", fmt.Errorf("opencode export returned invalid JSON (%d bytes)", len(data))
-	}
-
-	// Write to temp directory under .entire
+	// Write export directly to temp file under .entire. Avoid stdout capture,
+	// which can truncate large payloads in some opencode versions.
 	if err := os.MkdirAll(tmpDir, 0o750); err != nil {
 		return "", fmt.Errorf("failed to create temp dir: %w", err)
 	}
 
-	if err := os.WriteFile(tmpFile, data, 0o600); err != nil {
-		return "", fmt.Errorf("failed to write export file: %w", err)
+	if err := runOpenCodeExportToFileFn(ctx, sessionID, tmpFile); err != nil {
+		return "", fmt.Errorf("opencode export failed: %w", err)
+	}
+
+	//nolint:gosec // tmpFile is constructed from validated session ID under repo .entire/tmp
+	data, err := os.ReadFile(tmpFile)
+	if err != nil {
+		return "", fmt.Errorf("failed to read export file: %w", err)
+	}
+
+	if !json.Valid(data) {
+		logging.Debug(logging.WithComponent(ctx, "lifecycle"),
+			"opencode export file contained invalid JSON",
+			slog.Int("bytes", len(data)),
+			slog.String("path", tmpFile),
+		)
+		return "", fmt.Errorf("opencode export returned invalid JSON (%d bytes)", len(data))
 	}
 
 	return tmpFile, nil

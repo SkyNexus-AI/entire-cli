@@ -8,13 +8,14 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
-	"github.com/go-git/go-git/v5"
-	"github.com/go-git/go-git/v5/plumbing"
-	"github.com/go-git/go-git/v5/plumbing/format/config"
-	"github.com/go-git/go-git/v5/plumbing/object"
+	"github.com/go-git/go-git/v6"
+	"github.com/go-git/go-git/v6/plumbing"
+	"github.com/go-git/go-git/v6/plumbing/format/config"
+	"github.com/go-git/go-git/v6/plumbing/object"
 )
 
 // RewindPoint mirrors the rewind --list JSON output.
@@ -51,6 +52,7 @@ func InitRepo(t *testing.T, repoDir string) {
 		cfg.Raw = config.New()
 	}
 	cfg.Raw.Section("commit").SetOption("gpgsign", "false")
+	cfg.Core.AutoCRLF = "true"
 
 	if err := repo.SetConfig(cfg); err != nil {
 		t.Fatalf("failed to set repo config: %v", err)
@@ -187,6 +189,28 @@ func GetHeadHash(t *testing.T, repoDir string) string {
 	return head.Hash().String()
 }
 
+// CreateBranch creates a local branch at the current HEAD.
+func CreateBranch(t *testing.T, dir string, name string) {
+	t.Helper()
+	cmd := exec.Command("git", "branch", name) //nolint:noctx // test helper, no context needed
+	cmd.Dir = dir
+	cmd.Env = GitIsolatedEnv()
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git branch %s: %v\n%s", name, err, out)
+	}
+}
+
+// GitReset runs git reset --hard to the given ref.
+func GitReset(t *testing.T, dir string, ref string) {
+	t.Helper()
+	cmd := exec.Command("git", "reset", "--hard", ref) //nolint:noctx // test helper, no context needed
+	cmd.Dir = dir
+	cmd.Env = GitIsolatedEnv()
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git reset --hard %s: %v\n%s", ref, err, out)
+	}
+}
+
 // BranchExists checks if a branch exists in the repository.
 func BranchExists(t *testing.T, repoDir, branchName string) bool {
 	t.Helper()
@@ -280,4 +304,46 @@ func SafeIDPrefix(id string) string {
 		return id[:12]
 	}
 	return id
+}
+
+// gitEmptyConfigPath returns the path to an empty file suitable for use as
+// GIT_CONFIG_GLOBAL/GIT_CONFIG_SYSTEM. We use an empty file instead of
+// os.DevNull because git on Windows cannot open NUL as a config file.
+var gitEmptyConfig string
+var gitEmptyConfigOnce sync.Once
+
+func gitEmptyConfigPath() string {
+	gitEmptyConfigOnce.Do(func() {
+		f, err := os.CreateTemp("", "git-empty-config-*")
+		if err != nil {
+			panic("create empty git config: " + err.Error())
+		}
+		_ = f.Close()
+		gitEmptyConfig = f.Name()
+	})
+	return gitEmptyConfig
+}
+
+// GitIsolatedEnv returns os.Environ() with git isolation variables set.
+// This prevents user/system git config (global gitignore, aliases, etc.) from
+// affecting test behavior. Use this for any exec.Command that runs git or the
+// CLI binary in integration tests.
+//
+// See https://git-scm.com/docs/git#Documentation/git.txt-GITCONFIGGLOBAL
+//
+// Existing GIT_CONFIG_GLOBAL/GIT_CONFIG_SYSTEM entries are filtered out before
+// appending overrides to ensure they take effect regardless of parent env.
+func GitIsolatedEnv() []string {
+	env := os.Environ()
+	filtered := make([]string, 0, len(env)+2)
+	for _, e := range env {
+		if strings.HasPrefix(e, "GIT_CONFIG_GLOBAL=") || strings.HasPrefix(e, "GIT_CONFIG_SYSTEM=") {
+			continue
+		}
+		filtered = append(filtered, e)
+	}
+	return append(filtered,
+		"GIT_CONFIG_GLOBAL="+gitEmptyConfigPath(), // Isolate from user's global git config (e.g. global gitignore)
+		"GIT_CONFIG_SYSTEM="+gitEmptyConfigPath(), // Isolate from system git config
+	)
 }

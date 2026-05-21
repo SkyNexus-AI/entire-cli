@@ -7,47 +7,22 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
-	"syscall"
 	"time"
 )
 
-// cleanConfigDir creates an isolated temp directory for CLAUDE_CONFIG_DIR so
-// that E2E test runs don't inherit any user settings (CLAUDE.md, skills,
-// projects, plugins, etc.).
-//
-// On CI, it symlinks .claude.json (which Bootstrap() wrote with the API key
-// and hasCompletedOnboarding). Locally, it writes a minimal .claude.json to
-// skip the onboarding flow — Keychain-based auth works without any other files.
-func cleanConfigDir() (string, error) {
-	dst, err := os.MkdirTemp("", "claude-config-*")
-	if err != nil {
-		return "", err
-	}
-
-	if os.Getenv("CI") != "" {
-		if home, err := os.UserHomeDir(); err == nil {
-			src := filepath.Join(home, ".claude", ".claude.json")
-			if _, err := os.Stat(src); err == nil {
-				_ = os.Symlink(src, filepath.Join(dst, ".claude.json"))
-			}
-		}
-	} else {
-		_ = os.WriteFile(filepath.Join(dst, ".claude.json"),
-			[]byte(`{"hasCompletedOnboarding":true}`), 0o644)
-	}
-
-	return dst, nil
-}
-
-// cleanEnv returns os.Environ() with CLAUDECODE removed so that
-// Claude Code doesn't refuse to start inside this test runner.
+// cleanEnv returns os.Environ() with agent-incompatible variables removed.
+// It strips CLAUDECODE (so Claude Code doesn't refuse to start inside this
+// test runner) and ENTIRE_TEST_TTY (so agents exercise the real TTY detection
+// paths instead of the test override).
 func cleanEnv() []string {
 	var env []string
 	for _, e := range os.Environ() {
-		if !strings.HasPrefix(e, "CLAUDECODE=") {
-			env = append(env, e)
+		if strings.HasPrefix(e, "CLAUDECODE=") || strings.HasPrefix(e, "ENTIRE_TEST_TTY=") {
+			continue
 		}
+		env = append(env, e)
 	}
 	return env
 }
@@ -121,7 +96,6 @@ func (c *Claude) RunPrompt(ctx context.Context, dir string, prompt string, opts 
 
 	env := append(cleanEnv(),
 		"ACCESSIBLE=1",
-		"ENTIRE_TEST_TTY=0",
 
 		// See https://code.claude.com/docs/en/settings - without this setting Claude was going off and
 		// trying to Git-clone its plugin marketplace, which meant calling git commands that could fail
@@ -138,10 +112,7 @@ func (c *Claude) RunPrompt(ctx context.Context, dir string, prompt string, opts 
 	cmd.Dir = dir
 	cmd.Stdin = nil
 	cmd.Env = env
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error {
-		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-	}
+	setupProcessGroup(cmd)
 	cmd.WaitDelay = 5 * time.Second
 
 	var stdout, stderr strings.Builder
@@ -168,6 +139,9 @@ func (c *Claude) RunPrompt(ctx context.Context, dir string, prompt string, opts 
 }
 
 func (c *Claude) StartSession(ctx context.Context, dir string) (Session, error) {
+	if runtime.GOOS == "windows" {
+		return nil, nil //nolint:nilnil // nil session signals "not supported" per Agent interface contract
+	}
 	name := fmt.Sprintf("claude-test-%d", time.Now().UnixNano())
 
 	configDir, err := cleanConfigDir()
@@ -177,7 +151,6 @@ func (c *Claude) StartSession(ctx context.Context, dir string) (Session, error) 
 
 	envArgs := []string{
 		"ACCESSIBLE=1",
-		"ENTIRE_TEST_TTY=0",
 
 		// See https://code.claude.com/docs/en/settings - without this setting Claude was going off and
 		// trying to Git-clone its plugin marketplace, which meant calling git commands that could fail
@@ -190,7 +163,7 @@ func (c *Claude) StartSession(ctx context.Context, dir string) (Session, error) 
 
 	args := append([]string{"env"}, envArgs...)
 	args = append(args, c.Binary(), "--dangerously-skip-permissions")
-	s, err := NewTmuxSession(name, dir, []string{"CLAUDECODE"}, args[0], args[1:]...)
+	s, err := NewTmuxSession(name, dir, []string{"CLAUDECODE", "ENTIRE_TEST_TTY"}, args[0], args[1:]...)
 	if err != nil {
 		_ = os.RemoveAll(configDir)
 		return nil, err
@@ -219,4 +192,28 @@ func (c *Claude) StartSession(ctx context.Context, dir string) (Session, error) 
 	s.stableAtSend = ""
 
 	return s, nil
+}
+
+// cleanConfigDir creates an isolated temp directory for CLAUDE_CONFIG_DIR so
+// that E2E test runs don't inherit any user settings (CLAUDE.md, skills,
+// projects, plugins, etc.).
+func cleanConfigDir() (string, error) {
+	dst, err := os.MkdirTemp("", "claude-config-*")
+	if err != nil {
+		return "", err
+	}
+
+	if os.Getenv("CI") != "" {
+		if home, err := os.UserHomeDir(); err == nil {
+			src := filepath.Join(home, ".claude", ".claude.json")
+			if _, err := os.Stat(src); err == nil {
+				_ = linkFile(src, filepath.Join(dst, ".claude.json"))
+			}
+		}
+	} else {
+		_ = os.WriteFile(filepath.Join(dst, ".claude.json"),
+			[]byte(`{"hasCompletedOnboarding":true}`), 0o644)
+	}
+
+	return dst, nil
 }

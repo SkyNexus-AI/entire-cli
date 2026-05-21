@@ -2,15 +2,38 @@ package cli
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/entireio/cli/cmd/entire/cli/agent/claudecode"
 	"github.com/entireio/cli/cmd/entire/cli/paths"
-	"github.com/go-git/go-git/v5"
-	"github.com/go-git/go-git/v5/plumbing/object"
+	"github.com/entireio/cli/cmd/entire/cli/testutil"
+	"github.com/go-git/go-git/v6"
+	"github.com/go-git/go-git/v6/plumbing/object"
+	"github.com/stretchr/testify/require"
 )
+
+// prePromptStateFile returns the absolute path to the pre-prompt state file for a session.
+// Test-only helper; production code constructs the filename inline.
+func prePromptStateFile(ctx context.Context, sessionID string) string {
+	tmpDirAbs, err := paths.AbsPath(ctx, paths.EntireTmpDir)
+	if err != nil {
+		tmpDirAbs = paths.EntireTmpDir
+	}
+	return filepath.Join(tmpDirAbs, fmt.Sprintf("pre-prompt-%s.json", sessionID))
+}
+
+// preTaskStateFile returns the absolute path to the pre-task state file for a tool use.
+// Test-only helper; production code constructs the filename inline.
+func preTaskStateFile(ctx context.Context, toolUseID string) string {
+	tmpDirAbs, err := paths.AbsPath(ctx, paths.EntireTmpDir)
+	if err != nil {
+		tmpDirAbs = paths.EntireTmpDir
+	}
+	return filepath.Join(tmpDirAbs, fmt.Sprintf("pre-task-%s.json", toolUseID))
+}
 
 func TestPreTaskStateFile(t *testing.T) {
 	toolUseID := "toolu_abc123"
@@ -73,9 +96,7 @@ func TestPrePromptState_BackwardCompat_LastTranscriptLineCount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadPrePromptState() error = %v", err)
 	}
-	if state == nil {
-		t.Fatal("LoadPrePromptState() returned nil")
-	}
+	require.NotNil(t, state, "LoadPrePromptState() returned nil")
 
 	if state.TranscriptOffset != 42 {
 		t.Errorf("TranscriptOffset = %d, want 42 (migrated from last_transcript_line_count)", state.TranscriptOffset)
@@ -214,6 +235,22 @@ func TestFilterAndNormalizePaths_SiblingDirectories(t *testing.T) {
 			},
 		},
 		{
+			// On Windows, git status returns paths with backslashes (e.g., "src\file.ts").
+			// filepath.ToSlash normalizes these to forward slashes for consistent storage.
+			// On Linux/macOS, filepath.Separator is already '/', so ToSlash is a no-op —
+			// we use strings.ReplaceAll to simulate the Windows input on all platforms.
+			name: "platform separator paths are normalized to forward slashes",
+			files: []string{
+				"src" + string(filepath.Separator) + "file.ts",
+				"lib" + string(filepath.Separator) + "nested" + string(filepath.Separator) + "util.go",
+			},
+			basePath: "/repo",
+			want: []string{
+				"src/file.ts",
+				"lib/nested/util.go",
+			},
+		},
+		{
 			name: "infrastructure paths are filtered",
 			files: []string{
 				"/repo/src/file.ts",
@@ -223,6 +260,18 @@ func TestFilterAndNormalizePaths_SiblingDirectories(t *testing.T) {
 			want: []string{
 				"src/file.ts",
 				// .entire path should be filtered
+			},
+		},
+		{
+			name: "agent-owned opencode paths are filtered",
+			files: []string{
+				"/repo/src/file.ts",
+				"/repo/.opencode/plugins/entire.ts",
+				"/repo/opencode.json",
+			},
+			basePath: "/repo",
+			want: []string{
+				"src/file.ts",
 			},
 		},
 	}
@@ -413,9 +462,7 @@ func TestPrePromptState_WithSummaryOnlyTranscript(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadPrePromptState() error = %v", err)
 	}
-	if state == nil {
-		t.Fatal("LoadPrePromptState() returned nil")
-	}
+	require.NotNil(t, state, "LoadPrePromptState() returned nil")
 
 	// TranscriptOffset should be 2 (2 JSONL lines counted by ClaudeCodeAgent)
 	if state.TranscriptOffset != 2 {
@@ -432,6 +479,7 @@ func TestDetectFileChanges_DeletedFilesWithNilPreState(t *testing.T) {
 	// This test verifies that DetectFileChanges detects deleted files
 	// even when previouslyUntracked is nil. Deleted file detection
 	// doesn't depend on pre-prompt state.
+	const trackedFileName = "tracked.txt"
 
 	tmpDir := t.TempDir()
 	t.Chdir(tmpDir)
@@ -443,7 +491,7 @@ func TestDetectFileChanges_DeletedFilesWithNilPreState(t *testing.T) {
 	}
 
 	// Create and commit a tracked file
-	trackedFile := filepath.Join(tmpDir, "tracked.txt")
+	trackedFile := filepath.Join(tmpDir, trackedFileName)
 	if err := os.WriteFile(trackedFile, []byte("tracked content"), 0o644); err != nil {
 		t.Fatalf("failed to write tracked file: %v", err)
 	}
@@ -453,7 +501,7 @@ func TestDetectFileChanges_DeletedFilesWithNilPreState(t *testing.T) {
 		t.Fatalf("failed to get worktree: %v", err)
 	}
 
-	if _, err := worktree.Add("tracked.txt"); err != nil {
+	if _, err := worktree.Add(trackedFileName); err != nil {
 		t.Fatalf("failed to add file: %v", err)
 	}
 
@@ -484,9 +532,9 @@ func TestDetectFileChanges_DeletedFilesWithNilPreState(t *testing.T) {
 
 	// Deleted should contain the deleted tracked file
 	if len(changes.Deleted) != 1 {
-		t.Errorf("DetectFileChanges(context.Background(),nil) Deleted = %v, want [tracked.txt]", changes.Deleted)
-	} else if changes.Deleted[0] != "tracked.txt" {
-		t.Errorf("DetectFileChanges(context.Background(),nil) Deleted[0] = %v, want tracked.txt", changes.Deleted[0])
+		t.Errorf("DetectFileChanges(context.Background(),nil) Deleted = %v, want [%s]", changes.Deleted, trackedFileName)
+	} else if changes.Deleted[0] != trackedFileName {
+		t.Errorf("DetectFileChanges(context.Background(),nil) Deleted[0] = %v, want %s", changes.Deleted[0], trackedFileName)
 	}
 }
 
@@ -700,6 +748,70 @@ func TestDetectFileChanges_NilPreviouslyUntracked_ReturnsModified(t *testing.T) 
 	}
 }
 
+func TestDetectFileChanges_IgnoresOpenCodeAgentFiles(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Chdir(tmpDir)
+
+	testutil.InitRepo(t, tmpDir)
+
+	trackedFile := filepath.Join(tmpDir, "tracked.txt")
+	if err := os.WriteFile(trackedFile, []byte("content"), 0o644); err != nil {
+		t.Fatalf("failed to write tracked file: %v", err)
+	}
+
+	repo, err := git.PlainOpen(tmpDir)
+	if err != nil {
+		t.Fatalf("failed to open repo: %v", err)
+	}
+
+	worktree, err := repo.Worktree()
+	if err != nil {
+		t.Fatalf("failed to get worktree: %v", err)
+	}
+
+	if _, err := worktree.Add("tracked.txt"); err != nil {
+		t.Fatalf("failed to add file: %v", err)
+	}
+
+	if _, err := worktree.Commit("Initial commit", &git.CommitOptions{
+		Author: &object.Signature{
+			Name:  "Test User",
+			Email: "test@example.com",
+		},
+	}); err != nil {
+		t.Fatalf("failed to commit: %v", err)
+	}
+
+	if err := os.WriteFile(trackedFile, []byte("modified content"), 0o644); err != nil {
+		t.Fatalf("failed to modify tracked file: %v", err)
+	}
+
+	if err := os.MkdirAll(filepath.Join(tmpDir, ".opencode", "plugins"), 0o755); err != nil {
+		t.Fatalf("failed to create .opencode/plugins: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, ".opencode", "plugins", "entire.ts"), []byte("// plugin"), 0o644); err != nil {
+		t.Fatalf("failed to write opencode plugin: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, "opencode.json"), []byte("{}\n"), 0o644); err != nil {
+		t.Fatalf("failed to write opencode config: %v", err)
+	}
+
+	changes, err := DetectFileChanges(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("DetectFileChanges(context.Background(),nil) error = %v", err)
+	}
+
+	if len(changes.Modified) != 1 || changes.Modified[0] != "tracked.txt" {
+		t.Errorf("DetectFileChanges(context.Background(),nil) Modified = %v, want [tracked.txt]", changes.Modified)
+	}
+	if len(changes.New) != 0 {
+		t.Errorf("DetectFileChanges(context.Background(),nil) New = %v, want empty", changes.New)
+	}
+	if len(changes.Deleted) != 0 {
+		t.Errorf("DetectFileChanges(context.Background(),nil) Deleted = %v, want empty", changes.Deleted)
+	}
+}
+
 func TestMergeUnique(t *testing.T) {
 	t.Parallel()
 
@@ -760,5 +872,48 @@ func TestMergeUnique(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestFilterToUncommittedFiles_ReallyModified(t *testing.T) {
+	// Verify that files with genuinely different content are kept.
+
+	tmpDir := t.TempDir()
+	t.Chdir(tmpDir)
+
+	repo, err := git.PlainInit(tmpDir, false)
+	if err != nil {
+		t.Fatalf("failed to init repo: %v", err)
+	}
+
+	filePath := filepath.Join(tmpDir, "file.txt")
+	if err := os.WriteFile(filePath, []byte("original\n"), 0o644); err != nil {
+		t.Fatalf("failed to write file: %v", err)
+	}
+
+	wt, err := repo.Worktree()
+	if err != nil {
+		t.Fatalf("failed to get worktree: %v", err)
+	}
+	if _, err := wt.Add("file.txt"); err != nil {
+		t.Fatalf("failed to add file: %v", err)
+	}
+	if _, err := wt.Commit("Initial commit", &git.CommitOptions{
+		Author: &object.Signature{
+			Name:  "Test User",
+			Email: "test@example.com",
+		},
+	}); err != nil {
+		t.Fatalf("failed to commit: %v", err)
+	}
+
+	// Modify the file with genuinely different content
+	if err := os.WriteFile(filePath, []byte("modified\n"), 0o644); err != nil {
+		t.Fatalf("failed to rewrite file: %v", err)
+	}
+
+	result := filterToUncommittedFiles(context.Background(), []string{"file.txt"}, tmpDir)
+	if len(result) != 1 || result[0] != "file.txt" {
+		t.Errorf("filterToUncommittedFiles() = %v, want [file.txt]", result)
 	}
 }

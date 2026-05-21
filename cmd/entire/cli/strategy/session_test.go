@@ -13,11 +13,12 @@ import (
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint/id"
 	"github.com/entireio/cli/cmd/entire/cli/paths"
 	"github.com/entireio/cli/cmd/entire/cli/trailers"
+	"github.com/entireio/cli/redact"
 
-	"github.com/go-git/go-git/v5"
-	"github.com/go-git/go-git/v5/plumbing"
-	"github.com/go-git/go-git/v5/plumbing/filemode"
-	"github.com/go-git/go-git/v5/plumbing/object"
+	"github.com/go-git/go-git/v6"
+	"github.com/go-git/go-git/v6/plumbing"
+	"github.com/go-git/go-git/v6/plumbing/filemode"
+	"github.com/go-git/go-git/v6/plumbing/object"
 )
 
 const testSessionID = "2025-01-15-test-session"
@@ -174,6 +175,9 @@ func TestManualCommitStrategyGetAdditionalSessions(t *testing.T) {
 }
 
 func TestListSessionsFunctionsWithoutRepo(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Chdir(tmpDir)
+
 	// Without a git repo, these will fail - just verifying they're callable
 	_, err := ListSessions(context.Background())
 	if err != nil {
@@ -274,6 +278,44 @@ func TestListSessionsWithDescription(t *testing.T) {
 	sess := sessions[0]
 	if sess.Description != expectedDesc {
 		t.Errorf("Session.Description = %q, want %q", sess.Description, expectedDesc)
+	}
+}
+
+func TestGetDescriptionForCheckpointFallsForwardToV2WhenV1MissesCheckpoint(t *testing.T) {
+	tmpDir := t.TempDir()
+	resolved, err := filepath.EvalSymlinks(tmpDir)
+	if err != nil {
+		t.Fatalf("filepath.EvalSymlinks() failed: %v", err)
+	}
+	tmpDir = resolved
+
+	initTestRepo(t, tmpDir)
+	t.Chdir(tmpDir)
+
+	repo, err := OpenRepository(context.Background())
+	if err != nil {
+		t.Fatalf("OpenRepository(context.Background()) failed: %v", err)
+	}
+
+	createTestMetadataBranchWithPrompt(t, repo, testSessionID, id.MustCheckpointID("111111111111"), "v1 prompt")
+
+	targetCheckpointID := id.MustCheckpointID("222222222222")
+	expectedDesc := "prompt from v2"
+	v2Store := checkpoint.NewV2GitStore(repo)
+	if err := v2Store.WriteCommitted(context.Background(), checkpoint.WriteCommittedOptions{
+		CheckpointID: targetCheckpointID,
+		SessionID:    "session-v2-description",
+		Strategy:     StrategyNameManualCommit,
+		Transcript:   redact.AlreadyRedacted([]byte(`{"type":"test"}` + "\n")),
+		Prompts:      []string{expectedDesc},
+		AuthorName:   "Test",
+		AuthorEmail:  "test@example.com",
+	}); err != nil {
+		t.Fatalf("WriteCommitted() error = %v", err)
+	}
+
+	if got := getDescriptionForCheckpoint(repo, targetCheckpointID); got != expectedDesc {
+		t.Errorf("getDescriptionForCheckpoint() = %q, want %q", got, expectedDesc)
 	}
 }
 
@@ -447,7 +489,7 @@ func createTestMultiSessionCheckpoint(t *testing.T, repo *git.Repository, checkp
 	}
 
 	// Build tree
-	treeHash, err := checkpoint.BuildTreeFromEntries(repo, entries)
+	treeHash, err := checkpoint.BuildTreeFromEntries(context.Background(), repo, entries)
 	if err != nil {
 		t.Fatalf("failed to build tree: %v", err)
 	}
@@ -563,7 +605,7 @@ func createTestMetadataBranchWithPrompt(t *testing.T, repo *git.Repository, sess
 	}
 
 	// Build tree
-	treeHash, err := checkpoint.BuildTreeFromEntries(repo, entries)
+	treeHash, err := checkpoint.BuildTreeFromEntries(context.Background(), repo, entries)
 	if err != nil {
 		t.Fatalf("failed to build tree: %v", err)
 	}

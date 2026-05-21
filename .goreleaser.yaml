@@ -1,4 +1,6 @@
+# yaml-language-server: $schema=https://goreleaser.com/static/schema-pro.json
 version: 2
+pro: true
 
 before:
   hooks:
@@ -13,6 +15,7 @@ builds:
     goos:
       - darwin
       - linux
+      - windows
     goarch:
       - amd64
       - arm64
@@ -38,6 +41,10 @@ notarize:
 archives:
   - formats:
       - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
     name_template: "entire_{{ .Os }}_{{ .Arch }}"
     files:
       - src: completions/*
@@ -59,13 +66,18 @@ archives:
 checksum:
   name_template: "checksums.txt"
 
-changelog:
-  sort: asc
-  filters:
-    exclude:
-      - "^docs:"
-      - "^test:"
-      - "^chore:"
+release:
+  prerelease: auto
+
+scoops:
+  - repository:
+      owner: entireio
+      name: scoop-bucket
+      token: "{{ .Env.TAP_GITHUB_TOKEN }}"
+    homepage: "https://github.com/entireio/cli"
+    description: "CLI for Entire"
+    license: MIT
+    skip_upload: auto
 
 homebrew_casks:
   - name: entire
@@ -78,7 +90,40 @@ homebrew_casks:
     description: "CLI for Entire"
     binaries:
       - entire
-    completions:
-      bash: "completions/entire.bash"
-      zsh: "completions/entire.zsh"
-      fish: "completions/entire.fish"
+    generate_completions_from_executable:
+      executable: entire
+      shell_parameter_format: cobra
+      shells:
+        - bash
+        - zsh
+        - fish
+    conflicts:
+      - cask: entire@nightly
+    skip_upload: auto
+
+  - name: entire@nightly
+    repository:
+      owner: entireio
+      name: homebrew-tap
+      token: "{{ .Env.TAP_GITHUB_TOKEN }}"
+    directory: Casks
+    homepage: "https://github.com/entireio/cli"
+    description: "CLI for Entire (nightly build)"
+    binaries:
+      - entire
+    generate_completions_from_executable:
+      executable: entire
+      shell_parameter_format: cobra
+      shells:
+        - bash
+        - zsh
+        - fish
+    conflicts:
+      - cask: entire
+    skip_upload: "{{ if not .Prerelease }}true{{ end }}"
+
+announce:
+  discord:
+    enabled: '{{ and (not .Prerelease) (isEnvSet "DISCORD_WEBHOOK_ID") (isEnvSet "DISCORD_WEBHOOK_TOKEN") }}'
+    message_template: "Beep, boop. **Entire CLI {{ .Tag }}** is out!\n\n{{ .ReleaseURL }}\n\nSee https://docs.entire.io/cli/installation for help installing and updating."
+    author: "Entire"

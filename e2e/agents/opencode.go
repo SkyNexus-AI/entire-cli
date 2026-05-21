@@ -100,13 +100,17 @@ func (a *openCodeAgent) RunPrompt(ctx context.Context, dir string, prompt string
 			timeout = parsed
 		}
 	}
+	// Per-prompt timeout is the most specific override.
+	if cfg.PromptTimeout > 0 {
+		timeout = cfg.PromptTimeout
+	}
 
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, a.Binary(), args...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "ENTIRE_TEST_TTY=0")
+	cmd.Env = filterEnv(os.Environ(), "ENTIRE_TEST_TTY")
 
 	var stdout, stderr strings.Builder
 	cmd.Stdout = &stdout
@@ -140,13 +144,15 @@ func (a *openCodeAgent) StartSession(ctx context.Context, dir string) (Session, 
 	for attempt := range 2 {
 		name := fmt.Sprintf("opencode-test-%d", time.Now().UnixNano())
 		var err error
-		s, err = NewTmuxSession(name, dir, nil, "env", "ENTIRE_TEST_TTY=0", a.Binary(), "--model", a.model)
+		s, err = NewTmuxSession(name, dir, []string{"ENTIRE_TEST_TTY"}, a.Binary(), "--model", a.model)
 		if err != nil {
 			return nil, err
 		}
 
 		// Wait for TUI to be ready (input area with placeholder text).
-		if _, err := s.WaitFor(`Ask anything`, 15*time.Second); err != nil {
+		// OpenCode's TUI has a large ASCII banner and multiple panels that
+		// can take a while to render on CI, plus WaitFor needs 2s settle.
+		if _, err := s.WaitFor(`Ask anything`, 60*time.Second); err != nil {
 			content := s.Capture()
 			_ = s.Close()
 			if strings.TrimSpace(content) == "" && attempt == 0 {

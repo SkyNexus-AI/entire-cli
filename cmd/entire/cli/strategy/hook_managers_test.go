@@ -193,6 +193,94 @@ func TestDetectHookManagers_Overcommit(t *testing.T) {
 	}
 }
 
+func TestDetectHookManagers_Hk(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmpDir, "hk.pkl"), []byte(""), 0o644); err != nil {
+		t.Fatalf("failed to create hk.pkl: %v", err)
+	}
+
+	managers := detectHookManagers(tmpDir)
+	if len(managers) != 1 {
+		t.Fatalf("expected 1 manager, got %d", len(managers))
+	}
+	if managers[0].Name != "hk" {
+		t.Errorf("expected hk, got %s", managers[0].Name)
+	}
+	if managers[0].ConfigPath != "hk.pkl" {
+		t.Errorf("expected hk.pkl, got %s", managers[0].ConfigPath)
+	}
+	if managers[0].OverwritesHooks {
+		t.Error("hk should have OverwritesHooks=false")
+	}
+}
+
+func TestDetectHookManagers_HkConfigDir(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	configDir := filepath.Join(tmpDir, ".config")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatalf("failed to create .config/: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "hk.pkl"), []byte(""), 0o644); err != nil {
+		t.Fatalf("failed to create .config/hk.pkl: %v", err)
+	}
+
+	managers := detectHookManagers(tmpDir)
+	if len(managers) != 1 {
+		t.Fatalf("expected 1 manager, got %d", len(managers))
+	}
+	if managers[0].Name != "hk" {
+		t.Errorf("expected hk, got %s", managers[0].Name)
+	}
+	if managers[0].ConfigPath != ".config/hk.pkl" {
+		t.Errorf("expected .config/hk.pkl, got %s", managers[0].ConfigPath)
+	}
+}
+
+func TestDetectHookManagers_HkLocal(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmpDir, "hk.local.pkl"), []byte(""), 0o644); err != nil {
+		t.Fatalf("failed to create hk.local.pkl: %v", err)
+	}
+
+	managers := detectHookManagers(tmpDir)
+	if len(managers) != 1 {
+		t.Fatalf("expected 1 manager, got %d", len(managers))
+	}
+	if managers[0].Name != "hk" {
+		t.Errorf("expected hk, got %s", managers[0].Name)
+	}
+	if managers[0].ConfigPath != "hk.local.pkl" {
+		t.Errorf("expected hk.local.pkl, got %s", managers[0].ConfigPath)
+	}
+}
+
+func TestDetectHookManagers_HkDedup(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	// Both hk.pkl and hk.local.pkl present — should only report once
+	if err := os.WriteFile(filepath.Join(tmpDir, "hk.pkl"), []byte(""), 0o644); err != nil {
+		t.Fatalf("failed to create hk.pkl: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, "hk.local.pkl"), []byte(""), 0o644); err != nil {
+		t.Fatalf("failed to create hk.local.pkl: %v", err)
+	}
+
+	managers := detectHookManagers(tmpDir)
+	if len(managers) != 1 {
+		t.Fatalf("expected 1 manager (dedup), got %d", len(managers))
+	}
+	if managers[0].Name != "hk" {
+		t.Errorf("expected hk, got %s", managers[0].Name)
+	}
+}
+
 func TestDetectHookManagers_Multiple(t *testing.T) {
 	t.Parallel()
 
@@ -381,7 +469,7 @@ func TestCheckAndWarnHookManagers_NoManagers(t *testing.T) {
 	initHooksTestRepo(t)
 
 	var buf bytes.Buffer
-	CheckAndWarnHookManagers(context.Background(), &buf, false)
+	CheckAndWarnHookManagers(context.Background(), &buf, false, false)
 
 	if buf.Len() != 0 {
 		t.Errorf("expected no output, got %q", buf.String())
@@ -398,7 +486,7 @@ func TestCheckAndWarnHookManagers_WithHusky(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	CheckAndWarnHookManagers(context.Background(), &buf, false)
+	CheckAndWarnHookManagers(context.Background(), &buf, false, false)
 
 	output := buf.String()
 	if !strings.Contains(output, "Warning: Husky detected") {

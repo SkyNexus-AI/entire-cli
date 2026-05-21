@@ -10,8 +10,10 @@ import (
 	"github.com/entireio/cli/cmd/entire/cli/settings"
 	"github.com/entireio/cli/cmd/entire/cli/strategy"
 
-	// Import claudecode to register the agent
+	// Import agents to register them
 	_ "github.com/entireio/cli/cmd/entire/cli/agent/claudecode"
+	_ "github.com/entireio/cli/cmd/entire/cli/agent/codex"
+	_ "github.com/entireio/cli/cmd/entire/cli/agent/factoryaidroid"
 )
 
 // Package-level aliases to avoid shadowing the settings package with local variables named "settings".
@@ -61,9 +63,12 @@ func IsEnabled(ctx context.Context) (bool, error) {
 	return s.Enabled, nil
 }
 
-// GetStrategy returns the manual-commit strategy instance.
+// GetStrategy returns the manual-commit strategy instance with blob fetching
+// enabled so that checkpoint reads work after treeless fetches.
 func GetStrategy(_ context.Context) *strategy.ManualCommitStrategy {
-	return strategy.NewManualCommitStrategy()
+	s := strategy.NewManualCommitStrategy()
+	s.SetBlobFetcher(FetchBlobsByHash)
+	return s
 }
 
 // GetLogLevel returns the configured log level from settings.
@@ -85,11 +90,23 @@ func GetAgentsWithHooksInstalled(ctx context.Context) []types.AgentName {
 		if err != nil {
 			continue
 		}
-		if hs, ok := ag.(agent.HookSupport); ok && hs.AreHooksInstalled(ctx) {
+		if hs, ok := agent.AsHookSupport(ag); ok && hs.AreHooksInstalled(ctx) {
 			installed = append(installed, name)
 		}
 	}
 	return installed
+}
+
+// InstalledAgentDisplayNames returns user-facing display names for agents with hooks installed.
+func InstalledAgentDisplayNames(ctx context.Context) []string {
+	installedNames := GetAgentsWithHooksInstalled(ctx)
+	displayNames := make([]string, 0, len(installedNames))
+	for _, name := range installedNames {
+		if ag, err := agent.Get(name); err == nil {
+			displayNames = append(displayNames, string(ag.Type()))
+		}
+	}
+	return displayNames
 }
 
 // JoinAgentNames joins agent names into a comma-separated string.

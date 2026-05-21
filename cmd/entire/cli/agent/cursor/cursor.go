@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -13,8 +14,12 @@ import (
 
 	"github.com/entireio/cli/cmd/entire/cli/agent"
 	"github.com/entireio/cli/cmd/entire/cli/agent/types"
+	"github.com/entireio/cli/cmd/entire/cli/logging"
 	"github.com/entireio/cli/cmd/entire/cli/paths"
 )
+
+// Compile-time interface assertion.
+var _ agent.TranscriptPreparer = (*CursorAgent)(nil)
 
 //nolint:gochecknoinits // Agent self-registration is the intended pattern
 func init() {
@@ -24,7 +29,9 @@ func init() {
 // CursorAgent implements the Agent interface for Cursor.
 //
 //nolint:revive // CursorAgent is clearer than Agent in this context
-type CursorAgent struct{}
+type CursorAgent struct {
+	CommandRunner agent.TextCommandRunner
+}
 
 // NewCursorAgent creates a new Cursor agent instance.
 func NewCursorAgent() agent.Agent {
@@ -103,9 +110,21 @@ func (c *CursorAgent) GetSessionDir(repoPath string) (string, error) {
 	return filepath.Join(homeDir, ".cursor", "projects", projectDir, "agent-transcripts"), nil
 }
 
+// GetSessionBaseDir returns the base directory containing per-project session subdirectories.
+// Unlike GetSessionDir, this does NOT use test overrides because the override
+// points to a specific project dir, not the base containing all projects.
+func (c *CursorAgent) GetSessionBaseDir() (string, error) {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("failed to get home directory: %w", err)
+	}
+	return filepath.Join(homeDir, ".cursor", "projects"), nil
+}
+
 // ReadSession reads a session from Cursor's storage (JSONL transcript file).
-// Note: ModifiedFiles is left empty because Cursor's transcript format does not
-// contain tool_use blocks. File detection relies on git status instead.
+// Note: ModifiedFiles is left empty because Cursor's transcript does not contain
+// tool_use blocks for file detection. TranscriptAnalyzer extracts prompts and
+// summaries; file detection relies on git status.
 func (c *CursorAgent) ReadSession(input *agent.HookInput) (*agent.AgentSession, error) {
 	if input.SessionRef == "" {
 		return nil, errors.New("session reference (transcript path) is required")
@@ -123,6 +142,64 @@ func (c *CursorAgent) ReadSession(input *agent.HookInput) (*agent.AgentSession, 
 		StartTime:  time.Now(),
 		NativeData: data,
 	}, nil
+}
+
+// PrepareTranscript waits for Cursor's transcript file to be flushed to disk.
+// Cursor writes transcripts asynchronously; during mid-turn commits the file
+// may not yet contain data. This polls until the file exists and is non-empty,
+// or until the timeout expires.
+func (c *CursorAgent) PrepareTranscript(ctx context.Context, sessionRef string) error {
+	const (
+		maxWait      = 5 * time.Second
+		pollInterval = 50 * time.Millisecond
+	)
+
+	logCtx := logging.WithComponent(ctx, "agent.cursor")
+
+	start := time.Now()
+	deadline := start.Add(maxWait)
+	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
+		deadline = ctxDeadline
+	}
+	effectiveTimeout := deadline.Sub(start)
+
+	for time.Now().Before(deadline) {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("context ended while waiting for transcript: %w", err)
+		}
+
+		info, err := os.Stat(sessionRef)
+		if err == nil {
+			if info.Size() > 0 {
+				logging.Debug(logCtx, "transcript file ready",
+					slog.Int64("size", info.Size()),
+				)
+				return nil
+			}
+		} else if !os.IsNotExist(err) {
+			return fmt.Errorf("failed to stat transcript %q: %w", sessionRef, err)
+		}
+
+		wait := pollInterval
+		if remaining := time.Until(deadline); remaining < wait {
+			wait = remaining
+		}
+		timer := time.NewTimer(wait)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return fmt.Errorf("context ended while waiting for transcript: %w", ctx.Err())
+		case <-timer.C:
+		}
+	}
+
+	logging.Warn(logCtx, "transcript file not ready within timeout, proceeding",
+		slog.Duration("timeout", effectiveTimeout),
+		slog.String("path", sessionRef),
+	)
+	return nil
 }
 
 // WriteSession writes a session to Cursor's storage (JSONL transcript file).
@@ -153,7 +230,7 @@ func (c *CursorAgent) WriteSession(_ context.Context, session *agent.AgentSessio
 // FormatResumeCommand returns an instruction to resume a Cursor session.
 // Cursor is a GUI IDE, so there's no CLI command to resume a session directly.
 func (c *CursorAgent) FormatResumeCommand(_ string) string {
-	return "Open this project in Cursor to continue the session."
+	return "Open this project in Cursor."
 }
 
 // sanitizePathForCursor converts a path to Cursor's project directory format.

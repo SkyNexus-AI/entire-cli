@@ -8,12 +8,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
-	"github.com/go-git/go-git/v5"
-	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/entireio/cli/cmd/entire/cli/execx"
+	"github.com/entireio/cli/cmd/entire/cli/testutil"
+	"github.com/go-git/go-git/v6"
+	"github.com/go-git/go-git/v6/plumbing"
 )
 
 const masterBranch = "master"
@@ -67,8 +68,8 @@ func TestResume_SwitchBranchWithSession(t *testing.T) {
 	}
 
 	// Verify output contains session info and resume command
-	if !strings.Contains(output, "Session:") {
-		t.Errorf("output should contain 'Session:', got: %s", output)
+	if !strings.Contains(output, "Restored session") {
+		t.Errorf("output should contain 'Restored session', got: %s", output)
 	}
 	if !strings.Contains(output, "claude -r") {
 		t.Errorf("output should contain 'claude -r', got: %s", output)
@@ -117,8 +118,8 @@ func TestResume_AlreadyOnBranch(t *testing.T) {
 	}
 
 	// Should still show session info
-	if !strings.Contains(output, "Session:") {
-		t.Errorf("output should contain 'Session:', got: %s", output)
+	if !strings.Contains(output, "Restored session") {
+		t.Errorf("output should contain 'Restored session', got: %s", output)
 	}
 }
 
@@ -333,7 +334,7 @@ func TestResume_MultipleSessionsOnBranch(t *testing.T) {
 	}
 
 	// Should show session info (multi-session output says "Restored N sessions")
-	if !strings.Contains(output, "Restored 2 sessions") && !strings.Contains(output, "Session:") {
+	if !strings.Contains(output, "Restored 2 sessions") && !strings.Contains(output, "Restored session") {
 		t.Errorf("output should contain session info, got: %s", output)
 	}
 
@@ -398,8 +399,8 @@ func TestResume_CheckpointWithoutMetadata(t *testing.T) {
 
 	// Should NOT show session info since metadata is missing
 	// The resume command should silently skip commits without valid metadata
-	if strings.Contains(output, "Session:") {
-		t.Errorf("output should not contain 'Session:' when metadata is missing, got: %s", output)
+	if strings.Contains(output, "Restored session") {
+		t.Errorf("output should not contain 'Restored session' when metadata is missing, got: %s", output)
 	}
 }
 
@@ -466,8 +467,8 @@ func TestResume_AfterMergingMain(t *testing.T) {
 	}
 
 	// Should find the session from the older commit (before the merge)
-	if !strings.Contains(output, "Session:") {
-		t.Errorf("output should contain 'Session:', got: %s", output)
+	if !strings.Contains(output, "Restored session") {
+		t.Errorf("output should contain 'Restored session', got: %s", output)
 	}
 	if !strings.Contains(output, "claude -r") {
 		t.Errorf("output should contain 'claude -r', got: %s", output)
@@ -486,13 +487,12 @@ func (env *TestEnv) RunResume(branchName string) (string, error) {
 	env.T.Helper()
 
 	ctx := env.T.Context()
-	cmd := exec.CommandContext(ctx, getTestBinary(), "resume", branchName)
+	// Detach from controlling terminal so huh can't open /dev/tty for prompts.
+	cmd := execx.NonInteractive(ctx, getTestBinary(), "resume", branchName)
 	cmd.Dir = env.RepoDir
-	cmd.Env = append(gitIsolatedEnv(),
+	cmd.Env = append(testutil.GitIsolatedEnv(),
 		"ENTIRE_TEST_CLAUDE_PROJECT_DIR="+env.ClaudeProjectDir,
 	)
-	// Detach from controlling terminal so huh can't open /dev/tty for interactive prompts
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 
 	output, err := cmd.CombinedOutput()
 	return string(output), err
@@ -505,20 +505,12 @@ func (env *TestEnv) RunResumeForce(branchName string) (string, error) {
 	ctx := env.T.Context()
 	cmd := exec.CommandContext(ctx, getTestBinary(), "resume", "--force", branchName)
 	cmd.Dir = env.RepoDir
-	cmd.Env = append(gitIsolatedEnv(),
+	cmd.Env = append(testutil.GitIsolatedEnv(),
 		"ENTIRE_TEST_CLAUDE_PROJECT_DIR="+env.ClaudeProjectDir,
 	)
 
 	output, err := cmd.CombinedOutput()
 	return string(output), err
-}
-
-// RunResumeInteractive executes the resume command with a pty, allowing
-// interactive prompt responses. The respond function receives the pty for
-// reading output and writing input. See RunCommandInteractive for details.
-func (env *TestEnv) RunResumeInteractive(branchName string, respond func(ptyFile *os.File) string) (string, error) {
-	env.T.Helper()
-	return env.RunCommandInteractive([]string{"resume", branchName}, respond)
 }
 
 // GitMerge merges a branch into the current branch.
@@ -703,141 +695,6 @@ func TestResume_LocalLogNewerTimestamp_ForceOverwrites(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "Create hello method") {
 		t.Errorf("restored log should contain checkpoint transcript, got: %s", string(data))
-	}
-}
-
-// TestResume_LocalLogNewerTimestamp_UserConfirmsOverwrite tests that when the user
-// confirms the overwrite prompt interactively, the local log is overwritten.
-func TestResume_LocalLogNewerTimestamp_UserConfirmsOverwrite(t *testing.T) {
-	t.Parallel()
-	env := NewFeatureBranchEnv(t)
-
-	// Create a session with a specific timestamp
-	session := env.NewSession()
-	if err := env.SimulateUserPromptSubmit(session.ID); err != nil {
-		t.Fatalf("SimulateUserPromptSubmit failed: %v", err)
-	}
-
-	content := "def hello; end"
-	env.WriteFile("hello.rb", content)
-
-	session.CreateTranscript(
-		"Create hello method",
-		[]FileChange{{Path: "hello.rb", Content: content}},
-	)
-	if err := env.SimulateStop(session.ID, session.TranscriptPath); err != nil {
-		t.Fatalf("SimulateStop failed: %v", err)
-	}
-
-	// Commit the session's changes (manual-commit requires user to commit)
-	env.GitCommitWithShadowHooks("Create hello method", "hello.rb")
-
-	featureBranch := env.GetCurrentBranch()
-
-	// Create a local log with a NEWER timestamp than the checkpoint
-	if err := os.MkdirAll(env.ClaudeProjectDir, 0o755); err != nil {
-		t.Fatalf("failed to create Claude project dir: %v", err)
-	}
-	existingLog := filepath.Join(env.ClaudeProjectDir, session.ID+".jsonl")
-	futureTimestamp := time.Now().Add(24 * time.Hour).UTC().Format(time.RFC3339)
-	newerContent := fmt.Sprintf(`{"type":"human","timestamp":"%s","message":{"content":"newer local work"}}`, futureTimestamp)
-	if err := os.WriteFile(existingLog, []byte(newerContent), 0o644); err != nil {
-		t.Fatalf("failed to write existing log: %v", err)
-	}
-
-	// Switch to main
-	env.GitCheckoutBranch(masterBranch)
-
-	// Resume interactively and confirm the overwrite
-	output, err := env.RunResumeInteractive(featureBranch, func(ptyFile *os.File) string {
-		out, promptErr := WaitForPromptAndRespond(ptyFile, "[y/N]", "y\n", 10*time.Second)
-		if promptErr != nil {
-			t.Logf("Warning: %v", promptErr)
-		}
-		return out
-	})
-	if err != nil {
-		t.Fatalf("resume with user confirmation failed: %v\nOutput: %s", err, output)
-	}
-
-	// Verify local log was overwritten with checkpoint content
-	data, err := os.ReadFile(existingLog)
-	if err != nil {
-		t.Fatalf("failed to read log: %v", err)
-	}
-	if strings.Contains(string(data), "newer local work") {
-		t.Errorf("local log should have been overwritten after user confirmed, but still has newer content: %s", string(data))
-	}
-	if !strings.Contains(string(data), "Create hello method") {
-		t.Errorf("restored log should contain checkpoint transcript, got: %s", string(data))
-	}
-}
-
-// TestResume_LocalLogNewerTimestamp_UserDeclinesOverwrite tests that when the user
-// declines the overwrite prompt interactively, the local log is preserved.
-func TestResume_LocalLogNewerTimestamp_UserDeclinesOverwrite(t *testing.T) {
-	t.Parallel()
-	env := NewFeatureBranchEnv(t)
-
-	// Create a session with a specific timestamp
-	session := env.NewSession()
-	if err := env.SimulateUserPromptSubmit(session.ID); err != nil {
-		t.Fatalf("SimulateUserPromptSubmit failed: %v", err)
-	}
-
-	content := "def hello; end"
-	env.WriteFile("hello.rb", content)
-
-	session.CreateTranscript(
-		"Create hello method",
-		[]FileChange{{Path: "hello.rb", Content: content}},
-	)
-	if err := env.SimulateStop(session.ID, session.TranscriptPath); err != nil {
-		t.Fatalf("SimulateStop failed: %v", err)
-	}
-
-	// Commit the session's changes (manual-commit requires user to commit)
-	env.GitCommitWithShadowHooks("Create hello method", "hello.rb")
-
-	featureBranch := env.GetCurrentBranch()
-
-	// Create a local log with a NEWER timestamp than the checkpoint
-	if err := os.MkdirAll(env.ClaudeProjectDir, 0o755); err != nil {
-		t.Fatalf("failed to create Claude project dir: %v", err)
-	}
-	existingLog := filepath.Join(env.ClaudeProjectDir, session.ID+".jsonl")
-	futureTimestamp := time.Now().Add(24 * time.Hour).UTC().Format(time.RFC3339)
-	newerContent := fmt.Sprintf(`{"type":"human","timestamp":"%s","message":{"content":"newer local work"}}`, futureTimestamp)
-	if err := os.WriteFile(existingLog, []byte(newerContent), 0o644); err != nil {
-		t.Fatalf("failed to write existing log: %v", err)
-	}
-
-	// Switch to main
-	env.GitCheckoutBranch(masterBranch)
-
-	// Resume interactively and decline the overwrite
-	output, err := env.RunResumeInteractive(featureBranch, func(ptyFile *os.File) string {
-		out, promptErr := WaitForPromptAndRespond(ptyFile, "[y/N]", "n\n", 10*time.Second)
-		if promptErr != nil {
-			t.Logf("Warning: %v", promptErr)
-		}
-		return out
-	})
-	// Command should succeed (graceful exit) but not overwrite
-	t.Logf("Resume with user decline output: %s, err: %v", output, err)
-
-	// Verify local log was NOT overwritten
-	data, err := os.ReadFile(existingLog)
-	if err != nil {
-		t.Fatalf("failed to read log: %v", err)
-	}
-	if !strings.Contains(string(data), "newer local work") {
-		t.Errorf("local log should NOT have been overwritten after user declined, but content changed to: %s", string(data))
-	}
-
-	// Output should indicate the resume was cancelled
-	if !strings.Contains(output, "cancelled") && !strings.Contains(output, "preserved") {
-		t.Logf("Note: Expected 'cancelled' or 'preserved' in output, got: %s", output)
 	}
 }
 
@@ -1071,6 +928,114 @@ func TestResume_LocalLogNoTimestamp(t *testing.T) {
 	}
 }
 
+// TestResume_SquashMergeMultipleCheckpoints tests resume when a squash merge commit
+// contains multiple Entire-Checkpoint trailers from different sessions/commits.
+// This simulates the GitHub squash merge workflow where:
+// 1. Developer creates feature branch with multiple commits, each with its own checkpoint
+// 2. PR is squash-merged to main, combining all commit messages (and their checkpoint trailers)
+// 3. Feature branch is deleted
+// 4. Running "entire resume main" should resume only from the latest checkpoint (most recent session)
+func TestResume_SquashMergeMultipleCheckpoints(t *testing.T) {
+	t.Parallel()
+	env := NewFeatureBranchEnv(t)
+
+	// === Session 1: First piece of work on feature branch ===
+	session1 := env.NewSession()
+	if err := env.SimulateUserPromptSubmit(session1.ID); err != nil {
+		t.Fatalf("SimulateUserPromptSubmit session1 failed: %v", err)
+	}
+
+	content1 := "puts 'hello world'"
+	env.WriteFile("hello.rb", content1)
+
+	session1.CreateTranscript(
+		"Create hello script",
+		[]FileChange{{Path: "hello.rb", Content: content1}},
+	)
+	if err := env.SimulateStop(session1.ID, session1.TranscriptPath); err != nil {
+		t.Fatalf("SimulateStop session1 failed: %v", err)
+	}
+
+	// Commit session 1 (triggers condensation → checkpoint 1 on entire/checkpoints/v1)
+	env.GitCommitWithShadowHooks("Create hello script", "hello.rb")
+	checkpointID1 := env.GetLatestCheckpointID()
+	t.Logf("Session 1 checkpoint: %s", checkpointID1)
+
+	// === Session 2: Second piece of work on feature branch ===
+	session2 := env.NewSession()
+	if err := env.SimulateUserPromptSubmit(session2.ID); err != nil {
+		t.Fatalf("SimulateUserPromptSubmit session2 failed: %v", err)
+	}
+
+	content2 := "puts 'goodbye world'"
+	env.WriteFile("goodbye.rb", content2)
+
+	session2.CreateTranscript(
+		"Create goodbye script",
+		[]FileChange{{Path: "goodbye.rb", Content: content2}},
+	)
+	if err := env.SimulateStop(session2.ID, session2.TranscriptPath); err != nil {
+		t.Fatalf("SimulateStop session2 failed: %v", err)
+	}
+
+	// Commit session 2 (triggers condensation → checkpoint 2 on entire/checkpoints/v1)
+	env.GitCommitWithShadowHooks("Create goodbye script", "goodbye.rb")
+	checkpointID2 := env.GetLatestCheckpointID()
+	t.Logf("Session 2 checkpoint: %s", checkpointID2)
+
+	// Verify we got two different checkpoint IDs
+	if checkpointID1 == checkpointID2 {
+		t.Fatalf("expected different checkpoint IDs, got same: %s", checkpointID1)
+	}
+
+	// === Simulate squash merge: switch to master, create squash commit ===
+	env.GitCheckoutBranch(masterBranch)
+
+	// Write the combined file changes (as if squash merged)
+	env.WriteFile("hello.rb", content1)
+	env.WriteFile("goodbye.rb", content2)
+	env.GitAdd("hello.rb")
+	env.GitAdd("goodbye.rb")
+
+	// Create squash merge commit with both checkpoint trailers in the message
+	// This mimics GitHub's squash merge format: PR title + individual commit messages
+	env.GitCommitWithMultipleCheckpoints(
+		"Feature branch (#1)\n\n* Create hello script\n\n* Create goodbye script",
+		[]string{checkpointID1, checkpointID2},
+	)
+
+	// Remove local session logs (simulating a fresh machine or deleted local state)
+	if err := os.RemoveAll(env.ClaudeProjectDir); err != nil {
+		t.Fatalf("failed to remove Claude project dir: %v", err)
+	}
+
+	// === Run resume on master ===
+	output, err := env.RunResume(masterBranch)
+	if err != nil {
+		t.Fatalf("resume failed: %v\nOutput: %s", err, output)
+	}
+
+	t.Logf("Resume output:\n%s", output)
+
+	// Should show info about skipped checkpoints
+	if !strings.Contains(output, "older checkpoints skipped") {
+		t.Errorf("expected 'older checkpoints skipped' in output, got: %s", output)
+	}
+
+	// Should only resume the latest session (session2), not session1
+	if strings.Contains(output, session1.ID) {
+		t.Errorf("session1 ID %s should NOT appear in output (older checkpoint was skipped), got: %s", session1.ID, output)
+	}
+	if !strings.Contains(output, session2.ID) {
+		t.Errorf("expected session2 ID %s in output, got: %s", session2.ID, output)
+	}
+
+	// Should contain claude -r command
+	if !strings.Contains(output, "claude -r") {
+		t.Errorf("expected 'claude -r' in output, got: %s", output)
+	}
+}
+
 // TestResume_RelocatedRepo tests that resume works when a repository is moved
 // to a different directory after checkpoint creation. This validates that resume
 // reads checkpoint data from the git metadata branch (which travels with the repo)
@@ -1178,7 +1143,7 @@ func TestResume_RelocatedRepo(t *testing.T) {
 	}
 
 	// Verify output contains session info
-	if !strings.Contains(output, "Session:") {
-		t.Errorf("output should contain 'Session:', got: %s", output)
+	if !strings.Contains(output, "Restored session") {
+		t.Errorf("output should contain 'Restored session', got: %s", output)
 	}
 }

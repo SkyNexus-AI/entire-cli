@@ -18,9 +18,10 @@ const entireHookMarker = "Entire CLI hooks"
 
 const backupSuffix = ".pre-entire"
 const chainComment = "# Chain: run pre-existing hook"
+const missingEntireGitHookWarning = "[entire] Entire CLI is enabled but not installed or not on PATH. Skipping Entire Git hook; continuing. Installation guide: https://docs.entire.io/cli/installation#installation-methods"
 
 // gitHookNames are the git hooks managed by Entire CLI
-var gitHookNames = []string{"prepare-commit-msg", "commit-msg", "post-commit", "pre-push"}
+var gitHookNames = []string{"prepare-commit-msg", "commit-msg", "post-commit", "post-rewrite", "pre-push"}
 
 // ManagedGitHookNames returns the list of git hooks managed by Entire CLI.
 // This is useful for tests that need to manipulate hooks.
@@ -166,29 +167,43 @@ func isGitHookInstalledInHooksDir(hooksDir string) bool {
 
 // buildHookSpecs returns the hook specifications for all managed hooks.
 func buildHookSpecs(cmdPrefix string) []hookSpec {
+	prepareCommitMsgCmd := gitHookCommand(cmdPrefix, `prepare-commit-msg "$1" "$2" 2>/dev/null || true`, false)
+	commitMsgCmd := gitHookCommand(cmdPrefix, `commit-msg "$1" || true`, true)
+	postCommitCmd := gitHookCommand(cmdPrefix, `post-commit 2>/dev/null || true`, false)
+	postRewriteCmd := gitHookCommand(cmdPrefix, `post-rewrite "$1" 2>/dev/null || true`, false)
+	prePushCmd := gitHookCommand(cmdPrefix, `pre-push "$1" || true`, false)
+
 	return []hookSpec{
 		{
 			name: "prepare-commit-msg",
 			content: fmt.Sprintf(`#!/bin/sh
 # %s
-%s hooks git prepare-commit-msg "$1" "$2" 2>/dev/null || true
-`, entireHookMarker, cmdPrefix),
+%s
+`, entireHookMarker, prepareCommitMsgCmd),
 		},
 		{
 			name: "commit-msg",
 			content: fmt.Sprintf(`#!/bin/sh
 # %s
 # Commit-msg hook: strip trailer if no user content (allows aborting empty commits)
-%s hooks git commit-msg "$1" || exit 1
-`, entireHookMarker, cmdPrefix),
+%s
+`, entireHookMarker, commitMsgCmd),
 		},
 		{
 			name: "post-commit",
 			content: fmt.Sprintf(`#!/bin/sh
 # %s
 # Post-commit hook: condense session data if commit has Entire-Checkpoint trailer
-%s hooks git post-commit 2>/dev/null || true
-`, entireHookMarker, cmdPrefix),
+%s
+`, entireHookMarker, postCommitCmd),
+		},
+		{
+			name: "post-rewrite",
+			content: fmt.Sprintf(`#!/bin/sh
+# %s
+# Post-rewrite hook: remap session linkage after amend/rebase rewrites
+%s
+`, entireHookMarker, postRewriteCmd),
 		},
 		{
 			name: "pre-push",
@@ -196,18 +211,58 @@ func buildHookSpecs(cmdPrefix string) []hookSpec {
 # %s
 # Pre-push hook: push session logs alongside user's push
 # $1 is the remote name (e.g., "origin")
-%s hooks git pre-push "$1" || true
-`, entireHookMarker, cmdPrefix),
+%s
+`, entireHookMarker, prePushCmd),
 		},
 	}
+}
+
+func gitHookCommand(cmdPrefix, args string, warnMissing bool) string {
+	invocation := fmt.Sprintf("%s hooks git %s", cmdPrefix, args)
+	availableTest, ok := gitHookCommandAvailableTest(cmdPrefix)
+	if !ok {
+		return invocation
+	}
+
+	missingAction := ":"
+	if warnMissing {
+		missingAction = fmt.Sprintf("printf '%%s\\n' %s >&2 || :", shellQuote(missingEntireGitHookWarning))
+	}
+	return fmt.Sprintf("if %s; then %s; else %s; fi", availableTest, invocation, missingAction)
+}
+
+func gitHookCommandAvailableTest(cmdPrefix string) (string, bool) {
+	if cmdPrefix == "entire" {
+		return "command -v entire >/dev/null 2>&1", true
+	}
+	if isWindowsAbsoluteHookCommand(cmdPrefix) {
+		return fmt.Sprintf("[ -f %s ]", cmdPrefix), true
+	}
+	if strings.HasPrefix(cmdPrefix, "/") || strings.HasPrefix(cmdPrefix, "'/") {
+		return fmt.Sprintf("[ -x %s ]", cmdPrefix), true
+	}
+	return "", false
+}
+
+func isWindowsAbsoluteHookCommand(cmdPrefix string) bool {
+	path := strings.TrimPrefix(cmdPrefix, "'")
+	if len(path) < len("C:\\") || path[1] != ':' {
+		return false
+	}
+	driveLetter := path[0]
+	if (driveLetter < 'A' || driveLetter > 'Z') && (driveLetter < 'a' || driveLetter > 'z') {
+		return false
+	}
+	return path[2] == '\\' || path[2] == '/'
 }
 
 // InstallGitHook installs generic git hooks that delegate to `entire hook` commands.
 // These hooks work with any strategy - the strategy is determined at runtime.
 // If silent is true, no output is printed (except backup notifications, which always print).
 // localDev controls whether hooks use "go run" (true) or the "entire" binary (false).
+// absolutePath embeds the full binary path in hooks for GUI git clients.
 // Returns the number of hooks that were installed (0 if all already up to date).
-func InstallGitHook(ctx context.Context, silent bool, localDev bool) (int, error) {
+func InstallGitHook(ctx context.Context, silent, localDev, absolutePath bool) (int, error) {
 	hooksDir, err := GetHooksDir(ctx)
 	if err != nil {
 		return 0, err
@@ -217,7 +272,11 @@ func InstallGitHook(ctx context.Context, silent bool, localDev bool) (int, error
 		return 0, fmt.Errorf("failed to create hooks directory: %w", err)
 	}
 
-	specs := buildHookSpecs(hookCmdPrefix(localDev))
+	cmdPrefix, err := hookCmdPrefix(localDev, absolutePath)
+	if err != nil {
+		return 0, err
+	}
+	specs := buildHookSpecs(cmdPrefix)
 	installedCount := 0
 
 	for _, spec := range specs {
@@ -329,6 +388,10 @@ func RemoveGitHook(ctx context.Context) (int, error) {
 // generateChainedContent appends a chain call to the base hook content,
 // so the pre-existing hook (backed up to .pre-entire) is called after our hook.
 func generateChainedContent(baseContent, hookName string) string {
+	if hookName == "post-rewrite" {
+		return generatePostRewriteChainedContent(baseContent)
+	}
+
 	return baseContent + fmt.Sprintf(`%s
 _entire_hook_dir="$(dirname "$0")"
 if [ -x "$_entire_hook_dir/%s%s" ]; then
@@ -337,21 +400,64 @@ fi
 `, chainComment, hookName, backupSuffix, hookName, backupSuffix)
 }
 
-// hookCmdPrefix returns the command prefix for hook scripts and warning messages.
-// Returns "go run ./cmd/entire/main.go" when local_dev is enabled, "entire" otherwise.
-func hookCmdPrefix(localDev bool) string {
-	if localDev {
-		return "go run ./cmd/entire/main.go"
-	}
-	return "entire"
+func generatePostRewriteChainedContent(baseContent string) string {
+	const original = `hooks git post-rewrite "$1" 2>/dev/null || true`
+	const replacement = `hooks git post-rewrite "$1" < "$_entire_stdin" 2>/dev/null || true`
+
+	replayPrefix := `#!/bin/sh
+_entire_stdin="$(mktemp "${TMPDIR:-/tmp}/entire-post-rewrite.XXXXXX")"
+cat > "$_entire_stdin"
+trap 'rm -f "$_entire_stdin"' EXIT
+`
+
+	body := strings.TrimPrefix(baseContent, "#!/bin/sh\n")
+	body = strings.Replace(body, original, replacement, 1)
+
+	return replayPrefix + body + fmt.Sprintf(`
+%s
+_entire_hook_dir="$(dirname "$0")"
+if [ -x "$_entire_hook_dir/post-rewrite%s" ]; then
+    "$_entire_hook_dir/post-rewrite%s" "$@" < "$_entire_stdin"
+fi
+`, chainComment, backupSuffix, backupSuffix)
 }
 
-// isLocalDev reads the local_dev setting from .entire/settings.json
-// Works correctly from any subdirectory within the repository.
-func isLocalDev(ctx context.Context) bool {
+// hookCmdPrefix returns the command prefix for hook scripts and warning messages.
+// Returns "go run ./cmd/entire/main.go" when local_dev is enabled.
+// When absolutePath is true, resolves the full binary path via os.Executable()
+// and returns an error if resolution fails. This is needed for GUI git clients
+// (Xcode, Tower, etc.) that don't source shell profiles.
+func hookCmdPrefix(localDev, absolutePath bool) (string, error) {
+	if localDev {
+		return "go run ./cmd/entire/main.go", nil
+	}
+	if absolutePath {
+		exe, err := os.Executable()
+		if err != nil {
+			return "", fmt.Errorf("--absolute-git-hook-path: failed to resolve binary path: %w", err)
+		}
+		resolved, err := filepath.EvalSymlinks(exe)
+		if err != nil {
+			return "", fmt.Errorf("--absolute-git-hook-path: failed to resolve symlinks for %s: %w", exe, err)
+		}
+		return shellQuote(resolved), nil
+	}
+	return "entire", nil
+}
+
+// shellQuote wraps a string in single quotes for safe use in #!/bin/sh scripts.
+// Handles paths containing spaces, apostrophes, or other shell metacharacters
+// (e.g., /Users/John O'Brien/bin/entire).
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
+}
+
+// hookSettingsFromConfig loads hook-related settings from .entire/settings.json.
+// Returns (localDev, absoluteHookPath). On error, both default to false.
+func hookSettingsFromConfig(ctx context.Context) (localDev, absoluteHookPath bool) {
 	s, err := settings.Load(ctx)
 	if err != nil {
-		return false
+		return false, false
 	}
-	return s.LocalDev
+	return s.LocalDev, s.AbsoluteGitHookPath
 }
